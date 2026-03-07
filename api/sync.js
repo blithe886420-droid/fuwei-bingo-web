@@ -10,24 +10,32 @@ export default async function handler(req, res) {
       });
     }
 
-    const sourceUrl = "https://lotto.auzo.tw/bingobingo/list_20260307.html";
-    const pageRes = await fetch(sourceUrl);
+    const now = new Date();
+
+    const taipeiDate = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Taipei",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(now).replace(/-/g, "");
+
+    const sourceUrl = `https://lotto.auzo.tw/bingobingo/list_${taipeiDate}.html`;
+
+    const pageRes = await fetch(sourceUrl, {
+      headers: {
+        "User-Agent": "Mozilla/5.0"
+      }
+    });
+
     const html = await pageRes.text();
 
-    const matches = html.match(/\d{2}/g) || [];
+    const matches = html.match(/\b\d{2}\b/g) || [];
     const numbers = matches.slice(0, 20);
-
-    if (numbers.length < 20) {
-      return res.status(500).json({
-        ok: false,
-        error: "Could not parse 20 numbers from source page",
-      });
-    }
 
     const payload = {
       draw_no: Date.now(),
       draw_time: new Date().toISOString(),
-      numbers: numbers.join(" "),
+      numbers: numbers.join(" ")
     };
 
     const saveRes = await fetch(`${SUPABASE_URL}/rest/v1/bingo_draws`, {
@@ -35,30 +43,21 @@ export default async function handler(req, res) {
       headers: {
         apikey: SUPABASE_SECRET_KEY,
         Authorization: `Bearer ${SUPABASE_SECRET_KEY}`,
-        "Content-Type": "application/json",
-        Prefer: "return=representation",
+        "Content-Type": "application/json"
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(payload)
     });
-
-    const saveText = await saveRes.text();
-
-    if (!saveRes.ok) {
-      return res.status(500).json({
-        ok: false,
-        error: "Supabase insert failed",
-        detail: saveText,
-      });
-    }
 
     return res.status(200).json({
       ok: true,
-      saved: payload,
+      source: sourceUrl,
+      saved: payload
     });
+
   } catch (err) {
     return res.status(500).json({
       ok: false,
-      error: err.message || "Unknown error",
+      error: err.message
     });
   }
 }
