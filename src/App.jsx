@@ -194,8 +194,8 @@ function Stat({ title, value }) {
   );
 }
 
-const btnPrimary = {{background:"#fbbf24",color:"#111827",border:"none",borderRadius:16,padding:"12px 16px",fontWeight:700,cursor:"pointer"}};
-const btnGhost = {{background:"#111827",color:"#e2e8f0",border:"1px solid #334155",borderRadius:16,padding:"12px 16px",fontWeight:700,cursor:"pointer"}};
+const btnPrimary = {background:"#fbbf24",color:"#111827",border:"none",borderRadius:16,padding:"12px 16px",fontWeight:700,cursor:"pointer"};
+const btnGhost = {background:"#111827",color:"#e2e8f0",border:"1px solid #334155",borderRadius:16,padding:"12px 16px",fontWeight:700,cursor:"pointer"};
 
 export default function App() {
   const [drawInputs, setDrawInputs] = useState(SAMPLE_DRAWS);
