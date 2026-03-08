@@ -42,37 +42,6 @@ function uniq(arr) {
   return [...new Set(arr)];
 }
 
-function takeTopDistinct(sorted, count, exclude = []) {
-  const excludeSet = new Set(exclude);
-  const result = [];
-
-  for (const item of sorted) {
-    if (excludeSet.has(item.num)) continue;
-    if (!result.includes(item.num)) {
-      result.push(item.num);
-    }
-    if (result.length >= count) break;
-  }
-
-  return result;
-}
-
-function takeTopByCondition(sorted, count, condition, exclude = []) {
-  const excludeSet = new Set(exclude);
-  const result = [];
-
-  for (const item of sorted) {
-    if (excludeSet.has(item.num)) continue;
-    if (!condition(item.num, item.score)) continue;
-    if (!result.includes(item.num)) {
-      result.push(item.num);
-    }
-    if (result.length >= count) break;
-  }
-
-  return result;
-}
-
 function getZone(num) {
   const n = Number(num);
   if (n <= 20) return "01-20";
@@ -113,6 +82,92 @@ function buildTailStats(rows) {
   return counts;
 }
 
+function takeCandidates(sorted, count = 20) {
+  return sorted.slice(0, count).map(x => x.num);
+}
+
+function limitUsagePick(candidates, usageMap, result, limitPerNum = 2) {
+  for (const num of candidates) {
+    const used = usageMap[num] || 0;
+    if (used >= limitPerNum) continue;
+    if (result.includes(num)) continue;
+
+    result.push(num);
+    usageMap[num] = used + 1;
+    return true;
+  }
+  return false;
+}
+
+function fillGroupWithUsage(candidates, usageMap, base = [], need = 4, limitPerNum = 2) {
+  const result = [...base];
+
+  for (const num of candidates) {
+    if (result.length >= need) break;
+    const used = usageMap[num] || 0;
+    if (used >= limitPerNum) continue;
+    if (result.includes(num)) continue;
+
+    result.push(num);
+    usageMap[num] = used + 1;
+  }
+
+  return result.slice(0, need);
+}
+
+function fillFallbackAny(usageMap, result, need = 4, limitPerNum = 3) {
+  for (let i = 1; i <= 80; i++) {
+    const num = pad2(i);
+    const used = usageMap[num] || 0;
+    if (used >= limitPerNum) continue;
+    if (result.includes(num)) continue;
+
+    result.push(num);
+    usageMap[num] = used + 1;
+    if (result.length >= need) break;
+  }
+  return result.slice(0, need);
+}
+
+function diversifyGroups(groups) {
+  const usageMap = {};
+  const diversified = [];
+
+  for (let i = 0; i < groups.length; i++) {
+    const g = groups[i];
+    const candidates = uniq(g.candidates || []);
+    let result = [];
+
+    // 每組先盡量取自己最強的候選
+    result = fillGroupWithUsage(candidates, usageMap, [], 4, 2);
+
+    // 若不足4顆，再放寬到最多出現3組
+    if (result.length < 4) {
+      for (const num of candidates) {
+        const used = usageMap[num] || 0;
+        if (used >= 3) continue;
+        if (result.includes(num)) continue;
+
+        result.push(num);
+        usageMap[num] = used + 1;
+        if (result.length >= 4) break;
+      }
+    }
+
+    // 還不足就全域補號
+    if (result.length < 4) {
+      result = fillFallbackAny(usageMap, result, 4, 3);
+    }
+
+    diversified.push({
+      ...g,
+      nums: result.slice(0, 4)
+    });
+  }
+
+  return diversified;
+}
+
 function buildHotChase(todayRows, recent20Rows, recent80Rows) {
   const todayScore = countFreq(todayRows, 5);
   const recent20Score = countFreq(recent20Rows, 3);
@@ -120,13 +175,12 @@ function buildHotChase(todayRows, recent20Rows, recent80Rows) {
 
   const merged = mergeScores(todayScore, recent20Score, recent80Score);
   const sorted = sortByScore(merged);
-  const nums = takeTopDistinct(sorted, 4);
 
   return {
     key: "hot_chase",
     label: "熱門追擊型",
-    nums,
     reason: "今日盤高頻 + 近20期熱號 + 近80期底盤",
+    candidates: takeCandidates(sorted, 16),
     scorePreview: sorted.slice(0, 8)
   };
 }
@@ -144,18 +198,16 @@ function buildRebound(todayRows, recent20Rows, recent80Rows) {
     const base = recent80Score[num] || 0;
     const today = todayScore[num] || 0;
     const recent = recent20Score[num] || 0;
-
     reboundMap[num] = base - today * 1.25 - recent * 0.85;
   }
 
   const sorted = sortByScore(reboundMap).filter(x => (recent80Score[x.num] || 0) > 0);
-  const nums = takeTopDistinct(sorted, 4);
 
   return {
     key: "rebound",
     label: "回補反彈型",
-    nums,
     reason: "近80期常見，但今日與近20期相對沉寂",
+    candidates: takeCandidates(sorted, 20),
     scorePreview: sorted.slice(0, 8)
   };
 }
@@ -169,27 +221,23 @@ function buildZoneBalanced(todayRows, recent20Rows, recent80Rows) {
 
   const sorted = sortByScore(merged);
   const zones = ["01-20", "21-40", "41-60", "61-80"];
-  const nums = [];
+  const zoneFirst = [];
 
   for (const zone of zones) {
-    const one = takeTopByCondition(
-      sorted,
-      1,
-      num => getZone(num) === zone,
-      nums
-    );
-    nums.push(...one);
+    const one = sorted.find(x => getZone(x.num) === zone);
+    if (one) zoneFirst.push(one.num);
   }
 
-  if (nums.length < 4) {
-    nums.push(...takeTopDistinct(sorted, 4 - nums.length, nums));
-  }
+  const allCandidates = uniq([
+    ...zoneFirst,
+    ...takeCandidates(sorted, 20)
+  ]);
 
   return {
     key: "zone_balanced",
     label: "區段平衡型",
-    nums: nums.slice(0, 4),
     reason: "四大區段各取一碼，降低單區過熱風險",
+    candidates: allCandidates,
     scorePreview: sorted.slice(0, 8)
   };
 }
@@ -212,32 +260,31 @@ function buildPatternStructure(todayRows, recent20Rows, recent80Rows) {
   const bestTail = Object.entries(tailMap)
     .sort((a, b) => b[1] - a[1])[0]?.[0];
 
-  let nums = takeTopByCondition(
-    sorted,
-    4,
-    num => String(getTail(num)) === String(bestTail)
-  );
+  const sameTail = sorted
+    .filter(x => String(getTail(x.num)) === String(bestTail))
+    .map(x => x.num);
 
-  if (nums.length < 4) {
-    const ordered = sorted.map(x => Number(x.num)).sort((a, b) => a - b);
-    for (let i = 0; i < ordered.length; i++) {
-      const n = ordered[i];
-      if (ordered.includes(n + 1)) {
-        nums = uniq([...nums, pad2(n), pad2(n + 1)]);
-      }
-      if (nums.length >= 4) break;
+  const ordered = sorted.map(x => Number(x.num)).sort((a, b) => a - b);
+  const nearNums = [];
+
+  for (let i = 0; i < ordered.length; i++) {
+    const n = ordered[i];
+    if (ordered.includes(n + 1)) {
+      nearNums.push(pad2(n), pad2(n + 1));
     }
   }
 
-  if (nums.length < 4) {
-    nums.push(...takeTopDistinct(sorted, 4 - nums.length, nums));
-  }
+  const candidates = uniq([
+    ...sameTail,
+    ...nearNums,
+    ...takeCandidates(sorted, 20)
+  ]);
 
   return {
     key: "pattern_structure",
     label: "盤型結構型",
-    nums: nums.slice(0, 4),
     reason: `優先抓同尾結構${bestTail !== undefined ? `（尾數 ${bestTail}）` : ""}，不足再補鄰號`,
+    candidates,
     scorePreview: sorted.slice(0, 8)
   };
 }
@@ -321,22 +368,26 @@ export default async function handler(req, res) {
     const sectionStats = buildSectionStats(recent20Rows);
     const tailStats = buildTailStats(recent20Rows);
 
-    const s1 = buildHotChase(todayRows, recent20Rows, recent80Rows);
-    const s2 = buildRebound(todayRows, recent20Rows, recent80Rows);
-    const s3 = buildZoneBalanced(todayRows, recent20Rows, recent80Rows);
-    const s4 = buildPatternStructure(todayRows, recent20Rows, recent80Rows);
+    const rawGroups = [
+      buildHotChase(todayRows, recent20Rows, recent80Rows),
+      buildRebound(todayRows, recent20Rows, recent80Rows),
+      buildZoneBalanced(todayRows, recent20Rows, recent80Rows),
+      buildPatternStructure(todayRows, recent20Rows, recent80Rows)
+    ];
 
-    const groups = [s1, s2, s3, s4].map((s, idx) => ({
+    const diversified = diversifyGroups(rawGroups);
+
+    const groups = diversified.map((g, idx) => ({
       groupNo: idx + 1,
-      key: s.key,
-      label: `第${idx + 1}組｜${s.label}`,
-      nums: uniq(s.nums).slice(0, 4),
-      reason: s.reason
+      key: g.key,
+      label: `第${idx + 1}組｜${g.label}`,
+      nums: uniq(g.nums).slice(0, 4),
+      reason: g.reason
     }));
 
     return res.status(200).json({
       ok: true,
-      mode: "bingo_strategy_generate_v1",
+      mode: "bingo_strategy_generate_v1_1_diversified",
       target: {
         stars: 4,
         groups: 4,
