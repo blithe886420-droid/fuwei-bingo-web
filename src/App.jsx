@@ -1,14 +1,15 @@
-// v1.6 hobby deploy test 6
+// v1.7 hobby deploy test 7
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { buildBingoV1Strategies } from "../lib/buildBingoV1Strategies";
 
 const STORAGE_KEYS = {
-  latest: "fuwei_bingo_latest_v16_hobby",
-  recent20: "fuwei_bingo_recent20_v16_hobby",
-  testPlan: "fuwei_bingo_test_plan_v16_hobby",
-  formalPlan: "fuwei_bingo_formal_plan_v16_hobby",
-  testResult: "fuwei_bingo_test_result_v16_hobby",
-  formalResult: "fuwei_bingo_formal_result_v16_hobby",
-  autoRunAt: "fuwei_bingo_auto_run_at_v16_hobby"
+  latest: "fuwei_bingo_latest_v17_hobby",
+  recent20: "fuwei_bingo_recent20_v17_hobby",
+  testPlan: "fuwei_bingo_test_plan_v17_hobby",
+  formalPlan: "fuwei_bingo_formal_plan_v17_hobby",
+  testResult: "fuwei_bingo_test_result_v17_hobby",
+  formalResult: "fuwei_bingo_formal_result_v17_hobby",
+  autoRunAt: "fuwei_bingo_auto_run_at_v17_hobby"
 };
 
 const TXT_LATEST = {
@@ -70,61 +71,6 @@ function buildCandidates(recent20) {
   return Object.entries(freq)
     .map(([num, count]) => ({ num, count, tail: tail(num) }))
     .sort((a, b) => b.count - a.count || Number(a.num) - Number(b.num));
-}
-
-function uniquePush(arr, val) {
-  if (!arr.includes(val)) arr.push(val);
-  return arr;
-}
-
-function generateFourGroups(recent20) {
-  const candidates = buildCandidates(recent20);
-  const top = candidates.slice(0, 20);
-  const hot = top.slice(0, 8).map(x => x.num);
-
-  const tails = {};
-  top.forEach(x => {
-    tails[x.tail] = (tails[x.tail] || 0) + 1;
-  });
-
-  const topTail = Object.entries(tails)
-    .sort((a, b) => b[1] - a[1])[0]?.[0];
-
-  const sameTailPool = top
-    .filter(x => String(x.tail) === String(topTail))
-    .map(x => x.num);
-
-  const oddEvenMix = top
-    .filter(x => Number(x.num) % 2 === 1)
-    .slice(0, 2)
-    .map(x => x.num)
-    .concat(top.filter(x => Number(x.num) % 2 === 0).slice(0, 2).map(x => x.num));
-
-  const orderedNums = top
-    .map(x => Number(x.num))
-    .sort((a, b) => a - b);
-
-  const nearGroup = [];
-  for (let i = 0; i < orderedNums.length; i++) {
-    const n = orderedNums[i];
-    if (orderedNums.includes(n + 1)) {
-      uniquePush(nearGroup, String(n).padStart(2, "0"));
-      uniquePush(nearGroup, String(n + 1).padStart(2, "0"));
-    }
-    if (nearGroup.length >= 4) break;
-  }
-
-  const g1 = hot.slice(0, 4);
-  const g2 = sameTailPool.slice(0, 4).length >= 4 ? sameTailPool.slice(0, 4) : hot.slice(2, 6);
-  const g3 = oddEvenMix.slice(0, 4);
-  const g4 = nearGroup.length >= 4 ? nearGroup.slice(0, 4) : hot.slice(4, 8);
-
-  return [
-    { label: "A 熱門主攻組", nums: g1, reason: "近20期熱門號優先" },
-    { label: "B 同尾主題組", nums: g2, reason: "近20期強尾數延伸" },
-    { label: "C 平衡混合組", nums: g3, reason: "奇偶與熱門平衡" },
-    { label: "D 鄰號盤型組", nums: g4, reason: "近20期盤型相鄰結構" }
-  ];
 }
 
 export default function App() {
@@ -258,26 +204,36 @@ export default function App() {
   }
 
   async function startTestMode() {
-    const groups = generateFourGroups(recent20);
+    const built = buildBingoV1Strategies(recent20);
+    const groups = built.strategies.map(s => ({
+      label: `第${s.groupNo}組｜${s.label}`,
+      nums: s.nums,
+      reason: s.reason,
+      key: s.key,
+      meta: s.meta
+    }));
+
     const plan = {
       mode: "test",
       createdAt: new Date().toISOString(),
       sourceDrawNo: latest.drawNo,
-      targetPeriods: 2,
+      targetPeriods: 4,
+      strategyMode: built.mode,
+      target: built.target,
       groups,
       predictionId: null
     };
 
     try {
-      const saved = await savePrediction("test", 2, groups);
+      const saved = await savePrediction("test", 4, groups);
       if (saved.ok) {
         plan.predictionId = saved.id;
-        setNotice("已建立測試模式，並寫入預測資料庫。");
+        setNotice("已建立四星賓果四組四期測試模式，並寫入預測資料庫。");
       } else {
-        setNotice("已建立測試模式，但預測資料庫寫入失敗。");
+        setNotice("已建立四星賓果四組四期測試模式，但預測資料庫寫入失敗。");
       }
     } catch {
-      setNotice("已建立測試模式，但預測資料庫寫入失敗。");
+      setNotice("已建立四星賓果四組四期測試模式，但預測資料庫寫入失敗。");
     }
 
     setTestPlan(plan);
@@ -285,12 +241,22 @@ export default function App() {
   }
 
   async function startFormalMode() {
-    const groups = generateFourGroups(recent20);
+    const built = buildBingoV1Strategies(recent20);
+    const groups = built.strategies.map(s => ({
+      label: `第${s.groupNo}組｜${s.label}`,
+      nums: s.nums,
+      reason: s.reason,
+      key: s.key,
+      meta: s.meta
+    }));
+
     const plan = {
       mode: "formal",
       createdAt: new Date().toISOString(),
       sourceDrawNo: latest.drawNo,
       targetPeriods: 4,
+      strategyMode: built.mode,
+      target: built.target,
       groups,
       predictionId: null
     };
@@ -299,12 +265,12 @@ export default function App() {
       const saved = await savePrediction("formal", 4, groups);
       if (saved.ok) {
         plan.predictionId = saved.id;
-        setNotice("已建立正式投注，並寫入預測資料庫。");
+        setNotice("已建立四星賓果四組四期正式方案，並寫入預測資料庫。");
       } else {
-        setNotice("已建立正式投注，但預測資料庫寫入失敗。");
+        setNotice("已建立四星賓果四組四期正式方案，但預測資料庫寫入失敗。");
       }
     } catch {
-      setNotice("已建立正式投注，但預測資料庫寫入失敗。");
+      setNotice("已建立四星賓果四組四期正式方案，但預測資料庫寫入失敗。");
     }
 
     setFormalPlan(plan);
@@ -426,9 +392,9 @@ export default function App() {
       <div style={styles.wrap}>
         <section style={styles.hero}>
           <div style={styles.kicker}>FUWEI BINGO SYSTEM</div>
-          <h1 style={styles.h1}>富緯賓果系統 v1.6 Hobby 補抓版</h1>
+          <h1 style={styles.h1}>富緯賓果系統 v1.7 四星四組四期策略版</h1>
           <p style={styles.p}>
-            不依賴付費 Cron。你每次打開網站，系統都會自動補抓最新號碼、補存資料、補比對測試結果。
+            固定採用四星賓果、四組、四期。每次開啟網站都會自動補抓、同步，並可建立四策略方案。
           </p>
 
           <div style={styles.notice}>{notice}</div>
@@ -498,7 +464,7 @@ export default function App() {
         <div style={styles.grid2}>
           <section style={styles.panel}>
             <h2 style={styles.h2}>最近 20 期底稿</h2>
-            <div style={styles.subtle}>供策略生成與補比對使用</div>
+            <div style={styles.subtle}>供四星賓果四組四期策略生成與補比對使用</div>
             <div style={{ maxHeight: 220, overflow: "auto", marginTop: 12 }}>
               {recent20.map((row, idx) => (
                 <div key={idx} style={{ ...styles.row, borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
@@ -522,10 +488,11 @@ export default function App() {
 
         <div style={styles.grid2}>
           <section style={styles.panel}>
-            <h2 style={styles.h2}>測試模式（四組四星 / 追 2 期）</h2>
+            <h2 style={styles.h2}>測試模式（四星賓果 / 四組 / 四期）</h2>
             {testPlan ? (
               <>
                 <div style={styles.subtle}>Prediction ID：{testPlan.predictionId || "尚未寫入"}</div>
+                <div style={styles.subtle}>策略模式：{testPlan.strategyMode || "bingo_v1_4star_4group_4period"}</div>
                 {testPlan.groups.map((g, idx) => (
                   <div key={idx} style={styles.groupCard}>
                     <div style={styles.groupTitle}>{g.label}</div>
@@ -560,10 +527,11 @@ export default function App() {
           </section>
 
           <section style={styles.panel}>
-            <h2 style={styles.h2}>正式投注（四組四星 / 追 4 期）</h2>
+            <h2 style={styles.h2}>正式投注（四星賓果 / 四組 / 四期）</h2>
             {formalPlan ? (
               <>
                 <div style={styles.subtle}>Prediction ID：{formalPlan.predictionId || "尚未寫入"}</div>
+                <div style={styles.subtle}>策略模式：{formalPlan.strategyMode || "bingo_v1_4star_4group_4period"}</div>
                 {formalPlan.groups.map((g, idx) => (
                   <div key={idx} style={styles.groupCard}>
                     <div style={styles.groupTitle}>{g.label}</div>
