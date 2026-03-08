@@ -1,3 +1,92 @@
+import { parseAuzoBingoDraws } from "../lib/parseAuzoBingo.js";
+
+function isValidDrawNo(drawNo) {
+  return Number.isInteger(drawNo) && drawNo >= 100000000 && drawNo <= 999999999;
+}
+
+function isValidDrawTime(drawTime) {
+  return typeof drawTime === "string" && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(drawTime);
+}
+
+async function fetchTodayAuzoLatest() {
+  const now = new Date();
+  const dateStr = now.toLocaleDateString("sv-SE", {
+    timeZone: "Asia/Taipei"
+  }).replaceAll("-", "");
+
+  const sourceUrl = `https://lotto.auzo.tw/bingobingo/list_${dateStr}.html`;
+
+  const response = await fetch(sourceUrl, {
+    headers: {
+      "User-Agent": "Mozilla/5.0",
+      "Accept":
+        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "Accept-Language": "zh-TW,zh;q=0.9"
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`auzo fetch failed: ${response.status}`);
+  }
+
+  const html = await response.text();
+  const draws = parseAuzoBingoDraws(html, dateStr);
+
+  if (!Array.isArray(draws) || draws.length === 0) {
+    throw new Error("parse bingo rows failed");
+  }
+
+  const latest = draws[0];
+  const latestDrawNo = Number(latest.draw_no);
+  const latestDrawTime = latest.draw_time;
+  const latestNumbers = latest.numbers;
+
+  if (!isValidDrawNo(latestDrawNo)) {
+    throw new Error("invalid latest draw_no");
+  }
+
+  if (!isValidDrawTime(latestDrawTime)) {
+    throw new Error("invalid latest draw_time");
+  }
+
+  if (!latestNumbers || typeof latestNumbers !== "string") {
+    throw new Error("invalid latest numbers");
+  }
+
+  return {
+    sourceUrl,
+    dateStr,
+    latestDrawNo,
+    latestDrawTime,
+    latestNumbers
+  };
+}
+
+async function safeJsonFetchAbsolute(baseUrl, path, options = {}) {
+  const response = await fetch(`${baseUrl}${path}`, options);
+  const raw = await response.text();
+
+  let data = null;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    return {
+      ok: false,
+      responseOk: response.ok,
+      status: response.status,
+      error: `non-json response from ${path}`,
+      rawPreview: raw.slice(0, 300)
+    };
+  }
+
+  return {
+    ok: response.ok && !!data?.ok,
+    responseOk: response.ok,
+    status: response.status,
+    data
+  };
+}
+
 export default async function handler(req, res) {
   try {
     const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -13,88 +102,55 @@ export default async function handler(req, res) {
       });
     }
 
-    const baseUrl =
-      process.env.NEXT_PUBLIC_SITE_URL
-        ? process.env.NEXT_PUBLIC_SITE_URL
-        : process.env.VERCEL_URL
-        ? `https://${process.env.VERCEL_URL}`
-        : `${req.headers["x-forwarded-proto"] || "https"}://${req.headers.host}`;
+    const protocol = req.headers["x-forwarded-proto"] || "https";
+    const host = req.headers.host;
+    const baseUrl = `${protocol}://${host}`;
 
-    async function safeJsonFetch(path, options = {}) {
-      const response = await fetch(`${baseUrl}${path}`, options);
-      const raw = await response.text();
-
-      let data = null;
-      try {
-        data = JSON.parse(raw);
-      } catch {
-        return {
-          ok: false,
-          responseOk: response.ok,
-          status: response.status,
-          error: `non-json response from ${path}`,
-          rawPreview: raw.slice(0, 300)
-        };
-      }
-
-      return {
-        ok: response.ok && !!data?.ok,
-        responseOk: response.ok,
-        status: response.status,
-        data
-      };
-    }
-
-    // 1. catchup 改成可失敗但不中止整輪
+    // 1) catchup 改成可失敗但不中止
     let catchupInserted = 0;
     let catchupWarning = null;
 
-    const catchup = await safeJsonFetch("/api/catchup");
-
+    const catchup = await safeJsonFetchAbsolute(baseUrl, "/api/catchup");
     if (catchup.ok) {
       catchupInserted = Number(catchup.data?.inserted || 0);
     } else {
       catchupWarning = catchup.error || catchup.data?.error || "catchup failed";
     }
 
-    // 2. sync
-    const sync = await safeJsonFetch("/api/sync");
-    if (!sync.ok) {
-      return res.status(500).json({
-        ok: false,
-        step: "sync",
-        error: sync.error || sync.data?.error || "sync failed",
-        rawPreview: sync.rawPreview || null
-      });
-    }
+    // 2) 直接在這裡抓最新，不再呼叫 /api/sync
+    const latest = await fetchTodayAuzoLatest();
 
-    const latestDrawNo = Number(sync.data?.draw_no || 0);
-    if (!latestDrawNo) {
-      return res.status(500).json({
-        ok: false,
-        step: "sync",
-        error: "latest draw_no missing"
-      });
-    }
+    // 3) 直接寫入資料庫，遇到重複忽略
+    const insertPayload = {
+      draw_no: latest.latestDrawNo,
+      draw_time: latest.latestDrawTime,
+      numbers: latest.latestNumbers
+    };
 
-    // 3. save latest
-    const save = await safeJsonFetch("/api/save", {
+    const saveResp = await fetch(`${SUPABASE_URL}/rest/v1/bingo_draws?on_conflict=draw_no`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({})
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${SUPABASE_KEY}`,
+        "Content-Type": "application/json",
+        Prefer: "resolution=ignore-duplicates,return=representation"
+      },
+      body: JSON.stringify(insertPayload)
     });
 
-    if (!save.ok) {
+    const saveText = await saveResp.text();
+
+    if (!saveResp.ok) {
       return res.status(500).json({
         ok: false,
-        step: "save",
-        error: save.error || save.data?.error || "save failed",
-        rawPreview: save.rawPreview || null
+        step: "save-latest",
+        error: `save latest failed: ${saveResp.status}`,
+        rawPreview: saveText.slice(0, 300)
       });
     }
 
-    // 4. generate strategy
-    const strategy = await safeJsonFetch("/api/strategy-generate?n=80");
+    // 4) 生成策略
+    const strategy = await safeJsonFetchAbsolute(baseUrl, "/api/strategy-generate?n=80");
     if (!strategy.ok) {
       return res.status(500).json({
         ok: false,
@@ -125,9 +181,9 @@ export default async function handler(req, res) {
       }
     }));
 
-    // 5. 檢查同一期是否已建立 auto training test
+    // 5) 檢查同一期是否已建立測試
     const existingPredictionResp = await fetch(
-      `${SUPABASE_URL}/rest/v1/predictions?select=id,source_draw_no,target_draw_no,status,mode&mode=eq.test&source_draw_no=eq.${latestDrawNo}&order=created_at.desc&limit=1`,
+      `${SUPABASE_URL}/rest/v1/predictions?select=id,source_draw_no,target_draw_no,status,mode&mode=eq.test&source_draw_no=eq.${latest.latestDrawNo}&order=created_at.desc&limit=1`,
       {
         headers: {
           apikey: SUPABASE_KEY,
@@ -166,12 +222,12 @@ export default async function handler(req, res) {
       createdPrediction = existingPredictions[0];
       skippedCreate = true;
     } else {
-      const predictionSave = await safeJsonFetch("/api/prediction-save", {
+      const predictionSave = await safeJsonFetchAbsolute(baseUrl, "/api/prediction-save", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           mode: "test",
-          sourceDrawNo: latestDrawNo,
+          sourceDrawNo: latest.latestDrawNo,
           targetPeriods: 4,
           groups: normalizedGroups
         })
@@ -195,7 +251,7 @@ export default async function handler(req, res) {
       };
     }
 
-    // 6. 找出已到比對期的 test prediction
+    // 6) 找已成熟 prediction
     const pendingResp = await fetch(
       `${SUPABASE_URL}/rest/v1/predictions?select=id,source_draw_no,target_draw_no,status,mode&mode=eq.test&or=(status.eq.pending,status.eq.created)&order=created_at.asc&limit=50`,
       {
@@ -231,13 +287,13 @@ export default async function handler(req, res) {
 
     const matured = (Array.isArray(pendingPredictions) ? pendingPredictions : []).filter(p => {
       const targetDrawNo = Number(p.target_draw_no || 0);
-      return targetDrawNo > 0 && latestDrawNo >= targetDrawNo;
+      return targetDrawNo > 0 && latest.latestDrawNo >= targetDrawNo;
     });
 
     const compareResults = [];
 
     for (const p of matured) {
-      const compare = await safeJsonFetch("/api/prediction-compare", {
+      const compare = await safeJsonFetchAbsolute(baseUrl, "/api/prediction-compare", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -266,9 +322,9 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       ok: true,
-      mode: "auto_train_v1_stable",
-      latestDrawNo,
-      latestDrawTime: sync.data?.draw_time || null,
+      mode: "auto_train_v2_internal_sync",
+      latestDrawNo: latest.latestDrawNo,
+      latestDrawTime: latest.latestDrawTime,
       catchupInserted,
       catchupWarning,
       strategyMode: strategy.data?.mode || null,
