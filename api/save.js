@@ -1,5 +1,14 @@
 import { parseAuzoBingoDraws } from "../lib/parseAuzoBingo.js";
 
+function getProjectHint(url = "") {
+  try {
+    const u = new URL(url);
+    return u.hostname;
+  } catch {
+    return url || "unknown";
+  }
+}
+
 export default async function handler(req, res) {
   try {
     if (req.method !== "POST") {
@@ -22,7 +31,9 @@ export default async function handler(req, res) {
       });
     }
 
-    // 1. 直接抓今天奧索頁面
+    const projectHint = getProjectHint(SUPABASE_URL);
+
+    // 1. 抓今天奧索頁面
     const now = new Date();
     const dateStr = now.toLocaleDateString("sv-SE", {
       timeZone: "Asia/Taipei"
@@ -58,7 +69,6 @@ export default async function handler(req, res) {
       });
     }
 
-    // 2. 取最新一期
     const latest = draws[0];
 
     if (!latest?.draw_no || !latest?.draw_time || !latest?.numbers) {
@@ -69,9 +79,11 @@ export default async function handler(req, res) {
       });
     }
 
-    // 3. 先檢查資料庫有沒有這一期
+    const latestDrawNo = Number(latest.draw_no);
+
+    // 2. 先查這一期有沒有
     const checkResp = await fetch(
-      `${SUPABASE_URL}/rest/v1/bingo_draws?draw_no=eq.${encodeURIComponent(latest.draw_no)}&select=id,draw_no&limit=1`,
+      `${SUPABASE_URL}/rest/v1/bingo_draws?draw_no=eq.${latestDrawNo}&select=id,draw_no,draw_time,numbers&limit=1`,
       {
         headers: {
           apikey: SUPABASE_KEY,
@@ -86,7 +98,8 @@ export default async function handler(req, res) {
       return res.status(500).json({
         ok: false,
         error: `check failed: ${checkResp.status}`,
-        rawPreview: checkText.slice(0, 500)
+        rawPreview: checkText.slice(0, 500),
+        projectHint
       });
     }
 
@@ -97,17 +110,19 @@ export default async function handler(req, res) {
       return res.status(500).json({
         ok: false,
         error: "check parse failed",
-        rawPreview: checkText.slice(0, 500)
+        rawPreview: checkText.slice(0, 500),
+        projectHint
       });
     }
 
     let saved = false;
     let skipped = false;
+    let insertedRow = null;
 
-    // 4. 沒有才寫入
+    // 3. 沒有才寫入
     if (!checkRows.length) {
       const insertPayload = {
-        draw_no: Number(latest.draw_no),
+        draw_no: latestDrawNo,
         draw_time: latest.draw_time,
         numbers: latest.numbers
       };
@@ -130,16 +145,67 @@ export default async function handler(req, res) {
           ok: false,
           error: `insert failed: ${insertResp.status}`,
           rawPreview: insertText.slice(0, 500),
-          tryingToInsert: insertPayload
+          tryingToInsert: insertPayload,
+          projectHint
         });
       }
 
+      let insertRows = [];
+      try {
+        insertRows = JSON.parse(insertText);
+      } catch {
+        return res.status(500).json({
+          ok: false,
+          error: "insert parse failed",
+          rawPreview: insertText.slice(0, 500),
+          projectHint
+        });
+      }
+
+      insertedRow = insertRows?.[0] || null;
       saved = true;
     } else {
       skipped = true;
+      insertedRow = checkRows[0];
     }
 
-    // 5. 回傳資料庫最新 20 期
+    // 4. 立刻回查，確認真的在同一個資料庫
+    const verifyResp = await fetch(
+      `${SUPABASE_URL}/rest/v1/bingo_draws?draw_no=eq.${latestDrawNo}&select=id,draw_no,draw_time,numbers&limit=1`,
+      {
+        headers: {
+          apikey: SUPABASE_KEY,
+          Authorization: `Bearer ${SUPABASE_KEY}`
+        }
+      }
+    );
+
+    const verifyText = await verifyResp.text();
+
+    if (!verifyResp.ok) {
+      return res.status(500).json({
+        ok: false,
+        error: `verify failed: ${verifyResp.status}`,
+        rawPreview: verifyText.slice(0, 500),
+        projectHint
+      });
+    }
+
+    let verifyRows = [];
+    try {
+      verifyRows = JSON.parse(verifyText);
+    } catch {
+      return res.status(500).json({
+        ok: false,
+        error: "verify parse failed",
+        rawPreview: verifyText.slice(0, 500),
+        projectHint
+      });
+    }
+
+    const verified = Array.isArray(verifyRows) && verifyRows.length > 0;
+
+    // 5. 再查資料庫最新20期，前端 recent20 只准用這裡
     const recentResp = await fetch(
       `${SUPABASE_URL}/rest/v1/bingo_draws?select=draw_no,draw_time,numbers&order=draw_no.desc&limit=20`,
       {
@@ -156,7 +222,8 @@ export default async function handler(req, res) {
       return res.status(500).json({
         ok: false,
         error: `recent20 fetch failed: ${recentResp.status}`,
-        rawPreview: recentText.slice(0, 500)
+        rawPreview: recentText.slice(0, 500),
+        projectHint
       });
     }
 
@@ -167,19 +234,27 @@ export default async function handler(req, res) {
       return res.status(500).json({
         ok: false,
         error: "recent20 parse failed",
-        rawPreview: recentText.slice(0, 500)
+        rawPreview: recentText.slice(0, 500),
+        projectHint
       });
     }
+
+    const latestInDb = recent20?.[0] || null;
 
     return res.status(200).json({
       ok: true,
       saved,
       skipped,
-      latest: {
-        draw_no: Number(latest.draw_no),
+      verified,
+      projectHint,
+      sourceUrl,
+      latestFetched: {
+        draw_no: latestDrawNo,
         draw_time: latest.draw_time,
         numbers: latest.numbers
       },
+      insertedRow,
+      latestInDb,
       recent20
     });
   } catch (err) {
