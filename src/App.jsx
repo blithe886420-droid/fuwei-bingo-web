@@ -1,11 +1,11 @@
 import React, { useEffect, useMemo, useState } from "react";
 
 const STORAGE_KEYS = {
-  latest: "fuwei_bingo_latest_v10",
-  recent20: "fuwei_bingo_recent20_v10",
-  testPlan: "fuwei_bingo_test_plan_v10",
-  formalPlan: "fuwei_bingo_formal_plan_v10",
-  testResult: "fuwei_bingo_test_result_v10"
+  latest: "fuwei_bingo_latest_v11",
+  recent20: "fuwei_bingo_recent20_v11",
+  testPlan: "fuwei_bingo_test_plan_v11",
+  formalPlan: "fuwei_bingo_formal_plan_v11",
+  testResult: "fuwei_bingo_test_result_v11"
 };
 
 const TXT_LATEST = {
@@ -209,6 +209,26 @@ export default function App() {
     writeLocal(STORAGE_KEYS.testResult, testResult);
   }, [testResult]);
 
+  async function refreshRecent20() {
+    try {
+      const saveRes = await fetch("/api/save", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ numbers: latest.numbers || [] })
+      });
+
+      const saveData = await saveRes.json();
+
+      if (saveData.ok && Array.isArray(saveData.recent20) && saveData.recent20.length > 0) {
+        setRecent20(saveData.recent20);
+      }
+    } catch {
+      // 不阻斷主流程
+    }
+  }
+
   async function syncLatest() {
     try {
       setSyncStatus("同步中...");
@@ -259,6 +279,10 @@ export default function App() {
           saveNotice = "，此組號碼已存在資料庫";
         } else {
           saveNotice = "，但建檔未成功";
+        }
+
+        if (saveData.ok && Array.isArray(saveData.recent20) && saveData.recent20.length > 0) {
+          setRecent20(saveData.recent20);
         }
       } catch (err) {
         saveNotice = "，但建檔失敗";
