@@ -179,8 +179,8 @@ export default function App() {
     }
 
     const newLatest = {
-      drawNo: data.latest?.drawNo || "即時同步",
-      drawTime: data.capturedAt || data.latest?.drawTime || "即時更新",
+      drawNo: data.draw_no || data.latest?.drawNo || null,
+      drawTime: data.draw_time || data.capturedAt || data.latest?.drawTime || "即時更新",
       numbers,
       source: "澳所即時同步"
     };
@@ -355,6 +355,13 @@ export default function App() {
         return;
       }
 
+      const catchupRes = await fetch("/api/catchup");
+      const catchupData = await catchupRes.json();
+
+      if (!catchupData.ok) {
+        throw new Error(catchupData.error || catchupData.step || "補抓失敗");
+      }
+
       const latestData = await syncLatestCore(true);
 
       let done = 0;
@@ -376,7 +383,14 @@ export default function App() {
       }
 
       writeLocal(STORAGE_KEYS.autoRunAt, now);
-      setAutoStatus(`補抓補比對完成，已處理 ${done} 筆預測。`);
+
+      const inserted = Number(catchupData.inserted || 0);
+
+      if (inserted > 0) {
+        setAutoStatus(`補抓成功，新增 ${inserted} 期；已處理 ${done} 筆預測。`);
+      } else {
+        setAutoStatus(`補抓完成，沒有缺期；已處理 ${done} 筆預測。`);
+      }
     } catch (err) {
       setAutoStatus(`補抓補比對失敗：${err.message}`);
     }
