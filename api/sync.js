@@ -35,19 +35,19 @@ export default async function handler(req, res) {
 
     const html = await response.text();
 
-    // 最新 20 顆
+    // 抓最新一期區塊：期數 + 時間
+    const latestBlockMatch = html.match(
+      /Bingo\s*Bingo賓果賓果最新一期開獎號碼[\s\S]{0,300}?第\s*(\d{8,})\s*期[\s\S]{0,120}?\(\s*\d{4}-\d{2}-\d{2}\s+(\d{2}:\d{2})\s*\)/
+    );
+
+    const latestDrawNo = latestBlockMatch ? Number(latestBlockMatch[1]) : null;
+    const latestDrawTime = latestBlockMatch ? latestBlockMatch[2] : null;
+
+    // 抓最上面最新一期 20 顆球號
     const topBallMatches = html.match(/>\d{2}</g) || [];
     const latestNumbers = topBallMatches
       .slice(0, 20)
       .map(x => x.replace(/[^\d]/g, ""));
-
-    // 最新時間
-    const drawTimeMatch = html.match(/\(\s*\d{4}-\d{2}-\d{2}\s+(\d{2}:\d{2})\s*\)/);
-    const latestDrawTime = drawTimeMatch ? drawTimeMatch[1] : null;
-
-    // 最新期數：直接抓頁面第一個 8 碼期數
-    const drawNoMatches = [...html.matchAll(/\b(1\d{7})\b/g)].map(x => x[1]);
-    const latestDrawNo = drawNoMatches.length > 0 ? Number(drawNoMatches[0]) : null;
 
     if (!latestDrawNo || !latestDrawTime || latestNumbers.length !== 20) {
       return res.status(500).json({
@@ -62,7 +62,7 @@ export default async function handler(req, res) {
 
     // 抓當日頁全部期數
     const dayRows = [];
-    const rowRegex = /(\d{8})[\s\S]{0,160}?(\d{2}:\d{2})[\s\S]{0,1800}?((?:>\d{2}<[\s\S]{0,80}){20})/g;
+    const rowRegex = /(\d{8})[\s\S]{0,180}?(\d{2}:\d{2})[\s\S]{0,2200}?((?:>\d{2}<[\s\S]{0,80}){20})/g;
 
     let match;
     while ((match = rowRegex.exec(html)) !== null) {
@@ -81,6 +81,7 @@ export default async function handler(req, res) {
       }
     }
 
+    // 如果表格沒抓到最新一期，就手動補進去
     if (!dayRows.some(row => row.draw_no === latestDrawNo)) {
       dayRows.unshift({
         draw_no: latestDrawNo,
@@ -89,6 +90,7 @@ export default async function handler(req, res) {
       });
     }
 
+    // 去重
     const uniqueRows = [];
     const seen = new Set();
 
@@ -99,6 +101,7 @@ export default async function handler(req, res) {
       }
     }
 
+    // 查資料庫內既有期數，避免重複寫入
     const drawNos = uniqueRows.map(row => row.draw_no);
     let existingSet = new Set();
 
@@ -121,6 +124,7 @@ export default async function handler(req, res) {
 
     const newRows = uniqueRows.filter(row => !existingSet.has(row.draw_no));
 
+    // 寫入新資料
     if (newRows.length > 0) {
       const saveRes = await fetch(`${SUPABASE_URL}/rest/v1/bingo_draws`, {
         method: "POST",
@@ -143,6 +147,7 @@ export default async function handler(req, res) {
       }
     }
 
+    // 取最新 20 期，給前端測試模式 / 正式模式用
     const recent20Res = await fetch(
       `${SUPABASE_URL}/rest/v1/bingo_draws?select=draw_no,draw_time,numbers&order=draw_no.desc&limit=20`,
       {
