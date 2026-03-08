@@ -41,7 +41,7 @@ export default async function handler(req, res) {
     const ss = String(taipeiNow.getSeconds()).padStart(2, "0");
     const capturedAt = `${hh}:${mi}:${ss}`;
 
-    // 用 numbers 做去重
+    // 先查有沒有相同號碼，避免重複存
     const checkUrl = `${SUPABASE_URL}/rest/v1/bingo_draws?select=id,numbers&numbers=eq.${encodeURIComponent(numbersText)}&limit=1`;
 
     const checkRes = await fetch(checkUrl, {
@@ -63,16 +63,36 @@ export default async function handler(req, res) {
     const existing = await checkRes.json();
 
     if (Array.isArray(existing) && existing.length > 0) {
+      const recent20Res = await fetch(
+        `${SUPABASE_URL}/rest/v1/bingo_draws?select=id,draw_no,draw_time,numbers,created_at&order=created_at.desc&limit=20`,
+        {
+          headers: {
+            apikey: SUPABASE_SECRET_KEY,
+            Authorization: `Bearer ${SUPABASE_SECRET_KEY}`
+          }
+        }
+      );
+
+      let recent20 = [];
+      if (recent20Res.ok) {
+        recent20 = await recent20Res.json();
+      }
+
       return res.status(200).json({
         ok: true,
         saved: false,
         skipped: true,
-        reason: "same numbers already exists"
+        reason: "same numbers already exists",
+        recent20
       });
     }
 
+    // 這裡是關鍵：補上 id
+    const uniqueId = Date.now();
+
     const payload = {
-      draw_no: Date.now(),
+      id: uniqueId,
+      draw_no: uniqueId,
       draw_time: capturedAt,
       numbers: numbersText
     };
@@ -99,11 +119,27 @@ export default async function handler(req, res) {
 
     const savedRow = await saveRes.json();
 
+    const recent20Res = await fetch(
+      `${SUPABASE_URL}/rest/v1/bingo_draws?select=id,draw_no,draw_time,numbers,created_at&order=created_at.desc&limit=20`,
+      {
+        headers: {
+          apikey: SUPABASE_SECRET_KEY,
+          Authorization: `Bearer ${SUPABASE_SECRET_KEY}`
+        }
+      }
+    );
+
+    let recent20 = [];
+    if (recent20Res.ok) {
+      recent20 = await recent20Res.json();
+    }
+
     return res.status(200).json({
       ok: true,
       saved: true,
       skipped: false,
-      row: savedRow
+      row: savedRow,
+      recent20
     });
   } catch (err) {
     return res.status(500).json({
