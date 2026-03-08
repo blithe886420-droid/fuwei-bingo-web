@@ -1,49 +1,68 @@
+import { parseAuzoBingoDraws } from "../lib/parseAuzoBingo.js"
+
 export default async function handler(req, res) {
+
   try {
+
     const SUPABASE_URL = process.env.SUPABASE_URL
-    const SUPABASE_KEY = process.env.SUPABASE_SECRET_KEY
 
-    const apiUrl =
-      "https://api.taiwanlottery.com/TLCAPIWeB/Lottery/BingoBingoResult"
+    const SUPABASE_KEY =
+      process.env.SUPABASE_SECRET_KEY ||
+      process.env.SUPABASE_SERVICE_ROLE_KEY ||
+      process.env.SUPABASE_KEY
 
-    const r = await fetch(apiUrl)
+    if (!SUPABASE_URL || !SUPABASE_KEY) {
 
-    if (!r.ok) {
-      return res.json({
+      return res.status(500).json({
         ok: false,
-        error: "台彩API抓取失敗",
-        status: r.status
+        error: "missing supabase env"
       })
+
     }
 
-    const data = await r.json()
+    const now = new Date()
 
-    const draws = data?.content?.lotteryDrawResult || []
+    const dateStr = now.toLocaleDateString("sv-SE", {
+      timeZone: "Asia/Taipei"
+    }).replaceAll("-", "")
+
+    const sourceUrl =
+      `https://lotto.auzo.tw/bingobingo/list_${dateStr}.html`
+
+    const response = await fetch(sourceUrl, {
+      headers: {
+        "User-Agent": "Mozilla/5.0",
+        "Accept":
+          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-TW,zh;q=0.9"
+      }
+    })
+
+    if (!response.ok) {
+
+      return res.status(500).json({
+        ok: false,
+        error: `fetch failed: ${response.status}`,
+        source: sourceUrl
+      })
+
+    }
+
+    const html = await response.text()
+
+    const draws = parseAuzoBingoDraws(html, dateStr)
 
     if (!draws.length) {
-      return res.json({
+
+      return res.status(500).json({
         ok: false,
-        message: "沒有抓到資料"
+        error: "parse bingo rows failed"
       })
+
     }
 
-    const rows = draws.map(d => ({
-      draw_no: String(d.drawNumber),
-
-      draw_time: d.drawDate + " " + d.drawTime,
-
-      numbers: (
-        d.drawNumberAppear ||
-        d.drawNumberSize ||
-        []
-      )
-        .map(n => String(n).padStart(2, "0"))
-        .join(" ")
-    }))
-
-    // 取得現有資料
-    const check = await fetch(
-      `${SUPABASE_URL}/rest/v1/bingo_draws?select=draw_no&order=draw_no.desc&limit=200`,
+    const checkResp = await fetch(
+      `${SUPABASE_URL}/rest/v1/bingo_draws?select=draw_no&order=draw_no.desc&limit=300`,
       {
         headers: {
           apikey: SUPABASE_KEY,
@@ -52,23 +71,26 @@ export default async function handler(req, res) {
       }
     )
 
-    const existing = await check.json()
+    const existing = await checkResp.json()
 
-    const existSet = new Set(existing.map(x => String(x.draw_no)))
+    const existSet =
+      new Set(existing.map(x => String(x.draw_no)))
 
-    const missing = rows.filter(
-      r => !existSet.has(String(r.draw_no))
-    )
+    const missing =
+      draws.filter(r => !existSet.has(String(r.draw_no)))
 
     if (!missing.length) {
-      return res.json({
+
+      return res.status(200).json({
         ok: true,
         inserted: 0,
-        message: "沒有缺期"
+        message: "沒有缺期",
+        parsed: draws.length
       })
+
     }
 
-    const insert = await fetch(
+    const insertResp = await fetch(
       `${SUPABASE_URL}/rest/v1/bingo_draws`,
       {
         method: "POST",
@@ -82,18 +104,22 @@ export default async function handler(req, res) {
       }
     )
 
-    const inserted = await insert.json()
+    const inserted = await insertResp.json()
 
-    res.json({
+    return res.status(200).json({
       ok: true,
       inserted: inserted.length,
-      drawNos: inserted.map(x => x.draw_no)
+      drawNos: inserted.map(x => x.draw_no),
+      parsed: draws.length
     })
 
   } catch (err) {
-    res.json({
+
+    return res.status(500).json({
       ok: false,
-      error: err.message
+      error: err.message || "catchup failed"
     })
+
   }
+
 }
