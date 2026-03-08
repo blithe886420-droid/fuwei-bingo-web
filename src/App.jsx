@@ -1,4 +1,4 @@
-// v2.3 stable + strategy generate button
+// v2.4 stable + auto train
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { buildBingoV1Strategies } from "../lib/buildBingoV1Strategies";
 import {
@@ -10,13 +10,14 @@ import {
 } from "../lib/strategySelfOptimizer";
 
 const STORAGE_KEYS = {
-  latest: "fuwei_bingo_latest_v23_hobby",
-  testPlan: "fuwei_bingo_test_plan_v23_hobby",
-  formalPlan: "fuwei_bingo_formal_plan_v23_hobby",
-  testResult: "fuwei_bingo_test_result_v23_hobby",
-  formalResult: "fuwei_bingo_formal_result_v23_hobby",
-  autoRunAt: "fuwei_bingo_auto_run_at_v23_hobby",
-  generatedPlan: "fuwei_bingo_generated_plan_v23_hobby"
+  latest: "fuwei_bingo_latest_v24_hobby",
+  testPlan: "fuwei_bingo_test_plan_v24_hobby",
+  formalPlan: "fuwei_bingo_formal_plan_v24_hobby",
+  testResult: "fuwei_bingo_test_result_v24_hobby",
+  formalResult: "fuwei_bingo_formal_result_v24_hobby",
+  autoRunAt: "fuwei_bingo_auto_run_at_v24_hobby",
+  generatedPlan: "fuwei_bingo_generated_plan_v24_hobby",
+  autoTrainLast: "fuwei_bingo_auto_train_last_v24_hobby"
 };
 
 const LEARNING_KEYS = createLearningStorageKeys("fuwei_bingo_strategy_learning_v2");
@@ -86,6 +87,10 @@ export default function App() {
     readLocal(STORAGE_KEYS.generatedPlan, null)
   );
 
+  const [autoTrainLast, setAutoTrainLast] = useState(() =>
+    readLocal(STORAGE_KEYS.autoTrainLast, null)
+  );
+
   const [syncStatus, setSyncStatus] = useState("尚未同步");
   const [notice, setNotice] = useState("系統啟動中，準備接即時資料。");
   const [autoStatus, setAutoStatus] = useState("尚未執行補抓補比對");
@@ -114,6 +119,7 @@ export default function App() {
   useEffect(() => writeLocal(STORAGE_KEYS.testResult, testResult), [testResult]);
   useEffect(() => writeLocal(STORAGE_KEYS.formalResult, formalResult), [formalResult]);
   useEffect(() => writeLocal(STORAGE_KEYS.generatedPlan, generatedPlan), [generatedPlan]);
+  useEffect(() => writeLocal(STORAGE_KEYS.autoTrainLast, autoTrainLast), [autoTrainLast]);
 
   async function loadRecent20(silent = false) {
     try {
@@ -172,7 +178,7 @@ export default function App() {
       const saveRes = await fetch("/api/save", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ numbers })
+        body: JSON.stringify({})
       });
 
       const saveData = await saveRes.json();
@@ -230,6 +236,65 @@ export default function App() {
       setNotice(`已生成四星賓果四組四期方案，資料期數到第 ${data.latestDrawNo} 期。`);
     } catch (err) {
       setNotice(`策略生成失敗：${err.message}`);
+    }
+  }
+
+  async function runAutoTrain() {
+    try {
+      setAutoStatus("自動訓練執行中...");
+
+      const res = await fetch("/api/auto-train");
+      const raw = await res.text();
+
+      let data = null;
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        throw new Error(`auto-train 回傳非 JSON：${raw.slice(0, 80)}`);
+      }
+
+      if (!data.ok) {
+        throw new Error(data.error || data.step || "auto-train failed");
+      }
+
+      // 同步前端狀態
+      await syncLatestCore(true);
+      await loadRecent20(true);
+
+      const generated = {
+        ok: true,
+        mode: data.strategyMode || "auto_train_v1",
+        target: {
+          stars: 4,
+          groups: 4,
+          periods: 4
+        },
+        latestDrawNo: data.latestDrawNo,
+        latestDrawTime: data.latestDrawTime,
+        usedRows: 80,
+        groups: Array.isArray(data.groups) ? data.groups.map((g, idx) => ({
+          groupNo: idx + 1,
+          key: g.key,
+          label: g.label,
+          nums: g.nums,
+          reason: g.reason
+        })) : []
+      };
+
+      setGeneratedPlan(generated);
+      setAutoTrainLast(data);
+
+      // 若有成熟比對，反映到 notice
+      const matured = Number(data.maturedCompared || 0);
+      const created = Number(data.created || 0);
+      const catchupInserted = Number(data.catchupInserted || 0);
+
+      setAutoStatus(
+        `自動訓練完成：補抓 ${catchupInserted} 期；新建訓練 ${created} 筆；到期比對 ${matured} 筆。`
+      );
+      setNotice(`自動訓練已完成，目前最新期數第 ${data.latestDrawNo} 期。`);
+    } catch (err) {
+      setAutoStatus(`自動訓練失敗：${err.message}`);
     }
   }
 
@@ -559,9 +624,9 @@ export default function App() {
       <div style={styles.wrap}>
         <section style={styles.hero}>
           <div style={styles.kicker}>FUWEI BINGO SYSTEM</div>
-          <h1 style={styles.h1}>富緯賓果系統 v2.3 穩定版</h1>
+          <h1 style={styles.h1}>富緯賓果系統 v2.4 自動訓練版</h1>
           <p style={styles.p}>
-            固定採用四星賓果、四組、四期。recent20 優先讀取 /api/recent20，並可一鍵生成四組四期方案。
+            固定採用四星賓果、四組、四期。支援一鍵自動訓練：補抓、同步、生成、建立測試、到期比對。
           </p>
 
           <div style={styles.notice}>{notice}</div>
@@ -596,6 +661,7 @@ export default function App() {
             <button style={styles.primaryBtn} onClick={syncLatest}>同步最新一期</button>
             <button style={styles.secondaryBtn} onClick={autoCatchupAndCompare}>立即補抓補比對</button>
             <button style={styles.secondaryBtn} onClick={generateStrategyPlan}>自動產生四組四期</button>
+            <button style={styles.secondaryBtn} onClick={runAutoTrain}>啟動自動訓練</button>
             <button style={styles.secondaryBtn} onClick={startTestMode}>建立測試模式</button>
             <button style={styles.secondaryBtn} onClick={startFormalMode}>建立正式投注</button>
           </div>
@@ -634,13 +700,32 @@ export default function App() {
           <section style={styles.panel}>
             <h2 style={styles.h2}>自動產生四組四期方案</h2>
             <div style={styles.subtle}>策略模式：{generatedPlan.mode}</div>
-            <div style={styles.subtle}>資料期數：第 {generatedPlan.latestDrawNo} 期 / 使用 {generatedPlan.usedRows} 筆資料</div>
+            <div style={styles.subtle}>資料期數：第 {generatedPlan.latestDrawNo} 期 / 使用 {generatedPlan.usedRows || 80} 筆資料</div>
             <div style={{ marginTop: 12 }}>
               {generatedPlan.groups.map((g, idx) => (
                 <div key={idx} style={styles.groupCard}>
                   <div style={styles.groupTitle}>{g.label}</div>
                   <div style={styles.groupNums}>{g.nums.join(" ")}</div>
                   <div style={styles.subtle}>{g.reason}</div>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
+
+        {autoTrainLast ? (
+          <section style={styles.panel}>
+            <h2 style={styles.h2}>自動訓練摘要</h2>
+            <div style={styles.subtle}>模式：{autoTrainLast.mode}</div>
+            <div style={styles.subtle}>最新期數：第 {autoTrainLast.latestDrawNo} 期</div>
+            <div style={styles.subtle}>補抓新增：{autoTrainLast.catchupInserted || 0} 期</div>
+            <div style={styles.subtle}>新建訓練：{autoTrainLast.created || 0} 筆</div>
+            <div style={styles.subtle}>到期比對：{autoTrainLast.maturedCompared || 0} 筆</div>
+            <div style={{ marginTop: 12 }}>
+              {(autoTrainLast.compareResults || []).map((r, idx) => (
+                <div key={idx} style={styles.row}>
+                  <span>Prediction {r.predictionId}</span>
+                  <strong>{r.verdict}</strong>
                 </div>
               ))}
             </div>
