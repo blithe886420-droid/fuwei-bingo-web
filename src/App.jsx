@@ -1,16 +1,25 @@
-// v1.7 hobby deploy test 7
+// v2.0 hobby self-optimized
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { buildBingoV1Strategies } from "../lib/buildBingoV1Strategies";
+import {
+  applyCompareLearningOnce,
+  createLearningStorageKeys,
+  getStrategyWeightMap,
+  readStrategyStats,
+  summarizeStrategyStats
+} from "../lib/strategySelfOptimizer";
 
 const STORAGE_KEYS = {
-  latest: "fuwei_bingo_latest_v17_hobby",
-  recent20: "fuwei_bingo_recent20_v17_hobby",
-  testPlan: "fuwei_bingo_test_plan_v17_hobby",
-  formalPlan: "fuwei_bingo_formal_plan_v17_hobby",
-  testResult: "fuwei_bingo_test_result_v17_hobby",
-  formalResult: "fuwei_bingo_formal_result_v17_hobby",
-  autoRunAt: "fuwei_bingo_auto_run_at_v17_hobby"
+  latest: "fuwei_bingo_latest_v20_hobby",
+  recent20: "fuwei_bingo_recent20_v20_hobby",
+  testPlan: "fuwei_bingo_test_plan_v20_hobby",
+  formalPlan: "fuwei_bingo_formal_plan_v20_hobby",
+  testResult: "fuwei_bingo_test_result_v20_hobby",
+  formalResult: "fuwei_bingo_formal_result_v20_hobby",
+  autoRunAt: "fuwei_bingo_auto_run_at_v20_hobby"
 };
+
+const LEARNING_KEYS = createLearningStorageKeys("fuwei_bingo_strategy_learning_v2");
 
 const TXT_LATEST = {
   drawNo: 115013398,
@@ -95,6 +104,9 @@ export default function App() {
   );
   const [formalResult, setFormalResult] = useState(() =>
     readLocal(STORAGE_KEYS.formalResult, null)
+  );
+  const [strategyStats, setStrategyStats] = useState(() =>
+    readStrategyStats(LEARNING_KEYS.stats)
   );
 
   const autoRanRef = useRef(false);
@@ -203,15 +215,24 @@ export default function App() {
     return await res.json();
   }
 
+  function buildStrategyGroups() {
+    const weightMap = getStrategyWeightMap(strategyStats);
+    const built = buildBingoV1Strategies(recent20, weightMap);
+
+    return {
+      built,
+      groups: built.strategies.map(s => ({
+        label: `第${s.groupNo}組｜${s.label}`,
+        nums: s.nums,
+        reason: `${s.reason}（權重 ${Number(s.meta?.optimizerWeight || 1).toFixed(2)}）`,
+        key: s.key,
+        meta: s.meta
+      }))
+    };
+  }
+
   async function startTestMode() {
-    const built = buildBingoV1Strategies(recent20);
-    const groups = built.strategies.map(s => ({
-      label: `第${s.groupNo}組｜${s.label}`,
-      nums: s.nums,
-      reason: s.reason,
-      key: s.key,
-      meta: s.meta
-    }));
+    const { built, groups } = buildStrategyGroups();
 
     const plan = {
       mode: "test",
@@ -220,6 +241,7 @@ export default function App() {
       targetPeriods: 4,
       strategyMode: built.mode,
       target: built.target,
+      strategyWeights: built.strategyWeights,
       groups,
       predictionId: null
     };
@@ -228,7 +250,7 @@ export default function App() {
       const saved = await savePrediction("test", 4, groups);
       if (saved.ok) {
         plan.predictionId = saved.id;
-        setNotice("已建立四星賓果四組四期測試模式，並寫入預測資料庫。");
+        setNotice("已建立四星賓果四組四期測試模式，並套用自我優化權重。");
       } else {
         setNotice("已建立四星賓果四組四期測試模式，但預測資料庫寫入失敗。");
       }
@@ -241,14 +263,7 @@ export default function App() {
   }
 
   async function startFormalMode() {
-    const built = buildBingoV1Strategies(recent20);
-    const groups = built.strategies.map(s => ({
-      label: `第${s.groupNo}組｜${s.label}`,
-      nums: s.nums,
-      reason: s.reason,
-      key: s.key,
-      meta: s.meta
-    }));
+    const { built, groups } = buildStrategyGroups();
 
     const plan = {
       mode: "formal",
@@ -257,6 +272,7 @@ export default function App() {
       targetPeriods: 4,
       strategyMode: built.mode,
       target: built.target,
+      strategyWeights: built.strategyWeights,
       groups,
       predictionId: null
     };
@@ -265,7 +281,7 @@ export default function App() {
       const saved = await savePrediction("formal", 4, groups);
       if (saved.ok) {
         plan.predictionId = saved.id;
-        setNotice("已建立四星賓果四組四期正式方案，並寫入預測資料庫。");
+        setNotice("已建立四星賓果四組四期正式方案，並套用自我優化權重。");
       } else {
         setNotice("已建立四星賓果四組四期正式方案，但預測資料庫寫入失敗。");
       }
@@ -275,6 +291,21 @@ export default function App() {
 
     setFormalPlan(plan);
     setFormalResult(null);
+  }
+
+  function learnFromCompare({ mode, predictionId, compareResult }) {
+    const learned = applyCompareLearningOnce({
+      statsKey: LEARNING_KEYS.stats,
+      seenKey: LEARNING_KEYS.seen,
+      mode,
+      predictionId,
+      drawNo: latest.drawNo,
+      compareResult
+    });
+
+    setStrategyStats(learned.stats);
+
+    return learned;
   }
 
   async function compareTestMode() {
@@ -290,7 +321,18 @@ export default function App() {
     }
 
     setTestResult(data.result);
-    setNotice(`測試模式比對完成：${data.result.verdict}`);
+
+    const learned = learnFromCompare({
+      mode: "test",
+      predictionId: testPlan.predictionId,
+      compareResult: data.result
+    });
+
+    if (learned.applied) {
+      setNotice(`測試模式比對完成：${data.result.verdict}，系統已更新策略權重。`);
+    } else {
+      setNotice(`測試模式比對完成：${data.result.verdict}，此期已學習過。`);
+    }
   }
 
   async function compareFormalMode() {
@@ -306,7 +348,18 @@ export default function App() {
     }
 
     setFormalResult(data.result);
-    setNotice(`正式投注比對完成：${data.result.verdict}`);
+
+    const learned = learnFromCompare({
+      mode: "formal",
+      predictionId: formalPlan.predictionId,
+      compareResult: data.result
+    });
+
+    if (learned.applied) {
+      setNotice(`正式投注比對完成：${data.result.verdict}，系統已更新策略權重。`);
+    } else {
+      setNotice(`正式投注比對完成：${data.result.verdict}，此期已學習過。`);
+    }
   }
 
   async function autoCatchupAndCompare() {
@@ -331,12 +384,21 @@ export default function App() {
       const latestData = await syncLatestCore(true);
 
       let done = 0;
+      let learnedCount = 0;
 
       if (testPlan?.predictionId) {
         const result = await comparePrediction(testPlan.predictionId, latestData.numbers);
         if (result.ok) {
           setTestResult(result.result);
           done += 1;
+
+          const learned = learnFromCompare({
+            mode: "test",
+            predictionId: testPlan.predictionId,
+            compareResult: result.result
+          });
+
+          if (learned.applied) learnedCount += 1;
         }
       }
 
@@ -345,6 +407,14 @@ export default function App() {
         if (result.ok) {
           setFormalResult(result.result);
           done += 1;
+
+          const learned = learnFromCompare({
+            mode: "formal",
+            predictionId: formalPlan.predictionId,
+            compareResult: result.result
+          });
+
+          if (learned.applied) learnedCount += 1;
         }
       }
 
@@ -353,9 +423,9 @@ export default function App() {
       const inserted = Number(catchupData.inserted || 0);
 
       if (inserted > 0) {
-        setAutoStatus(`補抓成功，新增 ${inserted} 期；已處理 ${done} 筆預測。`);
+        setAutoStatus(`補抓成功，新增 ${inserted} 期；已處理 ${done} 筆預測；學習 ${learnedCount} 次。`);
       } else {
-        setAutoStatus(`補抓完成，沒有缺期；已處理 ${done} 筆預測。`);
+        setAutoStatus(`補抓完成，沒有缺期；已處理 ${done} 筆預測；學習 ${learnedCount} 次。`);
       }
     } catch (err) {
       setAutoStatus(`補抓補比對失敗：${err.message}`);
@@ -387,14 +457,18 @@ export default function App() {
     return Object.entries(counts).sort((a, b) => b[1] - a[1]);
   }, [recent20]);
 
+  const strategySummary = useMemo(() => {
+    return summarizeStrategyStats(strategyStats);
+  }, [strategyStats]);
+
   return (
     <div style={styles.page}>
       <div style={styles.wrap}>
         <section style={styles.hero}>
           <div style={styles.kicker}>FUWEI BINGO SYSTEM</div>
-          <h1 style={styles.h1}>富緯賓果系統 v1.7 四星四組四期策略版</h1>
+          <h1 style={styles.h1}>富緯賓果系統 v2 自我優化版</h1>
           <p style={styles.p}>
-            固定採用四星賓果、四組、四期。每次開啟網站都會自動補抓、同步，並可建立四策略方案。
+            固定採用四星賓果、四組、四期。每次比對後，系統會記錄各策略命中表現，並在下一輪自動調整策略權重。
           </p>
 
           <div style={styles.notice}>{notice}</div>
@@ -486,13 +560,30 @@ export default function App() {
           </section>
         </div>
 
+        <section style={styles.panel}>
+          <h2 style={styles.h2}>自我優化權重面板</h2>
+          <div style={styles.subtle}>每次比對後，系統會更新各策略平均命中與權重。權重越高，下一輪生成時該策略內部權重越強。</div>
+          <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))", gap: 14 }}>
+            {strategySummary.map(item => (
+              <div key={item.key} style={styles.groupCard}>
+                <div style={styles.groupTitle}>{item.label}</div>
+                <div style={{ ...styles.subtle, marginTop: 8 }}>累計回合：{item.rounds}</div>
+                <div style={styles.subtle}>平均命中：{item.avgHit}</div>
+                <div style={styles.subtle}>目前權重：{item.weight}</div>
+                <div style={styles.subtle}>0碼：{item.hit0} / 1碼：{item.hit1} / 2碼：{item.hit2} / 3碼：{item.hit3} / 4碼：{item.hit4}</div>
+                <div style={styles.subtle}>近12次：{item.recentHits.length ? item.recentHits.join("、") : "尚無資料"}</div>
+              </div>
+            ))}
+          </div>
+        </section>
+
         <div style={styles.grid2}>
           <section style={styles.panel}>
             <h2 style={styles.h2}>測試模式（四星賓果 / 四組 / 四期）</h2>
             {testPlan ? (
               <>
                 <div style={styles.subtle}>Prediction ID：{testPlan.predictionId || "尚未寫入"}</div>
-                <div style={styles.subtle}>策略模式：{testPlan.strategyMode || "bingo_v1_4star_4group_4period"}</div>
+                <div style={styles.subtle}>策略模式：{testPlan.strategyMode || "bingo_v2_4star_4group_4period_self_optimized"}</div>
                 {testPlan.groups.map((g, idx) => (
                   <div key={idx} style={styles.groupCard}>
                     <div style={styles.groupTitle}>{g.label}</div>
@@ -531,7 +622,7 @@ export default function App() {
             {formalPlan ? (
               <>
                 <div style={styles.subtle}>Prediction ID：{formalPlan.predictionId || "尚未寫入"}</div>
-                <div style={styles.subtle}>策略模式：{formalPlan.strategyMode || "bingo_v1_4star_4group_4period"}</div>
+                <div style={styles.subtle}>策略模式：{formalPlan.strategyMode || "bingo_v2_4star_4group_4period_self_optimized"}</div>
                 {formalPlan.groups.map((g, idx) => (
                   <div key={idx} style={styles.groupCard}>
                     <div style={styles.groupTitle}>{g.label}</div>
@@ -670,7 +761,8 @@ const styles = {
     background: "#071938",
     borderRadius: 28,
     padding: 24,
-    border: "1px solid rgba(255,255,255,0.06)"
+    border: "1px solid rgba(255,255,255,0.06)",
+    marginTop: 20
   },
   h2: {
     marginTop: 0,
