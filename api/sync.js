@@ -18,7 +18,6 @@ export default async function handler(req, res) {
 
     const sourceUrl = `https://lotto.auzo.tw/bingobingo/list_${taipeiDate}.html`;
 
-    // 抓澳所當日頁
     const response = await fetch(sourceUrl, {
       headers: {
         "User-Agent": "Mozilla/5.0",
@@ -37,20 +36,18 @@ export default async function handler(req, res) {
 
     const html = await response.text();
 
-    // 最新一期標題，例如：
-    // 第115013411期 (2026-03-08 08:05)
-    const headerMatch = html.match(
-      /第\s*(\d+)\s*期\s*\((\d{4}-\d{2}-\d{2}\s+(\d{2}:\d{2}))\)/
-    );
-
-    const latestDrawNo = headerMatch ? Number(headerMatch[1]) : null;
-    const latestDrawTime = headerMatch ? headerMatch[3] : null;
-
-    // 抓最上面最新一期 20 顆紅球
+    // 先抓最上面 20 顆紅球
     const topBallMatches = html.match(/>\d{2}</g) || [];
     const latestNumbers = topBallMatches
       .slice(0, 20)
       .map(x => x.replace(/[^\d]/g, ""));
+
+    // 期數與時間改用更寬鬆方式抓
+    const drawNoMatch = html.match(/第\s*(\d{8,})\s*期/);
+    const drawTimeMatch = html.match(/\(\s*\d{4}-\d{2}-\d{2}\s+(\d{2}:\d{2})\s*\)/);
+
+    const latestDrawNo = drawNoMatch ? Number(drawNoMatch[1]) : null;
+    const latestDrawTime = drawTimeMatch ? drawTimeMatch[1] : null;
 
     if (!latestDrawNo || !latestDrawTime || latestNumbers.length !== 20) {
       return res.status(500).json({
@@ -63,9 +60,9 @@ export default async function handler(req, res) {
       });
     }
 
-    // 抓當日頁的全部期數
+    // 抓當日頁全部期數
     const dayRows = [];
-    const rowRegex = /(\d{8})[\s\S]{0,140}?(\d{2}:\d{2})[\s\S]{0,1600}?((?:>\d{2}<[\s\S]{0,60}){20})/g;
+    const rowRegex = /(\d{8})[\s\S]{0,160}?(\d{2}:\d{2})[\s\S]{0,1800}?((?:>\d{2}<[\s\S]{0,80}){20})/g;
 
     let match;
     while ((match = rowRegex.exec(html)) !== null) {
@@ -84,7 +81,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // 若 regex 沒抓到最新一期，手動補進去
+    // 補上最新一期
     if (!dayRows.some(row => row.draw_no === latestDrawNo)) {
       dayRows.unshift({
         draw_no: latestDrawNo,
@@ -104,7 +101,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // 查資料庫既有期數，避免重複寫入
+    // 查既有期數
     const drawNos = uniqueRows.map(row => row.draw_no);
     let existingSet = new Set();
 
@@ -127,7 +124,6 @@ export default async function handler(req, res) {
 
     const newRows = uniqueRows.filter(row => !existingSet.has(row.draw_no));
 
-    // 寫入 Supabase
     if (newRows.length > 0) {
       const saveRes = await fetch(`${SUPABASE_URL}/rest/v1/bingo_draws`, {
         method: "POST",
@@ -150,7 +146,6 @@ export default async function handler(req, res) {
       }
     }
 
-    // 取最新 20 期給前端
     const recent20Res = await fetch(
       `${SUPABASE_URL}/rest/v1/bingo_draws?select=draw_no,draw_time,numbers&order=draw_no.desc&limit=20`,
       {
