@@ -106,7 +106,7 @@ export default async function handler(req, res) {
     const host = req.headers.host;
     const baseUrl = `${protocol}://${host}`;
 
-    // 1) catchup 改成可失敗但不中止
+    // 1) catchup 可失敗但不中止
     let catchupInserted = 0;
     let catchupWarning = null;
 
@@ -117,10 +117,10 @@ export default async function handler(req, res) {
       catchupWarning = catchup.error || catchup.data?.error || "catchup failed";
     }
 
-    // 2) 直接在這裡抓最新，不再呼叫 /api/sync
+    // 2) 直接抓最新
     const latest = await fetchTodayAuzoLatest();
 
-    // 3) 直接寫入資料庫，遇到重複忽略
+    // 3) 寫入最新一期，重複就忽略
     const insertPayload = {
       draw_no: latest.latestDrawNo,
       draw_time: latest.latestDrawTime,
@@ -181,9 +181,9 @@ export default async function handler(req, res) {
       }
     }));
 
-    // 5) 檢查同一期是否已建立測試
+    // 5) 檢查同一期是否已建立 auto training 測試
     const existingPredictionResp = await fetch(
-      `${SUPABASE_URL}/rest/v1/predictions?select=id,source_draw_no,target_draw_no,status,mode&mode=eq.test&source_draw_no=eq.${latest.latestDrawNo}&order=created_at.desc&limit=1`,
+      `${SUPABASE_URL}/rest/v1/bingo_predictions?select=id,source_draw_no,target_draw_no,status,mode&mode=eq.test&source_draw_no=eq.${latest.latestDrawNo}&order=created_at.desc&limit=1`,
       {
         headers: {
           apikey: SUPABASE_KEY,
@@ -251,9 +251,9 @@ export default async function handler(req, res) {
       };
     }
 
-    // 6) 找已成熟 prediction
+    // 6) 找出已成熟的測試單
     const pendingResp = await fetch(
-      `${SUPABASE_URL}/rest/v1/predictions?select=id,source_draw_no,target_draw_no,status,mode&mode=eq.test&or=(status.eq.pending,status.eq.created)&order=created_at.asc&limit=50`,
+      `${SUPABASE_URL}/rest/v1/bingo_predictions?select=id,source_draw_no,target_draw_no,status,mode&mode=eq.test&or=(status.eq.pending,status.eq.created)&order=created_at.asc&limit=50`,
       {
         headers: {
           apikey: SUPABASE_KEY,
