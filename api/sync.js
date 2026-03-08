@@ -10,12 +10,11 @@ export default async function handler(req, res) {
       });
     }
 
-    // ===== 1) 台北時間 + 安全延遲 3 分鐘 =====
+    // ===== 基本設定：台北時間 + 安全延遲 3 分鐘 =====
     const now = new Date();
     const taipeiNow = new Date(
       now.toLocaleString("en-US", { timeZone: "Asia/Taipei" })
     );
-
     const safeNow = new Date(taipeiNow.getTime() - 3 * 60 * 1000);
 
     const yyyy = safeNow.getFullYear();
@@ -24,115 +23,172 @@ export default async function handler(req, res) {
     const hh = safeNow.getHours();
     const mi = safeNow.getMinutes();
 
-    const taipeiDate = `${yyyy}${mm}${dd}`;
+    const dateStr = `${yyyy}${mm}${dd}`;
     const safeTimeText = `${String(hh).padStart(2, "0")}:${String(mi).padStart(2, "0")}`;
 
-    const sourceUrl = `https://lotto.auzo.tw/bingobingo/list_${taipeiDate}.html`;
+    // ===== 資料來源 =====
+    const OFFICIAL_URL = "https://www.taiwanlottery.com/lotto/result/bingo_bingo";
+    const AUZO_URL = `https://lotto.auzo.tw/bingobingo/list_${dateStr}.html`;
 
-    // ===== 2) 抓澳所當日頁 =====
-    const response = await fetch(sourceUrl, {
-      headers: {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "zh-TW,zh;q=0.9"
+    // ===== 共用工具 =====
+    async function fetchWithRetry(url, options = {}, retries = 2) {
+      let lastErr = null;
+
+      for (let i = 0; i <= retries; i++) {
+        try {
+          const resp = await fetch(url, options);
+          if (!resp.ok) {
+            throw new Error(`HTTP ${resp.status}`);
+          }
+          return await resp.text();
+        } catch (err) {
+          lastErr = err;
+        }
       }
-    });
 
-    if (!response.ok) {
-      return res.status(500).json({
-        ok: false,
-        error: `Source fetch failed: ${response.status}`,
-        sourceUrl
-      });
+      throw lastErr || new Error("fetch failed");
     }
 
-    const html = await response.text();
-
-    // ===== 3) 先抓頁面中所有表格列：期數 / 時間 / 20顆號碼 =====
-    const dayRows = [];
-
-    // 比之前更寬鬆，避免頁面格式微調就失效
-    const rowRegex = /(\d{8})[\s\S]{0,220}?(\d{2}:\d{2})[\s\S]{0,2600}?((?:>\d{2}<[\s\S]{0,120}){20})/g;
-
-    let match;
-    while ((match = rowRegex.exec(html)) !== null) {
-      const drawNo = Number(match[1]);
-      const drawTime = match[2];
-      const numbers = [...match[3].matchAll(/>(\d{2})</g)]
-        .map(x => x[1])
-        .slice(0, 20);
-
-      if (drawNo && drawTime && numbers.length === 20) {
-        dayRows.push({
-          draw_no: drawNo,
-          draw_time: drawTime,
-          numbers: numbers.join(" ")
-        });
-      }
-    }
-
-    // 去重（同一期若抓到多次只留一筆）
-    const uniqueRows = [];
-    const seen = new Set();
-
-    for (const row of dayRows) {
-      if (!seen.has(row.draw_no)) {
-        seen.add(row.draw_no);
-        uniqueRows.push(row);
-      }
-    }
-
-    // 依期數新到舊排序
-    uniqueRows.sort((a, b) => b.draw_no - a.draw_no);
-
-    // ===== 4) 依安全延遲 3 分鐘，選出「穩定期數」 =====
-    // 規則：只選 draw_time <= safeNow 的最新一筆
-    // 若沒有，就退回抓到的第一筆
-    function timeToMinutes(text) {
+    function toMinutes(text) {
+      if (!text) return -1;
       const [h, m] = String(text).split(":").map(Number);
       if (!Number.isFinite(h) || !Number.isFinite(m)) return -1;
       return h * 60 + m;
     }
 
-    const safeMinutes = hh * 60 + mi;
+    function uniqueByDrawNo(rows) {
+      const out = [];
+      const seen = new Set();
 
-    let stableLatest =
-      uniqueRows.find(row => timeToMinutes(row.draw_time) <= safeMinutes) ||
-      uniqueRows[0] ||
-      null;
+      for (const row of rows) {
+        if (!row || !row.draw_no) continue;
+        if (!seen.has(row.draw_no)) {
+          seen.add(row.draw_no);
+          out.push(row);
+        }
+      }
 
-    // ===== 5) 如果表格沒抓到，就退回最上面 20 顆號碼 =====
-    // 這是最後保底，至少讓前端先有最新號碼可用
-    if (!stableLatest) {
+      return out;
+    }
+
+    function pickStableRow(rows, safeMinutes) {
+      if (!Array.isArray(rows) || rows.length === 0) return null;
+
+      const sorted = [...rows].sort((a, b) => b.draw_no - a.draw_no);
+
+      const stable =
+        sorted.find(row => toMinutes(row.draw_time) <= safeMinutes) || sorted[0];
+
+      return stable || null;
+    }
+
+    // ===== 解析台彩官網（主來源）=====
+    function parseOfficial(html) {
+      const rows = [];
+
+      // 抓所有兩位數號碼（供後面分組用）
+      const numberPool = [...html.matchAll(/\b(\d{2})\b/g)].map(x => x[1]);
+
+      // 抓所有時間
+      const timePool = [...html.matchAll(/\b(\d{2}:\d{2})\b/g)].map(x => x[1]);
+
+      // 抓所有看起來像期數的 8 碼（Bingo 期數通常 1 開頭）
+      const drawNoPool = [...html.matchAll(/\b(1\d{7})\b/g)].map(x => Number(x[1]));
+
+      // 粗略組成當日列
+      // 做法：以期數為基準，每筆取一個時間與 20 顆號碼
+      for (let i = 0; i < drawNoPool.length; i++) {
+        const drawNo = drawNoPool[i];
+        const drawTime = timePool[i] || null;
+        const numbers = numberPool.slice(i * 20, i * 20 + 20);
+
+        if (drawNo && drawTime && numbers.length === 20) {
+          rows.push({
+            draw_no: drawNo,
+            draw_time: drawTime,
+            numbers: numbers.join(" ")
+          });
+        }
+      }
+
+      return uniqueByDrawNo(rows);
+    }
+
+    // ===== 解析澳所（備援來源）=====
+    function parseAuzo(html) {
+      const rows = [];
+
+      // 當日表格列：期數 / 時間 / 20顆號碼
+      const rowRegex = /(\d{8})[\s\S]{0,220}?(\d{2}:\d{2})[\s\S]{0,2600}?((?:>\d{2}<[\s\S]{0,120}){20})/g;
+
+      let match;
+      while ((match = rowRegex.exec(html)) !== null) {
+        const drawNo = Number(match[1]);
+        const drawTime = match[2];
+        const numbers = [...match[3].matchAll(/>(\d{2})</g)]
+          .map(x => x[1])
+          .slice(0, 20);
+
+        if (drawNo && drawTime && numbers.length === 20) {
+          rows.push({
+            draw_no: drawNo,
+            draw_time: drawTime,
+            numbers: numbers.join(" ")
+          });
+        }
+      }
+
+      // 若 regex 沒抓夠，至少保底抓最上面 20 顆號碼
       const topBallMatches = html.match(/>\d{2}</g) || [];
       const latestNumbers = topBallMatches
         .slice(0, 20)
         .map(x => x.replace(/[^\d]/g, ""));
 
-      if (latestNumbers.length !== 20) {
-        return res.status(500).json({
-          ok: false,
-          error: "Could not parse latest numbers",
-          sourceUrl,
-          safeTimeText
+      const drawNoMatch = html.match(/\b(1\d{7})\b/);
+      const timeMatch = html.match(/\(\s*\d{4}-\d{2}-\d{2}\s+(\d{2}:\d{2})\s*\)/);
+
+      const latestDrawNo = drawNoMatch ? Number(drawNoMatch[1]) : null;
+      const latestDrawTime = timeMatch ? timeMatch[1] : null;
+
+      if (
+        latestDrawNo &&
+        latestDrawTime &&
+        latestNumbers.length === 20 &&
+        !rows.some(r => r.draw_no === latestDrawNo)
+      ) {
+        rows.unshift({
+          draw_no: latestDrawNo,
+          draw_time: latestDrawTime,
+          numbers: latestNumbers.join(" ")
         });
       }
 
-      stableLatest = {
-        draw_no: null,
-        draw_time: "即時更新",
-        numbers: latestNumbers.join(" ")
-      };
+      return uniqueByDrawNo(rows);
     }
 
-    // ===== 6) 寫入資料庫（只有抓得到期數時才寫） =====
-    let insertedCount = 0;
-    let skippedExistingCount = 0;
+    // ===== 先取 Supabase 最近 20 期（作為 fallback 與前端 recent20）=====
+    async function getRecent20FromDb() {
+      const recent20Res = await fetch(
+        `${SUPABASE_URL}/rest/v1/bingo_draws?select=draw_no,draw_time,numbers&order=draw_no.desc&limit=20`,
+        {
+          headers: {
+            apikey: SUPABASE_SECRET_KEY,
+            Authorization: `Bearer ${SUPABASE_SECRET_KEY}`
+          }
+        }
+      );
 
-    const rowsCanSave = uniqueRows.filter(row => row.draw_no);
+      if (!recent20Res.ok) return [];
+      return await recent20Res.json();
+    }
 
-    if (rowsCanSave.length > 0) {
-      const drawNos = rowsCanSave.map(row => row.draw_no);
+    // ===== 寫入 Supabase（避免重複）=====
+    async function saveRowsToDb(rows) {
+      if (!rows || rows.length === 0) {
+        return { insertedCount: 0, skippedExistingCount: 0 };
+      }
+
+      const drawNos = rows.map(r => r.draw_no);
       let existingSet = new Set();
 
       const existingRes = await fetch(
@@ -150,8 +206,7 @@ export default async function handler(req, res) {
         existingSet = new Set(existingJson.map(item => Number(item.draw_no)));
       }
 
-      const newRows = rowsCanSave.filter(row => !existingSet.has(row.draw_no));
-      skippedExistingCount = rowsCanSave.length - newRows.length;
+      const newRows = rows.filter(row => !existingSet.has(row.draw_no));
 
       if (newRows.length > 0) {
         const saveRes = await fetch(`${SUPABASE_URL}/rest/v1/bingo_draws`, {
@@ -165,49 +220,120 @@ export default async function handler(req, res) {
           body: JSON.stringify(newRows)
         });
 
-        if (saveRes.ok) {
-          insertedCount = newRows.length;
+        if (!saveRes.ok) {
+          const detail = await saveRes.text();
+          throw new Error(`Supabase insert failed: ${detail}`);
         }
+      }
+
+      return {
+        insertedCount: newRows.length,
+        skippedExistingCount: rows.length - newRows.length
+      };
+    }
+
+    // ===== 主流程：官方優先，澳所備援，最後 DB fallback =====
+    const safeMinutes = hh * 60 + mi;
+    let sourceUsed = null;
+    let parsedRows = [];
+    let latest = null;
+    let recent20 = await getRecent20FromDb();
+    let insertedCount = 0;
+    let skippedExistingCount = 0;
+
+    // 1) 先試官方
+    try {
+      const officialHtml = await fetchWithRetry(
+        OFFICIAL_URL,
+        {
+          headers: {
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "zh-TW,zh;q=0.9"
+          }
+        },
+        1
+      );
+
+      const officialRows = parseOfficial(officialHtml);
+
+      if (officialRows.length > 0) {
+        parsedRows = officialRows;
+        latest = pickStableRow(officialRows, safeMinutes);
+        sourceUsed = "official";
+      }
+    } catch (err) {
+      // 官方失敗，往下走澳所
+    }
+
+    // 2) 官方沒成，再試澳所
+    if (!latest) {
+      try {
+        const auzoHtml = await fetchWithRetry(
+          AUZO_URL,
+          {
+            headers: {
+              "User-Agent": "Mozilla/5.0",
+              "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+              "Accept-Language": "zh-TW,zh;q=0.9"
+            }
+          },
+          1
+        );
+
+        const auzoRows = parseAuzo(auzoHtml);
+
+        if (auzoRows.length > 0) {
+          parsedRows = auzoRows;
+          latest = pickStableRow(auzoRows, safeMinutes);
+          sourceUsed = "auzo";
+        }
+      } catch (err) {
+        // 澳所也失敗，往下走 fallback
       }
     }
 
-    // ===== 7) 取最新 20 期給前端 =====
-    let recent20 = [];
+    // 3) 有抓到 rows，就嘗試寫入 DB
+    if (parsedRows.length > 0) {
+      const saveResult = await saveRowsToDb(parsedRows);
+      insertedCount = saveResult.insertedCount;
+      skippedExistingCount = saveResult.skippedExistingCount;
 
-    const recent20Res = await fetch(
-      `${SUPABASE_URL}/rest/v1/bingo_draws?select=draw_no,draw_time,numbers&order=draw_no.desc&limit=20`,
-      {
-        headers: {
-          apikey: SUPABASE_SECRET_KEY,
-          Authorization: `Bearer ${SUPABASE_SECRET_KEY}`
-        }
+      // 重新抓 recent20，讓前端拿到最新 DB 狀態
+      recent20 = await getRecent20FromDb();
+    }
+
+    // 4) 若外部來源都失敗，就退回 DB 最近一筆
+    if (!latest) {
+      if (recent20 && recent20.length > 0) {
+        latest = recent20[0];
+        sourceUsed = "db_fallback";
       }
-    );
-
-    if (recent20Res.ok) {
-      recent20 = await recent20Res.json();
     }
 
-    // 如果資料庫還很空，就把今天抓到的 uniqueRows 補給前端一些底稿
-    if ((!recent20 || recent20.length === 0) && uniqueRows.length > 0) {
-      recent20 = uniqueRows.slice(0, 20);
+    // 5) 最後還是沒資料，才真正回錯
+    if (!latest) {
+      return res.status(500).json({
+        ok: false,
+        error: "No available data from official, auzo, or database fallback"
+      });
     }
 
-    // ===== 8) 回傳給前端 =====
     return res.status(200).json({
       ok: true,
-      sourceUrl,
+      sourceUrl: sourceUsed === "official" ? OFFICIAL_URL : AUZO_URL,
+      sourceUsed,
       syncPolicy: {
         timezone: "Asia/Taipei",
         safeDelayMinutes: 3,
         safeTimeUsed: safeTimeText
       },
       latest: {
-        drawNo: stableLatest.draw_no || "即時同步",
-        drawTime: stableLatest.draw_time || "即時更新",
-        numbers: String(stableLatest.numbers).split(" ")
+        drawNo: latest.draw_no || "即時同步",
+        drawTime: latest.draw_time || "即時更新",
+        numbers: String(latest.numbers).split(" ")
       },
-      recent20,
+      recent20: Array.isArray(recent20) ? recent20 : [],
       modes: {
         testMode: {
           label: "測試模式",
@@ -219,7 +345,7 @@ export default async function handler(req, res) {
         }
       },
       stats: {
-        dayParsedCount: uniqueRows.length,
+        dayParsedCount: parsedRows.length,
         insertedCount,
         skippedExistingCount
       }
