@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
 
 const STORAGE_KEYS = {
-  latest: "fuwei_bingo_latest_v11",
-  recent20: "fuwei_bingo_recent20_v11",
-  testPlan: "fuwei_bingo_test_plan_v11",
-  formalPlan: "fuwei_bingo_formal_plan_v11",
-  testResult: "fuwei_bingo_test_result_v11"
+  latest: "fuwei_bingo_latest_v15",
+  recent20: "fuwei_bingo_recent20_v15",
+  testPlan: "fuwei_bingo_test_plan_v15",
+  formalPlan: "fuwei_bingo_formal_plan_v15",
+  testResult: "fuwei_bingo_test_result_v15",
+  formalResult: "fuwei_bingo_formal_result_v15"
 };
 
 const TXT_LATEST = {
@@ -126,47 +127,6 @@ function generateFourGroups(recent20) {
   ];
 }
 
-function calcHit(groupNums, drawNums) {
-  const set = new Set(drawNums);
-  return groupNums.filter(n => set.has(n));
-}
-
-function calcPlanResult(plan, drawText) {
-  const drawNums = parseNumbers(drawText);
-  const periodCost = plan.groups.length * 25;
-  const totalCost = plan.targetPeriods * periodCost;
-
-  const results = plan.groups.map(g => {
-    const hits = calcHit(g.nums, drawNums);
-    return {
-      label: g.label,
-      nums: g.nums,
-      hits,
-      hitCount: hits.length
-    };
-  });
-
-  const effectiveGroups = results.filter(r => r.hitCount >= 2).length;
-  const estimatedReturn = effectiveGroups * 100;
-  const profit = estimatedReturn - totalCost;
-
-  return {
-    drawNums,
-    results,
-    totalCost,
-    estimatedReturn,
-    profit,
-    verdict:
-      profit > 0
-        ? "小贏以上"
-        : profit === 0
-        ? "打平"
-        : profit >= -50
-        ? "接近成本"
-        : "被咬"
-  };
-}
-
 export default function App() {
   const [latest, setLatest] = useState(() =>
     readLocal(STORAGE_KEYS.latest, TXT_LATEST)
@@ -186,8 +146,9 @@ export default function App() {
   const [testResult, setTestResult] = useState(() =>
     readLocal(STORAGE_KEYS.testResult, null)
   );
-
-  const [manualDraw, setManualDraw] = useState("");
+  const [formalResult, setFormalResult] = useState(() =>
+    readLocal(STORAGE_KEYS.formalResult, null)
+  );
 
   useEffect(() => {
     writeLocal(STORAGE_KEYS.latest, latest);
@@ -209,25 +170,9 @@ export default function App() {
     writeLocal(STORAGE_KEYS.testResult, testResult);
   }, [testResult]);
 
-  async function refreshRecent20() {
-    try {
-      const saveRes = await fetch("/api/save", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ numbers: latest.numbers || [] })
-      });
-
-      const saveData = await saveRes.json();
-
-      if (saveData.ok && Array.isArray(saveData.recent20) && saveData.recent20.length > 0) {
-        setRecent20(saveData.recent20);
-      }
-    } catch {
-      // 不阻斷主流程
-    }
-  }
+  useEffect(() => {
+    writeLocal(STORAGE_KEYS.formalResult, formalResult);
+  }, [formalResult]);
 
   async function syncLatest() {
     try {
@@ -284,7 +229,7 @@ export default function App() {
         if (saveData.ok && Array.isArray(saveData.recent20) && saveData.recent20.length > 0) {
           setRecent20(saveData.recent20);
         }
-      } catch (err) {
+      } catch {
         saveNotice = "，但建檔失敗";
       }
 
@@ -295,50 +240,122 @@ export default function App() {
     }
   }
 
-  function startTestMode() {
+  async function savePrediction(mode, targetPeriods, groups) {
+    const res = await fetch("/api/prediction-save", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        mode,
+        sourceDrawNo: latest.drawNo,
+        targetPeriods,
+        groups
+      })
+    });
+
+    return await res.json();
+  }
+
+  async function comparePrediction(predictionId) {
+    const res = await fetch("/api/prediction-compare", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        predictionId,
+        drawNumbers: latest.numbers
+      })
+    });
+
+    return await res.json();
+  }
+
+  async function startTestMode() {
     const groups = generateFourGroups(recent20);
     const plan = {
       mode: "test",
       createdAt: new Date().toISOString(),
       sourceDrawNo: latest.drawNo,
       targetPeriods: 2,
-      groups
+      groups,
+      predictionId: null
     };
+
+    try {
+      const saved = await savePrediction("test", 2, groups);
+      if (saved.ok) {
+        plan.predictionId = saved.id;
+        setNotice("已建立測試模式，並寫入預測資料庫。");
+      } else {
+        setNotice("已建立測試模式，但預測資料庫寫入失敗。");
+      }
+    } catch {
+      setNotice("已建立測試模式，但預測資料庫寫入失敗。");
+    }
+
     setTestPlan(plan);
-    setNotice("已建立測試模式：四組四星，先追 2 期。");
+    setTestResult(null);
   }
 
-  function startFormalMode() {
+  async function startFormalMode() {
     const groups = generateFourGroups(recent20);
     const plan = {
       mode: "formal",
       createdAt: new Date().toISOString(),
       sourceDrawNo: latest.drawNo,
       targetPeriods: 4,
-      groups
+      groups,
+      predictionId: null
     };
+
+    try {
+      const saved = await savePrediction("formal", 4, groups);
+      if (saved.ok) {
+        plan.predictionId = saved.id;
+        setNotice("已建立正式投注，並寫入預測資料庫。");
+      } else {
+        setNotice("已建立正式投注，但預測資料庫寫入失敗。");
+      }
+    } catch {
+      setNotice("已建立正式投注，但預測資料庫寫入失敗。");
+    }
+
     setFormalPlan(plan);
-    setNotice("已建立正式投注：四組四星，追 4 期。");
+    setFormalResult(null);
   }
 
-  function evaluateTestPlan() {
-    if (!testPlan) {
-      setNotice("尚未建立測試模式。");
-      return;
-    }
-    if (!manualDraw.trim()) {
-      setNotice("請先輸入最新一期 20 顆號碼，再進行對號。");
+  async function compareTestMode() {
+    if (!testPlan?.predictionId) {
+      setNotice("測試模式尚未建立完成，無法比對。");
       return;
     }
 
-    const result = calcPlanResult(testPlan, manualDraw);
-    setTestResult(result);
-
-    if (result.verdict === "小贏以上" || result.verdict === "接近成本") {
-      setNotice(`測試結果：${result.verdict}，可考慮按下正式投注。`);
-    } else {
-      setNotice(`測試結果：${result.verdict}，建議保守觀察。`);
+    const data = await comparePrediction(testPlan.predictionId);
+    if (!data.ok) {
+      setNotice(`測試模式比對失敗：${data.error || "未知錯誤"}`);
+      return;
     }
+
+    setTestResult(data.result);
+    setNotice(`測試模式比對完成：${data.result.verdict}`);
+  }
+
+  async function compareFormalMode() {
+    if (!formalPlan?.predictionId) {
+      setNotice("正式投注尚未建立完成，無法比對。");
+      return;
+    }
+
+    const data = await comparePrediction(formalPlan.predictionId);
+    if (!data.ok) {
+      setNotice(`正式投注比對失敗：${data.error || "未知錯誤"}`);
+      return;
+    }
+
+    setFormalResult(data.result);
+    setNotice(`正式投注比對完成：${data.result.verdict}`);
   }
 
   const core8 = useMemo(() => {
@@ -365,9 +382,9 @@ export default function App() {
       <div style={styles.wrap}>
         <section style={styles.hero}>
           <div style={styles.kicker}>FUWEI BINGO SYSTEM</div>
-          <h1 style={styles.h1}>富緯賓果系統 v1.0 雙模式版</h1>
+          <h1 style={styles.h1}>富緯賓果系統 v1.5 策略版</h1>
           <p style={styles.p}>
-            A 保留 TXT 歷史底庫，B 接上澳所即時同步。現在可先同步最新一期，再選擇「測試模式」或「直接正式投注」。
+            已完成最新一期抓號與資料庫建檔。現在可建立測試模式 / 正式投注，並用目前最新一期自動比對命中與損益。
           </p>
 
           <div style={styles.notice}>{notice}</div>
@@ -401,10 +418,10 @@ export default function App() {
               同步最新一期
             </button>
             <button style={styles.secondaryBtn} onClick={startTestMode}>
-              測試模式
+              建立測試模式
             </button>
             <button style={styles.secondaryBtn} onClick={startFormalMode}>
-              直接正式投注
+              建立正式投注
             </button>
           </div>
         </section>
@@ -440,18 +457,8 @@ export default function App() {
 
         <div style={styles.grid2}>
           <section style={styles.panel}>
-            <h2 style={styles.h2}>區段統計</h2>
-            {sectionStats.map(([label, count]) => (
-              <div key={label} style={styles.row}>
-                <span>{label}</span>
-                <strong>{count}</strong>
-              </div>
-            ))}
-          </section>
-
-          <section style={styles.panel}>
             <h2 style={styles.h2}>最近 20 期底稿</h2>
-            <div style={styles.subtle}>供測試模式 / 正式投注生成四星號碼使用</div>
+            <div style={styles.subtle}>供策略生成與回測使用</div>
             <div style={{ maxHeight: 220, overflow: "auto", marginTop: 12 }}>
               {recent20.map((row, idx) => (
                 <div key={idx} style={{ ...styles.row, borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
@@ -461,6 +468,16 @@ export default function App() {
               ))}
             </div>
           </section>
+
+          <section style={styles.panel}>
+            <h2 style={styles.h2}>區段統計</h2>
+            {sectionStats.map(([label, count]) => (
+              <div key={label} style={styles.row}>
+                <span>{label}</span>
+                <strong>{count}</strong>
+              </div>
+            ))}
+          </section>
         </div>
 
         <div style={styles.grid2}>
@@ -468,6 +485,7 @@ export default function App() {
             <h2 style={styles.h2}>測試模式（四組四星 / 追 2 期）</h2>
             {testPlan ? (
               <>
+                <div style={styles.subtle}>Prediction ID：{testPlan.predictionId || "尚未寫入"}</div>
                 {testPlan.groups.map((g, idx) => (
                   <div key={idx} style={styles.groupCard}>
                     <div style={styles.groupTitle}>{g.label}</div>
@@ -475,6 +493,28 @@ export default function App() {
                     <div style={styles.subtle}>{g.reason}</div>
                   </div>
                 ))}
+                <div style={styles.btnRow}>
+                  <button style={styles.primaryBtn} onClick={compareTestMode}>
+                    用目前最新一期比對測試模式
+                  </button>
+                </div>
+                {testResult && (
+                  <div style={styles.resultBox}>
+                    <div style={styles.resultLine}>判定：<strong>{testResult.verdict}</strong></div>
+                    <div style={styles.resultLine}>估計成本：{testResult.totalCost}</div>
+                    <div style={styles.resultLine}>估計回收：{testResult.estimatedReturn}</div>
+                    <div style={styles.resultLine}>估計損益：{testResult.profit}</div>
+                    <div style={{ marginTop: 12 }}>
+                      {testResult.results.map((r, idx) => (
+                        <div key={idx} style={styles.resultRow}>
+                          <span>{r.label}</span>
+                          <span>{r.nums.join(" ")}</span>
+                          <span>命中 {r.hitCount} 碼</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </>
             ) : (
               <div style={styles.subtle}>尚未建立測試模式。</div>
@@ -485,6 +525,7 @@ export default function App() {
             <h2 style={styles.h2}>正式投注（四組四星 / 追 4 期）</h2>
             {formalPlan ? (
               <>
+                <div style={styles.subtle}>Prediction ID：{formalPlan.predictionId || "尚未寫入"}</div>
                 {formalPlan.groups.map((g, idx) => (
                   <div key={idx} style={styles.groupCard}>
                     <div style={styles.groupTitle}>{g.label}</div>
@@ -492,51 +533,34 @@ export default function App() {
                     <div style={styles.subtle}>{g.reason}</div>
                   </div>
                 ))}
+                <div style={styles.btnRow}>
+                  <button style={styles.primaryBtn} onClick={compareFormalMode}>
+                    用目前最新一期比對正式投注
+                  </button>
+                </div>
+                {formalResult && (
+                  <div style={styles.resultBox}>
+                    <div style={styles.resultLine}>判定：<strong>{formalResult.verdict}</strong></div>
+                    <div style={styles.resultLine}>估計成本：{formalResult.totalCost}</div>
+                    <div style={styles.resultLine}>估計回收：{formalResult.estimatedReturn}</div>
+                    <div style={styles.resultLine}>估計損益：{formalResult.profit}</div>
+                    <div style={{ marginTop: 12 }}>
+                      {formalResult.results.map((r, idx) => (
+                        <div key={idx} style={styles.resultRow}>
+                          <span>{r.label}</span>
+                          <span>{r.nums.join(" ")}</span>
+                          <span>命中 {r.hitCount} 碼</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </>
             ) : (
               <div style={styles.subtle}>尚未建立正式投注。</div>
             )}
           </section>
         </div>
-
-        <section style={styles.panel}>
-          <h2 style={styles.h2}>自動對號 / 損益評估</h2>
-          <div style={styles.subtle}>
-            輸入最新一期 20 顆號碼後，可先對「測試模式」做損益判斷；若接近成本或小贏，再按正式投注。
-          </div>
-
-          <textarea
-            value={manualDraw}
-            onChange={(e) => setManualDraw(e.target.value)}
-            placeholder="請輸入最新一期 20 顆號碼，例如：11 12 13 18 21 30 32 35 41 45 52 57 58 59 61 63 64 71 77 79"
-            style={styles.textarea}
-          />
-
-          <div style={styles.btnRow}>
-            <button style={styles.primaryBtn} onClick={evaluateTestPlan}>
-              對測試模式進行對號 / 損益計算
-            </button>
-          </div>
-
-          {testResult && (
-            <div style={styles.resultBox}>
-              <div style={styles.resultLine}>判定：<strong>{testResult.verdict}</strong></div>
-              <div style={styles.resultLine}>估計成本：{testResult.totalCost}</div>
-              <div style={styles.resultLine}>估計回收：{testResult.estimatedReturn}</div>
-              <div style={styles.resultLine}>估計損益：{testResult.profit}</div>
-
-              <div style={{ marginTop: 12 }}>
-                {testResult.results.map((r, idx) => (
-                  <div key={idx} style={styles.resultRow}>
-                    <span>{r.label}</span>
-                    <span>{r.nums.join(" ")}</span>
-                    <span>命中 {r.hitCount} 碼</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </section>
       </div>
     </div>
   );
@@ -714,18 +738,6 @@ const styles = {
     fontSize: 30,
     fontWeight: 800,
     letterSpacing: 1
-  },
-  textarea: {
-    width: "100%",
-    minHeight: 120,
-    marginTop: 16,
-    borderRadius: 18,
-    padding: 16,
-    fontSize: 18,
-    background: "#041126",
-    color: "#fff",
-    border: "1px solid rgba(255,255,255,0.12)",
-    boxSizing: "border-box"
   },
   resultBox: {
     marginTop: 18,
