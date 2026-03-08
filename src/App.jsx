@@ -1,4 +1,4 @@
-// v2.1 hobby self-optimized
+// v2.2 stable recent20 first
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { buildBingoV1Strategies } from "../lib/buildBingoV1Strategies";
 import {
@@ -10,13 +10,12 @@ import {
 } from "../lib/strategySelfOptimizer";
 
 const STORAGE_KEYS = {
-  latest: "fuwei_bingo_latest_v21_hobby",
-  recent20: "fuwei_bingo_recent20_v21_hobby",
-  testPlan: "fuwei_bingo_test_plan_v21_hobby",
-  formalPlan: "fuwei_bingo_formal_plan_v21_hobby",
-  testResult: "fuwei_bingo_test_result_v21_hobby",
-  formalResult: "fuwei_bingo_formal_result_v21_hobby",
-  autoRunAt: "fuwei_bingo_auto_run_at_v21_hobby"
+  latest: "fuwei_bingo_latest_v22_hobby",
+  testPlan: "fuwei_bingo_test_plan_v22_hobby",
+  formalPlan: "fuwei_bingo_formal_plan_v22_hobby",
+  testResult: "fuwei_bingo_test_result_v22_hobby",
+  formalResult: "fuwei_bingo_formal_result_v22_hobby",
+  autoRunAt: "fuwei_bingo_auto_run_at_v22_hobby"
 };
 
 const LEARNING_KEYS = createLearningStorageKeys("fuwei_bingo_strategy_learning_v2");
@@ -30,14 +29,6 @@ const TXT_LATEST = {
   ],
   source: "3/7 完整 TXT 匯入"
 };
-
-const TXT_RECENT20 = [
-  { draw_no: 115013398, draw_time: "TXT", numbers: "01 08 11 15 18 22 25 39 41 43 46 51 55 60 61 65 66 69 73 76" },
-  { draw_no: 115013397, draw_time: "TXT", numbers: "03 08 13 16 17 20 26 28 31 34 35 37 39 41 42 45 53 55 66 78" },
-  { draw_no: 115013396, draw_time: "TXT", numbers: "19 24 26 27 30 32 33 35 37 38 40 47 49 51 57 60 61 62 74 79" },
-  { draw_no: 115013395, draw_time: "TXT", numbers: "05 07 09 10 11 13 14 21 22 28 30 37 44 52 55 66 68 69 71 79" },
-  { draw_no: 115013394, draw_time: "TXT", numbers: "02 03 07 11 21 22 30 31 33 42 46 49 59 63 64 66 69 71 77 79" }
-];
 
 function readLocal(key, fallback) {
   try {
@@ -53,7 +44,7 @@ function writeLocal(key, value) {
 }
 
 function parseNumbers(str) {
-  return String(str)
+  return String(str || "")
     .split(/[,\s]+/)
     .map(x => x.trim())
     .filter(Boolean)
@@ -86,11 +77,12 @@ export default function App() {
   const [latest, setLatest] = useState(() =>
     readLocal(STORAGE_KEYS.latest, TXT_LATEST)
   );
-  const [recent20, setRecent20] = useState(() =>
-    readLocal(STORAGE_KEYS.recent20, TXT_RECENT20)
-  );
+
+  const [recent20, setRecent20] = useState([]);
+  const [recent20Status, setRecent20Status] = useState("尚未載入 recent20");
+
   const [syncStatus, setSyncStatus] = useState("尚未同步");
-  const [notice, setNotice] = useState("系統已載入歷史底庫，準備接即時資料。");
+  const [notice, setNotice] = useState("系統啟動中，準備接即時資料。");
   const [autoStatus, setAutoStatus] = useState("尚未執行補抓補比對");
 
   const [testPlan, setTestPlan] = useState(() =>
@@ -112,11 +104,35 @@ export default function App() {
   const autoRanRef = useRef(false);
 
   useEffect(() => writeLocal(STORAGE_KEYS.latest, latest), [latest]);
-  useEffect(() => writeLocal(STORAGE_KEYS.recent20, recent20), [recent20]);
   useEffect(() => writeLocal(STORAGE_KEYS.testPlan, testPlan), [testPlan]);
   useEffect(() => writeLocal(STORAGE_KEYS.formalPlan, formalPlan), [formalPlan]);
   useEffect(() => writeLocal(STORAGE_KEYS.testResult, testResult), [testResult]);
   useEffect(() => writeLocal(STORAGE_KEYS.formalResult, formalResult), [formalResult]);
+
+  async function loadRecent20(silent = false) {
+    try {
+      const res = await fetch("/api/recent20");
+      const data = await res.json();
+
+      if (!data.ok) {
+        throw new Error(data.error || "recent20 載入失敗");
+      }
+
+      const rows = Array.isArray(data.recent20) ? data.recent20 : [];
+      setRecent20(rows);
+
+      if (!silent) {
+        setRecent20Status(`recent20 已更新，共 ${rows.length} 期。`);
+      }
+
+      return rows;
+    } catch (err) {
+      if (!silent) {
+        setRecent20Status(`recent20 載入失敗：${err.message}`);
+      }
+      return [];
+    }
+  }
 
   async function syncLatestCore(silent = false) {
     const res = await fetch("/api/sync");
@@ -155,19 +171,27 @@ export default function App() {
 
       const saveData = await saveRes.json();
 
-      if (saveData.ok && saveData.saved) {
-        saveNotice = "，並已自動建檔";
-      } else if (saveData.ok && saveData.skipped) {
-        saveNotice = "，此組號碼已存在資料庫";
-      } else {
-        saveNotice = "，但建檔未成功";
+      if (!saveData.ok) {
+        throw new Error(saveData.error || "save failed");
       }
 
-      if (saveData.ok && Array.isArray(saveData.recent20) && saveData.recent20.length > 0) {
-        setRecent20(saveData.recent20);
+      if (saveData.saved) {
+        saveNotice = "，並已自動建檔";
+      } else if (saveData.skipped) {
+        saveNotice = "，此組號碼已存在資料庫";
+      } else {
+        saveNotice = "，建檔狀態未知";
       }
-    } catch {
-      saveNotice = "，但建檔失敗";
+
+      if (Array.isArray(saveData.recent20) && saveData.recent20.length > 0) {
+        setRecent20(saveData.recent20);
+        setRecent20Status(`recent20 已更新，共 ${saveData.recent20.length} 期。`);
+      } else {
+        await loadRecent20(true);
+      }
+    } catch (err) {
+      saveNotice = `，但建檔失敗：${err.message}`;
+      await loadRecent20(true);
     }
 
     if (!silent) {
@@ -253,10 +277,10 @@ export default function App() {
         plan.targetDrawNo = Number(saved.targetDrawNo || plan.targetDrawNo);
         setNotice(`已建立四星賓果四組四期測試模式，需等到第 ${plan.targetDrawNo} 期才可比對。`);
       } else {
-        setNotice("已建立四星賓果四組四期測試模式，但預測資料庫寫入失敗。");
+        setNotice("已建立測試模式，但預測資料庫寫入失敗。");
       }
     } catch {
-      setNotice("已建立四星賓果四組四期測試模式，但預測資料庫寫入失敗。");
+      setNotice("已建立測試模式，但預測資料庫寫入失敗。");
     }
 
     setTestPlan(plan);
@@ -286,10 +310,10 @@ export default function App() {
         plan.targetDrawNo = Number(saved.targetDrawNo || plan.targetDrawNo);
         setNotice(`已建立四星賓果四組四期正式方案，需等到第 ${plan.targetDrawNo} 期才可比對。`);
       } else {
-        setNotice("已建立四星賓果四組四期正式方案，但預測資料庫寫入失敗。");
+        setNotice("已建立正式方案，但預測資料庫寫入失敗。");
       }
     } catch {
-      setNotice("已建立四星賓果四組四期正式方案，但預測資料庫寫入失敗。");
+      setNotice("已建立正式方案，但預測資料庫寫入失敗。");
     }
 
     setFormalPlan(plan);
@@ -398,13 +422,21 @@ export default function App() {
       }
 
       const catchupRes = await fetch("/api/catchup");
-      const catchupData = await catchupRes.json();
+      const catchupRaw = await catchupRes.text();
+
+      let catchupData = null;
+      try {
+        catchupData = JSON.parse(catchupRaw);
+      } catch {
+        throw new Error(`catchup 回傳非 JSON：${catchupRaw.slice(0, 80)}`);
+      }
 
       if (!catchupData.ok) {
-        throw new Error(catchupData.error || catchupData.step || "補抓失敗");
+        throw new Error(catchupData.error || catchupData.message || "補抓失敗");
       }
 
       const latestData = await syncLatestCore(true);
+      await loadRecent20(true);
 
       let done = 0;
       let learnedCount = 0;
@@ -456,6 +488,10 @@ export default function App() {
   }
 
   useEffect(() => {
+    loadRecent20(false);
+  }, []);
+
+  useEffect(() => {
     if (autoRanRef.current) return;
     autoRanRef.current = true;
     autoCatchupAndCompare();
@@ -489,13 +525,14 @@ export default function App() {
       <div style={styles.wrap}>
         <section style={styles.hero}>
           <div style={styles.kicker}>FUWEI BINGO SYSTEM</div>
-          <h1 style={styles.h1}>富緯賓果系統 v2.1 自我優化版</h1>
+          <h1 style={styles.h1}>富緯賓果系統 v2.2 穩定版</h1>
           <p style={styles.p}>
-            固定採用四星賓果、四組、四期。建立方案後必須等到目標期數開出，才允許正式比對與學習。
+            固定採用四星賓果、四組、四期。recent20 優先讀取 /api/recent20，避免舊快取干擾。
           </p>
 
           <div style={styles.notice}>{notice}</div>
           <div style={{ ...styles.notice, marginTop: 12, background: "#0a2440" }}>{autoStatus}</div>
+          <div style={{ ...styles.notice, marginTop: 12, background: "#0d2744" }}>{recent20Status}</div>
 
           <div style={styles.statsGrid}>
             <div style={styles.statCard}>
@@ -561,11 +598,11 @@ export default function App() {
         <div style={styles.grid2}>
           <section style={styles.panel}>
             <h2 style={styles.h2}>最近 20 期底稿</h2>
-            <div style={styles.subtle}>供四星賓果四組四期策略生成與補比對使用</div>
-            <div style={{ maxHeight: 220, overflow: "auto", marginTop: 12 }}>
+            <div style={styles.subtle}>固定優先讀取 /api/recent20，供四星賓果四組四期策略生成與補比對使用</div>
+            <div style={{ maxHeight: 260, overflow: "auto", marginTop: 12 }}>
               {recent20.map((row, idx) => (
-                <div key={idx} style={{ ...styles.row, borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
-                  <span>{row.draw_no || "TXT"}</span>
+                <div key={`${row.draw_no}-${idx}`} style={{ ...styles.row, borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+                  <span>{row.draw_no || "-"}</span>
                   <span style={{ fontSize: 12, opacity: 0.8 }}>{row.draw_time || ""}</span>
                 </div>
               ))}
