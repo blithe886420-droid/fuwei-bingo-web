@@ -1,11 +1,11 @@
 import React, { useEffect, useMemo, useState } from "react";
 
 const STORAGE_KEYS = {
-  latest: "fuwei_bingo_latest_v09",
-  recent20: "fuwei_bingo_recent20_v09",
-  testPlan: "fuwei_bingo_test_plan_v09",
-  formalPlan: "fuwei_bingo_formal_plan_v09",
-  testResult: "fuwei_bingo_test_result_v09"
+  latest: "fuwei_bingo_latest_v10",
+  recent20: "fuwei_bingo_recent20_v10",
+  testPlan: "fuwei_bingo_test_plan_v10",
+  formalPlan: "fuwei_bingo_formal_plan_v10",
+  testResult: "fuwei_bingo_test_result_v10"
 };
 
 const TXT_LATEST = {
@@ -64,15 +64,9 @@ function tail(n) {
 
 function buildCandidates(recent20) {
   const freq = freqMap(recent20);
-  const rows = Object.entries(freq)
-    .map(([num, count]) => ({
-      num,
-      count,
-      tail: tail(num)
-    }))
+  return Object.entries(freq)
+    .map(([num, count]) => ({ num, count, tail: tail(num) }))
     .sort((a, b) => b.count - a.count || Number(a.num) - Number(b.num));
-
-  return rows;
 }
 
 function uniquePush(arr, val) {
@@ -105,14 +99,14 @@ function generateFourGroups(recent20) {
       top.filter(x => Number(x.num) % 2 === 0).slice(0, 2).map(x => x.num)
     );
 
-  const sequentialHint = top
+  const orderedNums = top
     .map(x => Number(x.num))
     .sort((a, b) => a - b);
 
   const nearGroup = [];
-  for (let i = 0; i < sequentialHint.length; i++) {
-    const n = sequentialHint[i];
-    if (sequentialHint.includes(n + 1)) {
+  for (let i = 0; i < orderedNums.length; i++) {
+    const n = orderedNums[i];
+    if (orderedNums.includes(n + 1)) {
       uniquePush(nearGroup, String(n).padStart(2, "0"));
       uniquePush(nearGroup, String(n + 1).padStart(2, "0"));
     }
@@ -139,7 +133,6 @@ function calcHit(groupNums, drawNums) {
 
 function calcPlanResult(plan, drawText) {
   const drawNums = parseNumbers(drawText);
-  const perBetCost = 4 * 25; // 四星一組 25，四組=100，純示意
   const periodCost = plan.groups.length * 25;
   const totalCost = plan.targetPeriods * periodCost;
 
@@ -153,9 +146,6 @@ function calcPlanResult(plan, drawText) {
     };
   });
 
-  const totalHitCount = results.reduce((sum, r) => sum + r.hitCount, 0);
-
-  // 先用保守測試規則：每組中2碼以上視為有效訊號
   const effectiveGroups = results.filter(r => r.hitCount >= 2).length;
   const estimatedReturn = effectiveGroups * 100;
   const profit = estimatedReturn - totalCost;
@@ -222,6 +212,7 @@ export default function App() {
   async function syncLatest() {
     try {
       setSyncStatus("同步中...");
+
       const res = await fetch("/api/sync");
       const data = await res.json();
 
@@ -230,26 +221,51 @@ export default function App() {
         return;
       }
 
-      const latestBlock = data.latest || {};
-      const numbers = Array.isArray(latestBlock.numbers)
-        ? latestBlock.numbers
+      const numbers = Array.isArray(data.numbers)
+        ? data.numbers
+        : Array.isArray(data.latest?.numbers)
+        ? data.latest.numbers
         : [];
 
-      if (numbers.length > 0) {
-        setLatest({
-          drawNo: latestBlock.drawNo || "即時同步",
-          drawTime: latestBlock.drawTime || "即時更新",
-          numbers,
-          source: "澳所即時同步"
-        });
+      if (!numbers || numbers.length !== 20) {
+        setSyncStatus("同步失敗：未取得完整 20 顆號碼");
+        return;
       }
 
-      if (Array.isArray(data.recent20) && data.recent20.length > 0) {
-        setRecent20(data.recent20);
+      const newLatest = {
+        drawNo: data.latest?.drawNo || "即時同步",
+        drawTime: data.capturedAt || data.latest?.drawTime || "即時更新",
+        numbers,
+        source: "澳所即時同步"
+      };
+
+      setLatest(newLatest);
+
+      let saveNotice = "";
+      try {
+        const saveRes = await fetch("/api/save", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ numbers })
+        });
+
+        const saveData = await saveRes.json();
+
+        if (saveData.ok && saveData.saved) {
+          saveNotice = "，並已自動建檔";
+        } else if (saveData.ok && saveData.skipped) {
+          saveNotice = "，此組號碼已存在資料庫";
+        } else {
+          saveNotice = "，但建檔未成功";
+        }
+      } catch (err) {
+        saveNotice = "，但建檔失敗";
       }
 
       setSyncStatus("已同步最新資料");
-      setNotice("已抓到最新一期與最近20期，可直接進行測試模式或正式投注。");
+      setNotice(`已抓到最新 20 顆號碼${saveNotice}`);
     } catch (err) {
       setSyncStatus(`同步失敗：${err.message}`);
     }
@@ -347,7 +363,7 @@ export default function App() {
 
             <div style={styles.statCard}>
               <div style={styles.statLabel}>資料來源</div>
-              <div style={styles.statValue}>{latest.source || "TXT 底庫"}</div>
+              <div style={styles.statValue}>{latest.source || "澳所即時同步"}</div>
             </div>
 
             <div style={styles.statCard}>
@@ -373,14 +389,16 @@ export default function App() {
           <section style={styles.panel}>
             <h2 style={styles.h2}>最新一期資訊</h2>
             <div style={styles.subtle}>
-              {latest.drawNo ? `第 ${latest.drawNo} 期` : "即時同步"} / {latest.drawTime || "未提供時間"}
+              {latest.drawNo ? `第 ${latest.drawNo} 期` : "即時同步"} / {latest.source || "澳所即時同步"}
             </div>
+
             <div style={styles.numbersWrap}>
-              {latest.numbers?.map((n, i) => (
+              {(latest.numbers || []).map((n, i) => (
                 <span key={i} style={styles.numBall}>{n}</span>
               ))}
             </div>
-            <div style={styles.subtle}>來源：{latest.source || "TXT"}</div>
+
+            <div style={styles.subtle}>來源：{latest.source || "澳所即時同步"}</div>
           </section>
 
           <section style={styles.panel}>
