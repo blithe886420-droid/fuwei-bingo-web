@@ -10,7 +10,6 @@ export default async function handler(req, res) {
       });
     }
 
-    // 台灣日期 YYYYMMDD
     const now = new Date();
     const taipeiDate = now
       .toLocaleDateString("sv-SE", { timeZone: "Asia/Taipei" })
@@ -36,18 +35,19 @@ export default async function handler(req, res) {
 
     const html = await response.text();
 
-    // 先抓最上面 20 顆紅球
+    // 最新 20 顆
     const topBallMatches = html.match(/>\d{2}</g) || [];
     const latestNumbers = topBallMatches
       .slice(0, 20)
       .map(x => x.replace(/[^\d]/g, ""));
 
-    // 期數與時間改用更寬鬆方式抓
-    const drawNoMatch = html.match(/第\s*(\d{8,})\s*期/);
+    // 最新時間
     const drawTimeMatch = html.match(/\(\s*\d{4}-\d{2}-\d{2}\s+(\d{2}:\d{2})\s*\)/);
-
-    const latestDrawNo = drawNoMatch ? Number(drawNoMatch[1]) : null;
     const latestDrawTime = drawTimeMatch ? drawTimeMatch[1] : null;
+
+    // 最新期數：直接抓頁面第一個 8 碼期數
+    const drawNoMatches = [...html.matchAll(/\b(1\d{7})\b/g)].map(x => x[1]);
+    const latestDrawNo = drawNoMatches.length > 0 ? Number(drawNoMatches[0]) : null;
 
     if (!latestDrawNo || !latestDrawTime || latestNumbers.length !== 20) {
       return res.status(500).json({
@@ -81,7 +81,6 @@ export default async function handler(req, res) {
       }
     }
 
-    // 補上最新一期
     if (!dayRows.some(row => row.draw_no === latestDrawNo)) {
       dayRows.unshift({
         draw_no: latestDrawNo,
@@ -90,7 +89,6 @@ export default async function handler(req, res) {
       });
     }
 
-    // 去重
     const uniqueRows = [];
     const seen = new Set();
 
@@ -101,7 +99,6 @@ export default async function handler(req, res) {
       }
     }
 
-    // 查既有期數
     const drawNos = uniqueRows.map(row => row.draw_no);
     let existingSet = new Set();
 
