@@ -1,4 +1,4 @@
-// v2.0 hobby self-optimized
+// v2.1 hobby self-optimized
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { buildBingoV1Strategies } from "../lib/buildBingoV1Strategies";
 import {
@@ -10,13 +10,13 @@ import {
 } from "../lib/strategySelfOptimizer";
 
 const STORAGE_KEYS = {
-  latest: "fuwei_bingo_latest_v20_hobby",
-  recent20: "fuwei_bingo_recent20_v20_hobby",
-  testPlan: "fuwei_bingo_test_plan_v20_hobby",
-  formalPlan: "fuwei_bingo_formal_plan_v20_hobby",
-  testResult: "fuwei_bingo_test_result_v20_hobby",
-  formalResult: "fuwei_bingo_formal_result_v20_hobby",
-  autoRunAt: "fuwei_bingo_auto_run_at_v20_hobby"
+  latest: "fuwei_bingo_latest_v21_hobby",
+  recent20: "fuwei_bingo_recent20_v21_hobby",
+  testPlan: "fuwei_bingo_test_plan_v21_hobby",
+  formalPlan: "fuwei_bingo_formal_plan_v21_hobby",
+  testResult: "fuwei_bingo_test_result_v21_hobby",
+  formalResult: "fuwei_bingo_formal_result_v21_hobby",
+  autoRunAt: "fuwei_bingo_auto_run_at_v21_hobby"
 };
 
 const LEARNING_KEYS = createLearningStorageKeys("fuwei_bingo_strategy_learning_v2");
@@ -137,7 +137,7 @@ export default function App() {
     }
 
     const newLatest = {
-      drawNo: data.draw_no || data.latest?.drawNo || null,
+      drawNo: Number(data.draw_no || data.latest?.drawNo || 0) || null,
       drawTime: data.draw_time || data.capturedAt || data.latest?.drawTime || "即時更新",
       numbers,
       source: "澳所即時同步"
@@ -202,13 +202,12 @@ export default function App() {
     return await res.json();
   }
 
-  async function comparePrediction(predictionId, drawNumbers) {
+  async function comparePrediction(predictionId) {
     const res = await fetch("/api/prediction-compare", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        predictionId,
-        drawNumbers
+        predictionId
       })
     });
 
@@ -239,6 +238,7 @@ export default function App() {
       createdAt: new Date().toISOString(),
       sourceDrawNo: latest.drawNo,
       targetPeriods: 4,
+      targetDrawNo: Number(latest.drawNo || 0) + 4,
       strategyMode: built.mode,
       target: built.target,
       strategyWeights: built.strategyWeights,
@@ -250,7 +250,8 @@ export default function App() {
       const saved = await savePrediction("test", 4, groups);
       if (saved.ok) {
         plan.predictionId = saved.id;
-        setNotice("已建立四星賓果四組四期測試模式，並套用自我優化權重。");
+        plan.targetDrawNo = Number(saved.targetDrawNo || plan.targetDrawNo);
+        setNotice(`已建立四星賓果四組四期測試模式，需等到第 ${plan.targetDrawNo} 期才可比對。`);
       } else {
         setNotice("已建立四星賓果四組四期測試模式，但預測資料庫寫入失敗。");
       }
@@ -270,6 +271,7 @@ export default function App() {
       createdAt: new Date().toISOString(),
       sourceDrawNo: latest.drawNo,
       targetPeriods: 4,
+      targetDrawNo: Number(latest.drawNo || 0) + 4,
       strategyMode: built.mode,
       target: built.target,
       strategyWeights: built.strategyWeights,
@@ -281,7 +283,8 @@ export default function App() {
       const saved = await savePrediction("formal", 4, groups);
       if (saved.ok) {
         plan.predictionId = saved.id;
-        setNotice("已建立四星賓果四組四期正式方案，並套用自我優化權重。");
+        plan.targetDrawNo = Number(saved.targetDrawNo || plan.targetDrawNo);
+        setNotice(`已建立四星賓果四組四期正式方案，需等到第 ${plan.targetDrawNo} 期才可比對。`);
       } else {
         setNotice("已建立四星賓果四組四期正式方案，但預測資料庫寫入失敗。");
       }
@@ -299,7 +302,7 @@ export default function App() {
       seenKey: LEARNING_KEYS.seen,
       mode,
       predictionId,
-      drawNo: latest.drawNo,
+      drawNo: compareResult?.compareDrawNo,
       compareResult
     });
 
@@ -314,8 +317,18 @@ export default function App() {
       return;
     }
 
-    const data = await comparePrediction(testPlan.predictionId, latest.numbers);
+    if (!latest.drawNo || Number(latest.drawNo) < Number(testPlan.targetDrawNo || 0)) {
+      setNotice(`測試模式尚未到比對期數，目前第 ${latest.drawNo || "?"} 期，需等到第 ${testPlan.targetDrawNo} 期。`);
+      return;
+    }
+
+    const data = await comparePrediction(testPlan.predictionId);
+
     if (!data.ok) {
+      if (data.waiting) {
+        setNotice(data.error || "尚未到比對期數");
+        return;
+      }
       setNotice(`測試模式比對失敗：${data.error || "未知錯誤"}`);
       return;
     }
@@ -341,8 +354,18 @@ export default function App() {
       return;
     }
 
-    const data = await comparePrediction(formalPlan.predictionId, latest.numbers);
+    if (!latest.drawNo || Number(latest.drawNo) < Number(formalPlan.targetDrawNo || 0)) {
+      setNotice(`正式投注尚未到比對期數，目前第 ${latest.drawNo || "?"} 期，需等到第 ${formalPlan.targetDrawNo} 期。`);
+      return;
+    }
+
+    const data = await comparePrediction(formalPlan.predictionId);
+
     if (!data.ok) {
+      if (data.waiting) {
+        setNotice(data.error || "尚未到比對期數");
+        return;
+      }
       setNotice(`正式投注比對失敗：${data.error || "未知錯誤"}`);
       return;
     }
@@ -386,8 +409,8 @@ export default function App() {
       let done = 0;
       let learnedCount = 0;
 
-      if (testPlan?.predictionId) {
-        const result = await comparePrediction(testPlan.predictionId, latestData.numbers);
+      if (testPlan?.predictionId && Number(latestData.drawNo || 0) >= Number(testPlan.targetDrawNo || 0)) {
+        const result = await comparePrediction(testPlan.predictionId);
         if (result.ok) {
           setTestResult(result.result);
           done += 1;
@@ -402,8 +425,8 @@ export default function App() {
         }
       }
 
-      if (formalPlan?.predictionId) {
-        const result = await comparePrediction(formalPlan.predictionId, latestData.numbers);
+      if (formalPlan?.predictionId && Number(latestData.drawNo || 0) >= Number(formalPlan.targetDrawNo || 0)) {
+        const result = await comparePrediction(formalPlan.predictionId);
         if (result.ok) {
           setFormalResult(result.result);
           done += 1;
@@ -466,9 +489,9 @@ export default function App() {
       <div style={styles.wrap}>
         <section style={styles.hero}>
           <div style={styles.kicker}>FUWEI BINGO SYSTEM</div>
-          <h1 style={styles.h1}>富緯賓果系統 v2 自我優化版</h1>
+          <h1 style={styles.h1}>富緯賓果系統 v2.1 自我優化版</h1>
           <p style={styles.p}>
-            固定採用四星賓果、四組、四期。每次比對後，系統會記錄各策略命中表現，並在下一輪自動調整策略權重。
+            固定採用四星賓果、四組、四期。建立方案後必須等到目標期數開出，才允許正式比對與學習。
           </p>
 
           <div style={styles.notice}>{notice}</div>
@@ -584,6 +607,8 @@ export default function App() {
               <>
                 <div style={styles.subtle}>Prediction ID：{testPlan.predictionId || "尚未寫入"}</div>
                 <div style={styles.subtle}>策略模式：{testPlan.strategyMode || "bingo_v2_4star_4group_4period_self_optimized"}</div>
+                <div style={styles.subtle}>來源期數：第 {testPlan.sourceDrawNo} 期</div>
+                <div style={styles.subtle}>目標期數：第 {testPlan.targetDrawNo} 期</div>
                 {testPlan.groups.map((g, idx) => (
                   <div key={idx} style={styles.groupCard}>
                     <div style={styles.groupTitle}>{g.label}</div>
@@ -592,11 +617,14 @@ export default function App() {
                   </div>
                 ))}
                 <div style={styles.btnRow}>
-                  <button style={styles.primaryBtn} onClick={compareTestMode}>用目前最新一期比對測試模式</button>
+                  <button style={styles.primaryBtn} onClick={compareTestMode}>用目標期數比對測試模式</button>
                 </div>
                 {testResult && (
                   <div style={styles.resultBox}>
                     <div style={styles.resultLine}>判定：<strong>{testResult.verdict}</strong></div>
+                    <div style={styles.resultLine}>來源期數：{testResult.sourceDrawNo}</div>
+                    <div style={styles.resultLine}>目標期數：{testResult.targetDrawNo}</div>
+                    <div style={styles.resultLine}>實際比對期數：{testResult.compareDrawNo}</div>
                     <div style={styles.resultLine}>估計成本：{testResult.totalCost}</div>
                     <div style={styles.resultLine}>估計回收：{testResult.estimatedReturn}</div>
                     <div style={styles.resultLine}>估計損益：{testResult.profit}</div>
@@ -623,6 +651,8 @@ export default function App() {
               <>
                 <div style={styles.subtle}>Prediction ID：{formalPlan.predictionId || "尚未寫入"}</div>
                 <div style={styles.subtle}>策略模式：{formalPlan.strategyMode || "bingo_v2_4star_4group_4period_self_optimized"}</div>
+                <div style={styles.subtle}>來源期數：第 {formalPlan.sourceDrawNo} 期</div>
+                <div style={styles.subtle}>目標期數：第 {formalPlan.targetDrawNo} 期</div>
                 {formalPlan.groups.map((g, idx) => (
                   <div key={idx} style={styles.groupCard}>
                     <div style={styles.groupTitle}>{g.label}</div>
@@ -631,11 +661,14 @@ export default function App() {
                   </div>
                 ))}
                 <div style={styles.btnRow}>
-                  <button style={styles.primaryBtn} onClick={compareFormalMode}>用目前最新一期比對正式投注</button>
+                  <button style={styles.primaryBtn} onClick={compareFormalMode}>用目標期數比對正式投注</button>
                 </div>
                 {formalResult && (
                   <div style={styles.resultBox}>
                     <div style={styles.resultLine}>判定：<strong>{formalResult.verdict}</strong></div>
+                    <div style={styles.resultLine}>來源期數：{formalResult.sourceDrawNo}</div>
+                    <div style={styles.resultLine}>目標期數：{formalResult.targetDrawNo}</div>
+                    <div style={styles.resultLine}>實際比對期數：{formalResult.compareDrawNo}</div>
                     <div style={styles.resultLine}>估計成本：{formalResult.totalCost}</div>
                     <div style={styles.resultLine}>估計回收：{formalResult.estimatedReturn}</div>
                     <div style={styles.resultLine}>估計損益：{formalResult.profit}</div>
