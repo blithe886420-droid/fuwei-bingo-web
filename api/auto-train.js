@@ -14,8 +14,9 @@ export default async function handler(req, res) {
     }
 
     const baseUrl =
-      process.env.NEXT_PUBLIC_SITE_URL ||
-      process.env.VERCEL_URL
+      process.env.NEXT_PUBLIC_SITE_URL
+        ? process.env.NEXT_PUBLIC_SITE_URL
+        : process.env.VERCEL_URL
         ? `https://${process.env.VERCEL_URL}`
         : `${req.headers["x-forwarded-proto"] || "https"}://${req.headers.host}`;
 
@@ -44,15 +45,16 @@ export default async function handler(req, res) {
       };
     }
 
-    // 1. catchup
+    // 1. catchup 改成可失敗但不中止整輪
+    let catchupInserted = 0;
+    let catchupWarning = null;
+
     const catchup = await safeJsonFetch("/api/catchup");
-    if (!catchup.ok) {
-      return res.status(500).json({
-        ok: false,
-        step: "catchup",
-        error: catchup.error || catchup.data?.error || "catchup failed",
-        rawPreview: catchup.rawPreview || null
-      });
+
+    if (catchup.ok) {
+      catchupInserted = Number(catchup.data?.inserted || 0);
+    } else {
+      catchupWarning = catchup.error || catchup.data?.error || "catchup failed";
     }
 
     // 2. sync
@@ -75,7 +77,7 @@ export default async function handler(req, res) {
       });
     }
 
-    // 3. save latest into db (ignore duplicates by save.js)
+    // 3. save latest
     const save = await safeJsonFetch("/api/save", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -91,7 +93,7 @@ export default async function handler(req, res) {
       });
     }
 
-    // 4. load strategy
+    // 4. generate strategy
     const strategy = await safeJsonFetch("/api/strategy-generate?n=80");
     if (!strategy.ok) {
       return res.status(500).json({
@@ -123,7 +125,7 @@ export default async function handler(req, res) {
       }
     }));
 
-    // 5. check if same auto-train prediction already exists for this source draw no
+    // 5. 檢查同一期是否已建立 auto training test
     const existingPredictionResp = await fetch(
       `${SUPABASE_URL}/rest/v1/predictions?select=id,source_draw_no,target_draw_no,status,mode&mode=eq.test&source_draw_no=eq.${latestDrawNo}&order=created_at.desc&limit=1`,
       {
@@ -193,7 +195,7 @@ export default async function handler(req, res) {
       };
     }
 
-    // 6. compare all pending/created test predictions already mature
+    // 6. 找出已到比對期的 test prediction
     const pendingResp = await fetch(
       `${SUPABASE_URL}/rest/v1/predictions?select=id,source_draw_no,target_draw_no,status,mode&mode=eq.test&or=(status.eq.pending,status.eq.created)&order=created_at.asc&limit=50`,
       {
@@ -264,10 +266,11 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       ok: true,
-      mode: "auto_train_v1",
+      mode: "auto_train_v1_stable",
       latestDrawNo,
       latestDrawTime: sync.data?.draw_time || null,
-      catchupInserted: Number(catchup.data?.inserted || 0),
+      catchupInserted,
+      catchupWarning,
       strategyMode: strategy.data?.mode || null,
       created: skippedCreate ? 0 : 1,
       skippedCreate,
