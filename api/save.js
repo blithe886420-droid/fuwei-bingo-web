@@ -105,7 +105,7 @@ export default async function handler(req, res) {
       return res.status(500).json({
         ok: false,
         error: `insert failed: ${insertResp.status}`,
-        rawPreview: insertText.slice(0, 300)
+        rawPreview: insertText.slice(0, 500)
       });
     }
 
@@ -116,7 +116,7 @@ export default async function handler(req, res) {
       return res.status(500).json({
         ok: false,
         error: "insert parse failed",
-        rawPreview: insertText.slice(0, 300)
+        rawPreview: insertText.slice(0, 500)
       });
     }
 
