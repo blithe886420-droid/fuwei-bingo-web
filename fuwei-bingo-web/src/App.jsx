@@ -1,68 +1,66 @@
-import React, { useEffect, useMemo, useState } from "react";
-
-const MIRROR_PAIRS = [
-  ["01", "10"],
-  ["12", "21"],
-  ["08", "80"],
-  ["27", "72"],
-  ["37", "73"],
-  ["17", "71"],
-];
+// v2.5 stable + readable auto train summary
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { buildBingoV1Strategies } from "../lib/buildBingoV1Strategies";
+import {
+  applyCompareLearningOnce,
+  createLearningStorageKeys,
+  getStrategyWeightMap,
+  readStrategyStats,
+  summarizeStrategyStats
+} from "../lib/strategySelfOptimizer";
 
 const STORAGE_KEYS = {
-  draws: "fuwei_bingo_draws_v01",
-  tickets: "fuwei_bingo_tickets_v01",
-  usageStart: "fuwei_bingo_usage_start_v01",
+  latest: "fuwei_bingo_latest_v25_hobby",
+  testPlan: "fuwei_bingo_test_plan_v25_hobby",
+  formalPlan: "fuwei_bingo_formal_plan_v25_hobby",
+  testResult: "fuwei_bingo_test_result_v25_hobby",
+  formalResult: "fuwei_bingo_formal_result_v25_hobby",
+  autoRunAt: "fuwei_bingo_auto_run_at_v25_hobby",
+  generatedPlan: "fuwei_bingo_generated_plan_v25_hobby",
+  autoTrainLast: "fuwei_bingo_auto_train_last_v25_hobby"
 };
 
-const SAMPLE_DRAWS = [
-  "01 08 10 12 17 21 27 37 41 45 52 57 61 66 68 71 73 76 79 80",
-  "03 07 12 17 21 22 27 31 37 44 46 53 58 63 67 71 72 73 75 78",
-  "05 08 10 14 17 19 21 27 28 33 37 42 47 57 60 64 71 73 77 80",
-  "02 08 09 12 16 17 21 24 27 37 43 49 54 57 61 68 71 72 73 80",
-  "01 06 08 10 17 18 21 27 30 37 40 44 52 56 62 66 71 73 74 80",
-];
+const LEARNING_KEYS = createLearningStorageKeys("fuwei_bingo_strategy_learning_v2");
 
-const IMPORT_STATUS = {
-  importedDraws: 1624,
-  minDraw: 115011572,
-  maxDraw: 115013195,
-  source: "TXT 歷史資料匯入",
+const TXT_LATEST = {
+  drawNo: 115013398,
+  drawTime: "TXT 匯入",
+  numbers: [
+    "01", "08", "11", "15", "18", "22", "25", "39", "41", "43",
+    "46", "51", "55", "60", "61", "65", "66", "69", "73", "76"
+  ],
+  source: "3/7 完整 TXT 匯入"
 };
 
-function normalizeNumber(value) {
-  const n = String(value).replace(/\D/g, "");
-  if (!n) return "";
-  const parsed = Number(n);
-  if (parsed < 1 || parsed > 80) return "";
-  return String(parsed).padStart(2, "0");
-}
-
-function parseDraw(text) {
-  const nums = text.split(/[^\d]+/).map(normalizeNumber).filter(Boolean);
-  const unique = [...new Set(nums)];
-  return unique.slice(0, 20);
-}
-
-function countMap(draws) {
-  const map = {};
-  draws.flat().forEach((n) => {
-    map[n] = (map[n] || 0) + 1;
-  });
-  return map;
-}
-
-function streakMap(draws) {
-  const map = {};
-  for (let n = 1; n <= 80; n += 1) {
-    const key = String(n).padStart(2, "0");
-    let streak = 0;
-    for (const draw of draws) {
-      if (draw.includes(key)) streak += 1;
-      else break;
-    }
-    map[key] = streak;
+function readLocal(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
   }
+}
+
+function writeLocal(key, value) {
+  localStorage.setItem(key, JSON.stringify(value));
+}
+
+function parseNumbers(str) {
+  return String(str || "")
+    .split(/[,\s]+/)
+    .map(x => x.trim())
+    .filter(Boolean)
+    .map(x => String(x).padStart(2, "0"))
+    .slice(0, 20);
+}
+
+function freqMap(recent20) {
+  const map = {};
+  recent20.forEach(row => {
+    parseNumbers(row.numbers).forEach(n => {
+      map[n] = (map[n] || 0) + 1;
+    });
+  });
   return map;
 }
 
@@ -70,321 +68,1041 @@ function tail(n) {
   return Number(n) % 10;
 }
 
-function buildTailStats(draws) {
-  const stats = Array.from({ length: 10 }, (_, i) => ({ tail: i, count: 0 }));
-  draws.flat().forEach((n) => {
-    stats[tail(n)].count += 1;
-  });
-  return stats.sort((a, b) => b.count - a.count);
+function buildCandidates(recent20) {
+  const freq = freqMap(recent20);
+  return Object.entries(freq)
+    .map(([num, count]) => ({ num, count, tail: tail(num) }))
+    .sort((a, b) => b.count - a.count || Number(a.num) - Number(b.num));
 }
 
-function mirrorActivity(draws) {
-  return MIRROR_PAIRS.map(([a, b]) => {
-    let sameDrawHits = 0;
-    let recentHits = 0;
-    draws.forEach((draw, idx) => {
-      const hasA = draw.includes(a);
-      const hasB = draw.includes(b);
-      if (hasA && hasB) sameDrawHits += 1;
-      if (hasA || hasB) recentHits += Math.max(0, 5 - idx);
-    });
-    return { a, b, score: sameDrawHits * 30 + recentHits * 5 };
-  }).sort((x, y) => y.score - x.score);
-}
-
-function getHotScore(freq) {
-  return Math.min(100, freq * 20);
-}
-
-function getStreakScore(streak) {
-  if (streak >= 4) return 100;
-  if (streak === 3) return 80;
-  if (streak === 2) return 60;
-  if (streak === 1) return 20;
-  return 0;
-}
-
-function buildNeighborTailMap(tailStats) {
-  const base = {};
-  tailStats.forEach(({ tail, count }) => {
-    const left = (tail + 9) % 10;
-    const right = (tail + 1) % 10;
-    const strength = count >= 8 ? 30 : count >= 6 ? 20 : count >= 4 ? 10 : 0;
-    base[left] = Math.max(base[left] || 0, strength);
-    base[right] = Math.max(base[right] || 0, strength);
-  });
-  return base;
-}
-
-function buildScores(draws) {
-  const freq = countMap(draws);
-  const streaks = streakMap(draws);
-  const tails = buildTailStats(draws);
-  const tailCountMap = Object.fromEntries(tails.map((t) => [t.tail, t.count]));
-  const neighborMap = buildNeighborTailMap(tails);
-  const mirrors = mirrorActivity(draws);
-  const mirrorWeight = {};
-  mirrors.forEach(({ a, b, score }) => {
-    mirrorWeight[a] = Math.max(mirrorWeight[a] || 0, score >= 40 ? 40 : score >= 20 ? 25 : 10);
-    mirrorWeight[b] = Math.max(mirrorWeight[b] || 0, score >= 40 ? 40 : score >= 20 ? 25 : 10);
-  });
-
-  const rows = [];
-  for (let n = 1; n <= 80; n += 1) {
-    const key = String(n).padStart(2, "0");
-    const hot = getHotScore(freq[key] || 0);
-    if ((freq[key] || 0) === 0) continue;
-    const streak = getStreakScore(streaks[key] || 0);
-    const t = tail(key);
-    const tailScore = Math.min(100, (tailCountMap[t] || 0) * 10);
-    const neighbor = neighborMap[t] || 0;
-    const mirror = mirrorWeight[key] || 0;
-    const total = hot * 0.4 + streak * 0.2 + tailScore * 0.15 + neighbor * 0.1 + mirror * 0.15;
-    rows.push({ key, total: Number(total.toFixed(2)) });
+function compareTone(verdict) {
+  switch (verdict) {
+    case "小贏以上":
+    case "小贏":
+    case "win":
+      return "#7ef0a5";
+    case "打平":
+    case "tie":
+      return "#ffd36b";
+    case "compare_failed":
+      return "#ff9f9f";
+    default:
+      return "#d9e6ff";
   }
-  return rows.sort((a, b) => b.total - a.total);
-}
-
-function chooseDistinct(sorted, count = 4, avoid = []) {
-  const out = [];
-  const used = new Set(avoid);
-  for (const item of sorted) {
-    if (used.has(item.key)) continue;
-    out.push(item.key);
-    used.add(item.key);
-    if (out.length === count) break;
-  }
-  return out;
-}
-
-function buildSuggestions(scores, tailStats, mirrors) {
-  const hotGroup = chooseDistinct(scores, 4);
-  const topTail = tailStats[0]?.tail;
-  const tailNums = scores.filter((s) => tail(s.key) === topTail || tail(s.key) === (topTail + 9) % 10 || tail(s.key) === (topTail + 1) % 10);
-  const tailGroup = chooseDistinct(tailNums.length >= 4 ? tailNums : scores, 4, []);
-
-  const topMirror = mirrors[0];
-  const mirrorCandidates = scores.filter((s) => [topMirror?.a, topMirror?.b].includes(s.key));
-  let mirrorGroup = chooseDistinct(mirrorCandidates, 2, []);
-  mirrorGroup = [...mirrorGroup, ...chooseDistinct(scores, 4 - mirrorGroup.length, mirrorGroup)].slice(0, 4);
-
-  const mixed = chooseDistinct(scores, 4, [...hotGroup.slice(0, 2)]);
-  const mixedGroup = [...hotGroup.slice(0, 2), ...mixed].slice(0, 4);
-
-  return [
-    { name: "熱門主攻組", nums: hotGroup, note: "近 5 期熱號 + 連莊加權" },
-    { name: "尾數延伸組", nums: tailGroup, note: `主尾 ${topTail ?? "-"} + 鄰尾擴散` },
-    { name: "鏡像主題組", nums: mirrorGroup, note: `鏡像核心 ${topMirror ? `${topMirror.a} ↔ ${topMirror.b}` : "尚無"}` },
-    { name: "平衡混合組", nums: mixedGroup, note: "熱門 + 尾數 + 鏡像綜合" },
-  ];
-}
-
-function evaluateTicket(ticket, draw) {
-  return ticket.filter((n) => draw.includes(n));
 }
 
 export default function App() {
-  const [drawInputs, setDrawInputs] = useState(SAMPLE_DRAWS);
-  const [tickets, setTickets] = useState([]);
-  const [currentDrawText, setCurrentDrawText] = useState("");
-  const [liveUrl, setLiveUrl] = useState("");
-  const [liveStatus, setLiveStatus] = useState("尚未連接外部網站");
-  const [usageMinutes, setUsageMinutes] = useState(0);
+  const [latest, setLatest] = useState(() =>
+    readLocal(STORAGE_KEYS.latest, TXT_LATEST)
+  );
 
-  useEffect(() => {
-    const savedDraws = localStorage.getItem(STORAGE_KEYS.draws);
-    const savedTickets = localStorage.getItem(STORAGE_KEYS.tickets);
-    const started = localStorage.getItem(STORAGE_KEYS.usageStart);
-    if (savedDraws) setDrawInputs(JSON.parse(savedDraws));
-    if (savedTickets) setTickets(JSON.parse(savedTickets));
-    if (!started) localStorage.setItem(STORAGE_KEYS.usageStart, String(Date.now()));
-  }, []);
+  const [recent20, setRecent20] = useState([]);
+  const [recent20Status, setRecent20Status] = useState("尚未載入 recent20");
 
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.draws, JSON.stringify(drawInputs));
-  }, [drawInputs]);
+  const [generatedPlan, setGeneratedPlan] = useState(() =>
+    readLocal(STORAGE_KEYS.generatedPlan, null)
+  );
 
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.tickets, JSON.stringify(tickets));
-  }, [tickets]);
+  const [autoTrainLast, setAutoTrainLast] = useState(() =>
+    readLocal(STORAGE_KEYS.autoTrainLast, null)
+  );
 
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const started = Number(localStorage.getItem(STORAGE_KEYS.usageStart) || Date.now());
-      setUsageMinutes(Math.floor((Date.now() - started) / 60000));
-    }, 1000);
-    return () => clearInterval(interval);
-  }, []);
+  const [syncStatus, setSyncStatus] = useState("尚未同步");
+  const [notice, setNotice] = useState("系統啟動中，準備接即時資料。");
+  const [autoStatus, setAutoStatus] = useState("尚未執行補抓補比對");
 
-  const parsedDraws = useMemo(() => drawInputs.map(parseDraw).filter((row) => row.length > 0), [drawInputs]);
-  const scores = useMemo(() => buildScores(parsedDraws), [parsedDraws]);
-  const tailStats = useMemo(() => buildTailStats(parsedDraws), [parsedDraws]);
-  const mirrors = useMemo(() => mirrorActivity(parsedDraws), [parsedDraws]);
-  const suggestions = useMemo(() => buildSuggestions(scores, tailStats, mirrors), [scores, tailStats, mirrors]);
+  const [testPlan, setTestPlan] = useState(() =>
+    readLocal(STORAGE_KEYS.testPlan, null)
+  );
+  const [formalPlan, setFormalPlan] = useState(() =>
+    readLocal(STORAGE_KEYS.formalPlan, null)
+  );
+  const [testResult, setTestResult] = useState(() =>
+    readLocal(STORAGE_KEYS.testResult, null)
+  );
+  const [formalResult, setFormalResult] = useState(() =>
+    readLocal(STORAGE_KEYS.formalResult, null)
+  );
+  const [strategyStats, setStrategyStats] = useState(() =>
+    readStrategyStats(LEARNING_KEYS.stats)
+  );
 
-  const handleChangeRow = (idx, value) => setDrawInputs((prev) => prev.map((row, i) => (i === idx ? value : row)));
-  const loadSample = () => setDrawInputs(SAMPLE_DRAWS);
-  const clearAll = () => setDrawInputs(["", "", "", "", ""]);
+  const autoRanRef = useRef(false);
 
-  const createTickets = () => {
-    const stamp = new Date().toLocaleString("zh-TW");
-    const newTickets = suggestions.map((s, idx) => ({
-      id: `${Date.now()}-${idx}`,
-      name: s.name,
-      nums: s.nums,
-      note: s.note,
-      stage: 1,
-      createdAt: stamp,
-      status: "追號中",
-      hits: [],
-    }));
-    setTickets(newTickets);
-  };
+  useEffect(() => writeLocal(STORAGE_KEYS.latest, latest), [latest]);
+  useEffect(() => writeLocal(STORAGE_KEYS.testPlan, testPlan), [testPlan]);
+  useEffect(() => writeLocal(STORAGE_KEYS.formalPlan, formalPlan), [formalPlan]);
+  useEffect(() => writeLocal(STORAGE_KEYS.testResult, testResult), [testResult]);
+  useEffect(() => writeLocal(STORAGE_KEYS.formalResult, formalResult), [formalResult]);
+  useEffect(() => writeLocal(STORAGE_KEYS.generatedPlan, generatedPlan), [generatedPlan]);
+  useEffect(() => writeLocal(STORAGE_KEYS.autoTrainLast, autoTrainLast), [autoTrainLast]);
 
-  const runAutoCheck = () => {
-    const draw = parseDraw(currentDrawText);
-    if (draw.length === 0) return;
-    setTickets((prev) =>
-      prev.map((ticket) => {
-        const matched = evaluateTicket(ticket.nums, draw);
-        const nextStage = Math.min(ticket.stage + 1, 4);
-        const newHits = [...ticket.hits, { stage: ticket.stage, matched, draw }];
-        let status = nextStage >= 4 ? "最後一期 / 完成" : "追號中";
-        if (ticket.stage === 3) status = "第 3 期請評估是否換號";
-        return { ...ticket, stage: nextStage, status, hits: newHits };
+  async function loadRecent20(silent = false) {
+    try {
+      const res = await fetch("/api/recent20");
+      const data = await res.json();
+
+      if (!data.ok) {
+        throw new Error(data.error || "recent20 載入失敗");
+      }
+
+      const rows = Array.isArray(data.recent20) ? data.recent20 : [];
+      setRecent20(rows);
+
+      if (!silent) {
+        setRecent20Status(`recent20 已更新，共 ${rows.length} 期。`);
+      }
+
+      return rows;
+    } catch (err) {
+      if (!silent) {
+        setRecent20Status(`recent20 載入失敗：${err.message}`);
+      }
+      return [];
+    }
+  }
+
+  async function syncLatestCore(silent = false) {
+    const res = await fetch("/api/sync");
+    const data = await res.json();
+
+    if (!data.ok) {
+      throw new Error(data.error || "同步失敗");
+    }
+
+    const numbers = Array.isArray(data.numbers)
+      ? data.numbers
+      : Array.isArray(data.latest?.numbers)
+      ? data.latest.numbers
+      : [];
+
+    if (numbers.length !== 20) {
+      throw new Error("未取得完整 20 顆號碼");
+    }
+
+    const newLatest = {
+      drawNo: Number(data.draw_no || data.latest?.drawNo || 0) || null,
+      drawTime: data.draw_time || data.capturedAt || data.latest?.drawTime || "即時更新",
+      numbers,
+      source: "澳所即時同步"
+    };
+
+    setLatest(newLatest);
+
+    let saveNotice = "";
+    try {
+      const saveRes = await fetch("/api/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({})
+      });
+
+      const saveData = await saveRes.json();
+
+      if (!saveData.ok) {
+        throw new Error(saveData.error || "save failed");
+      }
+
+      if (saveData.saved) {
+        saveNotice = "，並已自動建檔";
+      } else if (saveData.skipped) {
+        saveNotice = "，此組號碼已存在資料庫";
+      } else {
+        saveNotice = "，建檔狀態未知";
+      }
+
+      if (Array.isArray(saveData.recent20) && saveData.recent20.length > 0) {
+        setRecent20(saveData.recent20);
+        setRecent20Status(`recent20 已更新，共 ${saveData.recent20.length} 期。`);
+      } else {
+        await loadRecent20(true);
+      }
+    } catch (err) {
+      saveNotice = `，但建檔失敗：${err.message}`;
+      await loadRecent20(true);
+    }
+
+    if (!silent) {
+      setSyncStatus("已同步最新資料");
+      setNotice(`已抓到最新 20 顆號碼${saveNotice}`);
+    }
+
+    return newLatest;
+  }
+
+  async function syncLatest() {
+    try {
+      setSyncStatus("同步中...");
+      await syncLatestCore(false);
+    } catch (err) {
+      setSyncStatus(`同步失敗：${err.message}`);
+    }
+  }
+
+  async function generateStrategyPlan() {
+    try {
+      const res = await fetch("/api/strategy-generate?n=80");
+      const data = await res.json();
+
+      if (!data.ok) {
+        throw new Error(data.error || "策略生成失敗");
+      }
+
+      setGeneratedPlan(data);
+      setNotice(`已生成四星賓果四組四期方案，資料期數到第 ${data.latestDrawNo} 期。`);
+    } catch (err) {
+      setNotice(`策略生成失敗：${err.message}`);
+    }
+  }
+
+  async function runAutoTrain() {
+    try {
+      setAutoStatus("自動訓練執行中...");
+
+      const res = await fetch("/api/auto-train");
+      const raw = await res.text();
+
+      let data = null;
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        throw new Error(`auto-train 回傳非 JSON：${raw.slice(0, 80)}`);
+      }
+
+      if (!data.ok) {
+        throw new Error(data.error || data.step || "auto-train failed");
+      }
+
+      await syncLatestCore(true);
+      await loadRecent20(true);
+
+      const generated = {
+        ok: true,
+        mode: data.strategyMode || "auto_train_v1",
+        target: {
+          stars: 4,
+          groups: 4,
+          periods: 4
+        },
+        latestDrawNo: data.latestDrawNo,
+        latestDrawTime: data.latestDrawTime,
+        usedRows: 80,
+        groups: Array.isArray(data.groups)
+          ? data.groups.map((g, idx) => ({
+              groupNo: idx + 1,
+              key: g.key,
+              label: g.label,
+              nums: g.nums,
+              reason: g.reason
+            }))
+          : []
+      };
+
+      setGeneratedPlan(generated);
+      setAutoTrainLast(data);
+
+      const matured = Number(data.maturedCompared || 0);
+      const created = Number(data.created || 0);
+      const catchupInserted = Number(data.catchupInserted || 0);
+
+      setAutoStatus(
+        `自動訓練完成：補抓 ${catchupInserted} 期；新建訓練 ${created} 筆；到期比對 ${matured} 筆。`
+      );
+      setNotice(`自動訓練已完成，目前最新期數第 ${data.latestDrawNo} 期。`);
+    } catch (err) {
+      setAutoStatus(`自動訓練失敗：${err.message}`);
+    }
+  }
+
+  async function savePrediction(mode, targetPeriods, groups) {
+    const res = await fetch("/api/prediction-save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mode,
+        sourceDrawNo: latest.drawNo,
+        targetPeriods,
+        groups
       })
-    );
-  };
+    });
 
-  const simulateConnectLive = () => {
-    if (!liveUrl.trim()) {
-      setLiveStatus("請先填入外部網站或資料 API 位址");
+    return await res.json();
+  }
+
+  async function comparePrediction(predictionId) {
+    const res = await fetch("/api/prediction-compare", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        predictionId
+      })
+    });
+
+    return await res.json();
+  }
+
+  function buildStrategyGroups() {
+    const weightMap = getStrategyWeightMap(strategyStats);
+    const built = buildBingoV1Strategies(recent20, weightMap);
+
+    return {
+      built,
+      groups: built.strategies.map(s => ({
+        label: `第${s.groupNo}組｜${s.label}`,
+        nums: s.nums,
+        reason: `${s.reason}（權重 ${Number(s.meta?.optimizerWeight || 1).toFixed(2)}）`,
+        key: s.key,
+        meta: s.meta
+      }))
+    };
+  }
+
+  async function startTestMode() {
+    const sourceGroups = generatedPlan?.groups?.length
+      ? generatedPlan.groups.map(g => ({
+          label: g.label,
+          nums: g.nums,
+          reason: g.reason,
+          key: g.key,
+          meta: {}
+        }))
+      : buildStrategyGroups().groups;
+
+    const plan = {
+      mode: "test",
+      createdAt: new Date().toISOString(),
+      sourceDrawNo: latest.drawNo,
+      targetPeriods: 4,
+      targetDrawNo: Number(latest.drawNo || 0) + 4,
+      strategyMode: generatedPlan?.mode || "bingo_v2_4star_4group_4period_self_optimized",
+      groups: sourceGroups,
+      predictionId: null
+    };
+
+    try {
+      const saved = await savePrediction("test", 4, sourceGroups);
+      if (saved.ok) {
+        plan.predictionId = saved.id;
+        plan.targetDrawNo = Number(saved.targetDrawNo || plan.targetDrawNo);
+        setNotice(`已建立四星賓果四組四期測試模式，需等到第 ${plan.targetDrawNo} 期才可比對。`);
+      } else {
+        setNotice("已建立測試模式，但預測資料庫寫入失敗。");
+      }
+    } catch {
+      setNotice("已建立測試模式，但預測資料庫寫入失敗。");
+    }
+
+    setTestPlan(plan);
+    setTestResult(null);
+  }
+
+  async function startFormalMode() {
+    const sourceGroups = generatedPlan?.groups?.length
+      ? generatedPlan.groups.map(g => ({
+          label: g.label,
+          nums: g.nums,
+          reason: g.reason,
+          key: g.key,
+          meta: {}
+        }))
+      : buildStrategyGroups().groups;
+
+    const plan = {
+      mode: "formal",
+      createdAt: new Date().toISOString(),
+      sourceDrawNo: latest.drawNo,
+      targetPeriods: 4,
+      targetDrawNo: Number(latest.drawNo || 0) + 4,
+      strategyMode: generatedPlan?.mode || "bingo_v2_4star_4group_4period_self_optimized",
+      groups: sourceGroups,
+      predictionId: null
+    };
+
+    try {
+      const saved = await savePrediction("formal", 4, sourceGroups);
+      if (saved.ok) {
+        plan.predictionId = saved.id;
+        plan.targetDrawNo = Number(saved.targetDrawNo || plan.targetDrawNo);
+        setNotice(`已建立四星賓果四組四期正式方案，需等到第 ${plan.targetDrawNo} 期才可比對。`);
+      } else {
+        setNotice("已建立正式方案，但預測資料庫寫入失敗。");
+      }
+    } catch {
+      setNotice("已建立正式方案，但預測資料庫寫入失敗。");
+    }
+
+    setFormalPlan(plan);
+    setFormalResult(null);
+  }
+
+  function learnFromCompare({ mode, predictionId, compareResult }) {
+    const learned = applyCompareLearningOnce({
+      statsKey: LEARNING_KEYS.stats,
+      seenKey: LEARNING_KEYS.seen,
+      mode,
+      predictionId,
+      drawNo: compareResult?.compareDrawNo,
+      compareResult
+    });
+
+    setStrategyStats(learned.stats);
+
+    return learned;
+  }
+
+  async function compareTestMode() {
+    if (!testPlan?.predictionId) {
+      setNotice("測試模式尚未建立完成，無法比對。");
       return;
     }
-    setLiveStatus("已預留連接邏輯。正式版可從外部網站 / API 即時抓號並自動存檔。");
-  };
 
-  const topHot = scores.slice(0, 10);
-  const usageAlert = usageMinutes >= 50;
+    if (!latest.drawNo || Number(latest.drawNo) < Number(testPlan.targetDrawNo || 0)) {
+      setNotice(`測試模式尚未到比對期數，目前第 ${latest.drawNo || "?"} 期，需等到第 ${testPlan.targetDrawNo} 期。`);
+      return;
+    }
+
+    const data = await comparePrediction(testPlan.predictionId);
+
+    if (!data.ok) {
+      if (data.waiting) {
+        setNotice(data.error || "尚未到比對期數");
+        return;
+      }
+      setNotice(`測試模式比對失敗：${data.error || "未知錯誤"}`);
+      return;
+    }
+
+    setTestResult(data.result);
+
+    const learned = learnFromCompare({
+      mode: "test",
+      predictionId: testPlan.predictionId,
+      compareResult: data.result
+    });
+
+    if (learned.applied) {
+      setNotice(`測試模式比對完成：${data.result.verdict}，系統已更新策略權重。`);
+    } else {
+      setNotice(`測試模式比對完成：${data.result.verdict}，此期已學習過。`);
+    }
+  }
+
+  async function compareFormalMode() {
+    if (!formalPlan?.predictionId) {
+      setNotice("正式投注尚未建立完成，無法比對。");
+      return;
+    }
+
+    if (!latest.drawNo || Number(latest.drawNo) < Number(formalPlan.targetDrawNo || 0)) {
+      setNotice(`正式投注尚未到比對期數，目前第 ${latest.drawNo || "?"} 期，需等到第 ${formalPlan.targetDrawNo} 期。`);
+      return;
+    }
+
+    const data = await comparePrediction(formalPlan.predictionId);
+
+    if (!data.ok) {
+      if (data.waiting) {
+        setNotice(data.error || "尚未到比對期數");
+        return;
+      }
+      setNotice(`正式投注比對失敗：${data.error || "未知錯誤"}`);
+      return;
+    }
+
+    setFormalResult(data.result);
+
+    const learned = learnFromCompare({
+      mode: "formal",
+      predictionId: formalPlan.predictionId,
+      compareResult: data.result
+    });
+
+    if (learned.applied) {
+      setNotice(`正式投注比對完成：${data.result.verdict}，系統已更新策略權重。`);
+    } else {
+      setNotice(`正式投注比對完成：${data.result.verdict}，此期已學習過。`);
+    }
+  }
+
+  async function autoCatchupAndCompare() {
+    try {
+      setAutoStatus("自動補抓補比對執行中...");
+
+      const lastRun = readLocal(STORAGE_KEYS.autoRunAt, null);
+      const now = Date.now();
+
+      if (lastRun && now - Number(lastRun) < 60 * 1000) {
+        setAutoStatus("1 分鐘內已執行過補抓補比對，略過。");
+        return;
+      }
+
+      const catchupRes = await fetch("/api/catchup");
+      const catchupRaw = await catchupRes.text();
+
+      let catchupData = null;
+      try {
+        catchupData = JSON.parse(catchupRaw);
+      } catch {
+        throw new Error(`catchup 回傳非 JSON：${catchupRaw.slice(0, 80)}`);
+      }
+
+      if (!catchupData.ok) {
+        throw new Error(catchupData.error || catchupData.message || "補抓失敗");
+      }
+
+      const latestData = await syncLatestCore(true);
+      await loadRecent20(true);
+
+      let done = 0;
+      let learnedCount = 0;
+
+      if (testPlan?.predictionId && Number(latestData.drawNo || 0) >= Number(testPlan.targetDrawNo || 0)) {
+        const result = await comparePrediction(testPlan.predictionId);
+        if (result.ok) {
+          setTestResult(result.result);
+          done += 1;
+
+          const learned = learnFromCompare({
+            mode: "test",
+            predictionId: testPlan.predictionId,
+            compareResult: result.result
+          });
+
+          if (learned.applied) learnedCount += 1;
+        }
+      }
+
+      if (formalPlan?.predictionId && Number(latestData.drawNo || 0) >= Number(formalPlan.targetDrawNo || 0)) {
+        const result = await comparePrediction(formalPlan.predictionId);
+        if (result.ok) {
+          setFormalResult(result.result);
+          done += 1;
+
+          const learned = learnFromCompare({
+            mode: "formal",
+            predictionId: formalPlan.predictionId,
+            compareResult: result.result
+          });
+
+          if (learned.applied) learnedCount += 1;
+        }
+      }
+
+      writeLocal(STORAGE_KEYS.autoRunAt, now);
+
+      const inserted = Number(catchupData.inserted || 0);
+
+      if (inserted > 0) {
+        setAutoStatus(`補抓成功，新增 ${inserted} 期；已處理 ${done} 筆預測；學習 ${learnedCount} 次。`);
+      } else {
+        setAutoStatus(`補抓完成，沒有缺期；已處理 ${done} 筆預測；學習 ${learnedCount} 次。`);
+      }
+    } catch (err) {
+      setAutoStatus(`補抓補比對失敗：${err.message}`);
+    }
+  }
+
+  useEffect(() => {
+    loadRecent20(false);
+  }, []);
+
+  useEffect(() => {
+    if (autoRanRef.current) return;
+    autoRanRef.current = true;
+    autoCatchupAndCompare();
+  }, []);
+
+  const core8 = useMemo(() => {
+    const candidates = buildCandidates(recent20).slice(0, 8);
+    return candidates.map(x => x.num);
+  }, [recent20]);
+
+  const sectionStats = useMemo(() => {
+    const counts = { "01-20": 0, "21-40": 0, "41-60": 0, "61-80": 0 };
+    recent20.forEach(row => {
+      parseNumbers(row.numbers).forEach(n => {
+        const x = Number(n);
+        if (x <= 20) counts["01-20"] += 1;
+        else if (x <= 40) counts["21-40"] += 1;
+        else if (x <= 60) counts["41-60"] += 1;
+        else counts["61-80"] += 1;
+      });
+    });
+    return Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  }, [recent20]);
+
+  const strategySummary = useMemo(() => {
+    return summarizeStrategyStats(strategyStats);
+  }, [strategyStats]);
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 p-4 md:p-8">
-      <div className="max-w-7xl mx-auto space-y-6">
-        <header className="rounded-3xl border border-slate-800 bg-slate-900/80 shadow-2xl p-6 md:p-8">
-          <div className="mb-6 rounded-3xl bg-cyan-500/10 border border-cyan-500/20 p-5">
-            <div className="mb-4 grid md:grid-cols-4 gap-3 text-sm">
-              <div className="rounded-2xl bg-slate-950/60 p-3"><div className="text-slate-400">已匯入期數</div><div className="text-xl font-semibold mt-1">{IMPORT_STATUS.importedDraws}</div></div>
-              <div className="rounded-2xl bg-slate-950/60 p-3"><div className="text-slate-400">最早期數</div><div className="text-xl font-semibold mt-1">{IMPORT_STATUS.minDraw}</div></div>
-              <div className="rounded-2xl bg-slate-950/60 p-3"><div className="text-slate-400">最新期數</div><div className="text-xl font-semibold mt-1">{IMPORT_STATUS.maxDraw}</div></div>
-              <div className="rounded-2xl bg-slate-950/60 p-3"><div className="text-slate-400">來源</div><div className="text-xl font-semibold mt-1">TXT</div></div>
+    <div style={styles.page}>
+      <div style={styles.wrap}>
+        <section style={styles.hero}>
+          <div style={styles.kicker}>FUWEI BINGO SYSTEM</div>
+          <h1 style={styles.h1}>富緯賓果系統 v2.5 可讀摘要版</h1>
+          <p style={styles.p}>
+            固定採用四星賓果、四組、四期。自動訓練摘要改為顯示來源期數、目標期數、實際比對期數與錯誤資訊。
+          </p>
+
+          <div style={styles.notice}>{notice}</div>
+          <div style={{ ...styles.notice, marginTop: 12, background: "#0a2440" }}>{autoStatus}</div>
+          <div style={{ ...styles.notice, marginTop: 12, background: "#0d2744" }}>{recent20Status}</div>
+
+          <div style={styles.statsGrid}>
+            <div style={styles.statCard}>
+              <div style={styles.statLabel}>最新期數</div>
+              <div style={styles.statValue}>
+                {latest.drawNo ? `第 ${latest.drawNo} 期` : "即時同步"}
+              </div>
             </div>
-            <div className="text-cyan-300 font-semibold">正式版開發四步架構</div>
-            <div className="mt-2 grid md:grid-cols-2 xl:grid-cols-4 gap-3 text-sm text-slate-200">
-              <div className="rounded-2xl bg-slate-950/60 p-3">1. 匯入 TXT 歷史資料到正式資料結構</div>
-              <div className="rounded-2xl bg-slate-950/60 p-3">2. 接上澳所同步抓號模組</div>
-              <div className="rounded-2xl bg-slate-950/60 p-3">3. 從 localStorage 升級到正式資料庫</div>
-              <div className="rounded-2xl bg-slate-950/60 p-3">4. 前端改讀正式資料來源</div>
+
+            <div style={styles.statCard}>
+              <div style={styles.statLabel}>最新時間</div>
+              <div style={styles.statValue}>{latest.drawTime || "即時更新"}</div>
+            </div>
+
+            <div style={styles.statCard}>
+              <div style={styles.statLabel}>資料來源</div>
+              <div style={styles.statValue}>{latest.source || "澳所即時同步"}</div>
+            </div>
+
+            <div style={styles.statCard}>
+              <div style={styles.statLabel}>同步狀態</div>
+              <div style={styles.statValue}>{syncStatus}</div>
             </div>
           </div>
-          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-            <div>
-              <p className="text-sm tracking-[0.25em] uppercase text-amber-400">Fuwei Bingo System</p>
-              <h1 className="text-3xl md:text-4xl font-bold mt-2">富緯賓果系統 v0.2 正式版開發原型</h1>
-              <p className="text-slate-300 mt-3 max-w-3xl leading-7">已把核心功能做進原型。這一版可以先部署成前端展示網站，之後再接正式後端與資料庫。</p>
-            </div>
-            <div className="grid grid-cols-2 gap-3 text-sm min-w-[280px]">
-              <div className="rounded-2xl bg-slate-800 p-4"><div className="text-slate-400">主力玩法</div><div className="text-xl font-semibold mt-1">四星</div></div>
-              <div className="rounded-2xl bg-slate-800 p-4"><div className="text-slate-400">輸出組數</div><div className="text-xl font-semibold mt-1">4 組</div></div>
-              <div className="rounded-2xl bg-slate-800 p-4"><div className="text-slate-400">追號週期</div><div className="text-xl font-semibold mt-1">4 期</div></div>
-              <div className={`rounded-2xl p-4 ${usageAlert ? "bg-rose-500/20 border border-rose-500/30" : "bg-slate-800"}`}><div className="text-slate-400">使用時間</div><div className="text-xl font-semibold mt-1">{usageMinutes} 分鐘</div></div>
-            </div>
+
+          <div style={styles.btnRow}>
+            <button style={styles.primaryBtn} onClick={syncLatest}>同步最新一期</button>
+            <button style={styles.secondaryBtn} onClick={autoCatchupAndCompare}>立即補抓補比對</button>
+            <button style={styles.secondaryBtn} onClick={generateStrategyPlan}>自動產生四組四期</button>
+            <button style={styles.secondaryBtn} onClick={runAutoTrain}>啟動自動訓練</button>
+            <button style={styles.secondaryBtn} onClick={startTestMode}>建立測試模式</button>
+            <button style={styles.secondaryBtn} onClick={startFormalMode}>建立正式投注</button>
           </div>
-        </header>
+        </section>
 
-        {usageAlert && <div className="rounded-3xl bg-rose-500/10 border border-rose-500/20 p-5 text-rose-200">已連續使用系統超過 50 分鐘，建議先休息一下。</div>}
-
-        <section className="grid lg:grid-cols-3 gap-6">
-          <div className="lg:col-span-2 rounded-3xl border border-slate-800 bg-slate-900 p-6">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-2xl font-semibold">最近 5 期輸入區</h2>
-              <span className="text-xs rounded-full bg-amber-500/10 text-amber-300 px-3 py-1 border border-amber-500/20">已接上分析邏輯</span>
+        <div style={styles.grid2}>
+          <section style={styles.panel}>
+            <h2 style={styles.h2}>最新一期資訊</h2>
+            <div style={styles.subtle}>
+              {latest.drawNo ? `第 ${latest.drawNo} 期` : "即時同步"} / {latest.source || "澳所即時同步"}
             </div>
-            <div className="space-y-4">
-              {drawInputs.map((row, idx) => (
-                <div key={idx} className="rounded-2xl bg-slate-800/80 p-4">
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="font-medium">第 {idx + 1} 期資料</div>
-                    <div className="text-xs text-slate-400">輸入 20 顆號碼，系統自動去重與格式化</div>
-                  </div>
-                  <textarea className="w-full min-h-20 rounded-2xl bg-slate-950 border border-slate-700 px-4 py-3 text-sm outline-none focus:border-amber-400" value={row} onChange={(e) => handleChangeRow(idx, e.target.value)} />
+
+            <div style={styles.numbersWrap}>
+              {(latest.numbers || []).map((n, i) => (
+                <span key={i} style={styles.numBall}>{n}</span>
+              ))}
+            </div>
+
+            <div style={styles.subtle}>來源：{latest.source || "澳所即時同步"}</div>
+          </section>
+
+          <section style={styles.panel}>
+            <h2 style={styles.h2}>核心 8 號</h2>
+            <div style={styles.coreGrid}>
+              {core8.map((n, i) => (
+                <div key={i} style={styles.coreCard}>
+                  <div style={styles.coreLabel}>核心 {i + 1}</div>
+                  <div style={styles.coreValue}>{n}</div>
                 </div>
               ))}
             </div>
-            <div className="flex flex-wrap gap-3 mt-5">
-              <button className="rounded-2xl bg-amber-400 text-slate-950 font-semibold px-5 py-3 shadow-lg" onClick={createTickets}>分析並建立 4 組四星</button>
-              <button className="rounded-2xl bg-slate-800 border border-slate-700 px-5 py-3" onClick={clearAll}>清空資料</button>
-              <button className="rounded-2xl bg-slate-800 border border-slate-700 px-5 py-3" onClick={loadSample}>載入範例</button>
-            </div>
-          </div>
+          </section>
+        </div>
 
-          <div className="rounded-3xl border border-slate-800 bg-slate-900 p-6">
-            <h2 className="text-2xl font-semibold mb-4">即時更新 / 儲存設定</h2>
-            <div className="space-y-4 text-sm text-slate-300">
-              <div className="rounded-2xl bg-slate-800 p-4">
-                <div className="font-semibold text-slate-100 mb-2">本機儲存</div>
-                <div>目前已經支援本機 localStorage 儲存：</div>
-                <div className="mt-2 text-slate-400">- 最近 5 期資料</div>
-                <div className="text-slate-400">- 已建立的四組追號紀錄</div>
-                <div className="text-slate-400">- 目前是前端暫存，不是正式資料庫</div>
+        {generatedPlan?.groups?.length ? (
+          <section style={styles.panel}>
+            <h2 style={styles.h2}>自動產生四組四期方案</h2>
+            <div style={styles.subtle}>策略模式：{generatedPlan.mode}</div>
+            <div style={styles.subtle}>資料期數：第 {generatedPlan.latestDrawNo} 期 / 使用 {generatedPlan.usedRows || 80} 筆資料</div>
+            <div style={{ marginTop: 12 }}>
+              {generatedPlan.groups.map((g, idx) => (
+                <div key={idx} style={styles.groupCard}>
+                  <div style={styles.groupTitle}>{g.label}</div>
+                  <div style={styles.groupNums}>{g.nums.join(" ")}</div>
+                  <div style={styles.subtle}>{g.reason}</div>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
+
+        {autoTrainLast ? (
+          <section style={styles.panel}>
+            <h2 style={styles.h2}>自動訓練摘要</h2>
+            <div style={styles.subtle}>模式：{autoTrainLast.mode}</div>
+            <div style={styles.subtle}>最新期數：第 {autoTrainLast.latestDrawNo} 期</div>
+            <div style={styles.subtle}>補抓新增：{autoTrainLast.catchupInserted || 0} 期</div>
+            <div style={styles.subtle}>新建訓練：{autoTrainLast.created || 0} 筆</div>
+            <div style={styles.subtle}>到期比對：{autoTrainLast.maturedCompared || 0} 筆</div>
+            {autoTrainLast.catchupWarning ? (
+              <div style={{ ...styles.subtle, color: "#ffd36b", marginTop: 8 }}>
+                補抓警告：{autoTrainLast.catchupWarning}
               </div>
-              <div className="rounded-2xl bg-slate-800 p-4">
-                <div className="font-semibold text-slate-100 mb-2">外部網站 / API 連接預留</div>
-                <div className="text-slate-400 leading-6 mb-3">正式版會以澳所樂透網作為同步來源，並加入 TXT 匯入、缺期補抓與正式資料庫流程。目前已完成 1624 期歷史資料匯入。</div>
-                <input className="w-full rounded-2xl bg-slate-950 border border-slate-700 px-4 py-3 outline-none focus:border-amber-400" placeholder="填入外部網站或 API 位址，例如你的資料來源" value={liveUrl} onChange={(e) => setLiveUrl(e.target.value)} />
-                <button className="mt-3 w-full rounded-2xl bg-slate-950 border border-slate-700 px-4 py-3 font-medium" onClick={simulateConnectLive}>模擬連接即時更新</button>
-                <div className="mt-3 text-slate-400 leading-6">{liveStatus}</div>
+            ) : null}
+
+            <div style={{ marginTop: 14 }}>
+              {(autoTrainLast.compareResults || []).map((r, idx) => (
+                <div key={idx} style={styles.autoTrainCard}>
+                  <div style={styles.autoTrainTop}>
+                    <strong>來源期數：{r.sourceDrawNo || "-"}</strong>
+                    <span style={{ color: compareTone(r.verdict), fontWeight: 700 }}>
+                      {r.verdict || "unknown"}
+                    </span>
+                  </div>
+                  <div style={styles.subtle}>目標期數：{r.targetDrawNo || "-"}</div>
+                  <div style={styles.subtle}>實際比對期數：{r.compareDrawNo || "-"}</div>
+                  {r.error ? (
+                    <div style={{ ...styles.subtle, color: "#ff9f9f" }}>
+                      錯誤：{r.error}
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
+
+        <div style={styles.grid2}>
+          <section style={styles.panel}>
+            <h2 style={styles.h2}>最近 20 期底稿</h2>
+            <div style={styles.subtle}>固定優先讀取 /api/recent20，供四星賓果四組四期策略生成與補比對使用</div>
+            <div style={{ maxHeight: 260, overflow: "auto", marginTop: 12 }}>
+              {recent20.map((row, idx) => (
+                <div key={`${row.draw_no}-${idx}`} style={{ ...styles.row, borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+                  <span>{row.draw_no || "-"}</span>
+                  <span style={{ fontSize: 12, opacity: 0.8 }}>{row.draw_time || ""}</span>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section style={styles.panel}>
+            <h2 style={styles.h2}>區段統計</h2>
+            {sectionStats.map(([label, count]) => (
+              <div key={label} style={styles.row}>
+                <span>{label}</span>
+                <strong>{count}</strong>
               </div>
-            </div>
+            ))}
+          </section>
+        </div>
+
+        <section style={styles.panel}>
+          <h2 style={styles.h2}>自我優化權重面板</h2>
+          <div style={styles.subtle}>每次比對後，系統會更新各策略平均命中與權重。權重越高，下一輪生成時該策略內部權重越強。</div>
+          <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))", gap: 14 }}>
+            {strategySummary.map(item => (
+              <div key={item.key} style={styles.groupCard}>
+                <div style={styles.groupTitle}>{item.label}</div>
+                <div style={{ ...styles.subtle, marginTop: 8 }}>累計回合：{item.rounds}</div>
+                <div style={styles.subtle}>平均命中：{item.avgHit}</div>
+                <div style={styles.subtle}>目前權重：{item.weight}</div>
+                <div style={styles.subtle}>0碼：{item.hit0} / 1碼：{item.hit1} / 2碼：{item.hit2} / 3碼：{item.hit3} / 4碼：{item.hit4}</div>
+                <div style={styles.subtle}>近12次：{item.recentHits.length ? item.recentHits.join("、") : "尚無資料"}</div>
+              </div>
+            ))}
           </div>
         </section>
 
-        <section className="grid xl:grid-cols-3 gap-6">
-          <div className="rounded-3xl border border-slate-800 bg-slate-900 p-6">
-            <h3 className="text-xl font-semibold mb-4">熱門號排行</h3>
-            <div className="space-y-3">{topHot.map((n, i) => <div key={n.key} className="flex items-center justify-between rounded-2xl bg-slate-800 px-4 py-3"><div className="flex items-center gap-3"><div className="w-8 h-8 rounded-full bg-amber-400 text-slate-950 font-bold flex items-center justify-center text-sm">{i + 1}</div><div className="text-lg font-semibold">{n.key}</div></div><div className="text-sm text-slate-400">總分 {n.total}</div></div>)}</div>
-          </div>
-          <div className="rounded-3xl border border-slate-800 bg-slate-900 p-6">
-            <h3 className="text-xl font-semibold mb-4">尾數 / 鄰尾分析</h3>
-            <div className="space-y-4">{tailStats.slice(0,4).map((item) => <div key={item.tail} className="rounded-2xl bg-slate-800 p-4"><div className="flex items-center justify-between"><div><div className="text-slate-400 text-sm">活躍尾數</div><div className="text-2xl font-bold mt-1">尾 {item.tail}</div></div><div className="text-right"><div className="text-slate-400 text-sm">近 5 期次數</div><div className="text-xl font-semibold">{item.count}</div></div></div><div className="mt-3 text-sm text-slate-300">鄰尾觀察：{(item.tail + 9) % 10} / {(item.tail + 1) % 10}</div></div>)}</div>
-          </div>
-          <div className="rounded-3xl border border-slate-800 bg-slate-900 p-6">
-            <h3 className="text-xl font-semibold mb-4">鏡像規則活躍度</h3>
-            <div className="space-y-3">{mirrors.map((m)=><div key={`${m.a}-${m.b}`} className="rounded-2xl bg-slate-800 p-4 flex items-center justify-between"><div className="text-lg font-semibold">{m.a} ↔ {m.b}</div><div className="text-sm text-slate-400">分數 {m.score}</div></div>)}</div>
-          </div>
-        </section>
+        <div style={styles.grid2}>
+          <section style={styles.panel}>
+            <h2 style={styles.h2}>測試模式（四星賓果 / 四組 / 四期）</h2>
+            {testPlan ? (
+              <>
+                <div style={styles.subtle}>Prediction ID：{testPlan.predictionId || "尚未寫入"}</div>
+                <div style={styles.subtle}>策略模式：{testPlan.strategyMode || "bingo_v2_4star_4group_4period_self_optimized"}</div>
+                <div style={styles.subtle}>來源期數：第 {testPlan.sourceDrawNo} 期</div>
+                <div style={styles.subtle}>目標期數：第 {testPlan.targetDrawNo} 期</div>
+                {testPlan.groups.map((g, idx) => (
+                  <div key={idx} style={styles.groupCard}>
+                    <div style={styles.groupTitle}>{g.label}</div>
+                    <div style={styles.groupNums}>{g.nums.join(" ")}</div>
+                    <div style={styles.subtle}>{g.reason}</div>
+                  </div>
+                ))}
+                <div style={styles.btnRow}>
+                  <button style={styles.primaryBtn} onClick={compareTestMode}>用目標期數比對測試模式</button>
+                </div>
+                {testResult && (
+                  <div style={styles.resultBox}>
+                    <div style={styles.resultLine}>判定：<strong>{testResult.verdict}</strong></div>
+                    <div style={styles.resultLine}>來源期數：{testResult.sourceDrawNo}</div>
+                    <div style={styles.resultLine}>目標期數：{testResult.targetDrawNo}</div>
+                    <div style={styles.resultLine}>實際比對期數：{testResult.compareDrawNo}</div>
+                    <div style={styles.resultLine}>估計成本：{testResult.totalCost}</div>
+                    <div style={styles.resultLine}>估計回收：{testResult.estimatedReturn}</div>
+                    <div style={styles.resultLine}>估計損益：{testResult.profit}</div>
+                    <div style={{ marginTop: 12 }}>
+                      {testResult.results.map((r, idx) => (
+                        <div key={idx} style={styles.resultRow}>
+                          <span>{r.label}</span>
+                          <span>{r.nums.join(" ")}</span>
+                          <span>命中 {r.hitCount} 碼</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div style={styles.subtle}>尚未建立測試模式。</div>
+            )}
+          </section>
 
-        <section className="rounded-3xl border border-slate-800 bg-slate-900 p-6">
-          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-5"><div><h2 className="text-2xl font-semibold">四星建議組合</h2><p className="text-slate-400 mt-1">固定輸出 4 組。你一旦按下分析建立，系統就視為已下注並開始四期追號。</p></div><div className="rounded-2xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 px-4 py-2 text-sm">冷號已排除，不進候選池</div></div>
-          <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-4">{suggestions.map((line)=><div key={line.name} className="rounded-3xl bg-slate-800 p-5 shadow-xl"><div className="text-sm text-amber-300 mb-2">{line.name}</div><div className="text-3xl font-bold tracking-wide">{line.nums.join(" ")}</div><div className="text-sm text-slate-400 mt-3 leading-6">{line.note}</div></div>)}</div>
-        </section>
-
-        <section className="grid xl:grid-cols-2 gap-6">
-          <div className="rounded-3xl border border-slate-800 bg-slate-900 p-6">
-            <h2 className="text-2xl font-semibold mb-4">追號紀錄 / 自動兌獎</h2>
-            <div className="mb-4 rounded-2xl bg-slate-800 p-4"><div className="font-medium mb-2">輸入最新一期開獎號碼後，自動對號</div><textarea className="w-full min-h-20 rounded-2xl bg-slate-950 border border-slate-700 px-4 py-3 text-sm outline-none focus:border-amber-400" value={currentDrawText} onChange={(e)=>setCurrentDrawText(e.target.value)} /><button className="mt-3 rounded-2xl bg-amber-400 text-slate-950 font-semibold px-5 py-3" onClick={runAutoCheck}>自動對號並推進期數</button></div>
-            <div className="overflow-hidden rounded-3xl border border-slate-800"><div className="grid grid-cols-4 bg-slate-800 text-sm font-semibold"><div className="p-3">組別</div><div className="p-3">四星號碼</div><div className="p-3">目前期數</div><div className="p-3">狀態</div></div>{tickets.length === 0 ? <div className="p-6 text-slate-400">還沒有建立追號紀錄。先按「分析並建立 4 組四星」。</div> : tickets.map((ticket, idx)=><div key={ticket.id} className="grid grid-cols-4 border-t border-slate-800 text-sm"><div className="p-3">{String.fromCharCode(65 + idx)}</div><div className="p-3">{ticket.nums.join(" ")}</div><div className="p-3">第 {ticket.stage} / 4 期</div><div className="p-3">{ticket.status}</div></div>)}</div>
-          </div>
-
-          <div className="rounded-3xl border border-slate-800 bg-slate-900 p-6">
-            <h2 className="text-2xl font-semibold mb-4">主動提醒中心</h2>
-            <div className="space-y-4">
-              <div className="rounded-3xl bg-amber-500/10 border border-amber-500/20 p-5"><div className="text-amber-300 font-semibold">第 3 期評估提醒</div><p className="text-slate-200 mt-2 leading-7">正式邏輯已接上：當追號進入第 3 期，狀態會自動標記為「第 3 期請評估是否換號」。</p></div>
-              <div className="rounded-3xl bg-emerald-500/10 border border-emerald-500/20 p-5"><div className="text-emerald-300 font-semibold">自動儲存</div><p className="text-slate-200 mt-2 leading-7">關掉頁面再開，最近 5 期與追號紀錄仍會保留。正式版會再改成真正資料庫。</p></div>
-              <div className="rounded-3xl bg-sky-500/10 border border-sky-500/20 p-5"><div className="text-sky-300 font-semibold">外部網站即時更新</div><p className="text-slate-200 mt-2 leading-7">前一版還沒有真的接外部資料源。下一步只要有固定來源網址或 API，就能接成真正的即時抓號。</p></div>
-            </div>
-          </div>
-        </section>
+          <section style={styles.panel}>
+            <h2 style={styles.h2}>正式投注（四星賓果 / 四組 / 四期）</h2>
+            {formalPlan ? (
+              <>
+                <div style={styles.subtle}>Prediction ID：{formalPlan.predictionId || "尚未寫入"}</div>
+                <div style={styles.subtle}>策略模式：{formalPlan.strategyMode || "bingo_v2_4star_4group_4period_self_optimized"}</div>
+                <div style={styles.subtle}>來源期數：第 {formalPlan.sourceDrawNo} 期</div>
+                <div style={styles.subtle}>目標期數：第 {formalPlan.targetDrawNo} 期</div>
+                {formalPlan.groups.map((g, idx) => (
+                  <div key={idx} style={styles.groupCard}>
+                    <div style={styles.groupTitle}>{g.label}</div>
+                    <div style={styles.groupNums}>{g.nums.join(" ")}</div>
+                    <div style={styles.subtle}>{g.reason}</div>
+                  </div>
+                ))}
+                <div style={styles.btnRow}>
+                  <button style={styles.primaryBtn} onClick={compareFormalMode}>用目標期數比對正式投注</button>
+                </div>
+                {formalResult && (
+                  <div style={styles.resultBox}>
+                    <div style={styles.resultLine}>判定：<strong>{formalResult.verdict}</strong></div>
+                    <div style={styles.resultLine}>來源期數：{formalResult.sourceDrawNo}</div>
+                    <div style={styles.resultLine}>目標期數：{formalResult.targetDrawNo}</div>
+                    <div style={styles.resultLine}>實際比對期數：{formalResult.compareDrawNo}</div>
+                    <div style={styles.resultLine}>估計成本：{formalResult.totalCost}</div>
+                    <div style={styles.resultLine}>估計回收：{formalResult.estimatedReturn}</div>
+                    <div style={styles.resultLine}>估計損益：{formalResult.profit}</div>
+                    <div style={{ marginTop: 12 }}>
+                      {formalResult.results.map((r, idx) => (
+                        <div key={idx} style={styles.resultRow}>
+                          <span>{r.label}</span>
+                          <span>{r.nums.join(" ")}</span>
+                          <span>命中 {r.hitCount} 碼</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div style={styles.subtle}>尚未建立正式投注。</div>
+            )}
+          </section>
+        </div>
       </div>
     </div>
   );
 }
+
+const styles = {
+  page: {
+    background: "#020b25",
+    minHeight: "100vh",
+    color: "#f3f6ff",
+    padding: "24px"
+  },
+  wrap: {
+    maxWidth: "1200px",
+    margin: "0 auto"
+  },
+  hero: {
+    background: "linear-gradient(180deg, #071938 0%, #09142b 100%)",
+    border: "1px solid rgba(100,180,255,0.18)",
+    borderRadius: 28,
+    padding: 28,
+    boxShadow: "0 20px 50px rgba(0,0,0,0.35)"
+  },
+  kicker: {
+    color: "#ffcf4d",
+    letterSpacing: 3,
+    fontSize: 14,
+    marginBottom: 10
+  },
+  h1: {
+    margin: 0,
+    fontSize: 44,
+    lineHeight: 1.15
+  },
+  p: {
+    color: "#b7c5e4",
+    fontSize: 18,
+    lineHeight: 1.8,
+    marginTop: 16
+  },
+  notice: {
+    marginTop: 18,
+    border: "1px solid #1f88c7",
+    background: "#083150",
+    color: "#dff2ff",
+    borderRadius: 18,
+    padding: "16px 18px",
+    fontSize: 18
+  },
+  statsGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))",
+    gap: 16,
+    marginTop: 22
+  },
+  statCard: {
+    background: "#081731",
+    borderRadius: 20,
+    padding: 18
+  },
+  statLabel: {
+    color: "#9eb4dc",
+    fontSize: 14,
+    marginBottom: 8
+  },
+  statValue: {
+    fontSize: 18,
+    fontWeight: 700
+  },
+  btnRow: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: 12,
+    marginTop: 20
+  },
+  primaryBtn: {
+    background: "#f7bf19",
+    color: "#111",
+    border: 0,
+    borderRadius: 18,
+    padding: "14px 22px",
+    fontSize: 18,
+    fontWeight: 700,
+    cursor: "pointer"
+  },
+  secondaryBtn: {
+    background: "transparent",
+    color: "#eef4ff",
+    border: "1px solid rgba(255,255,255,0.18)",
+    borderRadius: 18,
+    padding: "14px 22px",
+    fontSize: 18,
+    fontWeight: 700,
+    cursor: "pointer"
+  },
+  grid2: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit,minmax(320px,1fr))",
+    gap: 18,
+    marginTop: 20
+  },
+  panel: {
+    background: "#071938",
+    borderRadius: 28,
+    padding: 24,
+    border: "1px solid rgba(255,255,255,0.06)",
+    marginTop: 20
+  },
+  h2: {
+    marginTop: 0,
+    fontSize: 24
+  },
+  subtle: {
+    color: "#9eb4dc",
+    fontSize: 16,
+    lineHeight: 1.7
+  },
+  numbersWrap: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: 10,
+    marginTop: 16,
+    marginBottom: 16
+  },
+  numBall: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    minWidth: 52,
+    height: 52,
+    borderRadius: 999,
+    background: "#b11f2d",
+    color: "#fff",
+    fontWeight: 800,
+    fontSize: 22
+  },
+  coreGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(4, minmax(80px,1fr))",
+    gap: 12
+  },
+  coreCard: {
+    background: "#081731",
+    borderRadius: 18,
+    padding: 18,
+    textAlign: "center"
+  },
+  coreLabel: {
+    color: "#9eb4dc",
+    fontSize: 14
+  },
+  coreValue: {
+    marginTop: 10,
+    fontSize: 28,
+    fontWeight: 800
+  },
+  row: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: "10px 0"
+  },
+  groupCard: {
+    background: "#0b203f",
+    borderRadius: 20,
+    padding: 18,
+    marginTop: 12
+  },
+  groupTitle: {
+    color: "#ffcf4d",
+    fontSize: 18,
+    fontWeight: 700
+  },
+  groupNums: {
+    marginTop: 10,
+    fontSize: 30,
+    fontWeight: 800,
+    letterSpacing: 1
+  },
+  resultBox: {
+    marginTop: 18,
+    background: "#081731",
+    borderRadius: 18,
+    padding: 18
+  },
+  resultLine: {
+    fontSize: 18,
+    marginBottom: 8
+  },
+  resultRow: {
+    display: "grid",
+    gridTemplateColumns: "1.2fr 2fr 1fr",
+    gap: 12,
+    padding: "8px 0",
+    borderBottom: "1px solid rgba(255,255,255,0.08)"
+  },
+  autoTrainCard: {
+    background: "#0b203f",
+    borderRadius: 18,
+    padding: 16,
+    marginTop: 10
+  },
+  autoTrainTop: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+    marginBottom: 6
+  }
+};
