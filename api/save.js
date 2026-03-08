@@ -32,21 +32,24 @@ export default async function handler(req, res) {
     const numbersText = numbers.join(" ");
 
     const now = new Date();
-    const capturedAt = now.toLocaleTimeString("zh-TW", {
-      hour12: false,
-      timeZone: "Asia/Taipei"
-    });
-
-    // 先查有沒有同一組號碼，避免重複存
-    const checkRes = await fetch(
-      `${SUPABASE_URL}/rest/v1/bingo_draws?select=id,numbers&numbers=eq.${encodeURIComponent(numbersText)}&limit=1`,
-      {
-        headers: {
-          apikey: SUPABASE_SECRET_KEY,
-          Authorization: `Bearer ${SUPABASE_SECRET_KEY}`
-        }
-      }
+    const taipeiNow = new Date(
+      now.toLocaleString("en-US", { timeZone: "Asia/Taipei" })
     );
+
+    const hh = String(taipeiNow.getHours()).padStart(2, "0");
+    const mi = String(taipeiNow.getMinutes()).padStart(2, "0");
+    const ss = String(taipeiNow.getSeconds()).padStart(2, "0");
+    const capturedAt = `${hh}:${mi}:${ss}`;
+
+    // 用 numbers 做去重
+    const checkUrl = `${SUPABASE_URL}/rest/v1/bingo_draws?select=id,numbers&numbers=eq.${encodeURIComponent(numbersText)}&limit=1`;
+
+    const checkRes = await fetch(checkUrl, {
+      headers: {
+        apikey: SUPABASE_SECRET_KEY,
+        Authorization: `Bearer ${SUPABASE_SECRET_KEY}`
+      }
+    });
 
     if (!checkRes.ok) {
       const detail = await checkRes.text();
