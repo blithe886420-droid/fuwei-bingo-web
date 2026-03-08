@@ -1,0 +1,12 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron-sync",
+      "schedule": "3-58/5 * * * *"
+    },
+    {
+      "path": "/api/auto-compare",
+      "schedule": "4-59/5 * * * *"
+    }
+  ]
+}
