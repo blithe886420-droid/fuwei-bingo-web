@@ -1,15 +1,5 @@
 export default async function handler(req, res) {
   try {
-    const SUPABASE_URL = process.env.SUPABASE_URL;
-    const SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY;
-
-    if (!SUPABASE_URL || !SUPABASE_SECRET_KEY) {
-      return res.status(500).json({
-        ok: false,
-        error: "Missing SUPABASE_URL or SUPABASE_SECRET_KEY"
-      });
-    }
-
     if (req.method !== "POST") {
       return res.status(405).json({
         ok: false,
@@ -17,134 +7,134 @@ export default async function handler(req, res) {
       });
     }
 
-    const body = req.body || {};
-    const numbers = Array.isArray(body.numbers)
-      ? body.numbers.map(x => String(x).padStart(2, "0")).slice(0, 20)
-      : [];
+    const SUPABASE_URL = process.env.SUPABASE_URL;
+    const SUPABASE_KEY =
+      process.env.SUPABASE_SECRET_KEY ||
+      process.env.SUPABASE_SERVICE_ROLE_KEY ||
+      process.env.SUPABASE_KEY;
 
-    if (numbers.length !== 20) {
-      return res.status(400).json({
-        ok: false,
-        error: "numbers must be an array of 20 values"
-      });
-    }
-
-    const numbersText = numbers.join(" ");
-
-    const now = new Date();
-    const taipeiNow = new Date(
-      now.toLocaleString("en-US", { timeZone: "Asia/Taipei" })
-    );
-
-    const hh = String(taipeiNow.getHours()).padStart(2, "0");
-    const mi = String(taipeiNow.getMinutes()).padStart(2, "0");
-    const ss = String(taipeiNow.getSeconds()).padStart(2, "0");
-    const capturedAt = `${hh}:${mi}:${ss}`;
-
-    // 先查有沒有相同號碼，避免重複存
-    const checkUrl = `${SUPABASE_URL}/rest/v1/bingo_draws?select=id,numbers&numbers=eq.${encodeURIComponent(numbersText)}&limit=1`;
-
-    const checkRes = await fetch(checkUrl, {
-      headers: {
-        apikey: SUPABASE_SECRET_KEY,
-        Authorization: `Bearer ${SUPABASE_SECRET_KEY}`
-      }
-    });
-
-    if (!checkRes.ok) {
-      const detail = await checkRes.text();
+    if (!SUPABASE_URL || !SUPABASE_KEY) {
       return res.status(500).json({
         ok: false,
-        error: "Supabase check failed",
-        detail
+        error: "missing supabase env"
       });
     }
 
-    const existing = await checkRes.json();
+    const body =
+      typeof req.body === "string"
+        ? JSON.parse(req.body)
+        : req.body || {};
 
-    if (Array.isArray(existing) && existing.length > 0) {
-      const recent20Res = await fetch(
-        `${SUPABASE_URL}/rest/v1/bingo_draws?select=id,draw_no,draw_time,numbers,created_at&order=created_at.desc&limit=20`,
-        {
-          headers: {
-            apikey: SUPABASE_SECRET_KEY,
-            Authorization: `Bearer ${SUPABASE_SECRET_KEY}`
-          }
-        }
-      );
+    const mode = String(body.mode || "").trim();
+    const sourceDrawNo = Number(body.sourceDrawNo || 0);
+    const targetPeriods = Number(body.targetPeriods || 0);
+    const groups = Array.isArray(body.groups) ? body.groups : [];
 
-      let recent20 = [];
-      if (recent20Res.ok) {
-        recent20 = await recent20Res.json();
-      }
-
-      return res.status(200).json({
-        ok: true,
-        saved: false,
-        skipped: true,
-        reason: "same numbers already exists",
-        recent20
+    if (!mode) {
+      return res.status(400).json({
+        ok: false,
+        error: "mode is required"
       });
     }
 
-    // 這裡是關鍵：補上 id
-    const uniqueId = Date.now();
+    if (!sourceDrawNo || Number.isNaN(sourceDrawNo)) {
+      return res.status(400).json({
+        ok: false,
+        error: "sourceDrawNo is required"
+      });
+    }
+
+    if (!targetPeriods || Number.isNaN(targetPeriods) || targetPeriods < 1) {
+      return res.status(400).json({
+        ok: false,
+        error: "targetPeriods is invalid"
+      });
+    }
+
+    if (!groups.length) {
+      return res.status(400).json({
+        ok: false,
+        error: "groups is required"
+      });
+    }
+
+    const normalizedGroups = groups.map((g, idx) => ({
+      label: g?.label || `第${idx + 1}組`,
+      nums: Array.isArray(g?.nums)
+        ? g.nums.map(x => String(x).padStart(2, "0")).slice(0, 4)
+        : [],
+      reason: g?.reason || "",
+      key: g?.key || "",
+      meta: g?.meta || {}
+    }));
+
+    const invalidGroup = normalizedGroups.find(g => g.nums.length !== 4);
+    if (invalidGroup) {
+      return res.status(400).json({
+        ok: false,
+        error: "every group must contain 4 numbers"
+      });
+    }
+
+    const targetDrawNo = sourceDrawNo + targetPeriods;
 
     const payload = {
-      id: uniqueId,
-      draw_no: uniqueId,
-      draw_time: capturedAt,
-      numbers: numbersText
+      mode,
+      source_draw_no: sourceDrawNo,
+      target_periods: targetPeriods,
+      target_draw_no: targetDrawNo,
+      groups: normalizedGroups,
+      status: "pending",
+      created_at: new Date().toISOString()
     };
 
-    const saveRes = await fetch(`${SUPABASE_URL}/rest/v1/bingo_draws`, {
+    const insertResp = await fetch(`${SUPABASE_URL}/rest/v1/predictions`, {
       method: "POST",
       headers: {
-        apikey: SUPABASE_SECRET_KEY,
-        Authorization: `Bearer ${SUPABASE_SECRET_KEY}`,
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${SUPABASE_KEY}`,
         "Content-Type": "application/json",
         Prefer: "return=representation"
       },
       body: JSON.stringify(payload)
     });
 
-    if (!saveRes.ok) {
-      const detail = await saveRes.text();
+    const insertText = await insertResp.text();
+
+    if (!insertResp.ok) {
       return res.status(500).json({
         ok: false,
-        error: "Supabase insert failed",
-        detail
+        error: `insert failed: ${insertResp.status}`,
+        rawPreview: insertText.slice(0, 300)
       });
     }
 
-    const savedRow = await saveRes.json();
-
-    const recent20Res = await fetch(
-      `${SUPABASE_URL}/rest/v1/bingo_draws?select=id,draw_no,draw_time,numbers,created_at&order=created_at.desc&limit=20`,
-      {
-        headers: {
-          apikey: SUPABASE_SECRET_KEY,
-          Authorization: `Bearer ${SUPABASE_SECRET_KEY}`
-        }
-      }
-    );
-
-    let recent20 = [];
-    if (recent20Res.ok) {
-      recent20 = await recent20Res.json();
+    let inserted = [];
+    try {
+      inserted = JSON.parse(insertText);
+    } catch {
+      return res.status(500).json({
+        ok: false,
+        error: "insert parse failed",
+        rawPreview: insertText.slice(0, 300)
+      });
     }
+
+    const row = inserted?.[0];
 
     return res.status(200).json({
       ok: true,
-      saved: true,
-      skipped: false,
-      row: savedRow,
-      recent20
+      id: row?.id,
+      mode: row?.mode,
+      sourceDrawNo: row?.source_draw_no,
+      targetPeriods: row?.target_periods,
+      targetDrawNo: row?.target_draw_no,
+      status: row?.status || "pending"
     });
   } catch (err) {
     return res.status(500).json({
       ok: false,
-      error: err.message || "save failed"
+      error: err.message || "prediction-save failed"
     });
   }
 }
