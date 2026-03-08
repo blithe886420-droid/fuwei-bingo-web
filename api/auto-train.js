@@ -87,6 +87,13 @@ async function safeJsonFetchAbsolute(baseUrl, path, options = {}) {
   };
 }
 
+function calcTargetDrawNo(sourceDrawNo, targetPeriods) {
+  const source = Number(sourceDrawNo || 0);
+  const periods = Number(targetPeriods || 0);
+  if (!Number.isInteger(source) || !Number.isInteger(periods)) return 0;
+  return source + periods;
+}
+
 export default async function handler(req, res) {
   try {
     const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -183,7 +190,7 @@ export default async function handler(req, res) {
 
     // 5) 檢查同一期是否已建立 auto training 測試
     const existingPredictionResp = await fetch(
-      `${SUPABASE_URL}/rest/v1/bingo_predictions?select=id,source_draw_no,target_draw_no,status,mode&mode=eq.test&source_draw_no=eq.${latest.latestDrawNo}&order=created_at.desc&limit=1`,
+      `${SUPABASE_URL}/rest/v1/bingo_predictions?select=id,source_draw_no,target_periods,status,mode&mode=eq.test&source_draw_no=eq.${latest.latestDrawNo}&order=created_at.desc&limit=1`,
       {
         headers: {
           apikey: SUPABASE_KEY,
@@ -219,7 +226,15 @@ export default async function handler(req, res) {
     let skippedCreate = false;
 
     if (Array.isArray(existingPredictions) && existingPredictions.length > 0) {
-      createdPrediction = existingPredictions[0];
+      const row = existingPredictions[0];
+      createdPrediction = {
+        id: row.id,
+        source_draw_no: row.source_draw_no,
+        target_periods: row.target_periods,
+        target_draw_no: calcTargetDrawNo(row.source_draw_no, row.target_periods),
+        status: row.status || "created",
+        mode: row.mode || "test"
+      };
       skippedCreate = true;
     } else {
       const predictionSave = await safeJsonFetchAbsolute(baseUrl, "/api/prediction-save", {
@@ -245,15 +260,16 @@ export default async function handler(req, res) {
       createdPrediction = {
         id: predictionSave.data?.id,
         source_draw_no: predictionSave.data?.sourceDrawNo,
-        target_draw_no: predictionSave.data?.targetDrawNo,
-        status: predictionSave.data?.status || "pending",
+        target_periods: predictionSave.data?.targetPeriods || 4,
+        target_draw_no: predictionSave.data?.targetDrawNo || calcTargetDrawNo(predictionSave.data?.sourceDrawNo, predictionSave.data?.targetPeriods || 4),
+        status: predictionSave.data?.status || "created",
         mode: "test"
       };
     }
 
     // 6) 找出已成熟的測試單
     const pendingResp = await fetch(
-      `${SUPABASE_URL}/rest/v1/bingo_predictions?select=id,source_draw_no,target_draw_no,status,mode&mode=eq.test&or=(status.eq.pending,status.eq.created)&order=created_at.asc&limit=50`,
+      `${SUPABASE_URL}/rest/v1/bingo_predictions?select=id,source_draw_no,target_periods,status,mode&mode=eq.test&or=(status.eq.pending,status.eq.created)&order=created_at.asc&limit=50`,
       {
         headers: {
           apikey: SUPABASE_KEY,
@@ -286,7 +302,7 @@ export default async function handler(req, res) {
     }
 
     const matured = (Array.isArray(pendingPredictions) ? pendingPredictions : []).filter(p => {
-      const targetDrawNo = Number(p.target_draw_no || 0);
+      const targetDrawNo = calcTargetDrawNo(p.source_draw_no, p.target_periods);
       return targetDrawNo > 0 && latest.latestDrawNo >= targetDrawNo;
     });
 
@@ -305,7 +321,8 @@ export default async function handler(req, res) {
         compareResults.push({
           predictionId: p.id,
           sourceDrawNo: Number(p.source_draw_no || 0),
-          targetDrawNo: Number(p.target_draw_no || 0),
+          targetPeriods: Number(p.target_periods || 0),
+          targetDrawNo: calcTargetDrawNo(p.source_draw_no, p.target_periods),
           verdict: compare.data?.result?.verdict || "unknown",
           compareDrawNo: compare.data?.result?.compareDrawNo || null
         });
@@ -313,7 +330,8 @@ export default async function handler(req, res) {
         compareResults.push({
           predictionId: p.id,
           sourceDrawNo: Number(p.source_draw_no || 0),
-          targetDrawNo: Number(p.target_draw_no || 0),
+          targetPeriods: Number(p.target_periods || 0),
+          targetDrawNo: calcTargetDrawNo(p.source_draw_no, p.target_periods),
           verdict: "compare_failed",
           error: compare.error || compare.data?.error || "compare failed"
         });
@@ -322,7 +340,7 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       ok: true,
-      mode: "auto_train_v2_internal_sync",
+      mode: "auto_train_v3_bingo_predictions",
       latestDrawNo: latest.latestDrawNo,
       latestDrawTime: latest.latestDrawTime,
       catchupInserted,
