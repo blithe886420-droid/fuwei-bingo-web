@@ -44,10 +44,29 @@ export default async function handler(req, res) {
       });
     }
 
+    // 保險：後端再強制做一次排序與去重，避免前端看到重複期號
+    const deduped = [];
+    const seen = new Set();
+
+    for (const row of Array.isArray(recent20) ? recent20 : []) {
+      const drawNo = Number(row?.draw_no);
+      if (!Number.isInteger(drawNo)) continue;
+      if (seen.has(drawNo)) continue;
+
+      seen.add(drawNo);
+      deduped.push({
+        draw_no: drawNo,
+        draw_time: row?.draw_time || "",
+        numbers: row?.numbers || ""
+      });
+    }
+
+    deduped.sort((a, b) => b.draw_no - a.draw_no);
+
     return res.status(200).json({
       ok: true,
-      count: Array.isArray(recent20) ? recent20.length : 0,
-      recent20
+      count: deduped.length,
+      recent20: deduped.slice(0, 20)
     });
   } catch (err) {
     return res.status(500).json({
