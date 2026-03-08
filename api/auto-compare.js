@@ -6,7 +6,11 @@ function normalizeNums(arr) {
 
 function calcGroupResult(group, drawNumbers) {
   const groupNums = normalizeNums(group?.nums);
-  const drawSet = new Set((Array.isArray(drawNumbers) ? drawNumbers : []).map(x => String(x).padStart(2, "0")));
+  const drawSet = new Set(
+    (Array.isArray(drawNumbers) ? drawNumbers : [])
+      .map(x => String(x).padStart(2, "0"))
+  );
+
   const hitNums = groupNums.filter(n => drawSet.has(n));
   const hitCount = hitNums.length;
 
@@ -19,8 +23,6 @@ function calcGroupResult(group, drawNumbers) {
 }
 
 function calcEstimatedReturn(hitCount) {
-  // 這裡先維持簡化估算，不做獎金表硬編碼
-  // 之後若你有固定四星賓果對照表，再換成真實賠率
   if (hitCount <= 0) return 0;
   if (hitCount === 1) return 0;
   if (hitCount === 2) return 0;
@@ -75,7 +77,6 @@ export default async function handler(req, res) {
       });
     }
 
-    // 1. 讀取 prediction
     const predResp = await fetch(
       `${SUPABASE_URL}/rest/v1/predictions?id=eq.${encodeURIComponent(predictionId)}&select=*`,
       {
@@ -92,7 +93,7 @@ export default async function handler(req, res) {
       return res.status(500).json({
         ok: false,
         error: `prediction fetch failed: ${predResp.status}`,
-        rawPreview: predText.slice(0, 300)
+        rawPreview: predText.slice(0, 500)
       });
     }
 
@@ -103,7 +104,7 @@ export default async function handler(req, res) {
       return res.status(500).json({
         ok: false,
         error: "prediction parse failed",
-        rawPreview: predText.slice(0, 300)
+        rawPreview: predText.slice(0, 500)
       });
     }
 
@@ -118,7 +119,9 @@ export default async function handler(req, res) {
 
     const sourceDrawNo = Number(prediction.source_draw_no || 0);
     const targetPeriods = Number(prediction.target_periods || 0);
-    const targetDrawNo = Number(prediction.target_draw_no || (sourceDrawNo + targetPeriods));
+    const targetDrawNo = Number(
+      prediction.target_draw_no || (sourceDrawNo + targetPeriods)
+    );
 
     if (!sourceDrawNo || !targetPeriods || !targetDrawNo) {
       return res.status(400).json({
@@ -127,7 +130,6 @@ export default async function handler(req, res) {
       });
     }
 
-    // 2. 抓目前資料庫最新一期
     const latestResp = await fetch(
       `${SUPABASE_URL}/rest/v1/bingo_draws?select=draw_no,draw_time,numbers&order=draw_no.desc&limit=1`,
       {
@@ -144,7 +146,7 @@ export default async function handler(req, res) {
       return res.status(500).json({
         ok: false,
         error: `latest draw fetch failed: ${latestResp.status}`,
-        rawPreview: latestText.slice(0, 300)
+        rawPreview: latestText.slice(0, 500)
       });
     }
 
@@ -155,7 +157,7 @@ export default async function handler(req, res) {
       return res.status(500).json({
         ok: false,
         error: "latest draw parse failed",
-        rawPreview: latestText.slice(0, 300)
+        rawPreview: latestText.slice(0, 500)
       });
     }
 
@@ -169,7 +171,6 @@ export default async function handler(req, res) {
       });
     }
 
-    // 3. 還沒到目標期，不允許比對
     if (currentDrawNo < targetDrawNo) {
       return res.status(200).json({
         ok: false,
@@ -183,7 +184,6 @@ export default async function handler(req, res) {
       });
     }
 
-    // 4. 抓真正要比對的目標期
     const targetResp = await fetch(
       `${SUPABASE_URL}/rest/v1/bingo_draws?draw_no=eq.${targetDrawNo}&select=draw_no,draw_time,numbers&limit=1`,
       {
@@ -200,7 +200,7 @@ export default async function handler(req, res) {
       return res.status(500).json({
         ok: false,
         error: `target draw fetch failed: ${targetResp.status}`,
-        rawPreview: targetText.slice(0, 300)
+        rawPreview: targetText.slice(0, 500)
       });
     }
 
@@ -211,7 +211,7 @@ export default async function handler(req, res) {
       return res.status(500).json({
         ok: false,
         error: "target draw parse failed",
-        rawPreview: targetText.slice(0, 300)
+        rawPreview: targetText.slice(0, 500)
       });
     }
 
@@ -255,8 +255,11 @@ export default async function handler(req, res) {
     const results = groups.map(group => calcGroupResult(group, drawNumbers));
     const verdict = buildVerdict(results);
 
-    const totalCost = groups.length;
-    const estimatedReturn = results.reduce((sum, r) => sum + calcEstimatedReturn(r.hitCount), 0);
+    const totalCost = groups.length * 100;
+    const estimatedReturn = results.reduce(
+      (sum, r) => sum + calcEstimatedReturn(r.hitCount),
+      0
+    );
     const profit = estimatedReturn - totalCost;
 
     const compareResult = {
@@ -275,7 +278,6 @@ export default async function handler(req, res) {
       results
     };
 
-    // 5. 更新 prediction 狀態
     const patchResp = await fetch(
       `${SUPABASE_URL}/rest/v1/predictions?id=eq.${encodeURIComponent(prediction.id)}`,
       {
@@ -301,7 +303,7 @@ export default async function handler(req, res) {
       return res.status(500).json({
         ok: false,
         error: `prediction update failed: ${patchResp.status}`,
-        rawPreview: patchText.slice(0, 300)
+        rawPreview: patchText.slice(0, 500)
       });
     }
 
