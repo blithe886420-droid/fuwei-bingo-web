@@ -1,20 +1,21 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 const STORAGE_KEYS = {
-  latest: "fuwei_bingo_latest_v15",
-  recent20: "fuwei_bingo_recent20_v15",
-  testPlan: "fuwei_bingo_test_plan_v15",
-  formalPlan: "fuwei_bingo_formal_plan_v15",
-  testResult: "fuwei_bingo_test_result_v15",
-  formalResult: "fuwei_bingo_formal_result_v15"
+  latest: "fuwei_bingo_latest_v16_hobby",
+  recent20: "fuwei_bingo_recent20_v16_hobby",
+  testPlan: "fuwei_bingo_test_plan_v16_hobby",
+  formalPlan: "fuwei_bingo_formal_plan_v16_hobby",
+  testResult: "fuwei_bingo_test_result_v16_hobby",
+  formalResult: "fuwei_bingo_formal_result_v16_hobby",
+  autoRunAt: "fuwei_bingo_auto_run_at_v16_hobby"
 };
 
 const TXT_LATEST = {
   drawNo: 115013398,
   drawTime: "TXT 匯入",
   numbers: [
-    "01","08","11","15","18","22","25","39","41","43",
-    "46","51","55","60","61","65","66","69","73","76"
+    "01", "08", "11", "15", "18", "22", "25", "39", "41", "43",
+    "46", "51", "55", "60", "61", "65", "66", "69", "73", "76"
   ],
   source: "3/7 完整 TXT 匯入"
 };
@@ -96,9 +97,7 @@ function generateFourGroups(recent20) {
     .filter(x => Number(x.num) % 2 === 1)
     .slice(0, 2)
     .map(x => x.num)
-    .concat(
-      top.filter(x => Number(x.num) % 2 === 0).slice(0, 2).map(x => x.num)
-    );
+    .concat(top.filter(x => Number(x.num) % 2 === 0).slice(0, 2).map(x => x.num));
 
   const orderedNums = top
     .map(x => Number(x.num))
@@ -136,6 +135,7 @@ export default function App() {
   );
   const [syncStatus, setSyncStatus] = useState("尚未同步");
   const [notice, setNotice] = useState("系統已載入歷史底庫，準備接即時資料。");
+  const [autoStatus, setAutoStatus] = useState("尚未執行補抓補比對");
 
   const [testPlan, setTestPlan] = useState(() =>
     readLocal(STORAGE_KEYS.testPlan, null)
@@ -150,91 +150,79 @@ export default function App() {
     readLocal(STORAGE_KEYS.formalResult, null)
   );
 
-  useEffect(() => {
-    writeLocal(STORAGE_KEYS.latest, latest);
-  }, [latest]);
+  const autoRanRef = useRef(false);
 
-  useEffect(() => {
-    writeLocal(STORAGE_KEYS.recent20, recent20);
-  }, [recent20]);
+  useEffect(() => writeLocal(STORAGE_KEYS.latest, latest), [latest]);
+  useEffect(() => writeLocal(STORAGE_KEYS.recent20, recent20), [recent20]);
+  useEffect(() => writeLocal(STORAGE_KEYS.testPlan, testPlan), [testPlan]);
+  useEffect(() => writeLocal(STORAGE_KEYS.formalPlan, formalPlan), [formalPlan]);
+  useEffect(() => writeLocal(STORAGE_KEYS.testResult, testResult), [testResult]);
+  useEffect(() => writeLocal(STORAGE_KEYS.formalResult, formalResult), [formalResult]);
 
-  useEffect(() => {
-    writeLocal(STORAGE_KEYS.testPlan, testPlan);
-  }, [testPlan]);
+  async function syncLatestCore(silent = false) {
+    const res = await fetch("/api/sync");
+    const data = await res.json();
 
-  useEffect(() => {
-    writeLocal(STORAGE_KEYS.formalPlan, formalPlan);
-  }, [formalPlan]);
+    if (!data.ok) {
+      throw new Error(data.error || "同步失敗");
+    }
 
-  useEffect(() => {
-    writeLocal(STORAGE_KEYS.testResult, testResult);
-  }, [testResult]);
+    const numbers = Array.isArray(data.numbers)
+      ? data.numbers
+      : Array.isArray(data.latest?.numbers)
+      ? data.latest.numbers
+      : [];
 
-  useEffect(() => {
-    writeLocal(STORAGE_KEYS.formalResult, formalResult);
-  }, [formalResult]);
+    if (numbers.length !== 20) {
+      throw new Error("未取得完整 20 顆號碼");
+    }
+
+    const newLatest = {
+      drawNo: data.latest?.drawNo || "即時同步",
+      drawTime: data.capturedAt || data.latest?.drawTime || "即時更新",
+      numbers,
+      source: "澳所即時同步"
+    };
+
+    setLatest(newLatest);
+
+    let saveNotice = "";
+    try {
+      const saveRes = await fetch("/api/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ numbers })
+      });
+
+      const saveData = await saveRes.json();
+
+      if (saveData.ok && saveData.saved) {
+        saveNotice = "，並已自動建檔";
+      } else if (saveData.ok && saveData.skipped) {
+        saveNotice = "，此組號碼已存在資料庫";
+      } else {
+        saveNotice = "，但建檔未成功";
+      }
+
+      if (saveData.ok && Array.isArray(saveData.recent20) && saveData.recent20.length > 0) {
+        setRecent20(saveData.recent20);
+      }
+    } catch {
+      saveNotice = "，但建檔失敗";
+    }
+
+    if (!silent) {
+      setSyncStatus("已同步最新資料");
+      setNotice(`已抓到最新 20 顆號碼${saveNotice}`);
+    }
+
+    return newLatest;
+  }
 
   async function syncLatest() {
     try {
       setSyncStatus("同步中...");
-
-      const res = await fetch("/api/sync");
-      const data = await res.json();
-
-      if (!data.ok) {
-        setSyncStatus(`同步失敗：${data.error || "未知錯誤"}`);
-        return;
-      }
-
-      const numbers = Array.isArray(data.numbers)
-        ? data.numbers
-        : Array.isArray(data.latest?.numbers)
-        ? data.latest.numbers
-        : [];
-
-      if (!numbers || numbers.length !== 20) {
-        setSyncStatus("同步失敗：未取得完整 20 顆號碼");
-        return;
-      }
-
-      const newLatest = {
-        drawNo: data.latest?.drawNo || "即時同步",
-        drawTime: data.capturedAt || data.latest?.drawTime || "即時更新",
-        numbers,
-        source: "澳所即時同步"
-      };
-
-      setLatest(newLatest);
-
-      let saveNotice = "";
-      try {
-        const saveRes = await fetch("/api/save", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({ numbers })
-        });
-
-        const saveData = await saveRes.json();
-
-        if (saveData.ok && saveData.saved) {
-          saveNotice = "，並已自動建檔";
-        } else if (saveData.ok && saveData.skipped) {
-          saveNotice = "，此組號碼已存在資料庫";
-        } else {
-          saveNotice = "，但建檔未成功";
-        }
-
-        if (saveData.ok && Array.isArray(saveData.recent20) && saveData.recent20.length > 0) {
-          setRecent20(saveData.recent20);
-        }
-      } catch {
-        saveNotice = "，但建檔失敗";
-      }
-
-      setSyncStatus("已同步最新資料");
-      setNotice(`已抓到最新 20 顆號碼${saveNotice}`);
+      await syncLatestCore(false);
     } catch (err) {
       setSyncStatus(`同步失敗：${err.message}`);
     }
@@ -243,9 +231,7 @@ export default function App() {
   async function savePrediction(mode, targetPeriods, groups) {
     const res = await fetch("/api/prediction-save", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         mode,
         sourceDrawNo: latest.drawNo,
@@ -257,15 +243,13 @@ export default function App() {
     return await res.json();
   }
 
-  async function comparePrediction(predictionId) {
+  async function comparePrediction(predictionId, drawNumbers) {
     const res = await fetch("/api/prediction-compare", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         predictionId,
-        drawNumbers: latest.numbers
+        drawNumbers
       })
     });
 
@@ -332,7 +316,7 @@ export default function App() {
       return;
     }
 
-    const data = await comparePrediction(testPlan.predictionId);
+    const data = await comparePrediction(testPlan.predictionId, latest.numbers);
     if (!data.ok) {
       setNotice(`測試模式比對失敗：${data.error || "未知錯誤"}`);
       return;
@@ -348,7 +332,7 @@ export default function App() {
       return;
     }
 
-    const data = await comparePrediction(formalPlan.predictionId);
+    const data = await comparePrediction(formalPlan.predictionId, latest.numbers);
     if (!data.ok) {
       setNotice(`正式投注比對失敗：${data.error || "未知錯誤"}`);
       return;
@@ -357,6 +341,51 @@ export default function App() {
     setFormalResult(data.result);
     setNotice(`正式投注比對完成：${data.result.verdict}`);
   }
+
+  async function autoCatchupAndCompare() {
+    try {
+      setAutoStatus("自動補抓補比對執行中...");
+
+      const lastRun = readLocal(STORAGE_KEYS.autoRunAt, null);
+      const now = Date.now();
+
+      if (lastRun && now - Number(lastRun) < 60 * 1000) {
+        setAutoStatus("1 分鐘內已執行過補抓補比對，略過。");
+        return;
+      }
+
+      const latestData = await syncLatestCore(true);
+
+      let done = 0;
+
+      if (testPlan?.predictionId) {
+        const result = await comparePrediction(testPlan.predictionId, latestData.numbers);
+        if (result.ok) {
+          setTestResult(result.result);
+          done += 1;
+        }
+      }
+
+      if (formalPlan?.predictionId) {
+        const result = await comparePrediction(formalPlan.predictionId, latestData.numbers);
+        if (result.ok) {
+          setFormalResult(result.result);
+          done += 1;
+        }
+      }
+
+      writeLocal(STORAGE_KEYS.autoRunAt, now);
+      setAutoStatus(`補抓補比對完成，已處理 ${done} 筆預測。`);
+    } catch (err) {
+      setAutoStatus(`補抓補比對失敗：${err.message}`);
+    }
+  }
+
+  useEffect(() => {
+    if (autoRanRef.current) return;
+    autoRanRef.current = true;
+    autoCatchupAndCompare();
+  }, []);
 
   const core8 = useMemo(() => {
     const candidates = buildCandidates(recent20).slice(0, 8);
@@ -382,12 +411,13 @@ export default function App() {
       <div style={styles.wrap}>
         <section style={styles.hero}>
           <div style={styles.kicker}>FUWEI BINGO SYSTEM</div>
-          <h1 style={styles.h1}>富緯賓果系統 v1.5 策略版</h1>
+          <h1 style={styles.h1}>富緯賓果系統 v1.6 Hobby 補抓版</h1>
           <p style={styles.p}>
-            已完成最新一期抓號與資料庫建檔。現在可建立測試模式 / 正式投注，並用目前最新一期自動比對命中與損益。
+            不依賴付費 Cron。你每次打開網站，系統都會自動補抓最新號碼、補存資料、補比對測試結果。
           </p>
 
           <div style={styles.notice}>{notice}</div>
+          <div style={{ ...styles.notice, marginTop: 12, background: "#0a2440" }}>{autoStatus}</div>
 
           <div style={styles.statsGrid}>
             <div style={styles.statCard}>
@@ -414,15 +444,10 @@ export default function App() {
           </div>
 
           <div style={styles.btnRow}>
-            <button style={styles.primaryBtn} onClick={syncLatest}>
-              同步最新一期
-            </button>
-            <button style={styles.secondaryBtn} onClick={startTestMode}>
-              建立測試模式
-            </button>
-            <button style={styles.secondaryBtn} onClick={startFormalMode}>
-              建立正式投注
-            </button>
+            <button style={styles.primaryBtn} onClick={syncLatest}>同步最新一期</button>
+            <button style={styles.secondaryBtn} onClick={autoCatchupAndCompare}>立即補抓補比對</button>
+            <button style={styles.secondaryBtn} onClick={startTestMode}>建立測試模式</button>
+            <button style={styles.secondaryBtn} onClick={startFormalMode}>建立正式投注</button>
           </div>
         </section>
 
@@ -458,7 +483,7 @@ export default function App() {
         <div style={styles.grid2}>
           <section style={styles.panel}>
             <h2 style={styles.h2}>最近 20 期底稿</h2>
-            <div style={styles.subtle}>供策略生成與回測使用</div>
+            <div style={styles.subtle}>供策略生成與補比對使用</div>
             <div style={{ maxHeight: 220, overflow: "auto", marginTop: 12 }}>
               {recent20.map((row, idx) => (
                 <div key={idx} style={{ ...styles.row, borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
@@ -494,9 +519,7 @@ export default function App() {
                   </div>
                 ))}
                 <div style={styles.btnRow}>
-                  <button style={styles.primaryBtn} onClick={compareTestMode}>
-                    用目前最新一期比對測試模式
-                  </button>
+                  <button style={styles.primaryBtn} onClick={compareTestMode}>用目前最新一期比對測試模式</button>
                 </div>
                 {testResult && (
                   <div style={styles.resultBox}>
@@ -534,9 +557,7 @@ export default function App() {
                   </div>
                 ))}
                 <div style={styles.btnRow}>
-                  <button style={styles.primaryBtn} onClick={compareFormalMode}>
-                    用目前最新一期比對正式投注
-                  </button>
+                  <button style={styles.primaryBtn} onClick={compareFormalMode}>用目前最新一期比對正式投注</button>
                 </div>
                 {formalResult && (
                   <div style={styles.resultBox}>
