@@ -1,9 +1,7 @@
 import { parseAuzoBingoDraws } from "../lib/parseAuzoBingo.js"
 
 export default async function handler(req, res) {
-
   try {
-
     const now = new Date()
 
     const dateStr = now.toLocaleDateString("sv-SE", {
@@ -23,44 +21,51 @@ export default async function handler(req, res) {
     })
 
     if (!response.ok) {
-
       return res.status(500).json({
         ok: false,
         error: `fetch failed: ${response.status}`,
         source: sourceUrl
       })
-
     }
 
     const html = await response.text()
-
     const draws = parseAuzoBingoDraws(html, dateStr)
 
     if (!draws.length) {
-
       return res.status(500).json({
         ok: false,
         error: "Could not parse bingo rows",
         source: sourceUrl
       })
-
     }
 
     const latest = draws[0]
+    const numberArray = latest.numbers.split(" ")
+
+    if (numberArray.length !== 20) {
+      return res.status(500).json({
+        ok: false,
+        error: "未取得完整 20 顆號碼",
+        source: sourceUrl,
+        count: numberArray.length
+      })
+    }
 
     return res.status(200).json({
       ok: true,
       source: sourceUrl,
-      draw: latest
+      capturedAt: new Date().toLocaleTimeString("zh-TW", {
+        hour12: false,
+        timeZone: "Asia/Taipei"
+      }),
+      draw_no: latest.draw_no,
+      draw_time: latest.draw_time,
+      numbers: numberArray
     })
-
   } catch (err) {
-
     return res.status(500).json({
       ok: false,
       error: err.message || "sync failed"
     })
-
   }
-
 }
