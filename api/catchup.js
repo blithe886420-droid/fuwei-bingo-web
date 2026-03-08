@@ -7,6 +7,15 @@ export default async function handler(req, res) {
       "https://api.taiwanlottery.com/TLCAPIWeB/Lottery/BingoBingoResult"
 
     const r = await fetch(apiUrl)
+
+    if (!r.ok) {
+      return res.json({
+        ok: false,
+        error: "台彩API抓取失敗",
+        status: r.status
+      })
+    }
+
     const data = await r.json()
 
     const draws = data?.content?.lotteryDrawResult || []
@@ -19,13 +28,20 @@ export default async function handler(req, res) {
     }
 
     const rows = draws.map(d => ({
-      draw_no: Number(d.drawNumber),
+      draw_no: String(d.drawNumber),
+
       draw_time: d.drawDate + " " + d.drawTime,
-      numbers: d.drawNumberSize
+
+      numbers: (
+        d.drawNumberAppear ||
+        d.drawNumberSize ||
+        []
+      )
         .map(n => String(n).padStart(2, "0"))
         .join(" ")
     }))
 
+    // 取得現有資料
     const check = await fetch(
       `${SUPABASE_URL}/rest/v1/bingo_draws?select=draw_no&order=draw_no.desc&limit=200`,
       {
@@ -73,6 +89,7 @@ export default async function handler(req, res) {
       inserted: inserted.length,
       drawNos: inserted.map(x => x.draw_no)
     })
+
   } catch (err) {
     res.json({
       ok: false,
