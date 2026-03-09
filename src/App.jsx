@@ -1,4 +1,4 @@
-// v10.1 TEST-2P STABLE
+// v3.2 AUTO LOOP STABLE
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { buildBingoV1Strategies } from "../lib/buildBingoV1Strategies";
 import {
@@ -75,6 +75,11 @@ function buildCandidates(recent20) {
     .sort((a, b) => b.count - a.count || Number(a.num) - Number(b.num));
 }
 
+function withTs(url) {
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}ts=${Date.now()}`;
+}
+
 export default function App() {
   const [latest, setLatest] = useState(() =>
     readLocal(STORAGE_KEYS.latest, TXT_LATEST)
@@ -123,7 +128,9 @@ export default function App() {
 
   async function loadRecent20(silent = false) {
     try {
-      const res = await fetch("/api/recent20");
+      const res = await fetch(withTs("/api/recent20"), {
+        cache: "no-store"
+      });
       const data = await res.json();
 
       if (!data.ok) {
@@ -157,7 +164,9 @@ export default function App() {
   }
 
   async function syncLatestCore(silent = false) {
-    const res = await fetch("/api/sync");
+    const res = await fetch(withTs("/api/sync"), {
+      cache: "no-store"
+    });
     const data = await res.json();
 
     if (!data.ok) {
@@ -185,9 +194,10 @@ export default function App() {
 
     let saveNotice = "";
     try {
-      const saveRes = await fetch("/api/save", {
+      const saveRes = await fetch(withTs("/api/save"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        cache: "no-store",
         body: JSON.stringify({})
       });
 
@@ -247,7 +257,11 @@ export default function App() {
     try {
       setAutoStatus("自動訓練執行中...");
 
-      const res = await fetch("/api/auto-train");
+      const res = await fetch(withTs("/api/auto-train"), {
+        method: "GET",
+        cache: "no-store"
+      });
+
       const raw = await res.text();
 
       let data = null;
@@ -266,15 +280,15 @@ export default function App() {
 
       const generated = {
         ok: true,
-        mode: data.strategyMode || "auto_train_v1",
+        mode: data.strategyMode || "auto_train_v3",
         target: {
           stars: 4,
           groups: 4,
-          periods: 4
+          periods: 2
         },
         latestDrawNo: data.latestDrawNo,
         latestDrawTime: data.latestDrawTime,
-        usedRows: 80,
+        usedRows: 20,
         groups: Array.isArray(data.groups)
           ? data.groups.map((g, idx) => ({
               groupNo: idx + 1,
@@ -303,9 +317,10 @@ export default function App() {
   }
 
   async function savePrediction(mode, targetPeriods, groups, sourceDrawNo) {
-    const res = await fetch("/api/prediction-save", {
+    const res = await fetch(withTs("/api/prediction-save"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      cache: "no-store",
       body: JSON.stringify({
         mode,
         sourceDrawNo,
@@ -318,9 +333,10 @@ export default function App() {
   }
 
   async function comparePrediction(predictionId) {
-    const res = await fetch("/api/prediction-compare", {
+    const res = await fetch(withTs("/api/prediction-compare"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      cache: "no-store",
       body: JSON.stringify({
         predictionId
       })
@@ -369,7 +385,7 @@ export default function App() {
       sourceDrawNo: currentDrawNo,
       targetPeriods: 2,
       targetDrawNo: currentDrawNo + 2,
-      strategyMode: generatedPlan?.mode || "bingo_v2_test_2period",
+      strategyMode: generatedPlan?.mode || "bingo_v3_test_2period_both_compare",
       groups: sourceGroups,
       predictionId: null
     };
@@ -535,7 +551,10 @@ export default function App() {
         return;
       }
 
-      const catchupRes = await fetch("/api/catchup");
+      const catchupRes = await fetch(withTs("/api/catchup"), {
+        cache: "no-store"
+      });
+
       const catchupRaw = await catchupRes.text();
 
       let catchupData = null;
@@ -601,38 +620,53 @@ export default function App() {
     }
   }
 
- useEffect(() => {
-  // 先抓一次最新期數
-  loadRecent20(false);
-
-  // 每 3 分鐘自動更新
-  const timer = setInterval(async () => {
-    console.log("⏱ 每3分鐘自動更新期數與訓練");
-
-    await loadRecent20(false);
-
-    try {
-      await autoCatchupAndCompare();
-    } catch (err) {
-      console.error("autoCatchupAndCompare failed:", err);
-    }
-
-    try {
-      await runAutoTrain();
-    } catch (err) {
-      console.error("runAutoTrain failed:", err);
-    }
-  }, 180000); // 3分鐘
-
-  return () => {
-    clearInterval(timer);
-  };
-}, []);
-
   useEffect(() => {
     if (autoRanRef.current) return;
     autoRanRef.current = true;
-    autoCatchupAndCompare();
+
+    (async () => {
+      try {
+        await syncLatest();
+      } catch (err) {
+        console.error("initial syncLatest failed:", err);
+      }
+
+      try {
+        await autoCatchupAndCompare();
+      } catch (err) {
+        console.error("initial autoCatchupAndCompare failed:", err);
+      }
+
+      try {
+        await runAutoTrain();
+      } catch (err) {
+        console.error("initial runAutoTrain failed:", err);
+      }
+    })();
+
+    const timer = setInterval(async () => {
+      console.log("⏱ 每3分鐘自動 sync / compare / train");
+
+      try {
+        await syncLatest();
+      } catch (err) {
+        console.error("syncLatest failed:", err);
+      }
+
+      try {
+        await autoCatchupAndCompare();
+      } catch (err) {
+        console.error("autoCatchupAndCompare failed:", err);
+      }
+
+      try {
+        await runAutoTrain();
+      } catch (err) {
+        console.error("runAutoTrain failed:", err);
+      }
+    }, 180000);
+
+    return () => clearInterval(timer);
   }, []);
 
   const core8 = useMemo(() => {
@@ -739,7 +773,7 @@ export default function App() {
             <h2 style={styles.h2}>自動訓練生成方案</h2>
             <div style={styles.subtle}>策略模式：{generatedPlan.mode}</div>
             <div style={styles.subtle}>
-              資料期數：第 {generatedPlan.latestDrawNo} 期 / 使用 {generatedPlan.usedRows || 80} 筆資料
+              資料期數：第 {generatedPlan.latestDrawNo} 期 / 使用 {generatedPlan.usedRows || 20} 筆資料
             </div>
             <div style={{ marginTop: 12 }}>
               {generatedPlan.groups.map((g, idx) => (
@@ -756,16 +790,19 @@ export default function App() {
         {autoTrainLast ? (
           <section style={styles.panel}>
             <h2 style={styles.h2}>自動訓練摘要</h2>
-            <div style={styles.subtle}>模式：{autoTrainLast.mode}</div>
+            <div style={styles.subtle}>模式：{autoTrainLast.strategyMode || autoTrainLast.mode || "auto_train_v3"}</div>
             <div style={styles.subtle}>最新期數：第 {autoTrainLast.latestDrawNo} 期</div>
             <div style={styles.subtle}>補抓新增：{autoTrainLast.catchupInserted || 0} 期</div>
             <div style={styles.subtle}>新建訓練：{autoTrainLast.created || 0} 筆</div>
             <div style={styles.subtle}>到期比對：{autoTrainLast.maturedCompared || 0} 筆</div>
+            {autoTrainLast.nextPrediction?.created && (
+              <div style={styles.subtle}>已自動建立下一筆測試 prediction。</div>
+            )}
             <div style={{ marginTop: 12 }}>
               {(autoTrainLast.compareResults || []).map((r, idx) => (
                 <div key={idx} style={styles.row}>
                   <span>Prediction {r.predictionId}</span>
-                  <strong>{r.verdict}</strong>
+                  <strong>{r.verdict || r.error || "waiting"}</strong>
                 </div>
               ))}
             </div>
@@ -838,7 +875,7 @@ export default function App() {
             {testPlan ? (
               <>
                 <div style={styles.subtle}>Prediction ID：{testPlan.predictionId || "尚未寫入"}</div>
-                <div style={styles.subtle}>策略模式：{testPlan.strategyMode || "bingo_v2_test_2period"}</div>
+                <div style={styles.subtle}>策略模式：{testPlan.strategyMode || "bingo_v3_test_2period_both_compare"}</div>
                 <div style={styles.subtle}>來源期數：第 {testPlan.sourceDrawNo} 期</div>
                 <div style={styles.subtle}>目標期數：第 {testPlan.targetDrawNo} 期</div>
                 {testPlan.groups.map((g, idx) => (
@@ -857,15 +894,35 @@ export default function App() {
                     <div style={styles.resultLine}>來源期數：{testResult.sourceDrawNo}</div>
                     <div style={styles.resultLine}>目標期數：{testResult.targetDrawNo}</div>
                     <div style={styles.resultLine}>實際比對期數：{testResult.compareDrawNo}</div>
+                    {testResult.compareDrawRange && (
+                      <div style={styles.resultLine}>比對區間：{testResult.compareDrawRange}</div>
+                    )}
                     <div style={styles.resultLine}>估計成本：{testResult.totalCost}</div>
                     <div style={styles.resultLine}>估計回收：{testResult.estimatedReturn}</div>
                     <div style={styles.resultLine}>估計損益：{testResult.profit}</div>
+
+                    {Array.isArray(testResult.compareRounds) && testResult.compareRounds.length > 0 && (
+                      <div style={{ marginTop: 14 }}>
+                        {testResult.compareRounds.map((round, idx) => (
+                          <div key={idx} style={{ ...styles.groupCard, marginTop: 10 }}>
+                            <div style={styles.groupTitle}>
+                              第 {idx + 1} 期比對｜{round.drawNo}
+                            </div>
+                            <div style={styles.subtle}>時間：{round.drawTime}</div>
+                            <div style={styles.subtle}>開獎號碼：{(round.drawNumbers || []).join(" ")}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
                     <div style={{ marginTop: 12 }}>
                       {testResult.results.map((r, idx) => (
                         <div key={idx} style={styles.resultRow}>
                           <span>{r.label}</span>
                           <span>{r.nums.join(" ")}</span>
-                          <span>命中 {r.hitCount} 碼</span>
+                          <span>
+                            累計 {r.hitCount} 碼 / 單期最佳 {r.bestSingleHit || 0} 碼
+                          </span>
                         </div>
                       ))}
                     </div>
@@ -903,6 +960,9 @@ export default function App() {
                     <div style={styles.resultLine}>來源期數：{formalResult.sourceDrawNo}</div>
                     <div style={styles.resultLine}>目標期數：{formalResult.targetDrawNo}</div>
                     <div style={styles.resultLine}>實際比對期數：{formalResult.compareDrawNo}</div>
+                    {formalResult.compareDrawRange && (
+                      <div style={styles.resultLine}>比對區間：{formalResult.compareDrawRange}</div>
+                    )}
                     <div style={styles.resultLine}>估計成本：{formalResult.totalCost}</div>
                     <div style={styles.resultLine}>估計回收：{formalResult.estimatedReturn}</div>
                     <div style={styles.resultLine}>估計損益：{formalResult.profit}</div>
@@ -911,7 +971,9 @@ export default function App() {
                         <div key={idx} style={styles.resultRow}>
                           <span>{r.label}</span>
                           <span>{r.nums.join(" ")}</span>
-                          <span>命中 {r.hitCount} 碼</span>
+                          <span>
+                            累計 {r.hitCount} 碼 / 單期最佳 {r.bestSingleHit || 0} 碼
+                          </span>
                         </div>
                       ))}
                     </div>
@@ -1114,7 +1176,7 @@ const styles = {
   },
   resultRow: {
     display: "grid",
-    gridTemplateColumns: "1.2fr 2fr 1fr",
+    gridTemplateColumns: "1.4fr 2fr 1.6fr",
     gap: 12,
     padding: "8px 0",
     borderBottom: "1px solid rgba(255,255,255,0.08)"
