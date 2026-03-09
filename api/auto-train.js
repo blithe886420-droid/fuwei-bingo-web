@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import { buildBingoV1Strategies } from "../lib/buildBingoV1Strategies.js";
 
 function getSupabase() {
   const url = process.env.SUPABASE_URL;
@@ -6,13 +7,8 @@ function getSupabase() {
     process.env.SUPABASE_SERVICE_ROLE_KEY ||
     process.env.SUPABASE_SECRET_KEY;
 
-  if (!url) {
-    throw new Error("SUPABASE_URL is required");
-  }
-
-  if (!key) {
-    throw new Error("supabaseKey is required");
-  }
+  if (!url) throw new Error("SUPABASE_URL is required");
+  if (!key) throw new Error("supabaseKey is required");
 
   return createClient(url, key, {
     auth: {
@@ -139,15 +135,10 @@ function buildCompareResult(prediction, drawRows) {
 
   let verdict = `${periodsText}累計最佳 ${bestTotalOverall} 碼 / 單期最佳 ${bestSingleOverall} 碼`;
 
-  if (bestSingleOverall >= 4) {
-    verdict = `${periodsText}累計最佳 ${bestTotalOverall} 碼 / 單期最佳中4`;
-  } else if (bestSingleOverall === 3) {
-    verdict = `${periodsText}累計最佳 ${bestTotalOverall} 碼 / 單期最佳中3`;
-  } else if (bestSingleOverall === 2) {
-    verdict = `${periodsText}累計最佳 ${bestTotalOverall} 碼 / 單期最佳中2`;
-  } else if (bestSingleOverall === 1) {
-    verdict = `${periodsText}累計最佳 ${bestTotalOverall} 碼 / 單期最佳中1`;
-  }
+  if (bestSingleOverall >= 4) verdict = `${periodsText}累計最佳 ${bestTotalOverall} 碼 / 單期最佳中4`;
+  else if (bestSingleOverall === 3) verdict = `${periodsText}累計最佳 ${bestTotalOverall} 碼 / 單期最佳中3`;
+  else if (bestSingleOverall === 2) verdict = `${periodsText}累計最佳 ${bestTotalOverall} 碼 / 單期最佳中2`;
+  else if (bestSingleOverall === 1) verdict = `${periodsText}累計最佳 ${bestTotalOverall} 碼 / 單期最佳中1`;
 
   return {
     sourceDrawNo,
@@ -230,6 +221,93 @@ async function compareOnePrediction(supabase, prediction) {
   };
 }
 
+function buildGroupsFromRecent20(recent20) {
+  const rows = recent20.map((r) => ({
+    draw_no: r.draw_no,
+    draw_time: r.draw_time,
+    numbers: r.numbers
+  }));
+
+  const built = buildBingoV1Strategies(rows);
+  const strategies = Array.isArray(built?.strategies) ? built.strategies : [];
+
+  return strategies.map((s) => ({
+    label: `第${s.groupNo}組｜${s.label}`,
+    nums: s.nums,
+    reason: s.reason,
+    key: s.key,
+    meta: s.meta || {}
+  }));
+}
+
+async function createNextTestPrediction(supabase, latestRows) {
+  const latestRow = latestRows[0];
+  const latestDrawNo = Number(latestRow?.draw_no || 0);
+
+  if (!latestDrawNo) {
+    return { created: false, reason: "latestDrawNo invalid" };
+  }
+
+  // 避免重複建立同一期的 created prediction
+  const { data: existingCreated, error: existingError } = await supabase
+    .from("bingo_predictions")
+    .select("id, source_draw_no, target_periods, status")
+    .eq("status", "created")
+    .eq("mode", "test")
+    .eq("source_draw_no", latestDrawNo);
+
+  if (existingError) {
+    return {
+      created: false,
+      reason: existingError.message || "查詢既有 created prediction 失敗"
+    };
+  }
+
+  if (Array.isArray(existingCreated) && existingCreated.length > 0) {
+    return {
+      created: false,
+      reason: `第 ${latestDrawNo} 期的 test prediction 已存在`
+    };
+  }
+
+  const groups = buildGroupsFromRecent20(latestRows);
+
+  if (!groups.length) {
+    return {
+      created: false,
+      reason: "buildBingoV1Strategies 未產生 groups"
+    };
+  }
+
+  const payload = {
+    id: Date.now(),
+    mode: "test",
+    status: "created",
+    source_draw_no: latestDrawNo,
+    target_periods: 2,
+    groups_json: groups,
+    latest_draw_no: latestDrawNo
+  };
+
+  const { data, error } = await supabase
+    .from("bingo_predictions")
+    .insert(payload)
+    .select("id, source_draw_no, target_periods, status")
+    .single();
+
+  if (error) {
+    return {
+      created: false,
+      reason: error.message || "建立下一筆 prediction 失敗"
+    };
+  }
+
+  return {
+    created: true,
+    prediction: data
+  };
+}
+
 export default async function handler(req, res) {
   try {
     const supabase = getSupabase();
@@ -247,9 +325,8 @@ export default async function handler(req, res) {
       });
     }
 
-    const latestRow = latestRows[0];
-    const latestDrawNo = Number(latestRow.draw_no || 0);
-    const latestDrawTime = latestRow.draw_time || null;
+    const latestDrawNo = Number(latestRows[0].draw_no || 0);
+    const latestDrawTime = latestRows[0].draw_time || null;
 
     const { data: pendingPredictions, error: pendingError } = await supabase
       .from("bingo_predictions")
@@ -277,23 +354,22 @@ export default async function handler(req, res) {
 
     for (const prediction of matured) {
       const compared = await compareOnePrediction(supabase, prediction);
-
-      if (compared.ok) {
-        maturedCompared += 1;
-      }
-
+      if (compared.ok) maturedCompared += 1;
       compareResults.push(compared);
     }
 
+    const nextPrediction = await createNextTestPrediction(supabase, latestRows);
+
     return res.status(200).json({
       ok: true,
-      strategyMode: "auto_train_compare_existing_v2",
+      strategyMode: "v3_auto_loop_test_2period",
       latestDrawNo,
       latestDrawTime,
       catchupInserted: 0,
-      created: 0,
+      created: nextPrediction.created ? 1 : 0,
       maturedCompared,
       compareResults,
+      nextPrediction,
       groups: []
     });
   } catch (err) {
