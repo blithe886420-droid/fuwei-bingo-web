@@ -601,15 +601,28 @@ export default function App() {
     }
   }
 
-  useEffect(() => {
-  // 先抓一次
+ useEffect(() => {
+  // 先抓一次最新期數
   loadRecent20(false);
 
-  // 每3分鐘自動更新期數
-  const timer = setInterval(() => {
-    console.log("自動更新期數...");
-    loadRecent20(false);
-  }, 180000); // 180000ms = 3分鐘
+  // 每 3 分鐘自動更新
+  const timer = setInterval(async () => {
+    console.log("⏱ 每3分鐘自動更新期數與訓練");
+
+    await loadRecent20(false);
+
+    try {
+      await autoCatchupAndCompare();
+    } catch (err) {
+      console.error("autoCatchupAndCompare failed:", err);
+    }
+
+    try {
+      await runAutoTrain();
+    } catch (err) {
+      console.error("runAutoTrain failed:", err);
+    }
+  }, 180000); // 3分鐘
 
   return () => {
     clearInterval(timer);
