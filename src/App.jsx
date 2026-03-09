@@ -624,7 +624,7 @@ export default function App() {
       <div style={styles.wrap}>
         <section style={styles.hero}>
           <div style={styles.kicker}>FUWEI BINGO SYSTEM</div>
-          <h1 style={styles.h1}>富緯賓果系統 v9.9 測試版</h1>
+         <h1 style={styles.h1}>富緯賓果系統 v2.6 全覆蓋摘要版</h1>
           <p style={styles.p}>
             固定採用四星賓果、四組、四期。支援一鍵自動訓練：補抓、同步、生成、建立測試、到期比對。
           </p>
