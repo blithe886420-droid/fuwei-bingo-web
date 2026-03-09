@@ -356,7 +356,7 @@ export default function App() {
       mode: "test",
       createdAt: new Date().toISOString(),
       sourceDrawNo: latest.drawNo,
-      targetPeriods: 4,
+      targetPeriods: 2,
       targetDrawNo: Number(latest.drawNo || 0) + 4,
       strategyMode: generatedPlan?.mode || "bingo_v2_4star_4group_4period_self_optimized",
       groups: sourceGroups,
