@@ -1,36 +1,48 @@
+import { createClient } from "@supabase/supabase-js";
+
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
+
 function parseNumbers(input) {
-  return Array.isArray(input)
-    ? input.map(x => String(x).padStart(2, "0")).slice(0, 20)
-    : [];
+  if (Array.isArray(input)) {
+    return input
+      .map((x) => String(x).trim())
+      .filter(Boolean)
+      .map((x) => x.padStart(2, "0"))
+      .slice(0, 20);
+  }
+
+  return String(input || "")
+    .split(/[,\s]+/)
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .map((x) => x.padStart(2, "0"))
+    .slice(0, 20);
 }
 
-function calcHit(groupNums, drawNums) {
-  const set = new Set(drawNums);
-  return groupNums.filter(n => set.has(n));
+function safeJsonParse(value, fallback = null) {
+  if (value == null) return fallback;
+  if (typeof value === "object") return value;
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
 }
 
 export default async function handler(req, res) {
+  if (req.method !== "POST") {
+    return res.status(405).json({
+      ok: false,
+      error: "Method not allowed"
+    });
+  }
+
   try {
-    const SUPABASE_URL = process.env.SUPABASE_URL;
-    const SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY;
-
-    if (!SUPABASE_URL || !SUPABASE_SECRET_KEY) {
-      return res.status(500).json({
-        ok: false,
-        error: "Missing SUPABASE_URL or SUPABASE_SECRET_KEY"
-      });
-    }
-
-    if (req.method !== "POST") {
-      return res.status(405).json({
-        ok: false,
-        error: "Method not allowed"
-      });
-    }
-
-    const body = req.body || {};
-    const predictionId = body.predictionId;
-    const drawNumbers = parseNumbers(body.drawNumbers);
+    const { predictionId } = req.body || {};
 
     if (!predictionId) {
       return res.status(400).json({
@@ -39,6 +51,48 @@ export default async function handler(req, res) {
       });
     }
 
+    // 1. 先抓 prediction
+    const { data: prediction, error: predictionError } = await supabase
+      .from("bingo_predictions")
+      .select("*")
+      .eq("id", predictionId)
+      .single();
+
+    if (predictionError || !prediction) {
+      return res.status(404).json({
+        ok: false,
+        error: "prediction not found"
+      });
+    }
+
+    const sourceDrawNo = Number(prediction.source_draw_no || 0);
+    const targetPeriods = Number(prediction.target_periods || 0);
+    const targetDrawNo = sourceDrawNo + targetPeriods;
+
+    if (!sourceDrawNo || !targetPeriods || !targetDrawNo) {
+      return res.status(400).json({
+        ok: false,
+        error: "prediction source_draw_no / target_periods invalid"
+      });
+    }
+
+    // 2. 抓目標期數的開獎資料
+    const { data: drawRow, error: drawError } = await supabase
+      .from("bingo_draws")
+      .select("draw_no, draw_time, numbers")
+      .eq("draw_no", targetDrawNo)
+      .single();
+
+    if (drawError || !drawRow) {
+      return res.status(400).json({
+        ok: false,
+        waiting: true,
+        error: `尚未到比對期數，或第 ${targetDrawNo} 期開獎資料尚未入庫`
+      });
+    }
+
+    const drawNumbers = parseNumbers(drawRow.numbers);
+
     if (drawNumbers.length !== 20) {
       return res.status(400).json({
         ok: false,
@@ -46,115 +100,88 @@ export default async function handler(req, res) {
       });
     }
 
-    const getRes = await fetch(
-      `${SUPABASE_URL}/rest/v1/bingo_predictions?id=eq.${predictionId}&select=*`,
-      {
-        headers: {
-          apikey: SUPABASE_SECRET_KEY,
-          Authorization: `Bearer ${SUPABASE_SECRET_KEY}`
-        }
-      }
-    );
+    // 3. 解析 groups_json
+    const groupsRaw = safeJsonParse(prediction.groups_json, []);
+    const groups = Array.isArray(groupsRaw) ? groupsRaw : [];
 
-    if (!getRes.ok) {
-      const detail = await getRes.text();
-      return res.status(500).json({
+    if (!groups.length) {
+      return res.status(400).json({
         ok: false,
-        error: "Fetch prediction failed",
-        detail
+        error: "groups_json is empty"
       });
     }
 
-    const rows = await getRes.json();
-    const prediction = Array.isArray(rows) ? rows[0] : null;
+    // 4. 逐組比對
+    const results = groups.map((g, idx) => {
+      const nums = parseNumbers(g.nums);
+      const hits = nums.filter((n) => drawNumbers.includes(n));
 
-    if (!prediction) {
-      return res.status(404).json({
-        ok: false,
-        error: "Prediction not found"
-      });
-    }
-
-    const groups = Array.isArray(prediction.groups_json) ? prediction.groups_json : [];
-    const targetPeriods = Number(prediction.target_periods || 2);
-
-    const results = groups.map(g => {
-      const nums = Array.isArray(g.nums) ? g.nums : [];
-      const hits = calcHit(nums, drawNumbers);
       return {
-        label: g.label,
+        index: idx + 1,
+        key: g.key || `group_${idx + 1}`,
+        label: g.label || `第${idx + 1}組`,
         nums,
-        hits,
-        hitCount: hits.length
+        hitCount: hits.length,
+        hitNumbers: hits
       };
     });
 
-    const periodCost = groups.length * 25;
-    const totalCost = targetPeriods * periodCost;
-    const effectiveGroups = results.filter(r => r.hitCount >= 2).length;
-    const estimatedReturn = effectiveGroups * 100;
+    const maxHit = results.reduce((m, r) => Math.max(m, r.hitCount), 0);
+
+    let verdict = "未中";
+    if (maxHit >= 4) verdict = "中4";
+    else if (maxHit === 3) verdict = "中3";
+    else if (maxHit === 2) verdict = "中2";
+    else if (maxHit === 1) verdict = "中1";
+
+    // 這裡先用保守值，之後要再精算成本/獎金可以再補
+    const totalCost = 0;
+    const estimatedReturn = 0;
     const profit = estimatedReturn - totalCost;
 
-    const verdict =
-      profit > 0
-        ? "小贏以上"
-        : profit === 0
-        ? "打平"
-        : profit >= -50
-        ? "接近成本"
-        : "被咬";
-
-    const compareResult = {
+    const result = {
+      sourceDrawNo,
+      targetDrawNo,
+      compareDrawNo: Number(drawRow.draw_no),
+      compareDrawTime: drawRow.draw_time,
       drawNumbers,
-      results,
+      verdict,
+      maxHit,
       totalCost,
       estimatedReturn,
       profit,
-      verdict
+      results
     };
 
-    const now = new Date().toISOString();
+    // 5. 更新 prediction 狀態
+    const updatePayload = {
+      status: "compared",
+      verdict,
+      compare_result: result
+    };
 
-    const updateRes = await fetch(
-      `${SUPABASE_URL}/rest/v1/bingo_predictions?id=eq.${predictionId}`,
-      {
-        method: "PATCH",
-        headers: {
-          apikey: SUPABASE_SECRET_KEY,
-          Authorization: `Bearer ${SUPABASE_SECRET_KEY}`,
-          "Content-Type": "application/json",
-          Prefer: "return=representation"
-        },
-        body: JSON.stringify({
-          status: "compared",
-          latest_draw_numbers: drawNumbers.join(" "),
-          compare_result_json: compareResult,
-          verdict,
-          compared_at: now
-        })
-      }
-    );
+    const { error: updateError } = await supabase
+      .from("bingo_predictions")
+      .update(updatePayload)
+      .eq("id", predictionId);
 
-    if (!updateRes.ok) {
-      const detail = await updateRes.text();
-      return res.status(500).json({
-        ok: false,
-        error: "Update compare result failed",
-        detail
+    if (updateError) {
+      // 就算 DB 更新失敗，也先把比對結果回給前端
+      return res.status(200).json({
+        ok: true,
+        result,
+        warning: `compare 成功，但 DB 更新失敗：${updateError.message}`
       });
     }
 
-    const updated = await updateRes.json();
-
     return res.status(200).json({
       ok: true,
-      result: compareResult,
-      row: updated
+      result
     });
   } catch (err) {
     return res.status(500).json({
       ok: false,
-      error: err.message || "prediction compare failed"
+      error: err.message || "prediction-compare failed"
     });
   }
 }
