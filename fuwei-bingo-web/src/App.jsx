@@ -17,7 +17,7 @@ const STORAGE_KEYS = {
   formalResult: "fuwei_bingo_formal_result_v25_hobby",
   autoRunAt: "fuwei_bingo_auto_run_at_v25_hobby",
   generatedPlan: "fuwei_bingo_generated_plan_v25_hobby",
-  autoTrainLast: "fuwei_bingo_auto_train_last_v25_hobby"
+  autoTrainLast: "fuwei_bingo_auto_train_last_v26_hobby"
 };
 
 const LEARNING_KEYS = createLearningStorageKeys("fuwei_bingo_strategy_learning_v2");
