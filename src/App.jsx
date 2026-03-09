@@ -1,4 +1,4 @@
-// v3.2 AUTO LOOP STABLE
+// v3.3 AUTO LOOP + NIGHT SLEEP
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { buildBingoV1Strategies } from "../lib/buildBingoV1Strategies";
 import {
@@ -80,6 +80,26 @@ function withTs(url) {
   return `${url}${sep}ts=${Date.now()}`;
 }
 
+// 休息時段：00:00 ~ 07:29
+function isBingoRestTime() {
+  const now = new Date();
+  const hour = now.getHours();
+  const minute = now.getMinutes();
+  const total = hour * 60 + minute;
+  return total < 450; // 07:30 = 450 分
+}
+
+function getClockText() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  const hh = String(now.getHours()).padStart(2, "0");
+  const mm = String(now.getMinutes()).padStart(2, "0");
+  const ss = String(now.getSeconds()).padStart(2, "0");
+  return `${y}-${m}-${d} ${hh}:${mm}:${ss}`;
+}
+
 export default function App() {
   const [latest, setLatest] = useState(() =>
     readLocal(STORAGE_KEYS.latest, TXT_LATEST)
@@ -99,6 +119,7 @@ export default function App() {
   const [syncStatus, setSyncStatus] = useState("尚未同步");
   const [notice, setNotice] = useState("系統啟動中，準備接即時資料。");
   const [autoStatus, setAutoStatus] = useState("尚未執行補抓補比對");
+  const [loopStatus, setLoopStatus] = useState("自動循環待啟動");
 
   const [testPlan, setTestPlan] = useState(() =>
     readLocal(STORAGE_KEYS.testPlan, null)
@@ -568,13 +589,13 @@ export default function App() {
         throw new Error(catchupData.error || catchupData.message || "補抓失敗");
       }
 
-      await syncLatestCore(true);
+      const latestAfterSync = await syncLatestCore(true);
       await loadRecent20(true);
 
       let done = 0;
       let learnedCount = 0;
 
-      if (testPlan?.predictionId && Number(latest.drawNo || 0) >= Number(testPlan.targetDrawNo || 0)) {
+      if (testPlan?.predictionId && Number(latestAfterSync.drawNo || 0) >= Number(testPlan.targetDrawNo || 0)) {
         const result = await comparePrediction(testPlan.predictionId);
         if (result.ok) {
           setTestResult(result.result);
@@ -590,7 +611,7 @@ export default function App() {
         }
       }
 
-      if (formalPlan?.predictionId && Number(latest.drawNo || 0) >= Number(formalPlan.targetDrawNo || 0)) {
+      if (formalPlan?.predictionId && Number(latestAfterSync.drawNo || 0) >= Number(formalPlan.targetDrawNo || 0)) {
         const result = await comparePrediction(formalPlan.predictionId);
         if (result.ok) {
           setFormalResult(result.result);
@@ -620,50 +641,47 @@ export default function App() {
     }
   }
 
+  async function runAutoLoopOnce(fromTimer = false) {
+    const nowText = getClockText();
+
+    if (isBingoRestTime()) {
+      setLoopStatus(`目前為休息時段（00:00~07:29），已暫停自動更新。${nowText}`);
+      setNotice(`目前為休息時段（00:00~07:29），系統暫停自動同步與訓練。`);
+      return;
+    }
+
+    setLoopStatus(`自動循環執行中：${nowText}${fromTimer ? "（定時）" : "（啟動）"}`);
+
+    try {
+      await syncLatest();
+    } catch (err) {
+      console.error("syncLatest failed:", err);
+    }
+
+    try {
+      await autoCatchupAndCompare();
+    } catch (err) {
+      console.error("autoCatchupAndCompare failed:", err);
+    }
+
+    try {
+      await runAutoTrain();
+    } catch (err) {
+      console.error("runAutoTrain failed:", err);
+    }
+
+    setLoopStatus(`自動循環完成：${getClockText()}`);
+  }
+
   useEffect(() => {
     if (autoRanRef.current) return;
     autoRanRef.current = true;
 
-    (async () => {
-      try {
-        await syncLatest();
-      } catch (err) {
-        console.error("initial syncLatest failed:", err);
-      }
+    runAutoLoopOnce(false);
 
-      try {
-        await autoCatchupAndCompare();
-      } catch (err) {
-        console.error("initial autoCatchupAndCompare failed:", err);
-      }
-
-      try {
-        await runAutoTrain();
-      } catch (err) {
-        console.error("initial runAutoTrain failed:", err);
-      }
-    })();
-
-    const timer = setInterval(async () => {
+    const timer = setInterval(() => {
       console.log("⏱ 每3分鐘自動 sync / compare / train");
-
-      try {
-        await syncLatest();
-      } catch (err) {
-        console.error("syncLatest failed:", err);
-      }
-
-      try {
-        await autoCatchupAndCompare();
-      } catch (err) {
-        console.error("autoCatchupAndCompare failed:", err);
-      }
-
-      try {
-        await runAutoTrain();
-      } catch (err) {
-        console.error("runAutoTrain failed:", err);
-      }
+      runAutoLoopOnce(true);
     }, 180000);
 
     return () => clearInterval(timer);
@@ -705,6 +723,7 @@ export default function App() {
           <div style={styles.notice}>{notice}</div>
           <div style={{ ...styles.notice, marginTop: 12, background: "#0a2440" }}>{autoStatus}</div>
           <div style={{ ...styles.notice, marginTop: 12, background: "#0d2744" }}>{recent20Status}</div>
+          <div style={{ ...styles.notice, marginTop: 12, background: "#12345b" }}>{loopStatus}</div>
 
           <div style={styles.statsGrid}>
             <div style={styles.statCard}>
