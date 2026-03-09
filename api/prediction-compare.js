@@ -118,8 +118,8 @@ function buildCompareResult(prediction, drawRows) {
       key: g.key || `group_${idx + 1}`,
       label: g.label || `第${idx + 1}組`,
       nums,
-      hitCount: totalHitCount,          // 這裡改成兩期（或多期）累計命中
-      bestSingleHit,                    // 單期最佳命中
+      hitCount: totalHitCount,
+      bestSingleHit,
       hitNumbers: Array.from(allHitNumbers),
       roundHits
     };
@@ -152,7 +152,7 @@ function buildCompareResult(prediction, drawRows) {
   return {
     sourceDrawNo,
     targetDrawNo,
-    compareDrawNo: targetDrawNo, // 讓前端原本欄位還能顯示
+    compareDrawNo: targetDrawNo,
     compareDrawRange: compareRounds.map((r) => r.drawNo).join(" ~ "),
     compareRounds,
     verdict,
