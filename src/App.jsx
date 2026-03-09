@@ -660,7 +660,6 @@ export default function App() {
           <div style={styles.btnRow}>
             <button style={styles.primaryBtn} onClick={syncLatest}>同步最新一期</button>
             <button style={styles.secondaryBtn} onClick={autoCatchupAndCompare}>立即補抓補比對</button>
-            <button style={styles.secondaryBtn} onClick={generateStrategyPlan}>自動產生四組四期</button>
             <button style={styles.secondaryBtn} onClick={runAutoTrain}>啟動自動訓練</button>
             <button style={styles.secondaryBtn} onClick={startTestMode}>建立測試模式</button>
             <button style={styles.secondaryBtn} onClick={startFormalMode}>建立正式投注</button>
