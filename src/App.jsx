@@ -1,4 +1,4 @@
-// v10.0 TEST 2-PERIOD
+// v10.1 TEST-2P STABLE
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { buildBingoV1Strategies } from "../lib/buildBingoV1Strategies";
 import {
@@ -133,6 +133,16 @@ export default function App() {
       const rows = Array.isArray(data.recent20) ? data.recent20 : [];
       setRecent20(rows);
 
+      if (rows.length > 0) {
+        const newest = rows[0];
+        setLatest((prev) => ({
+          drawNo: Number(newest.draw_no || prev?.drawNo || 0) || prev?.drawNo || null,
+          drawTime: newest.draw_time || prev?.drawTime || "即時更新",
+          numbers: parseNumbers(newest.numbers || prev?.numbers || []),
+          source: "recent20 最新期數"
+        }));
+      }
+
       if (!silent) {
         setRecent20Status(`recent20 已更新，共 ${rows.length} 期。`);
       }
@@ -198,6 +208,16 @@ export default function App() {
       if (Array.isArray(saveData.recent20) && saveData.recent20.length > 0) {
         setRecent20(saveData.recent20);
         setRecent20Status(`recent20 已更新，共 ${saveData.recent20.length} 期。`);
+
+        const newest = saveData.recent20[0];
+        if (newest) {
+          setLatest({
+            drawNo: Number(newest.draw_no || newLatest.drawNo || 0) || newLatest.drawNo,
+            drawTime: newest.draw_time || newLatest.drawTime,
+            numbers: parseNumbers(newest.numbers || newLatest.numbers),
+            source: "recent20 最新期數"
+          });
+        }
       } else {
         await loadRecent20(true);
       }
@@ -234,7 +254,7 @@ export default function App() {
       try {
         data = JSON.parse(raw);
       } catch {
-        throw new Error(`auto-train 回傳非 JSON：${raw.slice(0, 80)}`);
+        throw new Error(`auto-train 回傳非 JSON：${raw.slice(0, 120)}`);
       }
 
       if (!data.ok) {
@@ -282,13 +302,13 @@ export default function App() {
     }
   }
 
-  async function savePrediction(mode, targetPeriods, groups) {
+  async function savePrediction(mode, targetPeriods, groups, sourceDrawNo) {
     const res = await fetch("/api/prediction-save", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         mode,
-        sourceDrawNo: latest.drawNo,
+        sourceDrawNo,
         targetPeriods,
         groups
       })
@@ -326,6 +346,13 @@ export default function App() {
   }
 
   async function startTestMode() {
+    const currentDrawNo = Number(recent20?.[0]?.draw_no || latest.drawNo || 0);
+
+    if (!currentDrawNo) {
+      setNotice("目前抓不到最新期數，請先按一次同步最新一期。");
+      return;
+    }
+
     const sourceGroups = generatedPlan?.groups?.length
       ? generatedPlan.groups.map((g) => ({
           label: g.label,
@@ -339,25 +366,24 @@ export default function App() {
     const plan = {
       mode: "test",
       createdAt: new Date().toISOString(),
-      sourceDrawNo: latest.drawNo,
+      sourceDrawNo: currentDrawNo,
       targetPeriods: 2,
-      targetDrawNo: Number(latest.drawNo || 0) + 2,
+      targetDrawNo: currentDrawNo + 2,
       strategyMode: generatedPlan?.mode || "bingo_v2_test_2period",
       groups: sourceGroups,
       predictionId: null
     };
 
     try {
-      const saved = await savePrediction("test", 2, sourceGroups);
+      const saved = await savePrediction("test", 2, sourceGroups, currentDrawNo);
       if (saved.ok) {
         plan.predictionId = saved.id;
-        plan.targetDrawNo = Number(saved.targetDrawNo || plan.targetDrawNo);
-        setNotice(`已建立四星賓果四組二期測試模式，需等到第 ${plan.targetDrawNo} 期才可比對。`);
+        setNotice(`已建立四星賓果四組二期測試模式，來源第 ${currentDrawNo} 期。`);
       } else {
-        setNotice("已建立測試模式，但預測資料庫寫入失敗。");
+        setNotice(`測試模式建立失敗：${saved.error || "預測資料庫寫入失敗"}`);
       }
-    } catch {
-      setNotice("已建立測試模式，但預測資料庫寫入失敗。");
+    } catch (err) {
+      setNotice(`測試模式建立失敗：${err.message}`);
     }
 
     setTestPlan(plan);
@@ -365,6 +391,13 @@ export default function App() {
   }
 
   async function startFormalMode() {
+    const currentDrawNo = Number(recent20?.[0]?.draw_no || latest.drawNo || 0);
+
+    if (!currentDrawNo) {
+      setNotice("目前抓不到最新期數，請先按一次同步最新一期。");
+      return;
+    }
+
     const sourceGroups = generatedPlan?.groups?.length
       ? generatedPlan.groups.map((g) => ({
           label: g.label,
@@ -378,25 +411,24 @@ export default function App() {
     const plan = {
       mode: "formal",
       createdAt: new Date().toISOString(),
-      sourceDrawNo: latest.drawNo,
+      sourceDrawNo: currentDrawNo,
       targetPeriods: 4,
-      targetDrawNo: Number(latest.drawNo || 0) + 4,
+      targetDrawNo: currentDrawNo + 4,
       strategyMode: generatedPlan?.mode || "bingo_v2_4star_4group_4period_self_optimized",
       groups: sourceGroups,
       predictionId: null
     };
 
     try {
-      const saved = await savePrediction("formal", 4, sourceGroups);
+      const saved = await savePrediction("formal", 4, sourceGroups, currentDrawNo);
       if (saved.ok) {
         plan.predictionId = saved.id;
-        plan.targetDrawNo = Number(saved.targetDrawNo || plan.targetDrawNo);
-        setNotice(`已建立四星賓果四組四期正式方案，需等到第 ${plan.targetDrawNo} 期才可比對。`);
+        setNotice(`已建立四星賓果四組四期正式方案，來源第 ${currentDrawNo} 期。`);
       } else {
-        setNotice("已建立正式方案，但預測資料庫寫入失敗。");
+        setNotice(`正式投注建立失敗：${saved.error || "預測資料庫寫入失敗"}`);
       }
-    } catch {
-      setNotice("已建立正式方案，但預測資料庫寫入失敗。");
+    } catch (err) {
+      setNotice(`正式投注建立失敗：${err.message}`);
     }
 
     setFormalPlan(plan);
@@ -414,7 +446,6 @@ export default function App() {
     });
 
     setStrategyStats(learned.stats);
-
     return learned;
   }
 
@@ -511,20 +542,20 @@ export default function App() {
       try {
         catchupData = JSON.parse(catchupRaw);
       } catch {
-        throw new Error(`catchup 回傳非 JSON：${catchupRaw.slice(0, 80)}`);
+        throw new Error(`catchup 回傳非 JSON：${catchupRaw.slice(0, 120)}`);
       }
 
       if (!catchupData.ok) {
         throw new Error(catchupData.error || catchupData.message || "補抓失敗");
       }
 
-      const latestData = await syncLatestCore(true);
+      await syncLatestCore(true);
       await loadRecent20(true);
 
       let done = 0;
       let learnedCount = 0;
 
-      if (testPlan?.predictionId && Number(latestData.drawNo || 0) >= Number(testPlan.targetDrawNo || 0)) {
+      if (testPlan?.predictionId && Number(latest.drawNo || 0) >= Number(testPlan.targetDrawNo || 0)) {
         const result = await comparePrediction(testPlan.predictionId);
         if (result.ok) {
           setTestResult(result.result);
@@ -540,7 +571,7 @@ export default function App() {
         }
       }
 
-      if (formalPlan?.predictionId && Number(latestData.drawNo || 0) >= Number(formalPlan.targetDrawNo || 0)) {
+      if (formalPlan?.predictionId && Number(latest.drawNo || 0) >= Number(formalPlan.targetDrawNo || 0)) {
         const result = await comparePrediction(formalPlan.predictionId);
         if (result.ok) {
           setFormalResult(result.result);
