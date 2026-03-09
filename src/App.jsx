@@ -1,4 +1,4 @@
-// v9.9 TEST DEPLOY
+// v10.0 TEST 2-PERIOD
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { buildBingoV1Strategies } from "../lib/buildBingoV1Strategies";
 import {
@@ -48,16 +48,16 @@ function writeLocal(key, value) {
 function parseNumbers(str) {
   return String(str || "")
     .split(/[,\s]+/)
-    .map(x => x.trim())
+    .map((x) => x.trim())
     .filter(Boolean)
-    .map(x => String(x).padStart(2, "0"))
+    .map((x) => String(x).padStart(2, "0"))
     .slice(0, 20);
 }
 
 function freqMap(recent20) {
   const map = {};
-  recent20.forEach(row => {
-    parseNumbers(row.numbers).forEach(n => {
+  recent20.forEach((row) => {
+    parseNumbers(row.numbers).forEach((n) => {
       map[n] = (map[n] || 0) + 1;
     });
   });
@@ -223,22 +223,6 @@ export default function App() {
     }
   }
 
-  async function generateStrategyPlan() {
-    try {
-      const res = await fetch("/api/strategy-generate?n=80");
-      const data = await res.json();
-
-      if (!data.ok) {
-        throw new Error(data.error || "策略生成失敗");
-      }
-
-      setGeneratedPlan(data);
-      setNotice(`已生成四星賓果四組四期方案，資料期數到第 ${data.latestDrawNo} 期。`);
-    } catch (err) {
-      setNotice(`策略生成失敗：${err.message}`);
-    }
-  }
-
   async function runAutoTrain() {
     try {
       setAutoStatus("自動訓練執行中...");
@@ -257,7 +241,6 @@ export default function App() {
         throw new Error(data.error || data.step || "auto-train failed");
       }
 
-      // 同步前端狀態
       await syncLatestCore(true);
       await loadRecent20(true);
 
@@ -272,19 +255,20 @@ export default function App() {
         latestDrawNo: data.latestDrawNo,
         latestDrawTime: data.latestDrawTime,
         usedRows: 80,
-        groups: Array.isArray(data.groups) ? data.groups.map((g, idx) => ({
-          groupNo: idx + 1,
-          key: g.key,
-          label: g.label,
-          nums: g.nums,
-          reason: g.reason
-        })) : []
+        groups: Array.isArray(data.groups)
+          ? data.groups.map((g, idx) => ({
+              groupNo: idx + 1,
+              key: g.key,
+              label: g.label,
+              nums: g.nums,
+              reason: g.reason
+            }))
+          : []
       };
 
       setGeneratedPlan(generated);
       setAutoTrainLast(data);
 
-      // 若有成熟比對，反映到 notice
       const matured = Number(data.maturedCompared || 0);
       const created = Number(data.created || 0);
       const catchupInserted = Number(data.catchupInserted || 0);
@@ -331,7 +315,7 @@ export default function App() {
 
     return {
       built,
-      groups: built.strategies.map(s => ({
+      groups: built.strategies.map((s) => ({
         label: `第${s.groupNo}組｜${s.label}`,
         nums: s.nums,
         reason: `${s.reason}（權重 ${Number(s.meta?.optimizerWeight || 1).toFixed(2)}）`,
@@ -343,7 +327,7 @@ export default function App() {
 
   async function startTestMode() {
     const sourceGroups = generatedPlan?.groups?.length
-      ? generatedPlan.groups.map(g => ({
+      ? generatedPlan.groups.map((g) => ({
           label: g.label,
           nums: g.nums,
           reason: g.reason,
@@ -357,18 +341,18 @@ export default function App() {
       createdAt: new Date().toISOString(),
       sourceDrawNo: latest.drawNo,
       targetPeriods: 2,
-      targetDrawNo: Number(latest.drawNo || 0) + 4,
-      strategyMode: generatedPlan?.mode || "bingo_v2_4star_4group_4period_self_optimized",
+      targetDrawNo: Number(latest.drawNo || 0) + 2,
+      strategyMode: generatedPlan?.mode || "bingo_v2_test_2period",
       groups: sourceGroups,
       predictionId: null
     };
 
     try {
-      const saved = await savePrediction("test", 4, sourceGroups);
+      const saved = await savePrediction("test", 2, sourceGroups);
       if (saved.ok) {
         plan.predictionId = saved.id;
         plan.targetDrawNo = Number(saved.targetDrawNo || plan.targetDrawNo);
-        setNotice(`已建立四星賓果四組四期測試模式，需等到第 ${plan.targetDrawNo} 期才可比對。`);
+        setNotice(`已建立四星賓果四組二期測試模式，需等到第 ${plan.targetDrawNo} 期才可比對。`);
       } else {
         setNotice("已建立測試模式，但預測資料庫寫入失敗。");
       }
@@ -382,7 +366,7 @@ export default function App() {
 
   async function startFormalMode() {
     const sourceGroups = generatedPlan?.groups?.length
-      ? generatedPlan.groups.map(g => ({
+      ? generatedPlan.groups.map((g) => ({
           label: g.label,
           nums: g.nums,
           reason: g.reason,
@@ -598,13 +582,13 @@ export default function App() {
 
   const core8 = useMemo(() => {
     const candidates = buildCandidates(recent20).slice(0, 8);
-    return candidates.map(x => x.num);
+    return candidates.map((x) => x.num);
   }, [recent20]);
 
   const sectionStats = useMemo(() => {
     const counts = { "01-20": 0, "21-40": 0, "41-60": 0, "61-80": 0 };
-    recent20.forEach(row => {
-      parseNumbers(row.numbers).forEach(n => {
+    recent20.forEach((row) => {
+      parseNumbers(row.numbers).forEach((n) => {
         const x = Number(n);
         if (x <= 20) counts["01-20"] += 1;
         else if (x <= 40) counts["21-40"] += 1;
@@ -624,9 +608,9 @@ export default function App() {
       <div style={styles.wrap}>
         <section style={styles.hero}>
           <div style={styles.kicker}>FUWEI BINGO SYSTEM</div>
-         <h1 style={styles.h1}>富緯賓果系統 v2.6 全覆蓋摘要版</h1>
+          <h1 style={styles.h1}>富緯賓果系統 v2.6 全覆蓋摘要版</h1>
           <p style={styles.p}>
-            固定採用四星賓果、四組、四期。支援一鍵自動訓練：補抓、同步、生成、建立測試、到期比對。
+            固定採用四星賓果、四組、四期。支援一鍵自動訓練：補抓、同步、建立測試、到期比對。
           </p>
 
           <div style={styles.notice}>{notice}</div>
@@ -697,9 +681,11 @@ export default function App() {
 
         {generatedPlan?.groups?.length ? (
           <section style={styles.panel}>
-            <h2 style={styles.h2}>自動產生四組四期方案</h2>
+            <h2 style={styles.h2}>自動訓練生成方案</h2>
             <div style={styles.subtle}>策略模式：{generatedPlan.mode}</div>
-            <div style={styles.subtle}>資料期數：第 {generatedPlan.latestDrawNo} 期 / 使用 {generatedPlan.usedRows || 80} 筆資料</div>
+            <div style={styles.subtle}>
+              資料期數：第 {generatedPlan.latestDrawNo} 期 / 使用 {generatedPlan.usedRows || 80} 筆資料
+            </div>
             <div style={{ marginTop: 12 }}>
               {generatedPlan.groups.map((g, idx) => (
                 <div key={idx} style={styles.groupCard}>
@@ -734,10 +720,15 @@ export default function App() {
         <div style={styles.grid2}>
           <section style={styles.panel}>
             <h2 style={styles.h2}>最近 20 期底稿</h2>
-            <div style={styles.subtle}>固定優先讀取 /api/recent20，供四星賓果四組四期策略生成與補比對使用</div>
+            <div style={styles.subtle}>
+              固定優先讀取 /api/recent20，供四星賓果策略生成與補比對使用
+            </div>
             <div style={{ maxHeight: 260, overflow: "auto", marginTop: 12 }}>
               {recent20.map((row, idx) => (
-                <div key={`${row.draw_no}-${idx}`} style={{ ...styles.row, borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+                <div
+                  key={`${row.draw_no}-${idx}`}
+                  style={{ ...styles.row, borderBottom: "1px solid rgba(255,255,255,0.08)" }}
+                >
                   <span>{row.draw_no || "-"}</span>
                   <span style={{ fontSize: 12, opacity: 0.8 }}>{row.draw_time || ""}</span>
                 </div>
@@ -758,16 +749,29 @@ export default function App() {
 
         <section style={styles.panel}>
           <h2 style={styles.h2}>自我優化權重面板</h2>
-          <div style={styles.subtle}>每次比對後，系統會更新各策略平均命中與權重。權重越高，下一輪生成時該策略內部權重越強。</div>
-          <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))", gap: 14 }}>
-            {strategySummary.map(item => (
+          <div style={styles.subtle}>
+            每次比對後，系統會更新各策略平均命中與權重。權重越高，下一輪生成時該策略內部權重越強。
+          </div>
+          <div
+            style={{
+              marginTop: 14,
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))",
+              gap: 14
+            }}
+          >
+            {strategySummary.map((item) => (
               <div key={item.key} style={styles.groupCard}>
                 <div style={styles.groupTitle}>{item.label}</div>
                 <div style={{ ...styles.subtle, marginTop: 8 }}>累計回合：{item.rounds}</div>
                 <div style={styles.subtle}>平均命中：{item.avgHit}</div>
                 <div style={styles.subtle}>目前權重：{item.weight}</div>
-                <div style={styles.subtle}>0碼：{item.hit0} / 1碼：{item.hit1} / 2碼：{item.hit2} / 3碼：{item.hit3} / 4碼：{item.hit4}</div>
-                <div style={styles.subtle}>近12次：{item.recentHits.length ? item.recentHits.join("、") : "尚無資料"}</div>
+                <div style={styles.subtle}>
+                  0碼：{item.hit0} / 1碼：{item.hit1} / 2碼：{item.hit2} / 3碼：{item.hit3} / 4碼：{item.hit4}
+                </div>
+                <div style={styles.subtle}>
+                  近12次：{item.recentHits.length ? item.recentHits.join("、") : "尚無資料"}
+                </div>
               </div>
             ))}
           </div>
@@ -775,11 +779,11 @@ export default function App() {
 
         <div style={styles.grid2}>
           <section style={styles.panel}>
-            <h2 style={styles.h2}>測試模式（四星賓果 / 四組 / 四期）</h2>
+            <h2 style={styles.h2}>測試模式（四星賓果 / 四組 / 二期）</h2>
             {testPlan ? (
               <>
                 <div style={styles.subtle}>Prediction ID：{testPlan.predictionId || "尚未寫入"}</div>
-                <div style={styles.subtle}>策略模式：{testPlan.strategyMode || "bingo_v2_4star_4group_4period_self_optimized"}</div>
+                <div style={styles.subtle}>策略模式：{testPlan.strategyMode || "bingo_v2_test_2period"}</div>
                 <div style={styles.subtle}>來源期數：第 {testPlan.sourceDrawNo} 期</div>
                 <div style={styles.subtle}>目標期數：第 {testPlan.targetDrawNo} 期</div>
                 {testPlan.groups.map((g, idx) => (
@@ -823,7 +827,9 @@ export default function App() {
             {formalPlan ? (
               <>
                 <div style={styles.subtle}>Prediction ID：{formalPlan.predictionId || "尚未寫入"}</div>
-                <div style={styles.subtle}>策略模式：{formalPlan.strategyMode || "bingo_v2_4star_4group_4period_self_optimized"}</div>
+                <div style={styles.subtle}>
+                  策略模式：{formalPlan.strategyMode || "bingo_v2_4star_4group_4period_self_optimized"}
+                </div>
                 <div style={styles.subtle}>來源期數：第 {formalPlan.sourceDrawNo} 期</div>
                 <div style={styles.subtle}>目標期數：第 {formalPlan.targetDrawNo} 期</div>
                 {formalPlan.groups.map((g, idx) => (
