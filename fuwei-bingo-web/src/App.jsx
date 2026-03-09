@@ -1,4 +1,4 @@
-// v2.5 stable + readable auto train summary
+// v2.6 full rewrite readable auto-train summary
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { buildBingoV1Strategies } from "../lib/buildBingoV1Strategies";
 import {
@@ -10,14 +10,14 @@ import {
 } from "../lib/strategySelfOptimizer";
 
 const STORAGE_KEYS = {
-  latest: "fuwei_bingo_latest_v25_hobby",
-  testPlan: "fuwei_bingo_test_plan_v25_hobby",
-  formalPlan: "fuwei_bingo_formal_plan_v25_hobby",
-  testResult: "fuwei_bingo_test_result_v25_hobby",
-  formalResult: "fuwei_bingo_formal_result_v25_hobby",
-  autoRunAt: "fuwei_bingo_auto_run_at_v25_hobby",
-  generatedPlan: "fuwei_bingo_generated_plan_v25_hobby",
-  autoTrainLast: "fuwei_bingo_auto_train_last_v26_hobby"
+  latest: "fuwei_bingo_latest_v26_hobby",
+  testPlan: "fuwei_bingo_test_plan_v26_hobby",
+  formalPlan: "fuwei_bingo_formal_plan_v26_hobby",
+  testResult: "fuwei_bingo_test_result_v26_hobby",
+  formalResult: "fuwei_bingo_formal_result_v26_hobby",
+  autoRunAt: "fuwei_bingo_auto_run_at_v26_hobby",
+  generatedPlan: "fuwei_bingo_generated_plan_v26_hobby",
+  autoTrainLast: "fuwei_bingo_auto_train_last_v26_hobby_clean"
 };
 
 const LEARNING_KEYS = createLearningStorageKeys("fuwei_bingo_strategy_learning_v2");
@@ -86,9 +86,36 @@ function compareTone(verdict) {
       return "#ffd36b";
     case "compare_failed":
       return "#ff9f9f";
+    case "被咬":
+    case "lose":
+      return "#ffb0b0";
     default:
       return "#d9e6ff";
   }
+}
+
+function normalizeAutoTrainResult(data) {
+  const list = Array.isArray(data?.compareResults) ? data.compareResults : [];
+
+  return {
+    mode: data?.mode || "unknown",
+    latestDrawNo: Number(data?.latestDrawNo || 0) || null,
+    latestDrawTime: data?.latestDrawTime || "",
+    catchupInserted: Number(data?.catchupInserted || 0),
+    catchupWarning: data?.catchupWarning || null,
+    created: Number(data?.created || 0),
+    skippedCreate: !!data?.skippedCreate,
+    maturedCompared: Number(data?.maturedCompared || 0),
+    createdPrediction: data?.createdPrediction || null,
+    compareResults: list.map((r, idx) => ({
+      idx,
+      sourceDrawNo: Number(r?.sourceDrawNo || 0) || null,
+      targetDrawNo: Number(r?.targetDrawNo || 0) || null,
+      compareDrawNo: Number(r?.compareDrawNo || 0) || null,
+      verdict: r?.verdict || "unknown",
+      error: r?.error || null
+    }))
+  };
 }
 
 export default function App() {
@@ -278,7 +305,7 @@ export default function App() {
 
       const generated = {
         ok: true,
-        mode: data.strategyMode || "auto_train_v1",
+        mode: data.strategyMode || "auto_train",
         target: {
           stars: 4,
           groups: 4,
@@ -299,7 +326,7 @@ export default function App() {
       };
 
       setGeneratedPlan(generated);
-      setAutoTrainLast(data);
+      setAutoTrainLast(normalizeAutoTrainResult(data));
 
       const matured = Number(data.maturedCompared || 0);
       const created = Number(data.created || 0);
@@ -640,9 +667,9 @@ export default function App() {
       <div style={styles.wrap}>
         <section style={styles.hero}>
           <div style={styles.kicker}>FUWEI BINGO SYSTEM</div>
-          <h1 style={styles.h1}>富緯賓果系統 v2.5 可讀摘要版</h1>
+          <h1 style={styles.h1}>富緯賓果系統 v2.6 全覆蓋摘要版</h1>
           <p style={styles.p}>
-            固定採用四星賓果、四組、四期。自動訓練摘要改為顯示來源期數、目標期數、實際比對期數與錯誤資訊。
+            自動訓練摘要已重寫，只顯示來源期數、目標期數、實際比對期數與錯誤，不再用 prediction id 當主資訊。
           </p>
 
           <div style={styles.notice}>{notice}</div>
@@ -733,7 +760,7 @@ export default function App() {
           <section style={styles.panel}>
             <h2 style={styles.h2}>自動訓練摘要</h2>
             <div style={styles.subtle}>模式：{autoTrainLast.mode}</div>
-            <div style={styles.subtle}>最新期數：第 {autoTrainLast.latestDrawNo} 期</div>
+            <div style={styles.subtle}>最新期數：第 {autoTrainLast.latestDrawNo || "-"} 期</div>
             <div style={styles.subtle}>補抓新增：{autoTrainLast.catchupInserted || 0} 期</div>
             <div style={styles.subtle}>新建訓練：{autoTrainLast.created || 0} 筆</div>
             <div style={styles.subtle}>到期比對：{autoTrainLast.maturedCompared || 0} 筆</div>
