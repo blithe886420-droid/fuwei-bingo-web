@@ -1,265 +1,381 @@
-import { createClient } from "@supabase/supabase-js";
+import { createClient } from '@supabase/supabase-js';
 
-function getSupabase() {
-  const url = process.env.SUPABASE_URL;
-  const key =
-    process.env.SUPABASE_SERVICE_ROLE_KEY ||
-    process.env.SUPABASE_SECRET_KEY;
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY =
+  process.env.SUPABASE_SERVICE_ROLE_KEY ||
+  process.env.SUPABASE_SECRET_KEY ||
+  process.env.SUPABASE_KEY;
 
-  if (!url) {
-    throw new Error("SUPABASE_URL is required");
+if (!SUPABASE_URL || !SUPABASE_KEY) {
+  throw new Error('Missing SUPABASE_URL or SUPABASE key');
+}
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+const DRAWS_TABLE = 'bingo_draws';
+const PREDICTIONS_TABLE = 'bingo_predictions';
+
+const DRAW_NO_COL = 'draw_no';
+const DRAW_TIME_COL = 'draw_time';
+const DRAW_NUMBERS_COL = 'numbers';
+
+const COST_PER_GROUP_PER_PERIOD = 25;
+
+function toInt(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function uniqueAsc(nums) {
+  return [...new Set(nums.map((n) => Number(n)).filter(Number.isFinite))].sort((a, b) => a - b);
+}
+
+function parseDrawNumbers(value) {
+  if (Array.isArray(value)) {
+    return value.map(Number).filter(Number.isFinite);
   }
 
-  if (!key) {
-    throw new Error("supabaseKey is required");
+  if (typeof value === 'string') {
+    return value
+      .split(/[,\s]+/)
+      .map((s) => Number(s.trim()))
+      .filter(Number.isFinite);
   }
 
-  return createClient(url, key, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false
+  return [];
+}
+
+function getHitNumbers(predicted, drawNumbers) {
+  const drawSet = new Set(drawNumbers.map(Number));
+  return predicted.map(Number).filter((n) => drawSet.has(n)).sort((a, b) => a - b);
+}
+
+function calcRewardByHitCount(hitCount) {
+  if (hitCount >= 4) return 1000;
+  if (hitCount === 3) return 100;
+  if (hitCount === 2) return 25;
+  return 0;
+}
+
+function parseGroupsFromPrediction(prediction) {
+  const raw = prediction?.groups_json ?? null;
+  if (!raw) return [];
+
+  if (Array.isArray(raw)) {
+    return raw
+      .map((group, idx) => {
+        if (Array.isArray(group)) {
+          return {
+            key: `group_${idx + 1}`,
+            label: `第${idx + 1}組`,
+            nums: uniqueAsc(group),
+            reason: '舊版資料',
+            meta: { legacy: true }
+          };
+        }
+
+        if (group && typeof group === 'object') {
+          return {
+            key: group.key || `group_${idx + 1}`,
+            label: group.label || `第${idx + 1}組`,
+            nums: uniqueAsc(Array.isArray(group.nums) ? group.nums : []),
+            reason: group.reason || '',
+            meta: group.meta || {}
+          };
+        }
+
+        return null;
+      })
+      .filter((g) => g && g.nums.length > 0);
+  }
+
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      return parseGroupsFromPrediction({ groups_json: parsed });
+    } catch {
+      return [];
     }
-  });
-}
-
-function parseNumbers(input) {
-  if (Array.isArray(input)) {
-    return input
-      .map((x) => String(x).trim())
-      .filter(Boolean)
-      .map((x) => x.padStart(2, "0"))
-      .slice(0, 20);
   }
 
-  return String(input || "")
-    .split(/[,\s]+/)
-    .map((x) => x.trim())
-    .filter(Boolean)
-    .map((x) => x.padStart(2, "0"))
-    .slice(0, 20);
+  return [];
 }
 
-function safeJsonParse(value, fallback = null) {
-  if (value == null) return fallback;
-  if (typeof value === "object") return value;
+async function getPredictionById(predictionId) {
+  const { data, error } = await supabase
+    .from(PREDICTIONS_TABLE)
+    .select('*')
+    .eq('id', predictionId)
+    .maybeSingle();
 
-  try {
-    return JSON.parse(value);
-  } catch {
-    return fallback;
-  }
+  if (error) throw error;
+  return data || null;
 }
 
-function buildCompareResult(prediction, drawRows) {
-  const sourceDrawNo = Number(prediction.source_draw_no || 0);
-  const targetPeriods = Number(prediction.target_periods || 0);
-  const targetDrawNo = sourceDrawNo + targetPeriods;
+async function getDrawRowsForPrediction(prediction) {
+  const sourceDrawNo = toInt(prediction.source_draw_no);
+  const targetPeriods = toInt(prediction.target_periods || 2);
 
-  const groupsRaw = safeJsonParse(prediction.groups_json, []);
-  const groups = Array.isArray(groupsRaw) ? groupsRaw : [];
+  const start = sourceDrawNo + 1;
+  const end = sourceDrawNo + targetPeriods;
 
-  if (!groups.length) {
-    throw new Error("groups_json is empty");
-  }
+  const { data, error } = await supabase
+    .from(DRAWS_TABLE)
+    .select(`${DRAW_NO_COL}, ${DRAW_TIME_COL}, ${DRAW_NUMBERS_COL}`)
+    .gte(DRAW_NO_COL, start)
+    .lte(DRAW_NO_COL, end)
+    .order(DRAW_NO_COL, { ascending: true });
 
-  const compareRounds = drawRows.map((row) => {
-    const drawNumbers = parseNumbers(row.numbers);
+  if (error) throw error;
 
-    if (drawNumbers.length !== 20) {
-      throw new Error(`draw_no ${row.draw_no} numbers is not 20`);
-    }
+  return (data || []).filter((row) => parseDrawNumbers(row[DRAW_NUMBERS_COL]).length > 0);
+}
 
-    const groupResults = groups.map((g, idx) => {
-      const nums = parseNumbers(g.nums);
-      const hitNumbers = nums.filter((n) => drawNumbers.includes(n));
+function buildCompareResult(prediction, groups, drawRows) {
+  const sourceDrawNo = String(prediction.source_draw_no || '');
+  const targetPeriods = toInt(prediction.target_periods || 2);
 
-      return {
-        index: idx + 1,
-        key: g.key || `group_${idx + 1}`,
-        label: g.label || `第${idx + 1}組`,
-        nums,
-        hitCount: hitNumbers.length,
-        hitNumbers
-      };
+  const compareRounds = [];
+  const groupResults = [];
+
+  let totalReward = 0;
+  let totalHitCount = 0;
+  let bestSingleHit = 0;
+
+  for (const drawRow of drawRows) {
+    const drawNo = toInt(drawRow[DRAW_NO_COL]);
+    const drawTime = drawRow[DRAW_TIME_COL] || '';
+    const drawNumbers = parseDrawNumbers(drawRow[DRAW_NUMBERS_COL]);
+
+    compareRounds.push({
+      drawNo,
+      drawTime,
+      drawNumbers
     });
 
-    return {
-      drawNo: Number(row.draw_no),
-      drawTime: row.draw_time,
-      drawNumbers,
-      results: groupResults
-    };
-  });
+    for (const group of groups) {
+      const hitNumbers = getHitNumbers(group.nums, drawNumbers);
+      const hitCount = hitNumbers.length;
+      const reward = calcRewardByHitCount(hitCount);
 
-  const aggregatedResults = groups.map((g, idx) => {
-    const nums = parseNumbers(g.nums);
+      let current = groupResults.find((g) => g.key === group.key);
+      if (!current) {
+        current = {
+          key: group.key,
+          label: group.label,
+          nums: group.nums,
+          reason: group.reason || '',
+          meta: group.meta || {},
+          hitCount: 0,
+          bestSingleHit: 0,
+          totalReward: 0,
+          hit2Count: 0,
+          hit3Count: 0,
+          hit4Count: 0,
+          periodHits: []
+        };
+        groupResults.push(current);
+      }
 
-    let totalHitCount = 0;
-    let bestSingleHit = 0;
-    const allHitNumbers = new Set();
+      current.hitCount += hitCount;
+      current.bestSingleHit = Math.max(current.bestSingleHit, hitCount);
+      current.totalReward += reward;
 
-    const roundHits = compareRounds.map((round) => {
-      const hit = round.results[idx];
-      totalHitCount += Number(hit.hitCount || 0);
-      bestSingleHit = Math.max(bestSingleHit, Number(hit.hitCount || 0));
+      if (hitCount === 2) current.hit2Count += 1;
+      if (hitCount === 3) current.hit3Count += 1;
+      if (hitCount >= 4) current.hit4Count += 1;
 
-      (hit.hitNumbers || []).forEach((n) => allHitNumbers.add(n));
+      current.periodHits.push({
+        drawNo,
+        drawTime,
+        hitNumbers,
+        hitCount,
+        reward
+      });
 
-      return {
-        drawNo: round.drawNo,
-        drawTime: round.drawTime,
-        hitCount: hit.hitCount,
-        hitNumbers: hit.hitNumbers
-      };
-    });
-
-    return {
-      index: idx + 1,
-      key: g.key || `group_${idx + 1}`,
-      label: g.label || `第${idx + 1}組`,
-      nums,
-      hitCount: totalHitCount,
-      bestSingleHit,
-      hitNumbers: Array.from(allHitNumbers),
-      roundHits
-    };
-  });
-
-  const bestSingleOverall = Math.max(
-    ...aggregatedResults.map((r) => Number(r.bestSingleHit || 0)),
-    0
-  );
-
-  const bestTotalOverall = Math.max(
-    ...aggregatedResults.map((r) => Number(r.hitCount || 0)),
-    0
-  );
-
-  const periodsText = `${compareRounds.length}期`;
-
-  let verdict = `${periodsText}累計最佳 ${bestTotalOverall} 碼 / 單期最佳 ${bestSingleOverall} 碼`;
-
-  if (bestSingleOverall >= 4) {
-    verdict = `${periodsText}累計最佳 ${bestTotalOverall} 碼 / 單期最佳中4`;
-  } else if (bestSingleOverall === 3) {
-    verdict = `${periodsText}累計最佳 ${bestTotalOverall} 碼 / 單期最佳中3`;
-  } else if (bestSingleOverall === 2) {
-    verdict = `${periodsText}累計最佳 ${bestTotalOverall} 碼 / 單期最佳中2`;
-  } else if (bestSingleOverall === 1) {
-    verdict = `${periodsText}累計最佳 ${bestTotalOverall} 碼 / 單期最佳中1`;
+      totalReward += reward;
+      totalHitCount += hitCount;
+      bestSingleHit = Math.max(bestSingleHit, hitCount);
+    }
   }
+
+  const totalCost = groups.length * targetPeriods * COST_PER_GROUP_PER_PERIOD;
+  const profit = totalReward - totalCost;
+  const compareDrawNo = drawRows.length ? toInt(drawRows[drawRows.length - 1][DRAW_NO_COL]) : null;
+  const compareDrawRange =
+    drawRows.length > 0
+      ? `${drawRows[0][DRAW_NO_COL]} ~ ${drawRows[drawRows.length - 1][DRAW_NO_COL]}`
+      : '';
+
+  const maxHit = Math.max(0, ...groupResults.map((g) => g.hitCount));
+  const verdict = `${targetPeriods}期累計最佳 ${maxHit} 碼 / 單期最佳中${bestSingleHit}`;
+
+  const compareResult = {
+    mode: `4star_4group_${targetPeriods}period`,
+    source_draw_no: sourceDrawNo,
+    target_periods: targetPeriods,
+    total_cost: totalCost,
+    total_reward: totalReward,
+    profit,
+    total_hit_count: totalHitCount,
+    best_single_hit: bestSingleHit,
+    compare_draw_range: compareDrawRange,
+    groups: groupResults.map((g) => ({
+      key: g.key,
+      label: g.label,
+      nums: g.nums,
+      reason: g.reason,
+      meta: g.meta,
+      total_hit_count: g.hitCount,
+      best_single_hit: g.bestSingleHit,
+      total_reward: g.totalReward,
+      hit2_count: g.hit2Count,
+      hit3_count: g.hit3Count,
+      hit4_count: g.hit4Count,
+      periods: g.periodHits.map((p) => ({
+        draw_no: p.drawNo,
+        draw_time: p.drawTime,
+        hit_numbers: p.hitNumbers,
+        hit_count: p.hitCount,
+        reward: p.reward
+      }))
+    })),
+    period_results: drawRows.map((drawRow) => {
+      const drawNo = toInt(drawRow[DRAW_NO_COL]);
+      let reward = 0;
+      for (const group of groupResults) {
+        const hit = group.periodHits.find((p) => p.drawNo === drawNo);
+        if (hit) reward += hit.reward;
+      }
+      return {
+        draw_no: drawNo,
+        draw_time: drawRow[DRAW_TIME_COL] || '',
+        reward
+      };
+    }),
+    summary: {
+      total_groups: groups.length,
+      total_periods: targetPeriods,
+      total_hit_count: totalHitCount,
+      best_single_hit: bestSingleHit
+    }
+  };
+
+  const resultForApp = {
+    verdict,
+    sourceDrawNo,
+    targetDrawNo: toInt(sourceDrawNo) + targetPeriods,
+    compareDrawNo,
+    compareDrawRange,
+    totalCost,
+    estimatedReturn: totalReward,
+    profit,
+    compareRounds,
+    results: groupResults.map((g) => ({
+      key: g.key,
+      label: g.label,
+      nums: g.nums,
+      hitCount: g.hitCount,
+      bestSingleHit: g.bestSingleHit,
+      totalReward: g.totalReward,
+      hit2Count: g.hit2Count,
+      hit3Count: g.hit3Count,
+      hit4Count: g.hit4Count,
+      periodHits: g.periodHits.map((p) => ({
+        drawNo: p.drawNo,
+        drawTime: p.drawTime,
+        hitNumbers: p.hitNumbers,
+        hitCount: p.hitCount,
+        reward: p.reward
+      }))
+    }))
+  };
 
   return {
-    sourceDrawNo,
-    targetDrawNo,
-    compareDrawNo: targetDrawNo,
-    compareDrawRange: compareRounds.map((r) => r.drawNo).join(" ~ "),
-    compareRounds,
     verdict,
-    maxHit: bestSingleOverall,
-    totalCost: 0,
-    estimatedReturn: 0,
-    profit: 0,
-    results: aggregatedResults
+    compareResult,
+    resultForApp,
+    totalHitCount,
+    bestSingleHit,
+    comparedDrawCount: drawRows.length
   };
 }
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") {
+  if (req.method !== 'POST') {
     return res.status(405).json({
       ok: false,
-      error: "Method not allowed"
+      error: 'Method not allowed'
     });
   }
 
   try {
-    const supabase = getSupabase();
-    const { predictionId } = req.body || {};
-
+    const predictionId = req.body?.predictionId;
     if (!predictionId) {
       return res.status(400).json({
         ok: false,
-        error: "predictionId is required"
+        error: 'predictionId is required'
       });
     }
 
-    const { data: prediction, error: predictionError } = await supabase
-      .from("bingo_predictions")
-      .select("*")
-      .eq("id", predictionId)
-      .single();
-
-    if (predictionError || !prediction) {
+    const prediction = await getPredictionById(predictionId);
+    if (!prediction) {
       return res.status(404).json({
         ok: false,
-        error: "prediction not found"
+        error: 'Prediction not found'
       });
     }
 
-    const sourceDrawNo = Number(prediction.source_draw_no || 0);
-    const targetPeriods = Number(prediction.target_periods || 0);
-
-    if (!sourceDrawNo || !targetPeriods) {
+    const groups = parseGroupsFromPrediction(prediction);
+    if (!groups.length) {
       return res.status(400).json({
         ok: false,
-        error: "prediction source_draw_no / target_periods invalid"
+        error: 'groups_json 解析失敗'
       });
     }
 
-    const startDrawNo = sourceDrawNo + 1;
-    const endDrawNo = sourceDrawNo + targetPeriods;
+    const drawRows = await getDrawRowsForPrediction(prediction);
+    const targetPeriods = toInt(prediction.target_periods || 2);
 
-    const { data: drawRows, error: drawError } = await supabase
-      .from("bingo_draws")
-      .select("draw_no, draw_time, numbers")
-      .gte("draw_no", startDrawNo)
-      .lte("draw_no", endDrawNo)
-      .order("draw_no", { ascending: true });
-
-    if (drawError) {
-      return res.status(400).json({
-        ok: false,
-        error: drawError.message || "讀取 bingo_draws 失敗"
-      });
-    }
-
-    if (!Array.isArray(drawRows) || drawRows.length < targetPeriods) {
-      return res.status(400).json({
+    if (drawRows.length < targetPeriods) {
+      const sourceDrawNo = toInt(prediction.source_draw_no);
+      return res.status(200).json({
         ok: false,
         waiting: true,
-        error: `尚未到完整比對期數，需收齊第 ${startDrawNo} 期到第 ${endDrawNo} 期開獎資料`
+        error: `尚未收齊第 ${sourceDrawNo + 1} 期到第 ${sourceDrawNo + targetPeriods} 期開獎資料`
       });
     }
 
-    const result = buildCompareResult(prediction, drawRows);
+    const built = buildCompareResult(prediction, groups, drawRows);
 
-    const updatePayload = {
-      status: "compared",
-      verdict: result.verdict,
-      compare_result: result
-    };
+    const { error } = await supabase
+      .from(PREDICTIONS_TABLE)
+      .update({
+        status: 'compared',
+        compare_status: 'done',
+        compared_at: new Date().toISOString(),
+        compared_draw_count: built.comparedDrawCount,
+        compare_result: built.compareResult,
+        compare_result_json: built.compareResult,
+        compare_history_json: [],
+        verdict: built.verdict,
+        hit_count: built.totalHitCount,
+        best_single_hit: built.bestSingleHit
+      })
+      .eq('id', predictionId);
 
-    const { error: updateError } = await supabase
-      .from("bingo_predictions")
-      .update(updatePayload)
-      .eq("id", predictionId);
-
-    if (updateError) {
-      return res.status(200).json({
-        ok: true,
-        result,
-        warning: `compare 成功，但 DB 更新失敗：${updateError.message}`
-      });
-    }
+    if (error) throw error;
 
     return res.status(200).json({
       ok: true,
-      result
+      result: built.resultForApp
     });
-  } catch (err) {
+  } catch (error) {
+    console.error('prediction-compare error:', error);
+
     return res.status(500).json({
       ok: false,
-      error: err.message || "prediction-compare failed"
+      error: error.message || 'prediction compare failed'
     });
   }
 }
