@@ -1,12 +1,11 @@
-// v3.4 AUTO LOOP + NIGHT SLEEP + AUTO TRAIN UI FIX
+// v3.4 AUTO LOOP + NIGHT SLEEP + TRAINING PROGRESS PANEL
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { buildBingoV1Strategies } from "../lib/buildBingoV1Strategies";
 import {
   applyCompareLearningOnce,
   createLearningStorageKeys,
   getStrategyWeightMap,
-  readStrategyStats,
-  summarizeStrategyStats
+  readStrategyStats
 } from "../lib/strategySelfOptimizer";
 
 const STORAGE_KEYS = {
@@ -17,7 +16,8 @@ const STORAGE_KEYS = {
   formalResult: "fuwei_bingo_formal_result_v24_hobby",
   autoRunAt: "fuwei_bingo_auto_run_at_v24_hobby",
   generatedPlan: "fuwei_bingo_generated_plan_v24_hobby",
-  autoTrainLast: "fuwei_bingo_auto_train_last_v24_hobby"
+  autoTrainLast: "fuwei_bingo_auto_train_last_v24_hobby",
+  autoTrainHistory: "fuwei_bingo_auto_train_history_v34"
 };
 
 const LEARNING_KEYS = createLearningStorageKeys("fuwei_bingo_strategy_learning_v2");
@@ -54,27 +54,6 @@ function parseNumbers(str) {
     .slice(0, 20);
 }
 
-function freqMap(recent20) {
-  const map = {};
-  recent20.forEach((row) => {
-    parseNumbers(row.numbers).forEach((n) => {
-      map[n] = (map[n] || 0) + 1;
-    });
-  });
-  return map;
-}
-
-function tail(n) {
-  return Number(n) % 10;
-}
-
-function buildCandidates(recent20) {
-  const freq = freqMap(recent20);
-  return Object.entries(freq)
-    .map(([num, count]) => ({ num, count, tail: tail(num) }))
-    .sort((a, b) => b.count - a.count || Number(a.num) - Number(b.num));
-}
-
 function withTs(url) {
   const sep = url.includes("?") ? "&" : "?";
   return `${url}${sep}ts=${Date.now()}`;
@@ -100,6 +79,62 @@ function getClockText() {
   return `${y}-${m}-${d} ${hh}:${mm}:${ss}`;
 }
 
+function normalizeNumber(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function mergeAutoTrainHistory(prevHistory, autoTrainData) {
+  const prev = Array.isArray(prevHistory) ? prevHistory : [];
+  const compared = Array.isArray(autoTrainData?.compared_details)
+    ? autoTrainData.compared_details
+    : [];
+
+  if (!compared.length) return prev;
+
+  const map = new Map(
+    prev.map((item) => [String(item.predictionId), item])
+  );
+
+  const now = Date.now();
+
+  compared.forEach((item, idx) => {
+    const predictionId = String(item?.prediction_id ?? `${now}-${idx}`);
+    const previous = map.get(predictionId) || {};
+
+    map.set(predictionId, {
+      ...previous,
+      predictionId,
+      sourceDrawNo: String(item?.source_draw_no ?? ""),
+      totalCost: normalizeNumber(item?.total_cost, 0),
+      totalReward: normalizeNumber(item?.total_reward, 0),
+      profit: normalizeNumber(item?.profit, 0),
+      bestSingleHit: normalizeNumber(item?.best_single_hit, 0),
+      totalHitCount:
+        item?.total_hit_count !== undefined && item?.total_hit_count !== null
+          ? normalizeNumber(item.total_hit_count, 0)
+          : previous.totalHitCount ?? null,
+      comparedAt: now + idx
+    });
+  });
+
+  return [...map.values()]
+    .sort((a, b) => normalizeNumber(b.comparedAt, 0) - normalizeNumber(a.comparedAt, 0))
+    .slice(0, 100);
+}
+
+function format1(value) {
+  return Number.isFinite(value) ? value.toFixed(1) : "0.0";
+}
+
+function buildTrendText(label, current, previous) {
+  if (!Number.isFinite(current)) return `${label}：尚無資料`;
+  if (!Number.isFinite(previous)) return `${label}：資料不足`;
+  if (current > previous) return `${label}比前 5 次高`;
+  if (current < previous) return `${label}比前 5 次低`;
+  return `${label}持平`;
+}
+
 export default function App() {
   const [latest, setLatest] = useState(() =>
     readLocal(STORAGE_KEYS.latest, TXT_LATEST)
@@ -114,6 +149,10 @@ export default function App() {
 
   const [autoTrainLast, setAutoTrainLast] = useState(() =>
     readLocal(STORAGE_KEYS.autoTrainLast, null)
+  );
+
+  const [autoTrainHistory, setAutoTrainHistory] = useState(() =>
+    readLocal(STORAGE_KEYS.autoTrainHistory, [])
   );
 
   const [syncStatus, setSyncStatus] = useState("尚未同步");
@@ -146,6 +185,7 @@ export default function App() {
   useEffect(() => writeLocal(STORAGE_KEYS.formalResult, formalResult), [formalResult]);
   useEffect(() => writeLocal(STORAGE_KEYS.generatedPlan, generatedPlan), [generatedPlan]);
   useEffect(() => writeLocal(STORAGE_KEYS.autoTrainLast, autoTrainLast), [autoTrainLast]);
+  useEffect(() => writeLocal(STORAGE_KEYS.autoTrainHistory, autoTrainHistory), [autoTrainHistory]);
 
   async function loadRecent20(silent = false) {
     try {
@@ -300,6 +340,7 @@ export default function App() {
       await loadRecent20(true);
 
       setAutoTrainLast(data);
+      setAutoTrainHistory((prev) => mergeAutoTrainHistory(prev, data));
 
       const latestDrawNo = data?.latest_draw_no ?? "未知";
       const comparedCount = Number(data?.compared_count || 0);
@@ -665,9 +706,59 @@ export default function App() {
     return () => clearInterval(timer);
   }, []);
 
-  const strategySummary = useMemo(() => {
-    return summarizeStrategyStats(strategyStats);
-  }, [strategyStats]);
+  const trainingProgress = useMemo(() => {
+    const history = Array.isArray(autoTrainHistory)
+      ? [...autoTrainHistory].sort((a, b) => normalizeNumber(b.comparedAt, 0) - normalizeNumber(a.comparedAt, 0))
+      : [];
+
+    const recent10 = history.slice(0, 10);
+    const latest5 = history.slice(0, 5);
+    const previous5 = history.slice(5, 10);
+
+    const hitValue = (item) => {
+      if (item?.totalHitCount !== undefined && item?.totalHitCount !== null) {
+        return normalizeNumber(item.totalHitCount, 0);
+      }
+      return normalizeNumber(item?.bestSingleHit, 0);
+    };
+
+    const avgOf = (arr, getter) => {
+      if (!arr.length) return NaN;
+      return arr.reduce((sum, item) => sum + getter(item), 0) / arr.length;
+    };
+
+    const avgHit10 = avgOf(recent10, hitValue);
+    const avgReward10 = avgOf(recent10, (item) => normalizeNumber(item.totalReward, 0));
+    const avgProfit10 = avgOf(recent10, (item) => normalizeNumber(item.profit, 0));
+    const bestHit10 = recent10.length
+      ? Math.max(...recent10.map((item) => normalizeNumber(item.bestSingleHit, 0)))
+      : 0;
+
+    const latest5AvgHit = avgOf(latest5, hitValue);
+    const previous5AvgHit = avgOf(previous5, hitValue);
+
+    const latest5AvgReward = avgOf(latest5, (item) => normalizeNumber(item.totalReward, 0));
+    const previous5AvgReward = avgOf(previous5, (item) => normalizeNumber(item.totalReward, 0));
+
+    const latest5BestHit = latest5.length
+      ? Math.max(...latest5.map((item) => normalizeNumber(item.bestSingleHit, 0)))
+      : NaN;
+    const previous5BestHit = previous5.length
+      ? Math.max(...previous5.map((item) => normalizeNumber(item.bestSingleHit, 0)))
+      : NaN;
+
+    return {
+      count: history.length,
+      recent10,
+      avgHit10,
+      avgReward10,
+      avgProfit10,
+      bestHit10,
+      hitTrend: buildTrendText("最近 5 次平均命中", latest5AvgHit, previous5AvgHit),
+      rewardTrend: buildTrendText("最近 5 次平均中獎", latest5AvgReward, previous5AvgReward),
+      bestHitTrend: buildTrendText("最近 5 次最佳單期命中", latest5BestHit, previous5BestHit)
+    };
+  }, [autoTrainHistory]);
 
   return (
     <div style={styles.page}>
@@ -807,6 +898,69 @@ export default function App() {
         ) : null}
 
         <section style={styles.panel}>
+          <h2 style={styles.h2}>訓練進步面板</h2>
+          <div style={styles.subtle}>
+            這裡顯示最近 10 次訓練成果。平均命中優先使用 total_hit_count；若後端未提供，則暫以最佳單期命中作為命中指標。
+          </div>
+
+          {trainingProgress.count > 0 ? (
+            <>
+              <div style={styles.progressGrid}>
+                <div style={styles.progressCard}>
+                  <div style={styles.statLabel}>最近 10 次平均命中</div>
+                  <div style={styles.progressValue}>{format1(trainingProgress.avgHit10)} 碼</div>
+                </div>
+
+                <div style={styles.progressCard}>
+                  <div style={styles.statLabel}>最近 10 次平均中獎</div>
+                  <div style={styles.progressValue}>{format1(trainingProgress.avgReward10)} 元</div>
+                </div>
+
+                <div style={styles.progressCard}>
+                  <div style={styles.statLabel}>最近 10 次平均損益</div>
+                  <div style={styles.progressValue}>{format1(trainingProgress.avgProfit10)} 元</div>
+                </div>
+
+                <div style={styles.progressCard}>
+                  <div style={styles.statLabel}>最近 10 次最佳單期命中</div>
+                  <div style={styles.progressValue}>{trainingProgress.bestHit10} 碼</div>
+                </div>
+              </div>
+
+              <div style={{ marginTop: 18 }}>
+                <div style={styles.groupTitle}>最近 5 次是否有進步</div>
+                <div style={styles.subtle}>• {trainingProgress.hitTrend}</div>
+                <div style={styles.subtle}>• {trainingProgress.rewardTrend}</div>
+                <div style={styles.subtle}>• {trainingProgress.bestHitTrend}</div>
+              </div>
+
+              <div style={{ marginTop: 18 }}>
+                <div style={styles.groupTitle}>最近 10 次訓練明細</div>
+                {trainingProgress.recent10.map((item, idx) => (
+                  <div key={`${item.predictionId}-${idx}`} style={styles.groupCard}>
+                    <div style={styles.subtle}>Prediction ID：{item.predictionId}</div>
+                    <div style={styles.subtle}>來源期數：第 {item.sourceDrawNo} 期</div>
+                    <div style={styles.subtle}>
+                      命中指標：
+                      {item.totalHitCount !== null && item.totalHitCount !== undefined
+                        ? `${item.totalHitCount} 碼`
+                        : `${item.bestSingleHit} 碼（暫以最佳單期命中代替）`}
+                    </div>
+                    <div style={styles.subtle}>總中獎：{item.totalReward} 元</div>
+                    <div style={styles.subtle}>淨損益：{item.profit} 元</div>
+                    <div style={styles.subtle}>最佳單期命中：{item.bestSingleHit} 碼</div>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <div style={{ ...styles.subtle, marginTop: 14 }}>
+              目前尚未累積到已比對的訓練成果，等系統完成更多 compare 後，這裡就會開始顯示進步趨勢。
+            </div>
+          )}
+        </section>
+
+        <section style={styles.panel}>
           <h2 style={styles.h2}>最近 20 期底稿</h2>
           <div style={styles.subtle}>
             固定優先讀取 /api/recent20，供四星賓果策略生成與補比對使用
@@ -819,36 +973,6 @@ export default function App() {
               >
                 <span>{row.draw_no || "-"}</span>
                 <span style={{ fontSize: 12, opacity: 0.8 }}>{row.draw_time || ""}</span>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        <section style={styles.panel}>
-          <h2 style={styles.h2}>自我優化權重面板</h2>
-          <div style={styles.subtle}>
-            每次比對後，系統會更新各策略平均命中與權重。權重越高，下一輪生成時該策略內部權重越強。
-          </div>
-          <div
-            style={{
-              marginTop: 14,
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))",
-              gap: 14
-            }}
-          >
-            {strategySummary.map((item) => (
-              <div key={item.key} style={styles.groupCard}>
-                <div style={styles.groupTitle}>{item.label}</div>
-                <div style={{ ...styles.subtle, marginTop: 8 }}>累計回合：{item.rounds}</div>
-                <div style={styles.subtle}>平均命中：{item.avgHit}</div>
-                <div style={styles.subtle}>目前權重：{item.weight}</div>
-                <div style={styles.subtle}>
-                  0碼：{item.hit0} / 1碼：{item.hit1} / 2碼：{item.hit2} / 3碼：{item.hit3} / 4碼：{item.hit4}
-                </div>
-                <div style={styles.subtle}>
-                  近12次：{item.recentHits.length ? item.recentHits.join("、") : "尚無資料"}
-                </div>
               </div>
             ))}
           </div>
@@ -1065,12 +1189,6 @@ const styles = {
     fontWeight: 700,
     cursor: "pointer"
   },
-  grid2: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit,minmax(320px,1fr))",
-    gap: 18,
-    marginTop: 20
-  },
   panel: {
     background: "#071938",
     borderRadius: 28,
@@ -1145,5 +1263,28 @@ const styles = {
     gap: 12,
     padding: "8px 0",
     borderBottom: "1px solid rgba(255,255,255,0.08)"
+  },
+  grid2: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit,minmax(320px,1fr))",
+    gap: 18,
+    marginTop: 20
+  },
+  progressGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))",
+    gap: 14,
+    marginTop: 16
+  },
+  progressCard: {
+    background: "#0b203f",
+    borderRadius: 20,
+    padding: 18
+  },
+  progressValue: {
+    fontSize: 28,
+    fontWeight: 800,
+    marginTop: 10,
+    color: "#ffffff"
   }
 };
