@@ -1,4 +1,4 @@
-// v3.5 AUTO LOOP + NIGHT SLEEP + FORMAL USE BEST STRATEGIES
+// v3.5 AI STRATEGY LEADERBOARD SYSTEM
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { buildBingoV1Strategies } from "../lib/buildBingoV1Strategies";
 import {
@@ -17,7 +17,8 @@ const STORAGE_KEYS = {
   autoRunAt: "fuwei_bingo_auto_run_at_v24_hobby",
   generatedPlan: "fuwei_bingo_generated_plan_v24_hobby",
   autoTrainLast: "fuwei_bingo_auto_train_last_v24_hobby",
-  autoTrainHistory: "fuwei_bingo_auto_train_history_v34"
+  autoTrainHistory: "fuwei_bingo_auto_train_history_v35",
+  strategyLeaderboard: "fuwei_bingo_strategy_leaderboard_v35"
 };
 
 const LEARNING_KEYS = createLearningStorageKeys("fuwei_bingo_strategy_learning_v2");
@@ -110,13 +111,14 @@ function mergeAutoTrainHistory(prevHistory, autoTrainData) {
         item?.total_hit_count !== undefined && item?.total_hit_count !== null
           ? normalizeNumber(item.total_hit_count, 0)
           : previous.totalHitCount ?? null,
+      strategies: Array.isArray(item?.strategies) ? item.strategies : previous.strategies || [],
       comparedAt: now + idx
     });
   });
 
   return [...map.values()]
     .sort((a, b) => normalizeNumber(b.comparedAt, 0) - normalizeNumber(a.comparedAt, 0))
-    .slice(0, 100);
+    .slice(0, 120);
 }
 
 function format1(value) {
@@ -151,6 +153,10 @@ export default function App() {
     readLocal(STORAGE_KEYS.autoTrainHistory, [])
   );
 
+  const [strategyLeaderboard, setStrategyLeaderboard] = useState(() =>
+    readLocal(STORAGE_KEYS.strategyLeaderboard, [])
+  );
+
   const [syncStatus, setSyncStatus] = useState("尚未同步");
   const [notice, setNotice] = useState("系統啟動中，準備接即時資料。");
   const [autoStatus, setAutoStatus] = useState("尚未執行補抓補比對");
@@ -168,6 +174,7 @@ export default function App() {
   const [formalResult, setFormalResult] = useState(() =>
     readLocal(STORAGE_KEYS.formalResult, null)
   );
+
   const [strategyStats, setStrategyStats] = useState(() =>
     readStrategyStats(LEARNING_KEYS.stats)
   );
@@ -182,6 +189,7 @@ export default function App() {
   useEffect(() => writeLocal(STORAGE_KEYS.generatedPlan, generatedPlan), [generatedPlan]);
   useEffect(() => writeLocal(STORAGE_KEYS.autoTrainLast, autoTrainLast), [autoTrainLast]);
   useEffect(() => writeLocal(STORAGE_KEYS.autoTrainHistory, autoTrainHistory), [autoTrainHistory]);
+  useEffect(() => writeLocal(STORAGE_KEYS.strategyLeaderboard, strategyLeaderboard), [strategyLeaderboard]);
 
   async function loadRecent20(silent = false) {
     try {
@@ -337,6 +345,7 @@ export default function App() {
 
       setAutoTrainLast(data);
       setAutoTrainHistory((prev) => mergeAutoTrainHistory(prev, data));
+      setStrategyLeaderboard(Array.isArray(data.leaderboard) ? data.leaderboard : []);
 
       const latestDrawNo = data?.latest_draw_no ?? "未知";
       const comparedCount = Number(data?.compared_count || 0);
@@ -385,62 +394,71 @@ export default function App() {
     const weightMap = getStrategyWeightMap(strategyStats);
     const built = buildBingoV1Strategies(recent20, weightMap);
 
-    const ranked = built.strategies
-      .map((s) => {
-        const weight = Number(s.meta?.optimizerWeight || 1);
-        const rounds = normalizeNumber(strategyStats?.[s.key]?.rounds, 0);
-        const avgHit = normalizeNumber(strategyStats?.[s.key]?.avgHit, 0);
-        const score = weight * 100 + avgHit * 10 + rounds * 0.1;
+    return built.strategies.map((s) => {
+      const weight = Number(s.meta?.optimizerWeight || 1);
+      const rounds = normalizeNumber(strategyStats?.[s.key]?.rounds, 0);
+      const avgHit = normalizeNumber(strategyStats?.[s.key]?.avgHit, 0);
+      const score = weight * 100 + avgHit * 10 + rounds * 0.1;
 
-        return {
-          key: s.key,
-          groupNo: s.groupNo,
-          label: s.label,
-          nums: s.nums,
-          reason: s.reason,
-          meta: s.meta || {},
-          weight,
-          rounds,
-          avgHit,
-          score
-        };
-      })
-      .sort((a, b) => b.score - a.score);
-
-    return ranked;
-  }
-
-  function buildStrategyGroups() {
-    const ranked = buildWeightedStrategies();
-
-    return {
-      groups: ranked.map((s) => ({
-        label: `第${s.groupNo}組｜${s.label}`,
-        nums: s.nums,
-        reason: `${s.reason}（權重 ${s.weight.toFixed(2)} / 平均命中 ${s.avgHit.toFixed(2)} / 累計回合 ${s.rounds}）`,
+      return {
         key: s.key,
-        meta: s.meta
-      }))
-    };
+        groupNo: s.groupNo,
+        label: s.label,
+        nums: s.nums,
+        reason: s.reason,
+        meta: s.meta || {},
+        weight,
+        rounds,
+        avgHit,
+        score
+      };
+    });
   }
 
-  function buildBestFormalGroups() {
-    const ranked = buildWeightedStrategies().slice(0, 4);
-
-    return ranked.map((s, idx) => ({
-      label: `正式第${idx + 1}名｜${s.label}`,
+  function buildTestGroups() {
+    const ranked = buildWeightedStrategies().sort((a, b) => b.score - a.score);
+    return ranked.slice(0, 4).map((s, idx) => ({
+      label: `測試第${idx + 1}名｜${s.label}`,
       nums: s.nums,
-      reason: `採用目前最強套路：權重 ${s.weight.toFixed(2)} / 平均命中 ${s.avgHit.toFixed(2)} / 累計回合 ${s.rounds} / 綜合分數 ${s.score.toFixed(2)}`,
+      reason: `${s.reason}（權重 ${s.weight.toFixed(2)} / 平均命中 ${s.avgHit.toFixed(2)} / 累計回合 ${s.rounds}）`,
       key: s.key,
-      meta: {
-        ...s.meta,
-        optimizerWeight: s.weight,
-        avgHit: s.avgHit,
-        rounds: s.rounds,
-        rank: idx + 1,
-        score: s.score
-      }
+      meta: { ...s.meta, rank: idx + 1 }
     }));
+  }
+
+  function buildFormalGroupsFromLeaderboard() {
+    const top4 = Array.isArray(strategyLeaderboard) ? strategyLeaderboard.slice(0, 4) : [];
+    const fallback = buildTestGroups();
+
+    if (!top4.length) {
+      return fallback.map((g, idx) => ({
+        ...g,
+        label: `正式第${idx + 1}名｜${g.label.replace(/^測試第\d+名｜/, "")}`,
+        reason: `暫無排行榜資料，退回本機學習權重模式：${g.reason}`
+      }));
+    }
+
+    const built = buildWeightedStrategies();
+    const strategyMap = new Map(built.map((s) => [s.key, s]));
+
+    return top4.map((ranked, idx) => {
+      const matched = strategyMap.get(ranked.key);
+
+      return {
+        label: `正式第${idx + 1}名｜${ranked.label}`,
+        nums: matched?.nums || [],
+        reason: `採用排行榜第 ${idx + 1} 名：平均命中 ${ranked.avg_hit} / 平均收益 ${ranked.avg_profit} / 勝率 ${ranked.win_rate}% / 累計回合 ${ranked.rounds}`,
+        key: ranked.key,
+        meta: {
+          rank: idx + 1,
+          avgHit: ranked.avg_hit,
+          avgProfit: ranked.avg_profit,
+          winRate: ranked.win_rate,
+          rounds: ranked.rounds,
+          score: ranked.score
+        }
+      };
+    }).filter((g) => Array.isArray(g.nums) && g.nums.length > 0);
   }
 
   async function startTestMode() {
@@ -451,15 +469,7 @@ export default function App() {
       return;
     }
 
-    const sourceGroups = generatedPlan?.groups?.length
-      ? generatedPlan.groups.map((g) => ({
-          label: g.label,
-          nums: g.nums,
-          reason: g.reason,
-          key: g.key,
-          meta: {}
-        }))
-      : buildStrategyGroups().groups;
+    const sourceGroups = buildTestGroups();
 
     const plan = {
       mode: "test",
@@ -467,7 +477,7 @@ export default function App() {
       sourceDrawNo: currentDrawNo,
       targetPeriods: 2,
       targetDrawNo: currentDrawNo + 2,
-      strategyMode: generatedPlan?.mode || "bingo_v3_test_2period_both_compare",
+      strategyMode: "test_use_best_local_weighted_strategies_v35",
       groups: sourceGroups,
       predictionId: null
     };
@@ -496,7 +506,12 @@ export default function App() {
       return;
     }
 
-    const sourceGroups = buildBestFormalGroups();
+    const sourceGroups = buildFormalGroupsFromLeaderboard();
+
+    if (!sourceGroups.length) {
+      setNotice("目前還沒有可用的排行榜策略，請先讓系統累積更多已比對訓練結果。");
+      return;
+    }
 
     const plan = {
       mode: "formal",
@@ -504,7 +519,7 @@ export default function App() {
       sourceDrawNo: currentDrawNo,
       targetPeriods: 4,
       targetDrawNo: currentDrawNo + 4,
-      strategyMode: "formal_use_best_learned_strategies_v1",
+      strategyMode: "formal_use_top4_leaderboard_strategies_v35",
       groups: sourceGroups,
       predictionId: null
     };
@@ -513,7 +528,7 @@ export default function App() {
       const saved = await savePrediction("formal", 4, sourceGroups, currentDrawNo);
       if (saved.ok) {
         plan.predictionId = saved.id;
-        setNotice(`已建立正式投注：本次直接採用目前學習後最強的 4 套策略，來源第 ${currentDrawNo} 期。`);
+        setNotice(`已建立正式投注：本次直接採用 AI 策略排行榜前 4 名套路。`);
       } else {
         setNotice(`正式投注建立失敗：${saved.error || "預測資料庫寫入失敗"}`);
       }
@@ -733,7 +748,6 @@ export default function App() {
     runAutoLoopOnce(false);
 
     const timer = setInterval(() => {
-      console.log("⏱ 每3分鐘自動 sync / compare / train");
       runAutoLoopOnce(true);
     }, 180000);
 
@@ -801,7 +815,7 @@ export default function App() {
           <div style={styles.kicker}>FUWEI BINGO SYSTEM</div>
           <h1 style={styles.h1}>富緯賓果系統 v3.5 全覆蓋摘要版</h1>
           <p style={styles.p}>
-            固定採用四星賓果、四組、四期。正式下注現在會直接採用目前學習後最強的策略組合。
+            現在正式下注會直接採用 AI 策略排行榜前 4 名，不再只是重新生成號碼。
           </p>
 
           <div style={styles.notice}>{notice}</div>
@@ -857,24 +871,34 @@ export default function App() {
           <div style={styles.subtle}>來源：{latest.source || "澳所即時同步"}</div>
         </section>
 
-        {generatedPlan?.groups?.length ? (
-          <section style={styles.panel}>
-            <h2 style={styles.h2}>自動訓練生成方案</h2>
-            <div style={styles.subtle}>策略模式：{generatedPlan.mode}</div>
-            <div style={styles.subtle}>
-              資料期數：第 {generatedPlan.latestDrawNo} 期 / 使用 {generatedPlan.usedRows || 20} 筆資料
-            </div>
-            <div style={{ marginTop: 12 }}>
-              {generatedPlan.groups.map((g, idx) => (
-                <div key={idx} style={styles.groupCard}>
-                  <div style={styles.groupTitle}>{g.label}</div>
-                  <div style={styles.groupNums}>{g.nums.join(" ")}</div>
-                  <div style={styles.subtle}>{g.reason}</div>
+        <section style={styles.panel}>
+          <h2 style={styles.h2}>AI 策略排行榜</h2>
+          <div style={styles.subtle}>
+            正式下注會直接採用這份排行榜的前 4 名策略。
+          </div>
+
+          {Array.isArray(strategyLeaderboard) && strategyLeaderboard.length > 0 ? (
+            <div style={{ marginTop: 14 }}>
+              {strategyLeaderboard.map((item, idx) => (
+                <div key={item.key} style={styles.groupCard}>
+                  <div style={styles.groupTitle}>
+                    {idx + 1}️⃣ {item.label}（{item.key}）
+                  </div>
+                  <div style={styles.subtle}>平均命中：{item.avg_hit}</div>
+                  <div style={styles.subtle}>平均收益：{item.avg_profit}</div>
+                  <div style={styles.subtle}>勝率：{item.win_rate}%</div>
+                  <div style={styles.subtle}>最佳單期命中：{item.best_hit}</div>
+                  <div style={styles.subtle}>累計回合：{item.rounds}</div>
+                  <div style={styles.subtle}>綜合分數：{item.score}</div>
                 </div>
               ))}
             </div>
-          </section>
-        ) : null}
+          ) : (
+            <div style={{ ...styles.subtle, marginTop: 14 }}>
+              目前尚未建立排行榜，先讓系統累積更多 compare 結果。
+            </div>
+          )}
+        </section>
 
         {autoTrainLast ? (
           <section style={styles.panel}>
@@ -887,54 +911,13 @@ export default function App() {
             <div style={styles.subtle}>新建訓練：{autoTrainLast.created_count ?? 0} 筆</div>
             <div style={styles.subtle}>最佳單期命中：{autoTrainLast.best_single_hit ?? 0}</div>
             <div style={styles.subtle}>訊息：{autoTrainLast.message || "無"}</div>
-
-            {Array.isArray(autoTrainLast.created_details) && autoTrainLast.created_details.length > 0 && (
-              <div style={{ marginTop: 14 }}>
-                <div style={styles.groupTitle}>新建訓練明細</div>
-                {autoTrainLast.created_details.map((item, idx) => (
-                  <div key={idx} style={styles.groupCard}>
-                    <div style={styles.subtle}>Prediction ID：{item.prediction_id}</div>
-                    <div style={styles.subtle}>來源期數：第 {item.source_draw_no} 期</div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {Array.isArray(autoTrainLast.pending_details) && autoTrainLast.pending_details.length > 0 && (
-              <div style={{ marginTop: 14 }}>
-                <div style={styles.groupTitle}>待比對明細</div>
-                {autoTrainLast.pending_details.map((item, idx) => (
-                  <div key={idx} style={styles.groupCard}>
-                    <div style={styles.subtle}>Prediction ID：{item.prediction_id}</div>
-                    <div style={styles.subtle}>來源期數：第 {item.source_draw_no} 期</div>
-                    <div style={styles.subtle}>{item.message}</div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {Array.isArray(autoTrainLast.compared_details) && autoTrainLast.compared_details.length > 0 && (
-              <div style={{ marginTop: 14 }}>
-                <div style={styles.groupTitle}>已比對明細</div>
-                {autoTrainLast.compared_details.map((item, idx) => (
-                  <div key={idx} style={styles.groupCard}>
-                    <div style={styles.subtle}>Prediction ID：{item.prediction_id}</div>
-                    <div style={styles.subtle}>來源期數：第 {item.source_draw_no} 期</div>
-                    <div style={styles.subtle}>總成本：{item.total_cost}</div>
-                    <div style={styles.subtle}>總中獎：{item.total_reward}</div>
-                    <div style={styles.subtle}>淨損益：{item.profit}</div>
-                    <div style={styles.subtle}>最佳單期命中：{item.best_single_hit}</div>
-                  </div>
-                ))}
-              </div>
-            )}
           </section>
         ) : null}
 
         <section style={styles.panel}>
           <h2 style={styles.h2}>訓練進步面板</h2>
           <div style={styles.subtle}>
-            這裡顯示最近 10 次訓練成果。平均命中優先使用 total_hit_count；若後端未提供，則暫以最佳單期命中作為命中指標。
+            顯示最近 10 次訓練成果，觀察系統有沒有真的進步。
           </div>
 
           {trainingProgress.count > 0 ? (
@@ -967,29 +950,10 @@ export default function App() {
                 <div style={styles.subtle}>• {trainingProgress.rewardTrend}</div>
                 <div style={styles.subtle}>• {trainingProgress.bestHitTrend}</div>
               </div>
-
-              <div style={{ marginTop: 18 }}>
-                <div style={styles.groupTitle}>最近 10 次訓練明細</div>
-                {trainingProgress.recent10.map((item, idx) => (
-                  <div key={`${item.predictionId}-${idx}`} style={styles.groupCard}>
-                    <div style={styles.subtle}>Prediction ID：{item.predictionId}</div>
-                    <div style={styles.subtle}>來源期數：第 {item.sourceDrawNo} 期</div>
-                    <div style={styles.subtle}>
-                      命中指標：
-                      {item.totalHitCount !== null && item.totalHitCount !== undefined
-                        ? `${item.totalHitCount} 碼`
-                        : `${item.bestSingleHit} 碼（暫以最佳單期命中代替）`}
-                    </div>
-                    <div style={styles.subtle}>總中獎：{item.totalReward} 元</div>
-                    <div style={styles.subtle}>淨損益：{item.profit} 元</div>
-                    <div style={styles.subtle}>最佳單期命中：{item.bestSingleHit} 碼</div>
-                  </div>
-                ))}
-              </div>
             </>
           ) : (
             <div style={{ ...styles.subtle, marginTop: 14 }}>
-              目前尚未累積到已比對的訓練成果，等系統完成更多 compare 後，這裡就會開始顯示進步趨勢。
+              目前尚未累積到足夠已比對成果。
             </div>
           )}
         </section>
@@ -997,7 +961,7 @@ export default function App() {
         <section style={styles.panel}>
           <h2 style={styles.h2}>最近 20 期底稿</h2>
           <div style={styles.subtle}>
-            固定優先讀取 /api/recent20，供四星賓果策略生成與補比對使用
+            固定優先讀取 /api/recent20，供策略生成與補比對使用。
           </div>
           <div style={{ maxHeight: 260, overflow: "auto", marginTop: 12 }}>
             {recent20.map((row, idx) => (
@@ -1018,9 +982,10 @@ export default function App() {
             {testPlan ? (
               <>
                 <div style={styles.subtle}>Prediction ID：{testPlan.predictionId || "尚未寫入"}</div>
-                <div style={styles.subtle}>策略模式：{testPlan.strategyMode || "bingo_v3_test_2period_both_compare"}</div>
+                <div style={styles.subtle}>策略模式：{testPlan.strategyMode}</div>
                 <div style={styles.subtle}>來源期數：第 {testPlan.sourceDrawNo} 期</div>
                 <div style={styles.subtle}>目標期數：第 {testPlan.targetDrawNo} 期</div>
+
                 {testPlan.groups.map((g, idx) => (
                   <div key={idx} style={styles.groupCard}>
                     <div style={styles.groupTitle}>{g.label}</div>
@@ -1028,9 +993,11 @@ export default function App() {
                     <div style={styles.subtle}>{g.reason}</div>
                   </div>
                 ))}
+
                 <div style={styles.btnRow}>
                   <button style={styles.primaryBtn} onClick={compareTestMode}>用目標期數比對測試模式</button>
                 </div>
+
                 {testResult && (
                   <div style={styles.resultBox}>
                     <div style={styles.resultLine}>判定：<strong>{testResult.verdict}</strong></div>
@@ -1043,32 +1010,6 @@ export default function App() {
                     <div style={styles.resultLine}>估計成本：{testResult.totalCost}</div>
                     <div style={styles.resultLine}>估計回收：{testResult.estimatedReturn}</div>
                     <div style={styles.resultLine}>估計損益：{testResult.profit}</div>
-
-                    {Array.isArray(testResult.compareRounds) && testResult.compareRounds.length > 0 && (
-                      <div style={{ marginTop: 14 }}>
-                        {testResult.compareRounds.map((round, idx) => (
-                          <div key={idx} style={{ ...styles.groupCard, marginTop: 10 }}>
-                            <div style={styles.groupTitle}>
-                              第 {idx + 1} 期比對｜{round.drawNo}
-                            </div>
-                            <div style={styles.subtle}>時間：{round.drawTime}</div>
-                            <div style={styles.subtle}>開獎號碼：{(round.drawNumbers || []).join(" ")}</div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    <div style={{ marginTop: 12 }}>
-                      {testResult.results.map((r, idx) => (
-                        <div key={idx} style={styles.resultRow}>
-                          <span>{r.label}</span>
-                          <span>{r.nums.join(" ")}</span>
-                          <span>
-                            累計 {r.hitCount} 碼 / 單期最佳 {r.bestSingleHit || 0} 碼
-                          </span>
-                        </div>
-                      ))}
-                    </div>
                   </div>
                 )}
               </>
@@ -1087,10 +1028,7 @@ export default function App() {
                 <div style={styles.subtle}>目標期數：第 {formalPlan.targetDrawNo} 期</div>
 
                 <div style={{ marginTop: 12 }}>
-                  <div style={styles.groupTitle}>本次正式下注採用目前最強套路</div>
-                  <div style={styles.subtle}>
-                    系統會依照目前學習後的策略權重、平均命中、累計回合，挑出前 4 名策略直接作為正式下注組合。
-                  </div>
+                  <div style={styles.groupTitle}>本次正式下注採用排行榜前 4 名</div>
                 </div>
 
                 {formalPlan.groups.map((g, idx) => (
@@ -1117,17 +1055,6 @@ export default function App() {
                     <div style={styles.resultLine}>估計成本：{formalResult.totalCost}</div>
                     <div style={styles.resultLine}>估計回收：{formalResult.estimatedReturn}</div>
                     <div style={styles.resultLine}>估計損益：{formalResult.profit}</div>
-                    <div style={{ marginTop: 12 }}>
-                      {formalResult.results.map((r, idx) => (
-                        <div key={idx} style={styles.resultRow}>
-                          <span>{r.label}</span>
-                          <span>{r.nums.join(" ")}</span>
-                          <span>
-                            累計 {r.hitCount} 碼 / 單期最佳 {r.bestSingleHit || 0} 碼
-                          </span>
-                        </div>
-                      ))}
-                    </div>
                   </div>
                 )}
               </>
@@ -1298,13 +1225,6 @@ const styles = {
   resultLine: {
     fontSize: 18,
     marginBottom: 8
-  },
-  resultRow: {
-    display: "grid",
-    gridTemplateColumns: "1.4fr 2fr 1.6fr",
-    gap: 12,
-    padding: "8px 0",
-    borderBottom: "1px solid rgba(255,255,255,0.08)"
   },
   grid2: {
     display: "grid",
