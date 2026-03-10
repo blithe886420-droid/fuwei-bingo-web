@@ -1,4 +1,4 @@
-// v3.4 AUTO LOOP + NIGHT SLEEP + TRAINING PROGRESS PANEL
+// v3.5 AUTO LOOP + NIGHT SLEEP + FORMAL USE BEST STRATEGIES
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { buildBingoV1Strategies } from "../lib/buildBingoV1Strategies";
 import {
@@ -59,7 +59,6 @@ function withTs(url) {
   return `${url}${sep}ts=${Date.now()}`;
 }
 
-// 休息時段：00:00 ~ 07:29
 function isBingoRestTime() {
   const now = new Date();
   const hour = now.getHours();
@@ -92,10 +91,7 @@ function mergeAutoTrainHistory(prevHistory, autoTrainData) {
 
   if (!compared.length) return prev;
 
-  const map = new Map(
-    prev.map((item) => [String(item.predictionId), item])
-  );
-
+  const map = new Map(prev.map((item) => [String(item.predictionId), item]));
   const now = Date.now();
 
   compared.forEach((item, idx) => {
@@ -385,20 +381,66 @@ export default function App() {
     return await res.json();
   }
 
-  function buildStrategyGroups() {
+  function buildWeightedStrategies() {
     const weightMap = getStrategyWeightMap(strategyStats);
     const built = buildBingoV1Strategies(recent20, weightMap);
 
+    const ranked = built.strategies
+      .map((s) => {
+        const weight = Number(s.meta?.optimizerWeight || 1);
+        const rounds = normalizeNumber(strategyStats?.[s.key]?.rounds, 0);
+        const avgHit = normalizeNumber(strategyStats?.[s.key]?.avgHit, 0);
+        const score = weight * 100 + avgHit * 10 + rounds * 0.1;
+
+        return {
+          key: s.key,
+          groupNo: s.groupNo,
+          label: s.label,
+          nums: s.nums,
+          reason: s.reason,
+          meta: s.meta || {},
+          weight,
+          rounds,
+          avgHit,
+          score
+        };
+      })
+      .sort((a, b) => b.score - a.score);
+
+    return ranked;
+  }
+
+  function buildStrategyGroups() {
+    const ranked = buildWeightedStrategies();
+
     return {
-      built,
-      groups: built.strategies.map((s) => ({
+      groups: ranked.map((s) => ({
         label: `第${s.groupNo}組｜${s.label}`,
         nums: s.nums,
-        reason: `${s.reason}（權重 ${Number(s.meta?.optimizerWeight || 1).toFixed(2)}）`,
+        reason: `${s.reason}（權重 ${s.weight.toFixed(2)} / 平均命中 ${s.avgHit.toFixed(2)} / 累計回合 ${s.rounds}）`,
         key: s.key,
         meta: s.meta
       }))
     };
+  }
+
+  function buildBestFormalGroups() {
+    const ranked = buildWeightedStrategies().slice(0, 4);
+
+    return ranked.map((s, idx) => ({
+      label: `正式第${idx + 1}名｜${s.label}`,
+      nums: s.nums,
+      reason: `採用目前最強套路：權重 ${s.weight.toFixed(2)} / 平均命中 ${s.avgHit.toFixed(2)} / 累計回合 ${s.rounds} / 綜合分數 ${s.score.toFixed(2)}`,
+      key: s.key,
+      meta: {
+        ...s.meta,
+        optimizerWeight: s.weight,
+        avgHit: s.avgHit,
+        rounds: s.rounds,
+        rank: idx + 1,
+        score: s.score
+      }
+    }));
   }
 
   async function startTestMode() {
@@ -454,15 +496,7 @@ export default function App() {
       return;
     }
 
-    const sourceGroups = generatedPlan?.groups?.length
-      ? generatedPlan.groups.map((g) => ({
-          label: g.label,
-          nums: g.nums,
-          reason: g.reason,
-          key: g.key,
-          meta: {}
-        }))
-      : buildStrategyGroups().groups;
+    const sourceGroups = buildBestFormalGroups();
 
     const plan = {
       mode: "formal",
@@ -470,7 +504,7 @@ export default function App() {
       sourceDrawNo: currentDrawNo,
       targetPeriods: 4,
       targetDrawNo: currentDrawNo + 4,
-      strategyMode: generatedPlan?.mode || "bingo_v2_4star_4group_4period_self_optimized",
+      strategyMode: "formal_use_best_learned_strategies_v1",
       groups: sourceGroups,
       predictionId: null
     };
@@ -479,7 +513,7 @@ export default function App() {
       const saved = await savePrediction("formal", 4, sourceGroups, currentDrawNo);
       if (saved.ok) {
         plan.predictionId = saved.id;
-        setNotice(`已建立四星賓果四組四期正式方案，來源第 ${currentDrawNo} 期。`);
+        setNotice(`已建立正式投注：本次直接採用目前學習後最強的 4 套策略，來源第 ${currentDrawNo} 期。`);
       } else {
         setNotice(`正式投注建立失敗：${saved.error || "預測資料庫寫入失敗"}`);
       }
@@ -765,9 +799,9 @@ export default function App() {
       <div style={styles.wrap}>
         <section style={styles.hero}>
           <div style={styles.kicker}>FUWEI BINGO SYSTEM</div>
-          <h1 style={styles.h1}>富緯賓果系統 v3.4 全覆蓋摘要版</h1>
+          <h1 style={styles.h1}>富緯賓果系統 v3.5 全覆蓋摘要版</h1>
           <p style={styles.p}>
-            固定採用四星賓果、四組、四期。支援一鍵自動訓練：補抓、同步、建立測試、到期比對。
+            固定採用四星賓果、四組、四期。正式下注現在會直接採用目前學習後最強的策略組合。
           </p>
 
           <div style={styles.notice}>{notice}</div>
@@ -1048,11 +1082,17 @@ export default function App() {
             {formalPlan ? (
               <>
                 <div style={styles.subtle}>Prediction ID：{formalPlan.predictionId || "尚未寫入"}</div>
-                <div style={styles.subtle}>
-                  策略模式：{formalPlan.strategyMode || "bingo_v2_4star_4group_4period_self_optimized"}
-                </div>
+                <div style={styles.subtle}>策略模式：{formalPlan.strategyMode}</div>
                 <div style={styles.subtle}>來源期數：第 {formalPlan.sourceDrawNo} 期</div>
                 <div style={styles.subtle}>目標期數：第 {formalPlan.targetDrawNo} 期</div>
+
+                <div style={{ marginTop: 12 }}>
+                  <div style={styles.groupTitle}>本次正式下注採用目前最強套路</div>
+                  <div style={styles.subtle}>
+                    系統會依照目前學習後的策略權重、平均命中、累計回合，挑出前 4 名策略直接作為正式下注組合。
+                  </div>
+                </div>
+
                 {formalPlan.groups.map((g, idx) => (
                   <div key={idx} style={styles.groupCard}>
                     <div style={styles.groupTitle}>{g.label}</div>
@@ -1060,9 +1100,11 @@ export default function App() {
                     <div style={styles.subtle}>{g.reason}</div>
                   </div>
                 ))}
+
                 <div style={styles.btnRow}>
                   <button style={styles.primaryBtn} onClick={compareFormalMode}>用目標期數比對正式投注</button>
                 </div>
+
                 {formalResult && (
                   <div style={styles.resultBox}>
                     <div style={styles.resultLine}>判定：<strong>{formalResult.verdict}</strong></div>
