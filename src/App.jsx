@@ -1,4 +1,4 @@
-// v3.3 AUTO LOOP + NIGHT SLEEP
+// v3.4 AUTO LOOP + NIGHT SLEEP + AUTO TRAIN UI FIX
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { buildBingoV1Strategies } from "../lib/buildBingoV1Strategies";
 import {
@@ -86,7 +86,7 @@ function isBingoRestTime() {
   const hour = now.getHours();
   const minute = now.getMinutes();
   const total = hour * 60 + minute;
-  return total < 450; // 07:30 = 450 分
+  return total < 450;
 }
 
 function getClockText() {
@@ -293,45 +293,23 @@ export default function App() {
       }
 
       if (!data.ok) {
-        throw new Error(data.error || data.step || "auto-train failed");
+        throw new Error(data.error || "auto-train failed");
       }
 
       await syncLatestCore(true);
       await loadRecent20(true);
 
-      const generated = {
-        ok: true,
-        mode: data.strategyMode || "auto_train_v3",
-        target: {
-          stars: 4,
-          groups: 4,
-          periods: 2
-        },
-        latestDrawNo: data.latestDrawNo,
-        latestDrawTime: data.latestDrawTime,
-        usedRows: 20,
-        groups: Array.isArray(data.groups)
-          ? data.groups.map((g, idx) => ({
-              groupNo: idx + 1,
-              key: g.key,
-              label: g.label,
-              nums: g.nums,
-              reason: g.reason
-            }))
-          : []
-      };
-
-      setGeneratedPlan(generated);
       setAutoTrainLast(data);
 
-      const matured = Number(data.maturedCompared || 0);
-      const created = Number(data.created || 0);
-      const catchupInserted = Number(data.catchupInserted || 0);
+      const latestDrawNo = data?.latest_draw_no ?? "未知";
+      const comparedCount = Number(data?.compared_count || 0);
+      const createdCount = Number(data?.created_count || 0);
 
       setAutoStatus(
-        `自動訓練完成：補抓 ${catchupInserted} 期；新建訓練 ${created} 筆；到期比對 ${matured} 筆。`
+        `自動訓練完成：到期比對 ${comparedCount} 筆，新建訓練 ${createdCount} 筆。`
       );
-      setNotice(`自動訓練已完成，目前最新期數第 ${data.latestDrawNo} 期。`);
+
+      setNotice(`自動訓練已完成，目前最新期數第 ${latestDrawNo} 期。`);
     } catch (err) {
       setAutoStatus(`自動訓練失敗：${err.message}`);
     }
@@ -687,25 +665,6 @@ export default function App() {
     return () => clearInterval(timer);
   }, []);
 
-  const core8 = useMemo(() => {
-    const candidates = buildCandidates(recent20).slice(0, 8);
-    return candidates.map((x) => x.num);
-  }, [recent20]);
-
-  const sectionStats = useMemo(() => {
-    const counts = { "01-20": 0, "21-40": 0, "41-60": 0, "61-80": 0 };
-    recent20.forEach((row) => {
-      parseNumbers(row.numbers).forEach((n) => {
-        const x = Number(n);
-        if (x <= 20) counts["01-20"] += 1;
-        else if (x <= 40) counts["21-40"] += 1;
-        else if (x <= 60) counts["41-60"] += 1;
-        else counts["61-80"] += 1;
-      });
-    });
-    return Object.entries(counts).sort((a, b) => b[1] - a[1]);
-  }, [recent20]);
-
   const strategySummary = useMemo(() => {
     return summarizeStrategyStats(strategyStats);
   }, [strategyStats]);
@@ -758,34 +717,20 @@ export default function App() {
           </div>
         </section>
 
-        <div style={styles.grid2}>
-          <section style={styles.panel}>
-            <h2 style={styles.h2}>最新一期資訊</h2>
-            <div style={styles.subtle}>
-              {latest.drawNo ? `第 ${latest.drawNo} 期` : "即時同步"} / {latest.source || "澳所即時同步"}
-            </div>
+        <section style={styles.panel}>
+          <h2 style={styles.h2}>最新一期資訊</h2>
+          <div style={styles.subtle}>
+            {latest.drawNo ? `第 ${latest.drawNo} 期` : "即時同步"} / {latest.source || "澳所即時同步"}
+          </div>
 
-            <div style={styles.numbersWrap}>
-              {(latest.numbers || []).map((n, i) => (
-                <span key={i} style={styles.numBall}>{n}</span>
-              ))}
-            </div>
+          <div style={styles.numbersWrap}>
+            {(latest.numbers || []).map((n, i) => (
+              <span key={i} style={styles.numBall}>{n}</span>
+            ))}
+          </div>
 
-            <div style={styles.subtle}>來源：{latest.source || "澳所即時同步"}</div>
-          </section>
-
-          <section style={styles.panel}>
-            <h2 style={styles.h2}>核心 8 號</h2>
-            <div style={styles.coreGrid}>
-              {core8.map((n, i) => (
-                <div key={i} style={styles.coreCard}>
-                  <div style={styles.coreLabel}>核心 {i + 1}</div>
-                  <div style={styles.coreValue}>{n}</div>
-                </div>
-              ))}
-            </div>
-          </section>
-        </div>
+          <div style={styles.subtle}>來源：{latest.source || "澳所即時同步"}</div>
+        </section>
 
         {generatedPlan?.groups?.length ? (
           <section style={styles.panel}>
@@ -809,54 +754,75 @@ export default function App() {
         {autoTrainLast ? (
           <section style={styles.panel}>
             <h2 style={styles.h2}>自動訓練摘要</h2>
-            <div style={styles.subtle}>模式：{autoTrainLast.strategyMode || autoTrainLast.mode || "auto_train_v3"}</div>
-            <div style={styles.subtle}>最新期數：第 {autoTrainLast.latestDrawNo} 期</div>
-            <div style={styles.subtle}>補抓新增：{autoTrainLast.catchupInserted || 0} 期</div>
-            <div style={styles.subtle}>新建訓練：{autoTrainLast.created || 0} 筆</div>
-            <div style={styles.subtle}>到期比對：{autoTrainLast.maturedCompared || 0} 筆</div>
-            {autoTrainLast.nextPrediction?.created && (
-              <div style={styles.subtle}>已自動建立下一筆測試 prediction。</div>
+            <div style={styles.subtle}>模式：{autoTrainLast.mode || "auto_train_v3"}</div>
+            <div style={styles.subtle}>最新期數：第 {autoTrainLast.latest_draw_no ?? "未知"} 期</div>
+            <div style={styles.subtle}>每輪比對上限：{autoTrainLast.compare_limit ?? 0} 筆</div>
+            <div style={styles.subtle}>每輪新建上限：{autoTrainLast.create_limit ?? 0} 筆</div>
+            <div style={styles.subtle}>到期比對：{autoTrainLast.compared_count ?? 0} 筆</div>
+            <div style={styles.subtle}>新建訓練：{autoTrainLast.created_count ?? 0} 筆</div>
+            <div style={styles.subtle}>最佳單期命中：{autoTrainLast.best_single_hit ?? 0}</div>
+            <div style={styles.subtle}>訊息：{autoTrainLast.message || "無"}</div>
+
+            {Array.isArray(autoTrainLast.created_details) && autoTrainLast.created_details.length > 0 && (
+              <div style={{ marginTop: 14 }}>
+                <div style={styles.groupTitle}>新建訓練明細</div>
+                {autoTrainLast.created_details.map((item, idx) => (
+                  <div key={idx} style={styles.groupCard}>
+                    <div style={styles.subtle}>Prediction ID：{item.prediction_id}</div>
+                    <div style={styles.subtle}>來源期數：第 {item.source_draw_no} 期</div>
+                  </div>
+                ))}
+              </div>
             )}
-            <div style={{ marginTop: 12 }}>
-              {(autoTrainLast.compareResults || []).map((r, idx) => (
-                <div key={idx} style={styles.row}>
-                  <span>Prediction {r.predictionId}</span>
-                  <strong>{r.verdict || r.error || "waiting"}</strong>
-                </div>
-              ))}
-            </div>
+
+            {Array.isArray(autoTrainLast.pending_details) && autoTrainLast.pending_details.length > 0 && (
+              <div style={{ marginTop: 14 }}>
+                <div style={styles.groupTitle}>待比對明細</div>
+                {autoTrainLast.pending_details.map((item, idx) => (
+                  <div key={idx} style={styles.groupCard}>
+                    <div style={styles.subtle}>Prediction ID：{item.prediction_id}</div>
+                    <div style={styles.subtle}>來源期數：第 {item.source_draw_no} 期</div>
+                    <div style={styles.subtle}>{item.message}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {Array.isArray(autoTrainLast.compared_details) && autoTrainLast.compared_details.length > 0 && (
+              <div style={{ marginTop: 14 }}>
+                <div style={styles.groupTitle}>已比對明細</div>
+                {autoTrainLast.compared_details.map((item, idx) => (
+                  <div key={idx} style={styles.groupCard}>
+                    <div style={styles.subtle}>Prediction ID：{item.prediction_id}</div>
+                    <div style={styles.subtle}>來源期數：第 {item.source_draw_no} 期</div>
+                    <div style={styles.subtle}>總成本：{item.total_cost}</div>
+                    <div style={styles.subtle}>總中獎：{item.total_reward}</div>
+                    <div style={styles.subtle}>淨損益：{item.profit}</div>
+                    <div style={styles.subtle}>最佳單期命中：{item.best_single_hit}</div>
+                  </div>
+                ))}
+              </div>
+            )}
           </section>
         ) : null}
 
-        <div style={styles.grid2}>
-          <section style={styles.panel}>
-            <h2 style={styles.h2}>最近 20 期底稿</h2>
-            <div style={styles.subtle}>
-              固定優先讀取 /api/recent20，供四星賓果策略生成與補比對使用
-            </div>
-            <div style={{ maxHeight: 260, overflow: "auto", marginTop: 12 }}>
-              {recent20.map((row, idx) => (
-                <div
-                  key={`${row.draw_no}-${idx}`}
-                  style={{ ...styles.row, borderBottom: "1px solid rgba(255,255,255,0.08)" }}
-                >
-                  <span>{row.draw_no || "-"}</span>
-                  <span style={{ fontSize: 12, opacity: 0.8 }}>{row.draw_time || ""}</span>
-                </div>
-              ))}
-            </div>
-          </section>
-
-          <section style={styles.panel}>
-            <h2 style={styles.h2}>區段統計</h2>
-            {sectionStats.map(([label, count]) => (
-              <div key={label} style={styles.row}>
-                <span>{label}</span>
-                <strong>{count}</strong>
+        <section style={styles.panel}>
+          <h2 style={styles.h2}>最近 20 期底稿</h2>
+          <div style={styles.subtle}>
+            固定優先讀取 /api/recent20，供四星賓果策略生成與補比對使用
+          </div>
+          <div style={{ maxHeight: 260, overflow: "auto", marginTop: 12 }}>
+            {recent20.map((row, idx) => (
+              <div
+                key={`${row.draw_no}-${idx}`}
+                style={{ ...styles.row, borderBottom: "1px solid rgba(255,255,255,0.08)" }}
+              >
+                <span>{row.draw_no || "-"}</span>
+                <span style={{ fontSize: 12, opacity: 0.8 }}>{row.draw_time || ""}</span>
               </div>
             ))}
-          </section>
-        </div>
+          </div>
+        </section>
 
         <section style={styles.panel}>
           <h2 style={styles.h2}>自我優化權重面板</h2>
@@ -1139,26 +1105,6 @@ const styles = {
     color: "#fff",
     fontWeight: 800,
     fontSize: 22
-  },
-  coreGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(4, minmax(80px,1fr))",
-    gap: 12
-  },
-  coreCard: {
-    background: "#081731",
-    borderRadius: 18,
-    padding: 18,
-    textAlign: "center"
-  },
-  coreLabel: {
-    color: "#9eb4dc",
-    fontSize: 14
-  },
-  coreValue: {
-    marginTop: 10,
-    fontSize: 28,
-    fontWeight: 800
   },
   row: {
     display: "flex",
