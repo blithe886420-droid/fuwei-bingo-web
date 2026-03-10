@@ -17,7 +17,7 @@ const TARGET_PERIODS = 2;
 const BET_GROUP_COUNT = 4;
 const NUMBERS_PER_GROUP = 4;
 
-// 先用測試版成本 / 獎金規則
+// 正式成本規則：每組每期 25 元
 const COST_PER_GROUP_PER_PERIOD = 25;
 
 // 限流，避免 Vercel timeout
@@ -74,11 +74,11 @@ function getHitNumbers(predicted, drawNumbers) {
     .sort((a, b) => a - b);
 }
 
-// 測試版獎金表
+// 正式獎金規則
 function calcRewardByHitCount(hitCount) {
-  if (hitCount >= 4) return 200;
+  if (hitCount >= 4) return 1000;
   if (hitCount === 3) return 100;
-  if (hitCount === 2) return 20;
+  if (hitCount === 2) return 25;
   return 0;
 }
 
