@@ -2,7 +2,9 @@ import { createClient } from '@supabase/supabase-js';
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey =
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY;
+  process.env.SUPABASE_SERVICE_ROLE_KEY ||
+  process.env.SUPABASE_SECRET_KEY ||
+  process.env.SUPABASE_KEY;
 
 if (!supabaseUrl || !supabaseKey) {
   throw new Error('Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY / SUPABASE_SECRET_KEY');
@@ -14,17 +16,19 @@ const MODE = 'v3_auto_loop_test_2period';
 const BET_GROUP_COUNT = 4;
 const TARGET_PERIODS = 2;
 
-// 這裡先用固定成本規則，之後你若有正式投注金額規則，再改這裡就好
+// 先用測試版成本規則，之後可再調整
 const COST_PER_GROUP_PER_PERIOD = 25;
 
-// 只處理少量 prediction，避免 timeout
+// 每次只處理少量 prediction，避免 Vercel timeout
 const MAX_COMPARE_PER_RUN = 2;
-
-// 只建立 1 筆下一期 prediction，避免暴衝
 const MAX_CREATE_PER_RUN = 1;
-
-// 逾時保護，避免 function 卡死
 const SOFT_TIMEOUT_MS = 8500;
+
+// 正確資料表與欄位
+const DRAWS_TABLE = 'bingo_draws';
+const DRAW_NO_COL = 'draw_no';
+const DRAW_TIME_COL = 'draw_time';
+const DRAW_NUMBERS_COL = 'numbers';
 
 function nowTs() {
   return Date.now();
@@ -43,14 +47,29 @@ function uniqueAsc(nums) {
   return [...new Set(nums.map(Number))].sort((a, b) => a - b);
 }
 
+function parseDrawNumbers(value) {
+  if (Array.isArray(value)) {
+    return value.map(Number).filter((n) => Number.isFinite(n));
+  }
+
+  if (typeof value === 'string') {
+    return value
+      .split(/[,\s]+/)
+      .map((s) => Number(s.trim()))
+      .filter((n) => Number.isFinite(n));
+  }
+
+  return [];
+}
+
 function getHitNumbers(predicted, drawNumbers) {
   const drawSet = new Set(drawNumbers.map(Number));
   return predicted.map(Number).filter((n) => drawSet.has(n)).sort((a, b) => a - b);
 }
 
 /**
- * 先用可調整的測試版獎金表
- * 之後若你有正式賓果四星玩法的固定對應獎金，再只改這裡
+ * 測試版固定獎金表
+ * 若你有正式四星玩法獎金表，之後只改這裡即可
  */
 function calcRewardByHitCount(hitCount) {
   if (hitCount >= 4) return 200;
@@ -70,12 +89,10 @@ function parsePredictionGroups(prediction) {
   if (!raw) return [];
 
   if (Array.isArray(raw)) {
-    // 可能是 [[...], [...]]
     if (Array.isArray(raw[0])) {
       return raw.map((group) => uniqueAsc(group));
     }
 
-    // 可能是單一平面陣列，切成 4 組
     if (typeof raw[0] === 'number') {
       const chunkSize = Math.floor(raw.length / BET_GROUP_COUNT);
       const groups = [];
@@ -102,11 +119,7 @@ function parsePredictionGroups(prediction) {
   return [];
 }
 
-function buildCompareResult({
-  sourceDrawNo,
-  groups,
-  drawRows,
-}) {
+function buildCompareResult({ sourceDrawNo, groups, drawRows }) {
   const periodResults = [];
   const groupResults = [];
 
@@ -122,10 +135,8 @@ function buildCompareResult({
     let groupReward = 0;
 
     for (const drawRow of drawRows) {
-      const period = toInt(drawRow.draw_no);
-      const drawNumbers = Array.isArray(drawRow.draw_numbers)
-        ? drawRow.draw_numbers.map(Number)
-        : [];
+      const period = toInt(drawRow[DRAW_NO_COL]);
+      const drawNumbers = parseDrawNumbers(drawRow[DRAW_NUMBERS_COL]);
 
       const hitNumbers = getHitNumbers(groupNumbers, drawNumbers);
       const hitCount = hitNumbers.length;
@@ -161,7 +172,7 @@ function buildCompareResult({
   }
 
   for (const drawRow of drawRows) {
-    const period = toInt(drawRow.draw_no);
+    const period = toInt(drawRow[DRAW_NO_COL]);
 
     let reward = 0;
     for (const g of groupResults) {
@@ -175,9 +186,7 @@ function buildCompareResult({
     });
   }
 
-  const totalCost =
-    groups.length * drawRows.length * COST_PER_GROUP_PER_PERIOD;
-
+  const totalCost = groups.length * drawRows.length * COST_PER_GROUP_PER_PERIOD;
   const profit = totalReward - totalCost;
 
   const bestSingleHit = Math.max(
@@ -186,10 +195,7 @@ function buildCompareResult({
   );
 
   const totalHitCount = groupResults.reduce((sum, g) => {
-    return (
-      sum +
-      g.period_hits.reduce((s, p) => s + toInt(p.hit_count), 0)
-    );
+    return sum + g.period_hits.reduce((s, p) => s + toInt(p.hit_count), 0);
   }, 0);
 
   return {
@@ -211,14 +217,14 @@ function buildCompareResult({
 
 async function getLatestDrawNo() {
   const { data, error } = await supabase
-    .from('draw_history')
-    .select('draw_no')
-    .order('draw_no', { ascending: false })
+    .from(DRAWS_TABLE)
+    .select(DRAW_NO_COL)
+    .order(DRAW_NO_COL, { ascending: false })
     .limit(1)
     .maybeSingle();
 
   if (error) throw error;
-  return data ? toInt(data.draw_no) : 0;
+  return data ? toInt(data[DRAW_NO_COL]) : 0;
 }
 
 async function getMaturedPredictions(limitCount) {
@@ -243,19 +249,18 @@ async function getDrawRowsForPrediction(prediction) {
   const end = sourceDrawNo + targetPeriods;
 
   const { data, error } = await supabase
-    .from('draw_history')
-    .select('draw_no, draw_numbers')
-    .gte('draw_no', start)
-    .lte('draw_no', end)
-    .order('draw_no', { ascending: true });
+    .from(DRAWS_TABLE)
+    .select(`${DRAW_NO_COL}, ${DRAW_TIME_COL}, ${DRAW_NUMBERS_COL}`)
+    .gte(DRAW_NO_COL, start)
+    .lte(DRAW_NO_COL, end)
+    .order(DRAW_NO_COL, { ascending: true });
 
   if (error) throw error;
 
-  const rows = (data || []).filter(
-    (r) =>
-      Array.isArray(r.draw_numbers) &&
-      r.draw_numbers.length > 0
-  );
+  const rows = (data || []).filter((r) => {
+    const nums = parseDrawNumbers(r[DRAW_NUMBERS_COL]);
+    return nums.length > 0;
+  });
 
   return rows;
 }
@@ -317,7 +322,7 @@ async function comparePrediction(prediction) {
 
 function generateTestGroupsFromRecent20(recent20) {
   const numbers = recent20
-    .flatMap((row) => (Array.isArray(row.draw_numbers) ? row.draw_numbers : []))
+    .flatMap((row) => parseDrawNumbers(row[DRAW_NUMBERS_COL]))
     .map(Number);
 
   const freq = new Map();
@@ -354,9 +359,9 @@ function generateTestGroupsFromRecent20(recent20) {
 
 async function getRecent20() {
   const { data, error } = await supabase
-    .from('draw_history')
-    .select('draw_no, draw_numbers')
-    .order('draw_no', { ascending: false })
+    .from(DRAWS_TABLE)
+    .select(`${DRAW_NO_COL}, ${DRAW_TIME_COL}, ${DRAW_NUMBERS_COL}`)
+    .order(DRAW_NO_COL, { ascending: false })
     .limit(20);
 
   if (error) throw error;
@@ -383,11 +388,10 @@ async function createNextTestPrediction() {
   if (!latestDrawNo) {
     return {
       ok: false,
-      message: 'draw_history 尚無資料',
+      message: 'bingo_draws 尚無資料',
     };
   }
 
-  // 新 prediction 的來源期數，就是目前最新期數
   const sourceDrawNo = latestDrawNo;
 
   const existing = await findExistingCreatedBySourceDrawNo(sourceDrawNo);
@@ -444,7 +448,6 @@ export default async function handler(req, res) {
 
   try {
     const latestDrawNo = await getLatestDrawNo();
-
     const maturedCandidates = await getMaturedPredictions(MAX_COMPARE_PER_RUN);
 
     let comparedCount = 0;
@@ -490,6 +493,7 @@ export default async function handler(req, res) {
       }
 
       const created = await createNextTestPrediction();
+
       if (created.ok) {
         createdCount += 1;
         createdDetails.push({
@@ -497,7 +501,6 @@ export default async function handler(req, res) {
           prediction_id: created.created.id,
         });
       } else {
-        // 已存在就跳過，不當成錯誤
         if (!created.skipped) {
           createdDetails.push({
             skipped: true,
