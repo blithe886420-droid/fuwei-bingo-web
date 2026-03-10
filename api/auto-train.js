@@ -307,7 +307,6 @@ async function comparePrediction(prediction) {
       compare_result: compareResult,
       hit_count: hitCount,
       best_single_hit: bestSingleHit,
-      updated_at: new Date().toISOString(),
     })
     .eq('id', predictionId);
 
@@ -322,7 +321,6 @@ async function comparePrediction(prediction) {
 
 function generateTestGroupsFromRecent20(recent20) {
   const numbers = recent20.flatMap((row) => parseDrawNumbers(row[DRAW_NUMBERS_COL]));
-
   const freq = new Map();
 
   for (const n of numbers) {
@@ -411,6 +409,7 @@ async function createNextTestPrediction() {
     source_draw_no: sourceDrawNo,
     target_periods: TARGET_PERIODS,
     groups_json: groups,
+    created_at: new Date().toISOString(),
   };
 
   const { data, error } = await supabase
