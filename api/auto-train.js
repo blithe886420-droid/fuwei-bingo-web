@@ -15,8 +15,6 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 const MODE = 'v3_auto_loop_test_2period';
 const TARGET_PERIODS = 2;
 const BET_GROUP_COUNT = 4;
-const NUMBERS_PER_GROUP = 4;
-
 const COST_PER_GROUP_PER_PERIOD = 25;
 
 const MAX_COMPARE_PER_RUN = 1;
@@ -37,6 +35,12 @@ function nowTs() {
 function toInt(value, fallback = 0) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
+}
+
+function round2(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Number(n.toFixed(2));
 }
 
 function uniqueAsc(nums) {
@@ -106,9 +110,7 @@ function parsePredictionGroups(prediction) {
   if (typeof raw === 'string') {
     try {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        return parsePredictionGroups({ groups_json: parsed });
-      }
+      return parsePredictionGroups({ groups_json: parsed });
     } catch {
       return [];
     }
@@ -210,25 +212,38 @@ function buildComparePayload({ prediction, groups, drawRows }) {
           hit2_count: 0,
           hit3_count: 0,
           hit4_count: 0,
+          payout_rounds: 0,
+          profit_rounds: 0,
+          total_cost: 0,
+          total_profit: 0,
           periods: []
         };
         groupResults.push(targetGroup);
       }
 
+      const cost = COST_PER_GROUP_PER_PERIOD;
+      const profit = reward - cost;
+
       targetGroup.total_hit_count += hitCount;
       targetGroup.best_single_hit = Math.max(targetGroup.best_single_hit, hitCount);
       targetGroup.total_reward += reward;
+      targetGroup.total_cost += cost;
+      targetGroup.total_profit += profit;
 
       if (hitCount === 2) targetGroup.hit2_count += 1;
       if (hitCount === 3) targetGroup.hit3_count += 1;
       if (hitCount >= 4) targetGroup.hit4_count += 1;
+      if (reward > 0) targetGroup.payout_rounds += 1;
+      if (profit > 0) targetGroup.profit_rounds += 1;
 
       targetGroup.periods.push({
         draw_no: drawNo,
         draw_time: drawTime,
         hit_numbers: hitNumbers,
         hit_count: hitCount,
-        reward
+        reward,
+        cost,
+        profit
       });
 
       totalHitCount += hitCount;
@@ -244,6 +259,18 @@ function buildComparePayload({ prediction, groups, drawRows }) {
     });
   }
 
+  for (const group of groupResults) {
+    const totalRounds = group.periods.length || targetPeriods;
+    group.avg_hit = round2(group.total_hit_count / totalRounds);
+    group.avg_reward = round2(group.total_reward / totalRounds);
+    group.avg_profit = round2(group.total_profit / totalRounds);
+    group.payout_rate = round2((group.payout_rounds / totalRounds) * 100);
+    group.profit_win_rate = round2((group.profit_rounds / totalRounds) * 100);
+    group.roi = group.total_cost > 0
+      ? round2((group.total_profit / group.total_cost) * 100)
+      : 0;
+  }
+
   const totalCost = groups.length * targetPeriods * COST_PER_GROUP_PER_PERIOD;
   const profit = totalReward - totalCost;
   const compareDrawRange =
@@ -252,7 +279,6 @@ function buildComparePayload({ prediction, groups, drawRows }) {
       : '';
 
   const maxTotalHit = Math.max(0, ...groupResults.map((g) => g.total_hit_count));
-
   const verdict = `${targetPeriods}期累計最佳 ${maxTotalHit} 碼 / 單期最佳中${bestSingleHit}`;
 
   const compareResult = {
@@ -374,7 +400,7 @@ function buildStrategyGroupsFromRecent20(recent20) {
     label: '熱號強追',
     nums: uniqueAsc(hottest.slice(0, 4)),
     reason: '最近20期最高頻4碼',
-    meta: { model: 'v3.5', source: 'auto_train' }
+    meta: { model: 'v3.6', source: 'auto_train' }
   });
 
   groups.push({
@@ -382,7 +408,7 @@ function buildStrategyGroupsFromRecent20(recent20) {
     label: '熱號均衡',
     nums: uniqueAsc([...topInRange(1, 40, 2), ...topInRange(41, 80, 2)]).slice(0, 4),
     reason: '前後半區各取熱號，避免過度集中',
-    meta: { model: 'v3.5', source: 'auto_train' }
+    meta: { model: 'v3.6', source: 'auto_train' }
   });
 
   const tailA = topTails[0] ?? 0;
@@ -392,7 +418,7 @@ function buildStrategyGroupsFromRecent20(recent20) {
     label: '尾數混合',
     nums: uniqueAsc([...pickByTail(tailA, 2), ...pickByTail(tailB, 2)]).slice(0, 4),
     reason: `優先使用近期最熱尾數 ${tailA} / ${tailB}`,
-    meta: { model: 'v3.5', source: 'auto_train' }
+    meta: { model: 'v3.6', source: 'auto_train' }
   });
 
   groups.push({
@@ -405,7 +431,7 @@ function buildStrategyGroupsFromRecent20(recent20) {
       ...topInRange(61, 80, 1)
     ]).slice(0, 4),
     reason: '四區各取代表號，兼顧分散與熱度',
-    meta: { model: 'v3.5', source: 'auto_train' }
+    meta: { model: 'v3.6', source: 'auto_train' }
   });
 
   const fallback = [];
@@ -496,7 +522,7 @@ async function createNextTestPrediction() {
   };
 }
 
-async function buildLeaderboard(limitRows = 50) {
+async function buildLeaderboard(limitRows = 120) {
   const { data, error } = await supabase
     .from(PREDICTIONS_TABLE)
     .select('id, mode, compare_result, compared_at')
@@ -522,28 +548,31 @@ async function buildLeaderboard(limitRows = 50) {
           rounds: 0,
           totalHit: 0,
           totalReward: 0,
-          totalProfitContribution: 0,
-          winCount: 0,
+          totalCost: 0,
+          totalProfit: 0,
+          payoutRounds: 0,
+          profitRounds: 0,
           bestHit: 0
         });
       }
 
       const entry = map.get(key);
+      const totalRounds = Array.isArray(group?.periods) ? group.periods.length : TARGET_PERIODS;
       const totalHit = toInt(group?.total_hit_count, 0);
       const totalReward = toInt(group?.total_reward, 0);
-      const hit2 = toInt(group?.hit2_count, 0);
-      const hit3 = toInt(group?.hit3_count, 0);
-      const hit4 = toInt(group?.hit4_count, 0);
-      const rounds = Array.isArray(group?.periods) ? group.periods.length : TARGET_PERIODS;
-      const cost = rounds * COST_PER_GROUP_PER_PERIOD;
-      const profit = totalReward - cost;
+      const payoutRounds = toInt(group?.payout_rounds, 0);
+      const profitRounds = toInt(group?.profit_rounds, 0);
+      const totalCost = toInt(group?.total_cost, totalRounds * COST_PER_GROUP_PER_PERIOD);
+      const totalProfit = toInt(group?.total_profit, totalReward - totalCost);
 
-      entry.rounds += 1;
+      entry.rounds += totalRounds;
       entry.totalHit += totalHit;
       entry.totalReward += totalReward;
-      entry.totalProfitContribution += profit;
+      entry.totalCost += totalCost;
+      entry.totalProfit += totalProfit;
+      entry.payoutRounds += payoutRounds;
+      entry.profitRounds += profitRounds;
       entry.bestHit = Math.max(entry.bestHit, toInt(group?.best_single_hit, 0));
-      if (hit2 + hit3 + hit4 > 0) entry.winCount += 1;
     }
   }
 
@@ -551,22 +580,34 @@ async function buildLeaderboard(limitRows = 50) {
     .map((item) => {
       const avgHit = item.rounds ? item.totalHit / item.rounds : 0;
       const avgReward = item.rounds ? item.totalReward / item.rounds : 0;
-      const avgProfit = item.rounds ? item.totalProfitContribution / item.rounds : 0;
-      const winRate = item.rounds ? (item.winCount / item.rounds) * 100 : 0;
-      const score = avgProfit + avgHit * 20 + winRate * 2 + item.bestHit * 5;
+      const avgProfit = item.rounds ? item.totalProfit / item.rounds : 0;
+      const payoutRate = item.rounds ? (item.payoutRounds / item.rounds) * 100 : 0;
+      const profitWinRate = item.rounds ? (item.profitRounds / item.rounds) * 100 : 0;
+      const roi = item.totalCost > 0 ? (item.totalProfit / item.totalCost) * 100 : 0;
+
+      const score =
+        roi * 4 +
+        avgProfit * 1.2 +
+        profitWinRate * 2.2 +
+        payoutRate * 1.1 +
+        avgHit * 8 +
+        item.bestHit * 6;
 
       return {
         key: item.key,
         label: item.label,
-        rounds: item.rounds,
-        avg_hit: Number(avgHit.toFixed(2)),
-        avg_reward: Number(avgReward.toFixed(2)),
-        avg_profit: Number(avgProfit.toFixed(2)),
-        win_rate: Number(winRate.toFixed(2)),
+        total_rounds: item.rounds,
+        avg_hit: round2(avgHit),
+        avg_reward: round2(avgReward),
+        avg_profit: round2(avgProfit),
+        payout_rate: round2(payoutRate),
+        profit_win_rate: round2(profitWinRate),
+        roi: round2(roi),
         best_hit: item.bestHit,
-        score: Number(score.toFixed(2))
+        score: round2(score)
       };
     })
+    .filter((item) => item.key !== 'unknown')
     .sort((a, b) => b.score - a.score);
 
   return leaderboard;
@@ -617,6 +658,11 @@ export default async function handler(req, res) {
                 label: g.label,
                 total_hit_count: g.total_hit_count,
                 total_reward: g.total_reward,
+                total_cost: g.total_cost,
+                total_profit: g.total_profit,
+                payout_rate: g.payout_rate,
+                profit_win_rate: g.profit_win_rate,
+                roi: g.roi,
                 hit2_count: g.hit2_count,
                 hit3_count: g.hit3_count,
                 hit4_count: g.hit4_count
@@ -659,7 +705,7 @@ export default async function handler(req, res) {
       }
     }
 
-    const leaderboard = await buildLeaderboard(80);
+    const leaderboard = await buildLeaderboard(160);
 
     return res.status(200).json({
       ok: true,
