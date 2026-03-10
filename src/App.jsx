@@ -1,4 +1,4 @@
-// v3.5 AI STRATEGY LEADERBOARD SYSTEM
+// v3.6 PROFESSIONAL AI STRATEGY EVALUATION SYSTEM
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { buildBingoV1Strategies } from "../lib/buildBingoV1Strategies";
 import {
@@ -15,10 +15,9 @@ const STORAGE_KEYS = {
   testResult: "fuwei_bingo_test_result_v24_hobby",
   formalResult: "fuwei_bingo_formal_result_v24_hobby",
   autoRunAt: "fuwei_bingo_auto_run_at_v24_hobby",
-  generatedPlan: "fuwei_bingo_generated_plan_v24_hobby",
-  autoTrainLast: "fuwei_bingo_auto_train_last_v24_hobby",
-  autoTrainHistory: "fuwei_bingo_auto_train_history_v35",
-  strategyLeaderboard: "fuwei_bingo_strategy_leaderboard_v35"
+  autoTrainLast: "fuwei_bingo_auto_train_last_v36",
+  autoTrainHistory: "fuwei_bingo_auto_train_history_v36",
+  strategyLeaderboard: "fuwei_bingo_strategy_leaderboard_v36"
 };
 
 const LEARNING_KEYS = createLearningStorageKeys("fuwei_bingo_strategy_learning_v2");
@@ -84,6 +83,11 @@ function normalizeNumber(value, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function round1(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n.toFixed(1) : "0.0";
+}
+
 function mergeAutoTrainHistory(prevHistory, autoTrainData) {
   const prev = Array.isArray(prevHistory) ? prevHistory : [];
   const compared = Array.isArray(autoTrainData?.compared_details)
@@ -107,10 +111,7 @@ function mergeAutoTrainHistory(prevHistory, autoTrainData) {
       totalReward: normalizeNumber(item?.total_reward, 0),
       profit: normalizeNumber(item?.profit, 0),
       bestSingleHit: normalizeNumber(item?.best_single_hit, 0),
-      totalHitCount:
-        item?.total_hit_count !== undefined && item?.total_hit_count !== null
-          ? normalizeNumber(item.total_hit_count, 0)
-          : previous.totalHitCount ?? null,
+      totalHitCount: normalizeNumber(item?.total_hit_count, 0),
       strategies: Array.isArray(item?.strategies) ? item.strategies : previous.strategies || [],
       comparedAt: now + idx
     });
@@ -118,11 +119,7 @@ function mergeAutoTrainHistory(prevHistory, autoTrainData) {
 
   return [...map.values()]
     .sort((a, b) => normalizeNumber(b.comparedAt, 0) - normalizeNumber(a.comparedAt, 0))
-    .slice(0, 120);
-}
-
-function format1(value) {
-  return Number.isFinite(value) ? value.toFixed(1) : "0.0";
+    .slice(0, 150);
 }
 
 function buildTrendText(label, current, previous) {
@@ -134,25 +131,16 @@ function buildTrendText(label, current, previous) {
 }
 
 export default function App() {
-  const [latest, setLatest] = useState(() =>
-    readLocal(STORAGE_KEYS.latest, TXT_LATEST)
-  );
-
+  const [latest, setLatest] = useState(() => readLocal(STORAGE_KEYS.latest, TXT_LATEST));
   const [recent20, setRecent20] = useState([]);
   const [recent20Status, setRecent20Status] = useState("尚未載入 recent20");
-
-  const [generatedPlan, setGeneratedPlan] = useState(() =>
-    readLocal(STORAGE_KEYS.generatedPlan, null)
-  );
 
   const [autoTrainLast, setAutoTrainLast] = useState(() =>
     readLocal(STORAGE_KEYS.autoTrainLast, null)
   );
-
   const [autoTrainHistory, setAutoTrainHistory] = useState(() =>
     readLocal(STORAGE_KEYS.autoTrainHistory, [])
   );
-
   const [strategyLeaderboard, setStrategyLeaderboard] = useState(() =>
     readLocal(STORAGE_KEYS.strategyLeaderboard, [])
   );
@@ -186,7 +174,6 @@ export default function App() {
   useEffect(() => writeLocal(STORAGE_KEYS.formalPlan, formalPlan), [formalPlan]);
   useEffect(() => writeLocal(STORAGE_KEYS.testResult, testResult), [testResult]);
   useEffect(() => writeLocal(STORAGE_KEYS.formalResult, formalResult), [formalResult]);
-  useEffect(() => writeLocal(STORAGE_KEYS.generatedPlan, generatedPlan), [generatedPlan]);
   useEffect(() => writeLocal(STORAGE_KEYS.autoTrainLast, autoTrainLast), [autoTrainLast]);
   useEffect(() => writeLocal(STORAGE_KEYS.autoTrainHistory, autoTrainHistory), [autoTrainHistory]);
   useEffect(() => writeLocal(STORAGE_KEYS.strategyLeaderboard, strategyLeaderboard), [strategyLeaderboard]);
@@ -229,9 +216,7 @@ export default function App() {
   }
 
   async function syncLatestCore(silent = false) {
-    const res = await fetch(withTs("/api/sync"), {
-      cache: "no-store"
-    });
+    const res = await fetch(withTs("/api/sync"), { cache: "no-store" });
     const data = await res.json();
 
     if (!data.ok) {
@@ -257,7 +242,6 @@ export default function App() {
 
     setLatest(newLatest);
 
-    let saveNotice = "";
     try {
       const saveRes = await fetch(withTs("/api/save"), {
         method: "POST",
@@ -268,19 +252,7 @@ export default function App() {
 
       const saveData = await saveRes.json();
 
-      if (!saveData.ok) {
-        throw new Error(saveData.error || "save failed");
-      }
-
-      if (saveData.saved) {
-        saveNotice = "，並已自動建檔";
-      } else if (saveData.skipped) {
-        saveNotice = "，此組號碼已存在資料庫";
-      } else {
-        saveNotice = "，建檔狀態未知";
-      }
-
-      if (Array.isArray(saveData.recent20) && saveData.recent20.length > 0) {
+      if (saveData.ok && Array.isArray(saveData.recent20) && saveData.recent20.length > 0) {
         setRecent20(saveData.recent20);
         setRecent20Status(`recent20 已更新，共 ${saveData.recent20.length} 期。`);
 
@@ -296,14 +268,13 @@ export default function App() {
       } else {
         await loadRecent20(true);
       }
-    } catch (err) {
-      saveNotice = `，但建檔失敗：${err.message}`;
+    } catch {
       await loadRecent20(true);
     }
 
     if (!silent) {
       setSyncStatus("已同步最新資料");
-      setNotice(`已抓到最新 20 顆號碼${saveNotice}`);
+      setNotice("已抓到最新 20 顆號碼，並已同步更新。");
     }
 
     return newLatest;
@@ -328,8 +299,8 @@ export default function App() {
       });
 
       const raw = await res.text();
-
       let data = null;
+
       try {
         data = JSON.parse(raw);
       } catch {
@@ -351,10 +322,7 @@ export default function App() {
       const comparedCount = Number(data?.compared_count || 0);
       const createdCount = Number(data?.created_count || 0);
 
-      setAutoStatus(
-        `自動訓練完成：到期比對 ${comparedCount} 筆，新建訓練 ${createdCount} 筆。`
-      );
-
+      setAutoStatus(`自動訓練完成：到期比對 ${comparedCount} 筆，新建訓練 ${createdCount} 筆。`);
       setNotice(`自動訓練已完成，目前最新期數第 ${latestDrawNo} 期。`);
     } catch (err) {
       setAutoStatus(`自動訓練失敗：${err.message}`);
@@ -382,9 +350,7 @@ export default function App() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       cache: "no-store",
-      body: JSON.stringify({
-        predictionId
-      })
+      body: JSON.stringify({ predictionId })
     });
 
     return await res.json();
@@ -434,7 +400,7 @@ export default function App() {
       return fallback.map((g, idx) => ({
         ...g,
         label: `正式第${idx + 1}名｜${g.label.replace(/^測試第\d+名｜/, "")}`,
-        reason: `暫無排行榜資料，退回本機學習權重模式：${g.reason}`
+        reason: `暫無排行榜資料，退回本機權重模式：${g.reason}`
       }));
     }
 
@@ -447,14 +413,16 @@ export default function App() {
       return {
         label: `正式第${idx + 1}名｜${ranked.label}`,
         nums: matched?.nums || [],
-        reason: `採用排行榜第 ${idx + 1} 名：平均命中 ${ranked.avg_hit} / 平均收益 ${ranked.avg_profit} / 勝率 ${ranked.win_rate}% / 累計回合 ${ranked.rounds}`,
+        reason: `採用排行榜第 ${idx + 1} 名：平均命中 ${ranked.avg_hit} / 平均淨損益 ${ranked.avg_profit} / 中獎率 ${ranked.payout_rate}% / 盈利率 ${ranked.profit_win_rate}% / ROI ${ranked.roi}%`,
         key: ranked.key,
         meta: {
           rank: idx + 1,
           avgHit: ranked.avg_hit,
           avgProfit: ranked.avg_profit,
-          winRate: ranked.win_rate,
-          rounds: ranked.rounds,
+          payoutRate: ranked.payout_rate,
+          profitWinRate: ranked.profit_win_rate,
+          roi: ranked.roi,
+          totalRounds: ranked.total_rounds,
           score: ranked.score
         }
       };
@@ -463,7 +431,6 @@ export default function App() {
 
   async function startTestMode() {
     const currentDrawNo = Number(recent20?.[0]?.draw_no || latest.drawNo || 0);
-
     if (!currentDrawNo) {
       setNotice("目前抓不到最新期數，請先按一次同步最新一期。");
       return;
@@ -477,7 +444,7 @@ export default function App() {
       sourceDrawNo: currentDrawNo,
       targetPeriods: 2,
       targetDrawNo: currentDrawNo + 2,
-      strategyMode: "test_use_best_local_weighted_strategies_v35",
+      strategyMode: "test_use_best_local_weighted_strategies_v36",
       groups: sourceGroups,
       predictionId: null
     };
@@ -500,7 +467,6 @@ export default function App() {
 
   async function startFormalMode() {
     const currentDrawNo = Number(recent20?.[0]?.draw_no || latest.drawNo || 0);
-
     if (!currentDrawNo) {
       setNotice("目前抓不到最新期數，請先按一次同步最新一期。");
       return;
@@ -519,7 +485,7 @@ export default function App() {
       sourceDrawNo: currentDrawNo,
       targetPeriods: 4,
       targetDrawNo: currentDrawNo + 4,
-      strategyMode: "formal_use_top4_leaderboard_strategies_v35",
+      strategyMode: "formal_use_top4_leaderboard_strategies_v36",
       groups: sourceGroups,
       predictionId: null
     };
@@ -528,7 +494,7 @@ export default function App() {
       const saved = await savePrediction("formal", 4, sourceGroups, currentDrawNo);
       if (saved.ok) {
         plan.predictionId = saved.id;
-        setNotice(`已建立正式投注：本次直接採用 AI 策略排行榜前 4 名套路。`);
+        setNotice(`已建立正式投注：本次直接採用 AI 專業評估排行榜前 4 名。`);
       } else {
         setNotice(`正式投注建立失敗：${saved.error || "預測資料庫寫入失敗"}`);
       }
@@ -640,10 +606,7 @@ export default function App() {
         return;
       }
 
-      const catchupRes = await fetch(withTs("/api/catchup"), {
-        cache: "no-store"
-      });
-
+      const catchupRes = await fetch(withTs("/api/catchup"), { cache: "no-store" });
       const catchupRaw = await catchupRes.text();
 
       let catchupData = null;
@@ -763,27 +726,20 @@ export default function App() {
     const latest5 = history.slice(0, 5);
     const previous5 = history.slice(5, 10);
 
-    const hitValue = (item) => {
-      if (item?.totalHitCount !== undefined && item?.totalHitCount !== null) {
-        return normalizeNumber(item.totalHitCount, 0);
-      }
-      return normalizeNumber(item?.bestSingleHit, 0);
-    };
-
     const avgOf = (arr, getter) => {
       if (!arr.length) return NaN;
       return arr.reduce((sum, item) => sum + getter(item), 0) / arr.length;
     };
 
-    const avgHit10 = avgOf(recent10, hitValue);
+    const avgHit10 = avgOf(recent10, (item) => normalizeNumber(item.totalHitCount, 0));
     const avgReward10 = avgOf(recent10, (item) => normalizeNumber(item.totalReward, 0));
     const avgProfit10 = avgOf(recent10, (item) => normalizeNumber(item.profit, 0));
     const bestHit10 = recent10.length
       ? Math.max(...recent10.map((item) => normalizeNumber(item.bestSingleHit, 0)))
       : 0;
 
-    const latest5AvgHit = avgOf(latest5, hitValue);
-    const previous5AvgHit = avgOf(previous5, hitValue);
+    const latest5AvgHit = avgOf(latest5, (item) => normalizeNumber(item.totalHitCount, 0));
+    const previous5AvgHit = avgOf(previous5, (item) => normalizeNumber(item.totalHitCount, 0));
 
     const latest5AvgReward = avgOf(latest5, (item) => normalizeNumber(item.totalReward, 0));
     const previous5AvgReward = avgOf(previous5, (item) => normalizeNumber(item.totalReward, 0));
@@ -797,7 +753,6 @@ export default function App() {
 
     return {
       count: history.length,
-      recent10,
       avgHit10,
       avgReward10,
       avgProfit10,
@@ -813,9 +768,9 @@ export default function App() {
       <div style={styles.wrap}>
         <section style={styles.hero}>
           <div style={styles.kicker}>FUWEI BINGO SYSTEM</div>
-          <h1 style={styles.h1}>富緯賓果系統 v3.5 全覆蓋摘要版</h1>
+          <h1 style={styles.h1}>富緯賓果系統 v3.6 專業 AI 評估版</h1>
           <p style={styles.p}>
-            現在正式下注會直接採用 AI 策略排行榜前 4 名，不再只是重新生成號碼。
+            排行榜現在改用平均淨損益、ROI、中獎率、盈利率、平均命中做綜合評估。正式下注直接採用前 4 名。
           </p>
 
           <div style={styles.notice}>{notice}</div>
@@ -872,9 +827,9 @@ export default function App() {
         </section>
 
         <section style={styles.panel}>
-          <h2 style={styles.h2}>AI 策略排行榜</h2>
+          <h2 style={styles.h2}>AI 策略排行榜（專業版）</h2>
           <div style={styles.subtle}>
-            正式下注會直接採用這份排行榜的前 4 名策略。
+            勝率已拆成「中獎率」與「盈利率」。平均收益為平均淨損益，ROI 為總淨損益 ÷ 總成本。
           </div>
 
           {Array.isArray(strategyLeaderboard) && strategyLeaderboard.length > 0 ? (
@@ -886,9 +841,11 @@ export default function App() {
                   </div>
                   <div style={styles.subtle}>平均命中：{item.avg_hit}</div>
                   <div style={styles.subtle}>平均收益：{item.avg_profit}</div>
-                  <div style={styles.subtle}>勝率：{item.win_rate}%</div>
+                  <div style={styles.subtle}>中獎率：{item.payout_rate}%</div>
+                  <div style={styles.subtle}>盈利率：{item.profit_win_rate}%</div>
+                  <div style={styles.subtle}>ROI：{item.roi}%</div>
                   <div style={styles.subtle}>最佳單期命中：{item.best_hit}</div>
-                  <div style={styles.subtle}>累計回合：{item.rounds}</div>
+                  <div style={styles.subtle}>累計回合：{item.total_rounds}</div>
                   <div style={styles.subtle}>綜合分數：{item.score}</div>
                 </div>
               ))}
@@ -917,7 +874,7 @@ export default function App() {
         <section style={styles.panel}>
           <h2 style={styles.h2}>訓練進步面板</h2>
           <div style={styles.subtle}>
-            顯示最近 10 次訓練成果，觀察系統有沒有真的進步。
+            顯示最近 10 次訓練成果，觀察系統是否正在朝更高命中與更低虧損前進。
           </div>
 
           {trainingProgress.count > 0 ? (
@@ -925,17 +882,17 @@ export default function App() {
               <div style={styles.progressGrid}>
                 <div style={styles.progressCard}>
                   <div style={styles.statLabel}>最近 10 次平均命中</div>
-                  <div style={styles.progressValue}>{format1(trainingProgress.avgHit10)} 碼</div>
+                  <div style={styles.progressValue}>{round1(trainingProgress.avgHit10)} 碼</div>
                 </div>
 
                 <div style={styles.progressCard}>
                   <div style={styles.statLabel}>最近 10 次平均中獎</div>
-                  <div style={styles.progressValue}>{format1(trainingProgress.avgReward10)} 元</div>
+                  <div style={styles.progressValue}>{round1(trainingProgress.avgReward10)} 元</div>
                 </div>
 
                 <div style={styles.progressCard}>
                   <div style={styles.statLabel}>最近 10 次平均損益</div>
-                  <div style={styles.progressValue}>{format1(trainingProgress.avgProfit10)} 元</div>
+                  <div style={styles.progressValue}>{round1(trainingProgress.avgProfit10)} 元</div>
                 </div>
 
                 <div style={styles.progressCard}>
@@ -1028,7 +985,7 @@ export default function App() {
                 <div style={styles.subtle}>目標期數：第 {formalPlan.targetDrawNo} 期</div>
 
                 <div style={{ marginTop: 12 }}>
-                  <div style={styles.groupTitle}>本次正式下注採用排行榜前 4 名</div>
+                  <div style={styles.groupTitle}>本次正式下注採用專業 AI 評估前 4 名</div>
                 </div>
 
                 {formalPlan.groups.map((g, idx) => (
