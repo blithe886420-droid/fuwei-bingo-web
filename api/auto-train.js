@@ -16,10 +16,10 @@ const MODE = 'v3_auto_loop_test_2period';
 const BET_GROUP_COUNT = 4;
 const TARGET_PERIODS = 2;
 
-// 先用測試版成本規則，之後可再調整
+// 先用測試版成本規則
 const COST_PER_GROUP_PER_PERIOD = 25;
 
-// 每次只處理少量 prediction，避免 Vercel timeout
+// 限制每次處理量，避免 timeout
 const MAX_COMPARE_PER_RUN = 2;
 const MAX_CREATE_PER_RUN = 1;
 const SOFT_TIMEOUT_MS = 8500;
@@ -64,13 +64,13 @@ function parseDrawNumbers(value) {
 
 function getHitNumbers(predicted, drawNumbers) {
   const drawSet = new Set(drawNumbers.map(Number));
-  return predicted.map(Number).filter((n) => drawSet.has(n)).sort((a, b) => a - b);
+  return predicted
+    .map(Number)
+    .filter((n) => drawSet.has(n))
+    .sort((a, b) => a - b);
 }
 
-/**
- * 測試版固定獎金表
- * 若你有正式四星玩法獎金表，之後只改這裡即可
- */
+// 測試版獎金表，之後可再替換成正式規則
 function calcRewardByHitCount(hitCount) {
   if (hitCount >= 4) return 200;
   if (hitCount === 3) return 100;
@@ -106,10 +106,8 @@ function parsePredictionGroups(prediction) {
   if (typeof raw === 'string') {
     try {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        if (Array.isArray(parsed[0])) {
-          return parsed.map((group) => uniqueAsc(group));
-        }
+      if (Array.isArray(parsed) && Array.isArray(parsed[0])) {
+        return parsed.map((group) => uniqueAsc(group));
       }
     } catch (e) {
       // ignore
@@ -232,7 +230,7 @@ async function getMaturedPredictions(limitCount) {
     .from('bingo_predictions')
     .select('*')
     .eq('status', 'created')
-    .eq('prediction_type', 'test')
+    .eq('mode', MODE)
     .eq('target_periods', TARGET_PERIODS)
     .order('created_at', { ascending: true })
     .limit(limitCount);
@@ -342,7 +340,6 @@ function generateTestGroupsFromRecent20(recent20) {
 
   const pool = uniqueAsc([...ranked, ...fallback]);
 
-  // 每組 4 顆，四組
   const groups = [];
   let cursor = 0;
   for (let i = 0; i < BET_GROUP_COUNT; i++) {
@@ -372,7 +369,7 @@ async function findExistingCreatedBySourceDrawNo(sourceDrawNo) {
   const { data, error } = await supabase
     .from('bingo_predictions')
     .select('id')
-    .eq('prediction_type', 'test')
+    .eq('mode', MODE)
     .eq('target_periods', TARGET_PERIODS)
     .eq('source_draw_no', sourceDrawNo)
     .in('status', ['created', 'compared'])
@@ -385,6 +382,7 @@ async function findExistingCreatedBySourceDrawNo(sourceDrawNo) {
 
 async function createNextTestPrediction() {
   const latestDrawNo = await getLatestDrawNo();
+
   if (!latestDrawNo) {
     return {
       ok: false,
@@ -415,7 +413,6 @@ async function createNextTestPrediction() {
 
   const payload = {
     mode: MODE,
-    prediction_type: 'test',
     status: 'created',
     source_draw_no: sourceDrawNo,
     target_periods: TARGET_PERIODS,
