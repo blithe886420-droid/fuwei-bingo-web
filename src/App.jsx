@@ -1,4 +1,4 @@
-// v3.6.1 PROFESSIONAL AI EVALUATION + AUTO TRAIN TOGGLE
+// v3.6.2 PROFESSIONAL AI EVALUATION + AUTO TRAIN TOGGLE
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { buildBingoV1Strategies } from "../lib/buildBingoV1Strategies";
 import {
@@ -15,10 +15,10 @@ const STORAGE_KEYS = {
   testResult: "fuwei_bingo_test_result_v24_hobby",
   formalResult: "fuwei_bingo_formal_result_v24_hobby",
   autoRunAt: "fuwei_bingo_auto_run_at_v24_hobby",
-  autoTrainLast: "fuwei_bingo_auto_train_last_v361",
-  autoTrainHistory: "fuwei_bingo_auto_train_history_v361",
-  strategyLeaderboard: "fuwei_bingo_strategy_leaderboard_v361",
-  autoTrainEnabled: "fuwei_bingo_auto_train_enabled_v361"
+  autoTrainLast: "fuwei_bingo_auto_train_last_v362",
+  autoTrainHistory: "fuwei_bingo_auto_train_history_v362",
+  strategyLeaderboard: "fuwei_bingo_strategy_leaderboard_v362",
+  autoTrainEnabled: "fuwei_bingo_auto_train_enabled_v362"
 };
 
 const LEARNING_KEYS = createLearningStorageKeys("fuwei_bingo_strategy_learning_v2");
@@ -225,7 +225,14 @@ export default function App() {
       }
 
       setAutoTrainEnabled(!!data.value);
-      setNotice(`自動訓練已${data.value ? "開啟" : "關閉"}。`);
+
+      if (data.value) {
+        setNotice("自動訓練已開啟，立即執行一輪訓練。");
+        await runAutoTrain();
+      } else {
+        setAutoStatus("自動訓練已關閉，本輪後不再自動執行。");
+        setNotice("自動訓練已關閉。");
+      }
     } catch (err) {
       setNotice(`切換自動訓練失敗：${err.message}`);
     }
@@ -460,26 +467,28 @@ export default function App() {
     const built = buildWeightedStrategies();
     const strategyMap = new Map(built.map((s) => [s.key, s]));
 
-    return top4.map((ranked, idx) => {
-      const matched = strategyMap.get(ranked.key);
+    return top4
+      .map((ranked, idx) => {
+        const matched = strategyMap.get(ranked.key);
 
-      return {
-        label: `正式第${idx + 1}名｜${ranked.label}`,
-        nums: matched?.nums || [],
-        reason: `採用排行榜第 ${idx + 1} 名：平均命中 ${ranked.avg_hit} / 平均淨損益 ${ranked.avg_profit} / 中獎率 ${ranked.payout_rate}% / 盈利率 ${ranked.profit_win_rate}% / ROI ${ranked.roi}%`,
-        key: ranked.key,
-        meta: {
-          rank: idx + 1,
-          avgHit: ranked.avg_hit,
-          avgProfit: ranked.avg_profit,
-          payoutRate: ranked.payout_rate,
-          profitWinRate: ranked.profit_win_rate,
-          roi: ranked.roi,
-          totalRounds: ranked.total_rounds,
-          score: ranked.score
-        }
-      };
-    }).filter((g) => Array.isArray(g.nums) && g.nums.length > 0);
+        return {
+          label: `正式第${idx + 1}名｜${ranked.label}`,
+          nums: matched?.nums || [],
+          reason: `採用排行榜第 ${idx + 1} 名：平均命中 ${ranked.avg_hit} / 平均淨損益 ${ranked.avg_profit} / 中獎率 ${ranked.payout_rate}% / 盈利率 ${ranked.profit_win_rate}% / ROI ${ranked.roi}%`,
+          key: ranked.key,
+          meta: {
+            rank: idx + 1,
+            avgHit: ranked.avg_hit,
+            avgProfit: ranked.avg_profit,
+            payoutRate: ranked.payout_rate,
+            profitWinRate: ranked.profit_win_rate,
+            roi: ranked.roi,
+            totalRounds: ranked.total_rounds,
+            score: ranked.score
+          }
+        };
+      })
+      .filter((g) => Array.isArray(g.nums) && g.nums.length > 0);
   }
 
   async function startTestMode() {
@@ -497,7 +506,7 @@ export default function App() {
       sourceDrawNo: currentDrawNo,
       targetPeriods: 2,
       targetDrawNo: currentDrawNo + 2,
-      strategyMode: "test_use_best_local_weighted_strategies_v361",
+      strategyMode: "test_use_best_local_weighted_strategies_v362",
       groups: sourceGroups,
       predictionId: null
     };
@@ -538,7 +547,7 @@ export default function App() {
       sourceDrawNo: currentDrawNo,
       targetPeriods: 4,
       targetDrawNo: currentDrawNo + 4,
-      strategyMode: "formal_use_top4_leaderboard_strategies_v361",
+      strategyMode: "formal_use_top4_leaderboard_strategies_v362",
       groups: sourceGroups,
       predictionId: null
     };
@@ -725,7 +734,7 @@ export default function App() {
     }
   }
 
-  async function runAutoLoopOnce(fromTimer = false) {
+  async function runAutoLoopOnce(fromTimer = false, skipTrain = false) {
     const nowText = getClockText();
 
     if (isBingoRestTime()) {
@@ -750,7 +759,9 @@ export default function App() {
       console.error("autoCatchupAndCompare failed:", err);
     }
 
-    if (enabled) {
+    if (skipTrain) {
+      setAutoStatus("啟動時先不自動訓練，等待你手動開啟。");
+    } else if (enabled) {
       try {
         await runAutoTrain();
       } catch (err) {
@@ -769,10 +780,10 @@ export default function App() {
 
     loadSystemConfig(true);
     loadRecent20(true);
-    runAutoLoopOnce(false);
+    runAutoLoopOnce(false, true);
 
     const timer = setInterval(() => {
-      runAutoLoopOnce(true);
+      runAutoLoopOnce(true, false);
     }, 180000);
 
     return () => clearInterval(timer);
@@ -829,9 +840,9 @@ export default function App() {
       <div style={styles.wrap}>
         <section style={styles.hero}>
           <div style={styles.kicker}>FUWEI BINGO SYSTEM</div>
-          <h1 style={styles.h1}>富緯賓果系統 v3.6.1 專業 AI 評估版</h1>
+          <h1 style={styles.h1}>富緯賓果系統 v3.6.2 專業 AI 評估版</h1>
           <p style={styles.p}>
-            已加入跨裝置共用的自動訓練開關。你可以用手機或電腦控制是否執行 auto-train。
+            已加入跨裝置共用的自動訓練開關。啟動 APP 時先不同步自動訓練，等你按下開啟後才開始跑。
           </p>
 
           <div style={styles.notice}>{notice}</div>
@@ -876,7 +887,6 @@ export default function App() {
           <div style={styles.btnRow}>
             <button style={styles.primaryBtn} onClick={syncLatest}>同步最新一期</button>
             <button style={styles.secondaryBtn} onClick={autoCatchupAndCompare}>立即補抓補比對</button>
-            <button style={styles.secondaryBtn} onClick={runAutoTrain}>啟動自動訓練</button>
             <button style={styles.secondaryBtn} onClick={startTestMode}>建立測試模式</button>
             <button style={styles.secondaryBtn} onClick={startFormalMode}>建立正式投注</button>
           </div>
