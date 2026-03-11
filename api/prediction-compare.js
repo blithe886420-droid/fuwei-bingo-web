@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import { recordStrategyCompareResult } from '../lib/strategyStatsRecorder.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY =
@@ -297,7 +298,8 @@ function buildCompareResult(prediction, groups, drawRows) {
     resultForApp,
     totalHitCount,
     bestSingleHit,
-    comparedDrawCount: drawRows.length
+    comparedDrawCount: drawRows.length,
+    compareDrawNo
   };
 }
 
@@ -366,9 +368,22 @@ export default async function handler(req, res) {
 
     if (error) throw error;
 
+    let strategyStatsResult = null;
+
+    try {
+      strategyStatsResult = await recordStrategyCompareResult({
+        drawNo: built.compareDrawNo,
+        compareResult: built.resultForApp
+      });
+      console.log('recordStrategyCompareResult result:', strategyStatsResult);
+    } catch (err) {
+      console.error('recordStrategyCompareResult error:', err.message);
+    }
+
     return res.status(200).json({
       ok: true,
-      result: built.resultForApp
+      result: built.resultForApp,
+      strategyStatsResult
     });
   } catch (error) {
     console.error('prediction-compare error:', error);
