@@ -1,4 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
+import { recordStrategyCompareResult } from '../lib/strategyStatsRecorder.js';
+import { maybeRunStrategyEvolution } from '../lib/strategyEvolutionEngine.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY =
@@ -280,6 +282,9 @@ function buildComparePayload({ prediction, groups, drawRows }) {
 
   const maxTotalHit = Math.max(0, ...groupResults.map((g) => g.total_hit_count));
   const verdict = `${targetPeriods}期累計最佳 ${maxTotalHit} 碼 / 單期最佳中${bestSingleHit}`;
+  const compareDrawNo = drawRows.length
+    ? toInt(drawRows[drawRows.length - 1][DRAW_NO_COL])
+    : null;
 
   const compareResult = {
     mode: '4star_4group_2period',
@@ -300,13 +305,56 @@ function buildComparePayload({ prediction, groups, drawRows }) {
     }
   };
 
+  const resultForApp = {
+    verdict,
+    sourceDrawNo,
+    targetDrawNo: toInt(sourceDrawNo) + targetPeriods,
+    compareDrawNo,
+    compareDrawRange,
+    totalCost,
+    estimatedReturn: totalReward,
+    profit,
+    compareRounds: drawRows.map((drawRow) => ({
+      drawNo: toInt(drawRow[DRAW_NO_COL]),
+      drawTime: drawRow[DRAW_TIME_COL] || '',
+      drawNumbers: parseDrawNumbers(drawRow[DRAW_NUMBERS_COL])
+    })),
+    results: groupResults.map((g) => ({
+      key: g.key,
+      label: g.label,
+      nums: g.nums,
+      hitCount: g.total_hit_count,
+      bestSingleHit: g.best_single_hit,
+      totalReward: g.total_reward,
+      totalCost: g.total_cost,
+      totalProfit: g.total_profit,
+      roi: g.roi,
+      hit2Count: g.hit2_count,
+      hit3Count: g.hit3_count,
+      hit4Count: g.hit4_count,
+      payoutRate: g.payout_rate,
+      profitWinRate: g.profit_win_rate,
+      periodHits: (g.periods || []).map((p) => ({
+        drawNo: p.draw_no,
+        drawTime: p.draw_time,
+        hitNumbers: p.hit_numbers,
+        hitCount: p.hit_count,
+        reward: p.reward,
+        cost: p.cost,
+        profit: p.profit
+      }))
+    }))
+  };
+
   return {
     compareResult,
     compareResultJson: compareResult,
+    resultForApp,
     verdict,
     hitCount: totalHitCount,
     bestSingleHit,
-    comparedDrawCount: drawRows.length
+    comparedDrawCount: drawRows.length,
+    compareDrawNo
   };
 }
 
@@ -356,13 +404,28 @@ async function comparePrediction(prediction) {
 
   if (error) throw error;
 
+  let strategyStatsResult = null;
+
+  try {
+    strategyStatsResult = await recordStrategyCompareResult({
+      drawNo: built.compareDrawNo,
+      compareResult: built.resultForApp
+    });
+    console.log('recordStrategyCompareResult result:', strategyStatsResult);
+  } catch (err) {
+    console.error('recordStrategyCompareResult error:', err.message);
+  }
+
   return {
     ok: true,
     predictionId: prediction.id,
     sourceDrawNo: prediction.source_draw_no,
     compareResult: built.compareResult,
+    resultForApp: built.resultForApp,
+    strategyStatsResult,
     hitCount: built.hitCount,
-    bestSingleHit: built.bestSingleHit
+    bestSingleHit: built.bestSingleHit,
+    compareDrawNo: built.compareDrawNo
   };
 }
 
@@ -652,6 +715,7 @@ export default async function handler(req, res) {
           profit: result.compareResult?.profit || 0,
           total_hit_count: result.compareResult?.total_hit_count || 0,
           best_single_hit: result.bestSingleHit,
+          strategy_stats_result: result.strategyStatsResult,
           strategies: Array.isArray(result.compareResult?.groups)
             ? result.compareResult.groups.map((g) => ({
                 key: g.key,
@@ -707,6 +771,15 @@ export default async function handler(req, res) {
 
     const leaderboard = await buildLeaderboard(160);
 
+    let evolutionResult = null;
+
+    try {
+      evolutionResult = await maybeRunStrategyEvolution();
+      console.log('strategy evolution result:', evolutionResult);
+    } catch (err) {
+      console.error('maybeRunStrategyEvolution error:', err.message);
+    }
+
     return res.status(200).json({
       ok: true,
       mode: MODE,
@@ -720,6 +793,7 @@ export default async function handler(req, res) {
       pending_details: pendingDetails,
       created_details: createdDetails,
       leaderboard,
+      evolution_result: evolutionResult,
       message: `auto-train 完成：到期比對 ${comparedCount} 筆，新建訓練 ${createdCount} 筆`
     });
   } catch (error) {
