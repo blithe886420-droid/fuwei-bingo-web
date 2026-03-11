@@ -1,4 +1,4 @@
-// v3.6 PROFESSIONAL AI STRATEGY EVALUATION SYSTEM
+// v3.6.1 PROFESSIONAL AI EVALUATION + AUTO TRAIN TOGGLE
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { buildBingoV1Strategies } from "../lib/buildBingoV1Strategies";
 import {
@@ -15,9 +15,10 @@ const STORAGE_KEYS = {
   testResult: "fuwei_bingo_test_result_v24_hobby",
   formalResult: "fuwei_bingo_formal_result_v24_hobby",
   autoRunAt: "fuwei_bingo_auto_run_at_v24_hobby",
-  autoTrainLast: "fuwei_bingo_auto_train_last_v36",
-  autoTrainHistory: "fuwei_bingo_auto_train_history_v36",
-  strategyLeaderboard: "fuwei_bingo_strategy_leaderboard_v36"
+  autoTrainLast: "fuwei_bingo_auto_train_last_v361",
+  autoTrainHistory: "fuwei_bingo_auto_train_history_v361",
+  strategyLeaderboard: "fuwei_bingo_strategy_leaderboard_v361",
+  autoTrainEnabled: "fuwei_bingo_auto_train_enabled_v361"
 };
 
 const LEARNING_KEYS = createLearningStorageKeys("fuwei_bingo_strategy_learning_v2");
@@ -46,6 +47,10 @@ function writeLocal(key, value) {
 }
 
 function parseNumbers(str) {
+  if (Array.isArray(str)) {
+    return str.map((x) => String(x).padStart(2, "0")).slice(0, 20);
+  }
+
   return String(str || "")
     .split(/[,\s]+/)
     .map((x) => x.trim())
@@ -64,7 +69,7 @@ function isBingoRestTime() {
   const hour = now.getHours();
   const minute = now.getMinutes();
   const total = hour * 60 + minute;
-  return total < 450;
+  return total < 450; // 00:00 ~ 07:29
 }
 
 function getClockText() {
@@ -144,6 +149,9 @@ export default function App() {
   const [strategyLeaderboard, setStrategyLeaderboard] = useState(() =>
     readLocal(STORAGE_KEYS.strategyLeaderboard, [])
   );
+  const [autoTrainEnabled, setAutoTrainEnabled] = useState(() =>
+    readLocal(STORAGE_KEYS.autoTrainEnabled, true)
+  );
 
   const [syncStatus, setSyncStatus] = useState("尚未同步");
   const [notice, setNotice] = useState("系統啟動中，準備接即時資料。");
@@ -177,6 +185,51 @@ export default function App() {
   useEffect(() => writeLocal(STORAGE_KEYS.autoTrainLast, autoTrainLast), [autoTrainLast]);
   useEffect(() => writeLocal(STORAGE_KEYS.autoTrainHistory, autoTrainHistory), [autoTrainHistory]);
   useEffect(() => writeLocal(STORAGE_KEYS.strategyLeaderboard, strategyLeaderboard), [strategyLeaderboard]);
+  useEffect(() => writeLocal(STORAGE_KEYS.autoTrainEnabled, autoTrainEnabled), [autoTrainEnabled]);
+
+  async function loadSystemConfig(silent = false) {
+    try {
+      const res = await fetch(withTs("/api/system-config"), {
+        cache: "no-store"
+      });
+      const data = await res.json();
+
+      if (!data.ok) {
+        throw new Error(data.error || "system-config failed");
+      }
+
+      const enabled = !!data.value;
+      setAutoTrainEnabled(enabled);
+      return enabled;
+    } catch (err) {
+      if (!silent) {
+        setNotice(`讀取自動訓練開關失敗：${err.message}`);
+      }
+      return autoTrainEnabled;
+    }
+  }
+
+  async function setSystemAutoTrain(enabled) {
+    try {
+      const res = await fetch(withTs("/api/system-config"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({ enabled })
+      });
+
+      const data = await res.json();
+
+      if (!data.ok) {
+        throw new Error(data.error || "system-config POST failed");
+      }
+
+      setAutoTrainEnabled(!!data.value);
+      setNotice(`自動訓練已${data.value ? "開啟" : "關閉"}。`);
+    } catch (err) {
+      setNotice(`切換自動訓練失敗：${err.message}`);
+    }
+  }
 
   async function loadRecent20(silent = false) {
     try {
@@ -444,7 +497,7 @@ export default function App() {
       sourceDrawNo: currentDrawNo,
       targetPeriods: 2,
       targetDrawNo: currentDrawNo + 2,
-      strategyMode: "test_use_best_local_weighted_strategies_v36",
+      strategyMode: "test_use_best_local_weighted_strategies_v361",
       groups: sourceGroups,
       predictionId: null
     };
@@ -485,7 +538,7 @@ export default function App() {
       sourceDrawNo: currentDrawNo,
       targetPeriods: 4,
       targetDrawNo: currentDrawNo + 4,
-      strategyMode: "formal_use_top4_leaderboard_strategies_v36",
+      strategyMode: "formal_use_top4_leaderboard_strategies_v361",
       groups: sourceGroups,
       predictionId: null
     };
@@ -681,6 +734,8 @@ export default function App() {
       return;
     }
 
+    const enabled = await loadSystemConfig(true);
+
     setLoopStatus(`自動循環執行中：${nowText}${fromTimer ? "（定時）" : "（啟動）"}`);
 
     try {
@@ -695,10 +750,14 @@ export default function App() {
       console.error("autoCatchupAndCompare failed:", err);
     }
 
-    try {
-      await runAutoTrain();
-    } catch (err) {
-      console.error("runAutoTrain failed:", err);
+    if (enabled) {
+      try {
+        await runAutoTrain();
+      } catch (err) {
+        console.error("runAutoTrain failed:", err);
+      }
+    } else {
+      setAutoStatus("自動訓練已關閉，本輪僅執行同步 / 補抓 / 比對。");
     }
 
     setLoopStatus(`自動循環完成：${getClockText()}`);
@@ -708,6 +767,8 @@ export default function App() {
     if (autoRanRef.current) return;
     autoRanRef.current = true;
 
+    loadSystemConfig(true);
+    loadRecent20(true);
     runAutoLoopOnce(false);
 
     const timer = setInterval(() => {
@@ -768,15 +829,25 @@ export default function App() {
       <div style={styles.wrap}>
         <section style={styles.hero}>
           <div style={styles.kicker}>FUWEI BINGO SYSTEM</div>
-          <h1 style={styles.h1}>富緯賓果系統 v3.6 專業 AI 評估版</h1>
+          <h1 style={styles.h1}>富緯賓果系統 v3.6.1 專業 AI 評估版</h1>
           <p style={styles.p}>
-            排行榜現在改用平均淨損益、ROI、中獎率、盈利率、平均命中做綜合評估。正式下注直接採用前 4 名。
+            已加入跨裝置共用的自動訓練開關。你可以用手機或電腦控制是否執行 auto-train。
           </p>
 
           <div style={styles.notice}>{notice}</div>
           <div style={{ ...styles.notice, marginTop: 12, background: "#0a2440" }}>{autoStatus}</div>
           <div style={{ ...styles.notice, marginTop: 12, background: "#0d2744" }}>{recent20Status}</div>
           <div style={{ ...styles.notice, marginTop: 12, background: "#12345b" }}>{loopStatus}</div>
+
+          <div
+            style={{
+              ...styles.notice,
+              marginTop: 12,
+              background: autoTrainEnabled ? "#0b3a21" : "#4a1f1f"
+            }}
+          >
+            自動訓練狀態：{autoTrainEnabled ? "開啟中" : "已關閉"}
+          </div>
 
           <div style={styles.statsGrid}>
             <div style={styles.statCard}>
@@ -808,6 +879,21 @@ export default function App() {
             <button style={styles.secondaryBtn} onClick={runAutoTrain}>啟動自動訓練</button>
             <button style={styles.secondaryBtn} onClick={startTestMode}>建立測試模式</button>
             <button style={styles.secondaryBtn} onClick={startFormalMode}>建立正式投注</button>
+          </div>
+
+          <div style={styles.btnRow}>
+            <button
+              style={{ ...styles.primaryBtn, background: "#33c46b" }}
+              onClick={() => setSystemAutoTrain(true)}
+            >
+              開啟自動訓練
+            </button>
+            <button
+              style={{ ...styles.primaryBtn, background: "#d9534f", color: "#fff" }}
+              onClick={() => setSystemAutoTrain(false)}
+            >
+              關閉自動訓練
+            </button>
           </div>
         </section>
 
