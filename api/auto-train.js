@@ -25,6 +25,8 @@ const SOFT_TIMEOUT_MS = 8000;
 
 const DRAWS_TABLE = 'bingo_draws';
 const PREDICTIONS_TABLE = 'bingo_predictions';
+const STRATEGY_POOL_TABLE = 'strategy_pool';
+const STRATEGY_STATS_TABLE = 'strategy_stats';
 
 const DRAW_NO_COL = 'draw_no';
 const DRAW_TIME_COL = 'draw_time';
@@ -47,6 +49,17 @@ function round2(value) {
 
 function uniqueAsc(nums) {
   return [...new Set(nums.map((n) => Number(n)).filter(Number.isFinite))].sort((a, b) => a - b);
+}
+
+function uniqueKeepOrder(nums) {
+  const seen = new Set();
+  const result = [];
+  for (const n of nums.map((x) => Number(x)).filter(Number.isFinite)) {
+    if (seen.has(n)) continue;
+    seen.add(n);
+    result.push(n);
+  }
+  return result;
 }
 
 function parseDrawNumbers(value) {
@@ -321,6 +334,8 @@ function buildComparePayload({ prediction, groups, drawRows }) {
     })),
     results: groupResults.map((g) => ({
       key: g.key,
+      strategyKey: g.key,
+      strategy: g.key,
       label: g.label,
       nums: g.nums,
       hitCount: g.total_hit_count,
@@ -429,10 +444,21 @@ async function comparePrediction(prediction) {
   };
 }
 
-function buildStrategyGroupsFromRecent20(recent20) {
-  const allNums = recent20.flatMap((row) => parseDrawNumbers(row[DRAW_NUMBERS_COL]));
+function buildRecent20Analysis(recent20) {
+  const rows = Array.isArray(recent20) ? recent20 : [];
+  const allNums = rows.flatMap((row) => parseDrawNumbers(row[DRAW_NUMBERS_COL]));
+  const latestRow = rows[0] || null;
+  const prevRow = rows[1] || null;
+
+  const latestDraw = latestRow ? parseDrawNumbers(latestRow[DRAW_NUMBERS_COL]) : [];
+  const prevDraw = prevRow ? parseDrawNumbers(prevRow[DRAW_NUMBERS_COL]) : [];
+
   const freq = new Map();
   const tailFreq = new Map();
+
+  for (let n = 1; n <= 80; n += 1) {
+    freq.set(n, 0);
+  }
 
   for (const n of allNums) {
     freq.set(n, (freq.get(n) || 0) + 1);
@@ -444,78 +470,374 @@ function buildStrategyGroupsFromRecent20(recent20) {
     .sort((a, b) => b[1] - a[1] || a[0] - b[0])
     .map(([n]) => n);
 
-  function topInRange(min, max, count) {
-    return hottest.filter((n) => n >= min && n <= max).slice(0, count);
-  }
+  const coldest = [...freq.entries()]
+    .sort((a, b) => a[1] - b[1] || a[0] - b[0])
+    .map(([n]) => n);
 
-  function pickByTail(tailNum, count) {
-    return hottest.filter((n) => n % 10 === tailNum).slice(0, count);
-  }
+  const warm = [...freq.entries()]
+    .filter(([, count]) => count >= 1 && count <= 3)
+    .sort((a, b) => b[1] - a[1] || a[0] - b[0])
+    .map(([n]) => n);
 
   const topTails = [...tailFreq.entries()]
     .sort((a, b) => b[1] - a[1] || a[0] - b[0])
     .map(([t]) => t);
 
-  const groups = [];
+  const numbers1to80 = Array.from({ length: 80 }, (_, idx) => idx + 1);
 
-  groups.push({
-    key: 'hot_chase',
-    label: '熱號強追',
-    nums: uniqueAsc(hottest.slice(0, 4)),
-    reason: '最近20期最高頻4碼',
-    meta: { model: 'v3.6', source: 'auto_train' }
-  });
+  function topInRange(min, max, count, source = hottest) {
+    return source.filter((n) => n >= min && n <= max).slice(0, count);
+  }
 
-  groups.push({
-    key: 'hot_balance',
-    label: '熱號均衡',
-    nums: uniqueAsc([...topInRange(1, 40, 2), ...topInRange(41, 80, 2)]).slice(0, 4),
-    reason: '前後半區各取熱號，避免過度集中',
-    meta: { model: 'v3.6', source: 'auto_train' }
-  });
+  function pickByTail(tailNum, count, source = hottest) {
+    return source.filter((n) => n % 10 === tailNum).slice(0, count);
+  }
 
-  const tailA = topTails[0] ?? 0;
-  const tailB = topTails[1] ?? 1;
-  groups.push({
-    key: 'tail_mix',
-    label: '尾數混合',
-    nums: uniqueAsc([...pickByTail(tailA, 2), ...pickByTail(tailB, 2)]).slice(0, 4),
-    reason: `優先使用近期最熱尾數 ${tailA} / ${tailB}`,
-    meta: { model: 'v3.6', source: 'auto_train' }
-  });
+  return {
+    rows,
+    allNums,
+    freq,
+    hottest,
+    coldest,
+    warm: warm.length ? warm : hottest,
+    latestDraw,
+    prevDraw,
+    topTails,
+    numbers1to80,
+    topInRange,
+    pickByTail
+  };
+}
 
-  groups.push({
-    key: 'zone_split',
-    label: '分區拆解',
-    nums: uniqueAsc([
-      ...topInRange(1, 20, 1),
-      ...topInRange(21, 40, 1),
-      ...topInRange(41, 60, 1),
-      ...topInRange(61, 80, 1)
-    ]).slice(0, 4),
-    reason: '四區各取代表號，兼顧分散與熱度',
-    meta: { model: 'v3.6', source: 'auto_train' }
-  });
+function geneCandidates(gene, analysis) {
+  const {
+    hottest,
+    coldest,
+    warm,
+    latestDraw,
+    prevDraw,
+    topTails,
+    numbers1to80,
+    topInRange,
+    pickByTail
+  } = analysis;
 
-  const fallback = [];
-  for (let i = 1; i <= 80; i++) fallback.push(i);
+  const latestSet = new Set(latestDraw);
 
-  return groups.map((g, idx) => {
-    let nums = uniqueAsc(g.nums);
-    if (nums.length < 4) {
-      for (const n of fallback) {
-        if (!nums.includes(n)) nums.push(n);
-        if (nums.length >= 4) break;
-      }
-      nums = uniqueAsc(nums).slice(0, 4);
+  switch (String(gene || '').toLowerCase()) {
+    case 'hot':
+      return hottest;
+
+    case 'chase':
+      return hottest;
+
+    case 'zone':
+      return uniqueKeepOrder([
+        ...topInRange(1, 20, 3),
+        ...topInRange(21, 40, 3),
+        ...topInRange(41, 60, 3),
+        ...topInRange(61, 80, 3)
+      ]);
+
+    case 'split':
+      return uniqueKeepOrder([
+        ...topInRange(1, 20, 2),
+        ...topInRange(21, 40, 2),
+        ...topInRange(41, 60, 2),
+        ...topInRange(61, 80, 2)
+      ]);
+
+    case 'tail': {
+      const tailA = topTails[0] ?? 0;
+      const tailB = topTails[1] ?? 1;
+      return uniqueKeepOrder([
+        ...pickByTail(tailA, 6),
+        ...pickByTail(tailB, 6),
+        ...hottest
+      ]);
     }
 
-    return {
-      ...g,
-      label: g.label || `策略${idx + 1}`,
-      nums
-    };
-  }).slice(0, BET_GROUP_COUNT);
+    case 'balanced':
+      return uniqueKeepOrder([
+        ...topInRange(1, 40, 8),
+        ...topInRange(41, 80, 8),
+        ...warm,
+        ...hottest
+      ]);
+
+    case 'rebound':
+      return uniqueKeepOrder([
+        ...coldest.filter((n) => !latestSet.has(n)).slice(0, 16),
+        ...warm,
+        ...hottest
+      ]);
+
+    case 'bounce':
+      return uniqueKeepOrder([
+        ...coldest.slice(0, 12),
+        ...warm.slice(0, 12),
+        ...hottest
+      ]);
+
+    case 'warm':
+      return uniqueKeepOrder([
+        ...warm,
+        ...hottest
+      ]);
+
+    case 'repeat':
+      return uniqueKeepOrder([
+        ...latestDraw,
+        ...prevDraw,
+        ...hottest
+      ]);
+
+    case 'guard':
+      return uniqueKeepOrder([
+        ...hottest.filter((n) => !latestSet.has(n)),
+        ...warm.filter((n) => !latestSet.has(n)),
+        ...coldest
+      ]);
+
+    case 'cold':
+      return uniqueKeepOrder([
+        ...coldest,
+        ...warm,
+        ...hottest
+      ]);
+
+    case 'jump': {
+      const jumped = latestDraw.map((n) => {
+        const next = n + 10;
+        return next > 80 ? next - 80 : next;
+      });
+      return uniqueKeepOrder([
+        ...jumped,
+        ...hottest,
+        ...warm
+      ]);
+    }
+
+    case 'follow': {
+      const around = [];
+      for (const n of latestDraw) {
+        if (n - 1 >= 1) around.push(n - 1);
+        if (n + 1 <= 80) around.push(n + 1);
+        if (n - 2 >= 1) around.push(n - 2);
+        if (n + 2 <= 80) around.push(n + 2);
+      }
+      return uniqueKeepOrder([
+        ...around,
+        ...latestDraw,
+        ...hottest
+      ]);
+    }
+
+    case 'pattern':
+      return uniqueKeepOrder([
+        ...hottest.filter((n) => n % 2 === 1),
+        ...hottest.filter((n) => n % 2 === 0),
+        ...warm
+      ]);
+
+    case 'structure':
+      return uniqueKeepOrder([
+        ...topInRange(1, 20, 4),
+        ...topInRange(21, 40, 4),
+        ...topInRange(41, 60, 4),
+        ...topInRange(61, 80, 4),
+        ...hottest
+      ]);
+
+    case 'mix':
+      return uniqueKeepOrder([
+        ...hottest.slice(0, 8),
+        ...warm.slice(0, 8),
+        ...coldest.slice(0, 8),
+        ...numbers1to80
+      ]);
+
+    default:
+      return hottest;
+  }
+}
+
+function interleaveCandidateLists(lists) {
+  const normalized = lists.filter((list) => Array.isArray(list) && list.length > 0);
+  const result = [];
+  const maxLen = Math.max(0, ...normalized.map((list) => list.length));
+
+  for (let i = 0; i < maxLen; i += 1) {
+    for (const list of normalized) {
+      if (i < list.length) result.push(list[i]);
+    }
+  }
+
+  return uniqueKeepOrder(result);
+}
+
+function finalizeGroupNumbers(candidates, analysis, count = 4) {
+  const fallback = uniqueKeepOrder([
+    ...analysis.hottest,
+    ...analysis.warm,
+    ...analysis.coldest,
+    ...analysis.numbers1to80
+  ]);
+
+  const merged = uniqueKeepOrder([
+    ...candidates,
+    ...fallback
+  ]);
+
+  return uniqueAsc(merged.slice(0, count));
+}
+
+function buildGroupReason(strategy, genes) {
+  const strategyName = strategy.strategy_name || strategy.strategy_key;
+  return `來自 strategy_pool active 策略 ${strategyName}，基因 ${genes.join(' + ')}`;
+}
+
+function buildGroupFromStrategy(strategy, recent20) {
+  const analysis = buildRecent20Analysis(recent20);
+  const genes = uniqueKeepOrder([strategy.gene_a, strategy.gene_b].filter(Boolean));
+
+  const candidateLists = genes.map((gene) => geneCandidates(gene, analysis));
+  const mergedCandidates = interleaveCandidateLists(candidateLists);
+  const nums = finalizeGroupNumbers(mergedCandidates, analysis, 4);
+
+  return {
+    key: strategy.strategy_key,
+    label: strategy.strategy_name || strategy.strategy_key,
+    nums,
+    reason: buildGroupReason(strategy, genes),
+    meta: {
+      model: 'v3.7',
+      source: 'strategy_pool',
+      strategy_key: strategy.strategy_key,
+      strategy_name: strategy.strategy_name || strategy.strategy_key,
+      gene_a: strategy.gene_a || '',
+      gene_b: strategy.gene_b || '',
+      protected_rank: Boolean(strategy.protected_rank),
+      total_rounds: toInt(strategy.total_rounds, 0),
+      avg_hit: Number(strategy.avg_hit || 0),
+      roi: Number(strategy.roi || 0),
+      recent_50_roi: Number(strategy.recent_50_roi || 0)
+    }
+  };
+}
+
+function scoreActiveStrategy(row) {
+  const protectedBonus = row.protected_rank ? 9999 : 0;
+  const recent50Roi = Number(row.recent_50_roi || 0);
+  const roi = Number(row.roi || 0);
+  const avgHit = Number(row.avg_hit || 0);
+  const totalRounds = Number(row.total_rounds || 0);
+  const matureBonus = totalRounds >= 10 ? 0.3 : 0;
+
+  return protectedBonus + recent50Roi * 0.45 + roi * 0.2 + avgHit * 25 + matureBonus;
+}
+
+async function getActiveStrategiesFromPool(limitCount = BET_GROUP_COUNT) {
+  const { data: activeRows, error: activeError } = await supabase
+    .from(STRATEGY_POOL_TABLE)
+    .select('*')
+    .eq('status', 'active');
+
+  if (activeError) throw activeError;
+
+  const activeStrategies = activeRows || [];
+  if (!activeStrategies.length) return [];
+
+  const strategyKeys = activeStrategies.map((row) => row.strategy_key);
+
+  const { data: statsRows, error: statsError } = await supabase
+    .from(STRATEGY_STATS_TABLE)
+    .select('*')
+    .in('strategy_key', strategyKeys);
+
+  if (statsError) throw statsError;
+
+  const statsMap = new Map((statsRows || []).map((row) => [row.strategy_key, row]));
+
+  return activeStrategies
+    .map((row) => ({
+      ...row,
+      ...(statsMap.get(row.strategy_key) || {}),
+      strategy_score: scoreActiveStrategy({
+        ...row,
+        ...(statsMap.get(row.strategy_key) || {})
+      })
+    }))
+    .sort((a, b) => {
+      if (Boolean(a.protected_rank) !== Boolean(b.protected_rank)) {
+        return Boolean(b.protected_rank) - Boolean(a.protected_rank);
+      }
+      return Number(b.strategy_score || 0) - Number(a.strategy_score || 0);
+    })
+    .slice(0, limitCount);
+}
+
+function buildFallbackSeedGroupsFromRecent20(recent20) {
+  const analysis = buildRecent20Analysis(recent20);
+  const fallbackStrategies = [
+    {
+      strategy_key: 'hot_chase',
+      strategy_name: '熱門追擊型',
+      gene_a: 'hot',
+      gene_b: 'chase',
+      protected_rank: false
+    },
+    {
+      strategy_key: 'hot_balance',
+      strategy_name: '熱號均衡',
+      gene_a: 'hot',
+      gene_b: 'balanced',
+      protected_rank: false
+    },
+    {
+      strategy_key: 'tail_mix',
+      strategy_name: '尾數混合型',
+      gene_a: 'tail',
+      gene_b: 'mix',
+      protected_rank: false
+    },
+    {
+      strategy_key: 'zone_split',
+      strategy_name: '分區拆解',
+      gene_a: 'zone',
+      gene_b: 'split',
+      protected_rank: false
+    }
+  ];
+
+  return fallbackStrategies.map((strategy) => buildGroupFromStrategy(strategy, analysis.rows));
+}
+
+async function buildStrategyGroupsFromPool(recent20) {
+  const activeStrategies = await getActiveStrategiesFromPool(BET_GROUP_COUNT);
+
+  if (!activeStrategies.length) {
+    return buildFallbackSeedGroupsFromRecent20(recent20);
+  }
+
+  const groups = activeStrategies
+    .map((strategy) => buildGroupFromStrategy(strategy, recent20))
+    .filter((group) => Array.isArray(group.nums) && group.nums.length === 4);
+
+  if (groups.length >= BET_GROUP_COUNT) {
+    return groups.slice(0, BET_GROUP_COUNT);
+  }
+
+  const fallbackGroups = buildFallbackSeedGroupsFromRecent20(recent20);
+  const map = new Map(groups.map((g) => [g.key, g]));
+
+  for (const fallback of fallbackGroups) {
+    if (!map.has(fallback.key) && map.size < BET_GROUP_COUNT) {
+      map.set(fallback.key, fallback);
+    }
+  }
+
+  return [...map.values()].slice(0, BET_GROUP_COUNT);
 }
 
 async function findExistingCreatedBySourceDrawNo(sourceDrawNo) {
@@ -556,7 +878,7 @@ async function createNextTestPrediction() {
     return { ok: false, skipped: false, message: '無 recent20 可建立測試 prediction' };
   }
 
-  const groups = buildStrategyGroupsFromRecent20(recent20);
+  const groups = await buildStrategyGroupsFromPool(recent20);
   const id = Date.now();
 
   const payload = {
@@ -742,7 +1064,7 @@ export default async function handler(req, res) {
       }
     }
 
-    for (let i = 0; i < MAX_CREATE_PER_RUN; i++) {
+    for (let i = 0; i < MAX_CREATE_PER_RUN; i += 1) {
       if (nowTs() - startedAt > SOFT_TIMEOUT_MS) break;
 
       const created = await createNextTestPrediction();
@@ -755,7 +1077,9 @@ export default async function handler(req, res) {
           strategies: created.groups.map((g) => ({
             key: g.key,
             label: g.label,
-            nums: g.nums
+            nums: g.nums,
+            reason: g.reason,
+            meta: g.meta
           }))
         });
       } else {
