@@ -1,12 +1,2 @@
-{
-  "crons": [
-    {
-      "path": "/api/cron-sync",
-      "schedule": "*/1 * * * *"
-    },
-    {
-      "path": "/api/auto-train",
-      "schedule": "*/1 * * * *"
-    }
-  ]
-}
+
+{}
