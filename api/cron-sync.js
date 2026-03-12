@@ -1,135 +1,221 @@
-export default async function handler(req, res) {
+import { createClient } from '@supabase/supabase-js';
+
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY =
+  process.env.SUPABASE_SERVICE_ROLE_KEY ||
+  process.env.SUPABASE_SECRET_KEY ||
+  process.env.SUPABASE_KEY;
+
+if (!SUPABASE_URL || !SUPABASE_KEY) {
+  throw new Error('Missing SUPABASE_URL or SUPABASE key');
+}
+
+createClient(SUPABASE_URL, SUPABASE_KEY);
+
+const SOFT_TIMEOUT_MS = 20000;
+
+function nowTs() {
+  return Date.now();
+}
+
+function buildBaseUrl(req) {
+  const proto =
+    req.headers['x-forwarded-proto'] ||
+    (req.headers.host && req.headers.host.includes('localhost') ? 'http' : 'https');
+
+  const host =
+    req.headers['x-forwarded-host'] ||
+    req.headers.host ||
+    process.env.VERCEL_URL;
+
+  if (!host) {
+    throw new Error('Cannot resolve request host');
+  }
+
+  if (String(host).startsWith('http://') || String(host).startsWith('https://')) {
+    return host;
+  }
+
+  return `${proto}://${host}`;
+}
+
+async function callInternalApi(baseUrl, path, { method = 'GET', body } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 12000);
+
   try {
-    const SUPABASE_URL = process.env.SUPABASE_URL;
-    const SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY;
-
-    if (!SUPABASE_URL || !SUPABASE_SECRET_KEY) {
-      return res.status(500).json({
-        ok: false,
-        error: "Missing SUPABASE_URL or SUPABASE_SECRET_KEY"
-      });
-    }
-
-    const now = new Date();
-    const taipeiNow = new Date(
-      now.toLocaleString("en-US", { timeZone: "Asia/Taipei" })
-    );
-
-    const yyyy = taipeiNow.getFullYear();
-    const mm = String(taipeiNow.getMonth() + 1).padStart(2, "0");
-    const dd = String(taipeiNow.getDate()).padStart(2, "0");
-    const hh = String(taipeiNow.getHours()).padStart(2, "0");
-    const mi = String(taipeiNow.getMinutes()).padStart(2, "0");
-    const ss = String(taipeiNow.getSeconds()).padStart(2, "0");
-
-    const dateStr = `${yyyy}${mm}${dd}`;
-    const capturedTime = `${hh}:${mi}:${ss}`;
-
-    const sourceUrl = `https://lotto.auzo.tw/bingobingo/list_${dateStr}.html`;
-
-    const response = await fetch(sourceUrl, {
+    const res = await fetch(`${baseUrl}${path}`, {
+      method,
       headers: {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "zh-TW,zh;q=0.9"
-      }
-    });
-
-    if (!response.ok) {
-      return res.status(500).json({
-        ok: false,
-        error: `fetch failed: ${response.status}`,
-        source: sourceUrl
-      });
-    }
-
-    const html = await response.text();
-
-    const ballMatches = html.match(/>\d{2}</g) || [];
-    const numbers = ballMatches
-      .slice(0, 20)
-      .map(x => x.replace(/[^\d]/g, ""));
-
-    if (numbers.length !== 20) {
-      return res.status(500).json({
-        ok: false,
-        error: "Could not parse latest 20 numbers",
-        source: sourceUrl,
-        count: numbers.length
-      });
-    }
-
-    const numbersText = numbers.join(" ");
-
-    const checkUrl = `${SUPABASE_URL}/rest/v1/bingo_draws?select=id,numbers&numbers=eq.${encodeURIComponent(numbersText)}&limit=1`;
-
-    const checkRes = await fetch(checkUrl, {
-      headers: {
-        apikey: SUPABASE_SECRET_KEY,
-        Authorization: `Bearer ${SUPABASE_SECRET_KEY}`
-      }
-    });
-
-    if (!checkRes.ok) {
-      const detail = await checkRes.text();
-      return res.status(500).json({
-        ok: false,
-        error: "Supabase check failed",
-        detail
-      });
-    }
-
-    const existing = await checkRes.json();
-
-    if (Array.isArray(existing) && existing.length > 0) {
-      return res.status(200).json({
-        ok: true,
-        saved: false,
-        skipped: true,
-        reason: "same numbers already exists"
-      });
-    }
-
-    const uniqueId = Date.now();
-
-    const payload = {
-      id: uniqueId,
-      draw_no: uniqueId,
-      draw_time: capturedTime,
-      numbers: numbersText
-    };
-
-    const saveRes = await fetch(`${SUPABASE_URL}/rest/v1/bingo_draws`, {
-      method: "POST",
-      headers: {
-        apikey: SUPABASE_SECRET_KEY,
-        Authorization: `Bearer ${SUPABASE_SECRET_KEY}`,
-        "Content-Type": "application/json",
-        Prefer: "return=representation"
+        'Content-Type': 'application/json',
+        'x-internal-cron': '1'
       },
-      body: JSON.stringify(payload)
+      body: body ? JSON.stringify(body) : undefined,
+      cache: 'no-store',
+      signal: controller.signal
     });
 
-    if (!saveRes.ok) {
-      const detail = await saveRes.text();
-      return res.status(500).json({
-        ok: false,
-        error: "Supabase insert failed",
-        detail
+    const text = await res.text();
+    let json = null;
+
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      json = { raw: text };
+    }
+
+    return {
+      ok: res.ok,
+      status: res.status,
+      path,
+      data: json
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function runSyncFlow(baseUrl, startedAt) {
+  const steps = [];
+
+  if (nowTs() - startedAt > SOFT_TIMEOUT_MS) {
+    return {
+      ok: false,
+      steps,
+      error: 'soft timeout before sync'
+    };
+  }
+
+  const syncResult = await callInternalApi(baseUrl, '/api/sync');
+  steps.push(syncResult);
+
+  if (nowTs() - startedAt > SOFT_TIMEOUT_MS) {
+    return {
+      ok: false,
+      steps,
+      error: 'soft timeout after sync'
+    };
+  }
+
+  const saveAfterSync = await callInternalApi(baseUrl, '/api/save', {
+    method: 'POST'
+  });
+  steps.push(saveAfterSync);
+
+  if (nowTs() - startedAt > SOFT_TIMEOUT_MS) {
+    return {
+      ok: false,
+      steps,
+      error: 'soft timeout after save'
+    };
+  }
+
+  const recent20Result = await callInternalApi(baseUrl, '/api/recent20');
+  steps.push(recent20Result);
+
+  if (nowTs() - startedAt > SOFT_TIMEOUT_MS) {
+    return {
+      ok: false,
+      steps,
+      error: 'soft timeout after recent20'
+    };
+  }
+
+  const catchupResult = await callInternalApi(baseUrl, '/api/catchup');
+  steps.push(catchupResult);
+
+  if (nowTs() - startedAt > SOFT_TIMEOUT_MS) {
+    return {
+      ok: false,
+      steps,
+      error: 'soft timeout after catchup'
+    };
+  }
+
+  const saveAfterCatchup = await callInternalApi(baseUrl, '/api/save', {
+    method: 'POST'
+  });
+  steps.push(saveAfterCatchup);
+
+  return {
+    ok: steps.every((s) => s.ok),
+    steps
+  };
+}
+
+export default async function handler(req, res) {
+  if (req.method !== 'GET' && req.method !== 'POST') {
+    return res.status(405).json({
+      ok: false,
+      error: 'Method not allowed'
+    });
+  }
+
+  const startedAt = nowTs();
+
+  try {
+    const baseUrl = buildBaseUrl(req);
+    const action = String(req.query?.action || req.body?.action || 'run').trim();
+
+    if (action === 'sync') {
+      const result = await callInternalApi(baseUrl, '/api/sync');
+      return res.status(200).json({
+        ok: result.ok,
+        mode: 'cron-sync',
+        action,
+        result
       });
     }
 
-    const savedRow = await saveRes.json();
+    if (action === 'save') {
+      const result = await callInternalApi(baseUrl, '/api/save', {
+        method: 'POST'
+      });
+      return res.status(200).json({
+        ok: result.ok,
+        mode: 'cron-sync',
+        action,
+        result
+      });
+    }
+
+    if (action === 'recent20') {
+      const result = await callInternalApi(baseUrl, '/api/recent20');
+      return res.status(200).json({
+        ok: result.ok,
+        mode: 'cron-sync',
+        action,
+        result
+      });
+    }
+
+    if (action === 'catchup') {
+      const result = await callInternalApi(baseUrl, '/api/catchup');
+      return res.status(200).json({
+        ok: result.ok,
+        mode: 'cron-sync',
+        action,
+        result
+      });
+    }
+
+    const flow = await runSyncFlow(baseUrl, startedAt);
 
     return res.status(200).json({
-      ok: true,
-      saved: true,
-      row: savedRow
+      ok: flow.ok,
+      mode: 'cron-sync',
+      action: 'run',
+      step_count: flow.steps.length,
+      steps: flow.steps,
+      duration_ms: nowTs() - startedAt,
+      error: flow.error || null
     });
-  } catch (err) {
+  } catch (error) {
+    console.error('cron-sync error:', error);
+
     return res.status(500).json({
       ok: false,
-      error: err.message || "cron sync failed"
+      error: error.message || 'Unknown cron-sync error'
     });
   }
 }
