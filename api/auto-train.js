@@ -461,8 +461,7 @@ function buildRecent20Analysis(recent20) {
 
   for (const n of allNums) {
     freq.set(n, (freq.get(n) || 0) + 1);
-    const t = n % 10;
-    tailFreq.set(t, (tailFreq.get(t) || 0) + 1);
+    tailFreq.set(n % 10, (tailFreq.get(n % 10) || 0) + 1);
   }
 
   const hottest = [...freq.entries()]
@@ -508,7 +507,11 @@ function buildRecent20Analysis(recent20) {
   };
 }
 
-function geneCandidates(gene, analysis) {
+function pickNumbersByModulo(source, modulo, remainder, count) {
+  return source.filter((n) => n % modulo === remainder).slice(0, count);
+}
+
+function geneCandidates(gene, analysis, context = {}) {
   const {
     hottest,
     coldest,
@@ -521,78 +524,110 @@ function geneCandidates(gene, analysis) {
     pickByTail
   } = analysis;
 
+  const variant = toInt(context.variantIndex, 0);
+  const keySeed = String(context.strategyKey || '');
   const latestSet = new Set(latestDraw);
+  const prevSet = new Set(prevDraw);
 
   switch (String(gene || '').toLowerCase()) {
     case 'hot':
+      return uniqueKeepOrder([
+        ...hottest.slice(variant, variant + 18),
+        ...hottest
+      ]);
+
     case 'chase':
-      return hottest;
+      return uniqueKeepOrder([
+        ...hottest.filter((n) => latestSet.has(n)).slice(0, 12),
+        ...hottest.slice(0, 24)
+      ]);
 
     case 'zone':
       return uniqueKeepOrder([
-        ...topInRange(1, 20, 3),
-        ...topInRange(21, 40, 3),
-        ...topInRange(41, 60, 3),
-        ...topInRange(61, 80, 3)
+        ...topInRange(1, 20, 5),
+        ...topInRange(21, 40, 5),
+        ...topInRange(41, 60, 5),
+        ...topInRange(61, 80, 5)
       ]);
-
-    case 'split':
-      return uniqueKeepOrder([
-        ...topInRange(1, 20, 2),
-        ...topInRange(21, 40, 2),
-        ...topInRange(41, 60, 2),
-        ...topInRange(61, 80, 2)
-      ]);
-
-    case 'tail': {
-      const tailA = topTails[0] ?? 0;
-      const tailB = topTails[1] ?? 1;
-      return uniqueKeepOrder([
-        ...pickByTail(tailA, 6),
-        ...pickByTail(tailB, 6),
-        ...hottest
-      ]);
-    }
 
     case 'balanced':
     case 'balance':
       return uniqueKeepOrder([
-        ...topInRange(1, 40, 8),
-        ...topInRange(41, 80, 8),
+        ...topInRange(1, 40, 10),
+        ...topInRange(41, 80, 10),
         ...warm,
         ...hottest
       ]);
+
+    case 'tail': {
+      const tailA = topTails[variant % Math.max(1, topTails.length)] ?? 0;
+      const tailB = topTails[(variant + 1) % Math.max(1, topTails.length)] ?? 1;
+      return uniqueKeepOrder([
+        ...pickByTail(tailA, 8),
+        ...pickByTail(tailB, 8),
+        ...hottest
+      ]);
+    }
+
+    case 'mix': {
+      const mod = (variant % 3) + 2;
+      const rem = keySeed.length % mod;
+      return uniqueKeepOrder([
+        ...pickNumbersByModulo(hottest, mod, rem, 12),
+        ...warm.slice(0, 12),
+        ...coldest.slice(0, 12),
+        ...numbers1to80
+      ]);
+    }
 
     case 'rebound':
     case 'bounce':
       return uniqueKeepOrder([
         ...coldest.filter((n) => !latestSet.has(n)).slice(0, 16),
-        ...warm,
+        ...warm.filter((n) => !latestSet.has(n)).slice(0, 12),
         ...hottest
       ]);
 
     case 'warm':
-      return uniqueKeepOrder([...warm, ...hottest]);
+      return uniqueKeepOrder([
+        ...warm.slice(variant, variant + 20),
+        ...warm,
+        ...hottest
+      ]);
 
     case 'repeat':
-      return uniqueKeepOrder([...latestDraw, ...prevDraw, ...hottest]);
+      return uniqueKeepOrder([
+        ...latestDraw,
+        ...prevDraw.filter((n) => latestSet.has(n)),
+        ...prevDraw,
+        ...hottest
+      ]);
 
     case 'guard':
       return uniqueKeepOrder([
-        ...hottest.filter((n) => !latestSet.has(n)),
+        ...hottest.filter((n) => !latestSet.has(n) && !prevSet.has(n)),
         ...warm.filter((n) => !latestSet.has(n)),
         ...coldest
       ]);
 
     case 'cold':
-      return uniqueKeepOrder([...coldest, ...warm, ...hottest]);
+      return uniqueKeepOrder([
+        ...coldest.slice(variant, variant + 20),
+        ...coldest,
+        ...warm,
+        ...hottest
+      ]);
 
     case 'jump': {
       const jumped = latestDraw.map((n) => {
         const next = n + 10;
         return next > 80 ? next - 80 : next;
       });
-      return uniqueKeepOrder([...jumped, ...hottest, ...warm]);
+      return uniqueKeepOrder([
+        ...jumped,
+        ...hottest.filter((n) => !latestSet.has(n)),
+        ...warm
+      ]);
     }
 
     case 'follow': {
@@ -603,13 +638,17 @@ function geneCandidates(gene, analysis) {
         if (n - 2 >= 1) around.push(n - 2);
         if (n + 2 <= 80) around.push(n + 2);
       }
-      return uniqueKeepOrder([...around, ...latestDraw, ...hottest]);
+      return uniqueKeepOrder([
+        ...around,
+        ...prevDraw,
+        ...hottest
+      ]);
     }
 
     case 'pattern':
       return uniqueKeepOrder([
-        ...hottest.filter((n) => n % 2 === 1),
-        ...hottest.filter((n) => n % 2 === 0),
+        ...hottest.filter((n) => n % 2 === variant % 2),
+        ...hottest.filter((n) => n % 2 !== variant % 2),
         ...warm
       ]);
 
@@ -619,19 +658,21 @@ function geneCandidates(gene, analysis) {
         ...topInRange(21, 40, 4),
         ...topInRange(41, 60, 4),
         ...topInRange(61, 80, 4),
+        ...latestDraw,
         ...hottest
       ]);
 
-    case 'mix':
+    case 'split':
       return uniqueKeepOrder([
-        ...hottest.slice(0, 8),
-        ...warm.slice(0, 8),
-        ...coldest.slice(0, 8),
-        ...numbers1to80
+        ...topInRange(1, 20, 2),
+        ...topInRange(21, 40, 2),
+        ...topInRange(41, 60, 2),
+        ...topInRange(61, 80, 2),
+        ...warm
       ]);
 
     default:
-      return hottest;
+      return uniqueKeepOrder(hottest);
   }
 }
 
@@ -649,7 +690,7 @@ function interleaveCandidateLists(lists) {
   return uniqueKeepOrder(result);
 }
 
-function finalizeGroupNumbers(candidates, analysis, count = 4) {
+function finalizeGroupNumbers(candidates, analysis, strategy, count = 4) {
   const fallback = uniqueKeepOrder([
     ...analysis.hottest,
     ...analysis.warm,
@@ -662,7 +703,32 @@ function finalizeGroupNumbers(candidates, analysis, count = 4) {
     ...fallback
   ]);
 
-  return uniqueAsc(merged.slice(0, count));
+  const variant = toInt(strategy.variantIndex, 0);
+  const selected = [];
+
+  for (const n of merged) {
+    if (selected.includes(n)) continue;
+
+    if (selected.length === 0) {
+      selected.push(n);
+      continue;
+    }
+
+    const tooClose = selected.some((picked) => Math.abs(picked - n) <= (variant % 2 === 0 ? 1 : 0));
+    if (tooClose) continue;
+
+    selected.push(n);
+    if (selected.length >= count) break;
+  }
+
+  if (selected.length < count) {
+    for (const n of merged) {
+      if (!selected.includes(n)) selected.push(n);
+      if (selected.length >= count) break;
+    }
+  }
+
+  return uniqueAsc(selected.slice(0, count));
 }
 
 function buildGroupReason(strategy, genes) {
@@ -670,13 +736,23 @@ function buildGroupReason(strategy, genes) {
   return `來自 strategy_pool active 策略 ${strategyName}，基因 ${genes.join(' + ')}`;
 }
 
-function buildGroupFromStrategy(strategy, recent20) {
+function buildGroupFromStrategy(strategy, recent20, variantIndex = 0) {
   const analysis = buildRecent20Analysis(recent20);
   const genes = uniqueKeepOrder([strategy.gene_a, strategy.gene_b].filter(Boolean));
 
-  const candidateLists = genes.map((gene) => geneCandidates(gene, analysis));
+  const context = {
+    variantIndex,
+    strategyKey: strategy.strategy_key
+  };
+
+  const candidateLists = genes.map((gene) => geneCandidates(gene, analysis, context));
   const mergedCandidates = interleaveCandidateLists(candidateLists);
-  const nums = finalizeGroupNumbers(mergedCandidates, analysis, 4);
+  const nums = finalizeGroupNumbers(
+    mergedCandidates,
+    analysis,
+    { ...strategy, variantIndex },
+    4
+  );
 
   return {
     key: strategy.strategy_key,
@@ -724,7 +800,10 @@ async function getActiveStrategiesFromPool(limitCount = BET_GROUP_COUNT) {
 
   if (activeError) throw activeError;
 
-  const activeStrategies = activeRows || [];
+  const activeStrategies = (activeRows || []).filter(
+    (row) => String(row.strategy_key || '').trim() && row.gene_a && row.gene_b
+  );
+
   if (!activeStrategies.length) return [];
 
   const strategyKeys = activeStrategies.map((row) => row.strategy_key);
@@ -757,15 +836,7 @@ async function getActiveStrategiesFromPool(limitCount = BET_GROUP_COUNT) {
 }
 
 function buildFallbackSeedGroupsFromRecent20(recent20) {
-  const analysis = buildRecent20Analysis(recent20);
   const fallbackStrategies = [
-    {
-      strategy_key: 'hot_chase',
-      strategy_name: '熱門追擊型',
-      gene_a: 'hot',
-      gene_b: 'chase',
-      protected_rank: false
-    },
     {
       strategy_key: 'hot_balanced',
       strategy_name: 'Hot Balanced',
@@ -774,22 +845,29 @@ function buildFallbackSeedGroupsFromRecent20(recent20) {
       protected_rank: false
     },
     {
-      strategy_key: 'tail_mix',
-      strategy_name: '尾數混合型',
-      gene_a: 'tail',
-      gene_b: 'mix',
+      strategy_key: 'balanced_zone',
+      strategy_name: 'Balanced Zone',
+      gene_a: 'balanced',
+      gene_b: 'zone',
       protected_rank: false
     },
     {
-      strategy_key: 'zone_balanced',
-      strategy_name: '區段平衡型',
-      gene_a: 'zone',
-      gene_b: 'balanced',
+      strategy_key: 'hot_chase',
+      strategy_name: '熱門追擊型',
+      gene_a: 'hot',
+      gene_b: 'chase',
+      protected_rank: false
+    },
+    {
+      strategy_key: 'repeat_guard',
+      strategy_name: '重號防守型',
+      gene_a: 'repeat',
+      gene_b: 'guard',
       protected_rank: false
     }
   ];
 
-  return fallbackStrategies.map((strategy) => buildGroupFromStrategy(strategy, analysis.rows));
+  return fallbackStrategies.map((strategy, idx) => buildGroupFromStrategy(strategy, recent20, idx));
 }
 
 async function buildStrategyGroupsFromPool(recent20) {
@@ -800,7 +878,7 @@ async function buildStrategyGroupsFromPool(recent20) {
   }
 
   const groups = activeStrategies
-    .map((strategy) => buildGroupFromStrategy(strategy, recent20))
+    .map((strategy, idx) => buildGroupFromStrategy(strategy, recent20, idx))
     .filter((group) => Array.isArray(group.nums) && group.nums.length === 4);
 
   if (groups.length >= BET_GROUP_COUNT) {
@@ -944,7 +1022,13 @@ async function buildLeaderboard(limitRows = 160) {
       entry.hit2 += toInt(group?.hit2_count, 0);
       entry.hit3 += toInt(group?.hit3_count, 0);
       entry.hit4 += toInt(group?.hit4_count, 0);
-      entry.hit1 += Math.max(0, totalRounds - toInt(group?.hit2_count, 0) - toInt(group?.hit3_count, 0) - toInt(group?.hit4_count, 0));
+      entry.hit1 += Math.max(
+        0,
+        totalRounds -
+          toInt(group?.hit2_count, 0) -
+          toInt(group?.hit3_count, 0) -
+          toInt(group?.hit4_count, 0)
+      );
     }
   }
 
@@ -957,15 +1041,8 @@ async function buildLeaderboard(limitRows = 160) {
       const profitWinRate = item.rounds ? (item.profitRounds / item.rounds) * 100 : 0;
       const roi = item.totalCost > 0 ? (item.totalProfit / item.totalCost) * 100 : 0;
 
-      const explosionScore =
-        item.hit2 * 3 +
-        item.hit3 * 8 +
-        item.hit4 * 20;
-
-      const stabilityScore =
-        avgHit * 50 +
-        avgReward * 5;
-
+      const explosionScore = item.hit2 * 3 + item.hit3 * 8 + item.hit4 * 20;
+      const stabilityScore = avgHit * 50 + avgReward * 5;
       const score = round2(explosionScore + stabilityScore);
 
       return {
