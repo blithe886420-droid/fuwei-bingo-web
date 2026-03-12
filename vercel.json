@@ -1,20 +1,12 @@
 {
   "crons": [
     {
+      "path": "/api/cron-sync",
+      "schedule": "*/1 * * * *"
+    },
+    {
       "path": "/api/auto-train",
       "schedule": "*/1 * * * *"
-    },
-    {
-      "path": "/api/sync",
-      "schedule": "*/1 * * * *"
-    },
-    {
-      "path": "/api/recent20",
-      "schedule": "*/2 * * * *"
-    },
-    {
-      "path": "/api/catchup",
-      "schedule": "*/3 * * * *"
     }
   ]
 }
