@@ -274,6 +274,8 @@ function buildCompareResult(prediction, groups, drawRows) {
     compareRounds,
     results: groupResults.map((g) => ({
       key: g.key,
+      strategyKey: g.key,
+      strategy: g.key,
       label: g.label,
       nums: g.nums,
       hitCount: g.hitCount,
