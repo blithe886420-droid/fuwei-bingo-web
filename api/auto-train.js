@@ -448,12 +448,15 @@ function buildRecent20Analysis(recent20) {
   const allNums = rows.flatMap((row) => parseDrawNumbers(row[DRAW_NUMBERS_COL]));
   const latestRow = rows[0] || null;
   const prevRow = rows[1] || null;
+  const thirdRow = rows[2] || null;
 
   const latestDraw = latestRow ? parseDrawNumbers(latestRow[DRAW_NUMBERS_COL]) : [];
   const prevDraw = prevRow ? parseDrawNumbers(prevRow[DRAW_NUMBERS_COL]) : [];
+  const thirdDraw = thirdRow ? parseDrawNumbers(thirdRow[DRAW_NUMBERS_COL]) : [];
 
   const freq = new Map();
   const tailFreq = new Map();
+  const zoneFreq = new Map();
 
   for (let n = 1; n <= 80; n += 1) {
     freq.set(n, 0);
@@ -462,6 +465,13 @@ function buildRecent20Analysis(recent20) {
   for (const n of allNums) {
     freq.set(n, (freq.get(n) || 0) + 1);
     tailFreq.set(n % 10, (tailFreq.get(n % 10) || 0) + 1);
+
+    const zone =
+      n <= 20 ? 1 :
+      n <= 40 ? 2 :
+      n <= 60 ? 3 : 4;
+
+    zoneFreq.set(zone, (zoneFreq.get(zone) || 0) + 1);
   }
 
   const hottest = [...freq.entries()]
@@ -481,6 +491,10 @@ function buildRecent20Analysis(recent20) {
     .sort((a, b) => b[1] - a[1] || a[0] - b[0])
     .map(([t]) => t);
 
+  const hotZones = [...zoneFreq.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0] - b[0])
+    .map(([zone]) => zone);
+
   const numbers1to80 = Array.from({ length: 80 }, (_, idx) => idx + 1);
 
   function topInRange(min, max, count, source = hottest) {
@@ -489,6 +503,13 @@ function buildRecent20Analysis(recent20) {
 
   function pickByTail(tailNum, count, source = hottest) {
     return source.filter((n) => n % 10 === tailNum).slice(0, count);
+  }
+
+  function pickByZone(zone, count, source = hottest) {
+    if (zone === 1) return source.filter((n) => n >= 1 && n <= 20).slice(0, count);
+    if (zone === 2) return source.filter((n) => n >= 21 && n <= 40).slice(0, count);
+    if (zone === 3) return source.filter((n) => n >= 41 && n <= 60).slice(0, count);
+    return source.filter((n) => n >= 61 && n <= 80).slice(0, count);
   }
 
   return {
@@ -500,15 +521,39 @@ function buildRecent20Analysis(recent20) {
     warm: warm.length ? warm : hottest,
     latestDraw,
     prevDraw,
+    thirdDraw,
     topTails,
+    hotZones,
     numbers1to80,
     topInRange,
-    pickByTail
+    pickByTail,
+    pickByZone
   };
 }
 
-function pickNumbersByModulo(source, modulo, remainder, count) {
-  return source.filter((n) => n % modulo === remainder).slice(0, count);
+function rotateList(source, offset = 0) {
+  if (!Array.isArray(source) || source.length === 0) return [];
+  const len = source.length;
+  const safeOffset = ((offset % len) + len) % len;
+  return [...source.slice(safeOffset), ...source.slice(0, safeOffset)];
+}
+
+function pickEvery(source, step = 2, take = 12) {
+  const out = [];
+  if (!Array.isArray(source) || source.length === 0) return out;
+  for (let i = 0; i < source.length && out.length < take; i += step) {
+    out.push(source[i]);
+  }
+  return out;
+}
+
+function strategySeedNumber(strategyKey = '', variantIndex = 0) {
+  const text = `${strategyKey}_${variantIndex}`;
+  let total = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    total += text.charCodeAt(i);
+  }
+  return total;
 }
 
 function geneCandidates(gene, analysis, context = {}) {
@@ -518,79 +563,83 @@ function geneCandidates(gene, analysis, context = {}) {
     warm,
     latestDraw,
     prevDraw,
+    thirdDraw,
     topTails,
+    hotZones,
     numbers1to80,
     topInRange,
-    pickByTail
+    pickByTail,
+    pickByZone
   } = analysis;
 
   const variant = toInt(context.variantIndex, 0);
-  const keySeed = String(context.strategyKey || '');
+  const keySeed = strategySeedNumber(context.strategyKey || '', variant);
   const latestSet = new Set(latestDraw);
   const prevSet = new Set(prevDraw);
+  const thirdSet = new Set(thirdDraw);
 
   switch (String(gene || '').toLowerCase()) {
     case 'hot':
       return uniqueKeepOrder([
-        ...hottest.slice(variant, variant + 18),
+        ...rotateList(hottest, keySeed % 7).slice(0, 20),
         ...hottest
       ]);
 
     case 'chase':
       return uniqueKeepOrder([
-        ...hottest.filter((n) => latestSet.has(n)).slice(0, 12),
-        ...hottest.slice(0, 24)
+        ...latestDraw.filter((n) => hottest.includes(n)),
+        ...rotateList(hottest, keySeed % 11).slice(0, 24)
       ]);
 
-    case 'zone':
+    case 'zone': {
+      const zoneA = hotZones[variant % Math.max(1, hotZones.length)] || 1;
+      const zoneB = hotZones[(variant + 1) % Math.max(1, hotZones.length)] || 2;
       return uniqueKeepOrder([
-        ...topInRange(1, 20, 5),
-        ...topInRange(21, 40, 5),
-        ...topInRange(41, 60, 5),
-        ...topInRange(61, 80, 5)
+        ...pickByZone(zoneA, 8, hottest),
+        ...pickByZone(zoneB, 8, warm),
+        ...hottest
       ]);
+    }
 
     case 'balanced':
     case 'balance':
       return uniqueKeepOrder([
-        ...topInRange(1, 40, 10),
-        ...topInRange(41, 80, 10),
-        ...warm,
-        ...hottest
+        ...topInRange(1, 20, 4, hottest),
+        ...topInRange(21, 40, 4, hottest),
+        ...topInRange(41, 60, 4, warm),
+        ...topInRange(61, 80, 4, warm),
+        ...rotateList(hottest, keySeed % 5)
       ]);
 
     case 'tail': {
       const tailA = topTails[variant % Math.max(1, topTails.length)] ?? 0;
-      const tailB = topTails[(variant + 1) % Math.max(1, topTails.length)] ?? 1;
+      const tailB = topTails[(variant + 2) % Math.max(1, topTails.length)] ?? 1;
       return uniqueKeepOrder([
-        ...pickByTail(tailA, 8),
-        ...pickByTail(tailB, 8),
-        ...hottest
+        ...pickByTail(tailA, 8, hottest),
+        ...pickByTail(tailB, 8, warm),
+        ...rotateList(hottest, keySeed % 9)
       ]);
     }
 
-    case 'mix': {
-      const mod = (variant % 3) + 2;
-      const rem = keySeed.length % mod;
+    case 'mix':
       return uniqueKeepOrder([
-        ...pickNumbersByModulo(hottest, mod, rem, 12),
-        ...warm.slice(0, 12),
-        ...coldest.slice(0, 12),
+        ...rotateList(hottest, keySeed % 13).slice(0, 10),
+        ...rotateList(warm, keySeed % 7).slice(0, 10),
+        ...rotateList(coldest, keySeed % 5).slice(0, 10),
         ...numbers1to80
       ]);
-    }
 
     case 'rebound':
     case 'bounce':
       return uniqueKeepOrder([
-        ...coldest.filter((n) => !latestSet.has(n)).slice(0, 16),
-        ...warm.filter((n) => !latestSet.has(n)).slice(0, 12),
-        ...hottest
+        ...coldest.filter((n) => !latestSet.has(n)).slice(0, 12),
+        ...warm.filter((n) => prevSet.has(n) || thirdSet.has(n)).slice(0, 12),
+        ...rotateList(hottest, keySeed % 3)
       ]);
 
     case 'warm':
       return uniqueKeepOrder([
-        ...warm.slice(variant, variant + 20),
+        ...rotateList(warm, keySeed % 9).slice(0, 18),
         ...warm,
         ...hottest
       ]);
@@ -599,23 +648,22 @@ function geneCandidates(gene, analysis, context = {}) {
       return uniqueKeepOrder([
         ...latestDraw,
         ...prevDraw.filter((n) => latestSet.has(n)),
-        ...prevDraw,
-        ...hottest
+        ...thirdDraw.filter((n) => latestSet.has(n) || prevSet.has(n)),
+        ...rotateList(hottest, keySeed % 6)
       ]);
 
     case 'guard':
       return uniqueKeepOrder([
-        ...hottest.filter((n) => !latestSet.has(n) && !prevSet.has(n)),
+        ...rotateList(hottest.filter((n) => !latestSet.has(n)), keySeed % 7).slice(0, 16),
         ...warm.filter((n) => !latestSet.has(n)),
         ...coldest
       ]);
 
     case 'cold':
       return uniqueKeepOrder([
-        ...coldest.slice(variant, variant + 20),
+        ...rotateList(coldest, keySeed % 8).slice(0, 18),
         ...coldest,
-        ...warm,
-        ...hottest
+        ...warm
       ]);
 
     case 'jump': {
@@ -625,7 +673,7 @@ function geneCandidates(gene, analysis, context = {}) {
       });
       return uniqueKeepOrder([
         ...jumped,
-        ...hottest.filter((n) => !latestSet.has(n)),
+        ...rotateList(hottest.filter((n) => !latestSet.has(n)), keySeed % 10).slice(0, 14),
         ...warm
       ]);
     }
@@ -639,7 +687,7 @@ function geneCandidates(gene, analysis, context = {}) {
         if (n + 2 <= 80) around.push(n + 2);
       }
       return uniqueKeepOrder([
-        ...around,
+        ...rotateList(around, keySeed % 5),
         ...prevDraw,
         ...hottest
       ]);
@@ -647,43 +695,45 @@ function geneCandidates(gene, analysis, context = {}) {
 
     case 'pattern':
       return uniqueKeepOrder([
-        ...hottest.filter((n) => n % 2 === variant % 2),
-        ...hottest.filter((n) => n % 2 !== variant % 2),
+        ...rotateList(hottest.filter((n) => n % 2 === variant % 2), keySeed % 4).slice(0, 16),
+        ...rotateList(hottest.filter((n) => n % 2 !== variant % 2), keySeed % 6).slice(0, 16),
         ...warm
       ]);
 
     case 'structure':
       return uniqueKeepOrder([
-        ...topInRange(1, 20, 4),
-        ...topInRange(21, 40, 4),
-        ...topInRange(41, 60, 4),
-        ...topInRange(61, 80, 4),
+        ...pickEvery(rotateList(hottest, keySeed % 9), 2, 10),
+        ...pickEvery(rotateList(warm, keySeed % 7), 3, 10),
         ...latestDraw,
-        ...hottest
+        ...prevDraw
       ]);
 
     case 'split':
       return uniqueKeepOrder([
-        ...topInRange(1, 20, 2),
-        ...topInRange(21, 40, 2),
-        ...topInRange(41, 60, 2),
-        ...topInRange(61, 80, 2),
+        ...topInRange(1, 20, 3, rotateList(hottest, keySeed % 3)),
+        ...topInRange(21, 40, 3, rotateList(hottest, keySeed % 5)),
+        ...topInRange(41, 60, 3, rotateList(hottest, keySeed % 7)),
+        ...topInRange(61, 80, 3, rotateList(hottest, keySeed % 9)),
         ...warm
       ]);
 
     default:
-      return uniqueKeepOrder(hottest);
+      return uniqueKeepOrder(rotateList(hottest, keySeed % 10));
   }
 }
 
-function interleaveCandidateLists(lists) {
-  const normalized = lists.filter((list) => Array.isArray(list) && list.length > 0);
+function mergeGeneLists(geneLists, strategyKey = '', variantIndex = 0) {
+  const normalized = geneLists.filter((list) => Array.isArray(list) && list.length > 0);
   const result = [];
   const maxLen = Math.max(0, ...normalized.map((list) => list.length));
+  const seed = strategySeedNumber(strategyKey, variantIndex);
 
-  for (let i = 0; i < maxLen; i += 1) {
-    for (const list of normalized) {
-      if (i < list.length) result.push(list[i]);
+  for (let round = 0; round < maxLen; round += 1) {
+    for (let listIndex = 0; listIndex < normalized.length; listIndex += 1) {
+      const list = normalized[(listIndex + seed) % normalized.length];
+      const idx = (round + seed + listIndex) % list.length;
+      const value = list[idx];
+      if (Number.isFinite(value)) result.push(value);
     }
   }
 
@@ -704,19 +754,13 @@ function finalizeGroupNumbers(candidates, analysis, strategy, count = 4) {
   ]);
 
   const variant = toInt(strategy.variantIndex, 0);
+  const seed = strategySeedNumber(strategy.strategy_key || '', variant);
+  const minGap = seed % 3 === 0 ? 2 : 1;
   const selected = [];
 
   for (const n of merged) {
     if (selected.includes(n)) continue;
-
-    if (selected.length === 0) {
-      selected.push(n);
-      continue;
-    }
-
-    const tooClose = selected.some((picked) => Math.abs(picked - n) <= (variant % 2 === 0 ? 1 : 0));
-    if (tooClose) continue;
-
+    if (selected.some((picked) => Math.abs(picked - n) < minGap)) continue;
     selected.push(n);
     if (selected.length >= count) break;
   }
@@ -746,7 +790,7 @@ function buildGroupFromStrategy(strategy, recent20, variantIndex = 0) {
   };
 
   const candidateLists = genes.map((gene) => geneCandidates(gene, analysis, context));
-  const mergedCandidates = interleaveCandidateLists(candidateLists);
+  const mergedCandidates = mergeGeneLists(candidateLists, strategy.strategy_key, variantIndex);
   const nums = finalizeGroupNumbers(
     mergedCandidates,
     analysis,
