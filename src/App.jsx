@@ -1234,7 +1234,7 @@ export default function App() {
 
         <div style={styles.grid2}>
           <section style={styles.panel}>
-            <h2 style={styles.h2}>測試模式（四星賓果 / 四組 / 二期）</h2>
+            <h2 style={styles.h2}>AI自動訓練（四星賓果 / 四組 / 二期）</h2>
             {testPlan ? (
               <>
                 <div style={styles.subtle}>Prediction ID：{testPlan.predictionId || "尚未寫入"}</div>
