@@ -60,23 +60,26 @@ function normalizeGroups(groups) {
     .slice(0, 4);
 }
 
+function parseGroupsJson(value) {
+  if (Array.isArray(value)) return normalizeGroups(value);
+
+  if (typeof value === 'string') {
+    try {
+      return normalizeGroups(JSON.parse(value));
+    } catch {
+      return [];
+    }
+  }
+
+  return [];
+}
+
 function normalizePredictionRow(row) {
   if (!row) return null;
 
   const mode = String(row.mode || '').toLowerCase();
   const sourceDrawNo = toInt(row.source_draw_no, 0);
   const targetPeriods = toInt(row.target_periods, mode === 'test' ? 2 : 4);
-
-  let groups = [];
-  if (Array.isArray(row.groups_json)) {
-    groups = normalizeGroups(row.groups_json);
-  } else if (typeof row.groups_json === 'string') {
-    try {
-      groups = normalizeGroups(JSON.parse(row.groups_json));
-    } catch {
-      groups = [];
-    }
-  }
 
   return {
     id: row.id,
@@ -86,7 +89,7 @@ function normalizePredictionRow(row) {
     sourceDrawNo,
     targetPeriods,
     targetDrawNo: sourceDrawNo ? sourceDrawNo + targetPeriods : 0,
-    groups,
+    groups: parseGroupsJson(row.groups_json),
     compare_result: row.compare_result || null,
     compare_result_json: row.compare_result_json || null,
     compare_status: row.compare_status || null,
@@ -95,7 +98,22 @@ function normalizePredictionRow(row) {
 }
 
 async function getLatestPredictionByMode(mode) {
-  const { data, error } = await supabase
+  const { data: createdData, error: createdError } = await supabase
+    .from(PREDICTIONS_TABLE)
+    .select('*')
+    .eq('mode', mode)
+    .eq('status', 'created')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (createdError) throw createdError;
+
+  if (createdData) {
+    return normalizePredictionRow(createdData);
+  }
+
+  const { data: anyData, error: anyError } = await supabase
     .from(PREDICTIONS_TABLE)
     .select('*')
     .eq('mode', mode)
@@ -103,8 +121,9 @@ async function getLatestPredictionByMode(mode) {
     .limit(1)
     .maybeSingle();
 
-  if (error) throw error;
-  return normalizePredictionRow(data);
+  if (anyError) throw anyError;
+
+  return normalizePredictionRow(anyData);
 }
 
 export default async function handler(req, res) {
