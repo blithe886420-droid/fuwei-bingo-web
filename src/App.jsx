@@ -1,4 +1,4 @@
-// v3.6.2 PROFESSIONAL AI EVALUATION + AUTO TRAIN TOGGLE
+// v4.0 PROFESSIONAL AI EVALUATION + AUTO TRAIN TOGGLE + FORMAL BET FIXED
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { buildBingoV1Strategies } from "../lib/buildBingoV1Strategies";
 import {
@@ -9,16 +9,16 @@ import {
 } from "../lib/strategySelfOptimizer";
 
 const STORAGE_KEYS = {
-  latest: "fuwei_bingo_latest_v24_hobby",
-  testPlan: "fuwei_bingo_test_plan_v24_hobby",
-  formalPlan: "fuwei_bingo_formal_plan_v24_hobby",
-  testResult: "fuwei_bingo_test_result_v24_hobby",
-  formalResult: "fuwei_bingo_formal_result_v24_hobby",
-  autoRunAt: "fuwei_bingo_auto_run_at_v24_hobby",
-  autoTrainLast: "fuwei_bingo_auto_train_last_v362",
-  autoTrainHistory: "fuwei_bingo_auto_train_history_v362",
-  strategyLeaderboard: "fuwei_bingo_strategy_leaderboard_v362",
-  autoTrainEnabled: "fuwei_bingo_auto_train_enabled_v362"
+  latest: "fuwei_bingo_latest_v40_ai",
+  testPlan: "fuwei_bingo_test_plan_v40_ai",
+  formalPlan: "fuwei_bingo_formal_plan_v40_ai",
+  testResult: "fuwei_bingo_test_result_v40_ai",
+  formalResult: "fuwei_bingo_formal_result_v40_ai",
+  autoRunAt: "fuwei_bingo_auto_run_at_v40_ai",
+  autoTrainLast: "fuwei_bingo_auto_train_last_v40_ai",
+  autoTrainHistory: "fuwei_bingo_auto_train_history_v40_ai",
+  strategyLeaderboard: "fuwei_bingo_strategy_leaderboard_v40_ai",
+  autoTrainEnabled: "fuwei_bingo_auto_train_enabled_v40_ai"
 };
 
 const LEARNING_KEYS = createLearningStorageKeys("fuwei_bingo_strategy_learning_v2");
@@ -32,6 +32,12 @@ const TXT_LATEST = {
   ],
   source: "3/7 完整 TXT 匯入"
 };
+
+const TEST_GROUP_COUNT = 4;
+const TEST_TARGET_PERIODS = 2;
+const FORMAL_GROUP_COUNT = 4;
+const FORMAL_TARGET_PERIODS = 4;
+const COST_PER_GROUP_PER_PERIOD = 25;
 
 function readLocal(key, fallback) {
   try {
@@ -57,6 +63,40 @@ function parseNumbers(str) {
     .filter(Boolean)
     .map((x) => String(x).padStart(2, "0"))
     .slice(0, 20);
+}
+
+function normalizeGroupNumbers(nums, max = 4) {
+  if (!Array.isArray(nums)) return [];
+  const unique = [...new Set(nums.map((x) => String(x).padStart(2, "0")))];
+  return unique.slice(0, max);
+}
+
+function normalizeGroupsForUi(groups, prefix = "第") {
+  if (!Array.isArray(groups)) return [];
+
+  return groups
+    .map((g, idx) => {
+      const nums = normalizeGroupNumbers(
+        Array.isArray(g?.nums)
+          ? g.nums
+          : Array.isArray(g?.numbers)
+            ? g.numbers
+            : [],
+        4
+      );
+
+      if (nums.length !== 4) return null;
+
+      return {
+        key: g?.key || `group_${idx + 1}`,
+        label: g?.label || `${prefix}${idx + 1}組`,
+        nums,
+        reason: g?.reason || "",
+        meta: g?.meta || {}
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 4);
 }
 
 function withTs(url) {
@@ -91,6 +131,10 @@ function normalizeNumber(value, fallback = 0) {
 function round1(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n.toFixed(1) : "0.0";
+}
+
+function calcPlanCost(groupCount, targetPeriods) {
+  return normalizeNumber(groupCount, 0) * normalizeNumber(targetPeriods, 0) * COST_PER_GROUP_PER_PERIOD;
 }
 
 function mergeAutoTrainHistory(prevHistory, autoTrainData) {
@@ -286,8 +330,8 @@ export default function App() {
     const numbers = Array.isArray(data.numbers)
       ? data.numbers
       : Array.isArray(data.latest?.numbers)
-      ? data.latest.numbers
-      : [];
+        ? data.latest.numbers
+        : [];
 
     if (numbers.length !== 20) {
       throw new Error("未取得完整 20 顆號碼");
@@ -430,7 +474,7 @@ export default function App() {
         key: s.key,
         groupNo: s.groupNo,
         label: s.label,
-        nums: s.nums,
+        nums: normalizeGroupNumbers(s.nums, 4),
         reason: s.reason,
         meta: s.meta || {},
         weight,
@@ -443,9 +487,10 @@ export default function App() {
 
   function buildTestGroups() {
     const ranked = buildWeightedStrategies().sort((a, b) => b.score - a.score);
+
     return ranked.slice(0, 4).map((s, idx) => ({
       label: `測試第${idx + 1}名｜${s.label}`,
-      nums: s.nums,
+      nums: normalizeGroupNumbers(s.nums, 4),
       reason: `${s.reason}（權重 ${s.weight.toFixed(2)} / 平均命中 ${s.avgHit.toFixed(2)} / 累計回合 ${s.rounds}）`,
       key: s.key,
       meta: { ...s.meta, rank: idx + 1 }
@@ -459,7 +504,7 @@ export default function App() {
     if (!top4.length) {
       return fallback.map((g, idx) => ({
         ...g,
-        label: `正式第${idx + 1}名｜${g.label.replace(/^測試第\d+名｜/, "")}`,
+        label: `正式第${idx + 1}名｜${String(g.label).replace(/^測試第\d+名｜/, "")}`,
         reason: `暫無排行榜資料，退回本機權重模式：${g.reason}`
       }));
     }
@@ -473,7 +518,7 @@ export default function App() {
 
         return {
           label: `正式第${idx + 1}名｜${ranked.label}`,
-          nums: matched?.nums || [],
+          nums: normalizeGroupNumbers(matched?.nums || [], 4),
           reason: `採用排行榜第 ${idx + 1} 名：平均命中 ${ranked.avg_hit} / 平均淨損益 ${ranked.avg_profit} / 中獎率 ${ranked.payout_rate}% / 盈利率 ${ranked.profit_win_rate}% / ROI ${ranked.roi}%`,
           key: ranked.key,
           meta: {
@@ -488,7 +533,7 @@ export default function App() {
           }
         };
       })
-      .filter((g) => Array.isArray(g.nums) && g.nums.length > 0);
+      .filter((g) => Array.isArray(g.nums) && g.nums.length === 4);
   }
 
   async function startTestMode() {
@@ -498,33 +543,57 @@ export default function App() {
       return;
     }
 
-    const sourceGroups = buildTestGroups();
+    const localGroups = buildTestGroups();
+    const sourceGroups = normalizeGroupsForUi(localGroups, "測試第");
 
-    const plan = {
+    if (sourceGroups.length !== TEST_GROUP_COUNT) {
+      setNotice("測試模式本機策略不足 4 組，請先同步 recent20 或檢查策略來源。");
+      return;
+    }
+
+    const emptyPlan = {
       mode: "test",
       createdAt: new Date().toISOString(),
       sourceDrawNo: currentDrawNo,
-      targetPeriods: 2,
-      targetDrawNo: currentDrawNo + 2,
-      strategyMode: "test_use_best_local_weighted_strategies_v362",
+      targetPeriods: TEST_TARGET_PERIODS,
+      targetDrawNo: currentDrawNo + TEST_TARGET_PERIODS,
+      strategyMode: "test_use_best_local_weighted_strategies_v40",
       groups: sourceGroups,
-      predictionId: null
+      predictionId: null,
+      totalCost: calcPlanCost(TEST_GROUP_COUNT, TEST_TARGET_PERIODS)
     };
 
+    setTestPlan(emptyPlan);
+    setTestResult(null);
+    setNotice("測試模式建立中...");
+
     try {
-      const saved = await savePrediction("test", 2, sourceGroups, currentDrawNo);
+      const saved = await savePrediction("test", TEST_TARGET_PERIODS, sourceGroups, currentDrawNo);
+
       if (saved.ok) {
-        plan.predictionId = saved.id;
-        setNotice(`已建立四星賓果四組二期測試模式，來源第 ${currentDrawNo} 期。`);
+        const finalGroups = normalizeGroupsForUi(
+          Array.isArray(saved.groups) ? saved.groups : sourceGroups,
+          "測試第"
+        );
+
+        const plan = {
+          ...emptyPlan,
+          predictionId: saved.id,
+          sourceDrawNo: Number(saved.source_draw_no || currentDrawNo),
+          targetPeriods: Number(saved.target_periods || TEST_TARGET_PERIODS),
+          targetDrawNo: Number(saved.source_draw_no || currentDrawNo) + Number(saved.target_periods || TEST_TARGET_PERIODS),
+          groups: finalGroups.length ? finalGroups : sourceGroups,
+          totalCost: normalizeNumber(saved.estimated_total_cost, calcPlanCost(TEST_GROUP_COUNT, TEST_TARGET_PERIODS))
+        };
+
+        setTestPlan(plan);
+        setNotice(`已建立四星賓果四組二期測試模式，來源第 ${plan.sourceDrawNo} 期。`);
       } else {
         setNotice(`測試模式建立失敗：${saved.error || "預測資料庫寫入失敗"}`);
       }
     } catch (err) {
       setNotice(`測試模式建立失敗：${err.message}`);
     }
-
-    setTestPlan(plan);
-    setTestResult(null);
   }
 
   async function startFormalMode() {
@@ -534,38 +603,67 @@ export default function App() {
       return;
     }
 
-    const sourceGroups = buildFormalGroupsFromLeaderboard();
+    const localFormalGroups = normalizeGroupsForUi(buildFormalGroupsFromLeaderboard(), "正式第");
 
-    if (!sourceGroups.length) {
-      setNotice("目前還沒有可用的排行榜策略，請先讓系統累積更多已比對訓練結果。");
-      return;
-    }
-
-    const plan = {
+    const emptyPlan = {
       mode: "formal",
       createdAt: new Date().toISOString(),
       sourceDrawNo: currentDrawNo,
-      targetPeriods: 4,
-      targetDrawNo: currentDrawNo + 4,
-      strategyMode: "formal_use_top4_leaderboard_strategies_v362",
-      groups: sourceGroups,
-      predictionId: null
+      targetPeriods: FORMAL_TARGET_PERIODS,
+      targetDrawNo: currentDrawNo + FORMAL_TARGET_PERIODS,
+      strategyMode: "formal_use_top4_leaderboard_or_server_auto_v40",
+      groups: localFormalGroups,
+      predictionId: null,
+      totalCost: calcPlanCost(FORMAL_GROUP_COUNT, FORMAL_TARGET_PERIODS)
     };
 
+    setFormalPlan(emptyPlan);
+    setFormalResult(null);
+    setNotice("正式投注建立中，系統正在讀取最佳 4 策略並生成號碼...");
+
     try {
-      const saved = await savePrediction("formal", 4, sourceGroups, currentDrawNo);
+      const saved = await savePrediction(
+        "formal",
+        FORMAL_TARGET_PERIODS,
+        localFormalGroups,
+        currentDrawNo
+      );
+
       if (saved.ok) {
-        plan.predictionId = saved.id;
-        setNotice(`已建立正式投注：本次直接採用 AI 專業評估排行榜前 4 名。`);
+        const finalGroups = normalizeGroupsForUi(
+          Array.isArray(saved.groups) ? saved.groups : localFormalGroups,
+          "正式第"
+        );
+
+        const plan = {
+          ...emptyPlan,
+          predictionId: saved.id,
+          sourceDrawNo: Number(saved.source_draw_no || currentDrawNo),
+          targetPeriods: Number(saved.target_periods || FORMAL_TARGET_PERIODS),
+          targetDrawNo:
+            Number(saved.source_draw_no || currentDrawNo) +
+            Number(saved.target_periods || FORMAL_TARGET_PERIODS),
+          groups: finalGroups,
+          totalCost: normalizeNumber(
+            saved.estimated_total_cost,
+            calcPlanCost(FORMAL_GROUP_COUNT, FORMAL_TARGET_PERIODS)
+          )
+        };
+
+        setFormalPlan(plan);
+
+        const sourceText =
+          saved.group_source === "server_auto_generate"
+            ? "本次由後端自動依目前最佳策略生成 4 組正式號碼。"
+            : "本次直接採用目前最佳 4 策略建立正式投注。";
+
+        setNotice(sourceText);
       } else {
         setNotice(`正式投注建立失敗：${saved.error || "預測資料庫寫入失敗"}`);
       }
     } catch (err) {
       setNotice(`正式投注建立失敗：${err.message}`);
     }
-
-    setFormalPlan(plan);
-    setFormalResult(null);
   }
 
   function learnFromCompare({ mode, predictionId, compareResult }) {
@@ -739,7 +837,7 @@ export default function App() {
 
     if (isBingoRestTime()) {
       setLoopStatus(`目前為休息時段（00:00~07:29），已暫停自動更新。${nowText}`);
-      setNotice(`目前為休息時段（00:00~07:29），系統暫停自動同步與訓練。`);
+      setNotice("目前為休息時段（00:00~07:29），系統暫停自動同步與訓練。");
       return;
     }
 
@@ -840,9 +938,9 @@ export default function App() {
       <div style={styles.wrap}>
         <section style={styles.hero}>
           <div style={styles.kicker}>FUWEI BINGO SYSTEM</div>
-          <h1 style={styles.h1}>富緯賓果系統 v3.6.2 專業 AI 評估版</h1>
+          <h1 style={styles.h1}>富緯賓果系統 v4.0 專業 AI 評估版</h1>
           <p style={styles.p}>
-            已加入跨裝置共用的自動訓練開關。啟動 APP 時先不同步自動訓練，等你按下開啟後才開始跑。
+            已修正正式下注流程，現在可直接依目前最佳 4 策略建立四組四期正式投注，並即時顯示成本與號碼。
           </p>
 
           <div style={styles.notice}>{notice}</div>
@@ -948,7 +1046,7 @@ export default function App() {
             </div>
           ) : (
             <div style={{ ...styles.subtle, marginTop: 14 }}>
-              目前尚未建立排行榜，先讓系統累積更多 compare 結果。
+              目前尚未建立排行榜，但正式投注按鈕仍可透過後端自動生成四組正式號碼。
             </div>
           )}
         </section>
@@ -956,7 +1054,7 @@ export default function App() {
         {autoTrainLast ? (
           <section style={styles.panel}>
             <h2 style={styles.h2}>自動訓練摘要</h2>
-            <div style={styles.subtle}>模式：{autoTrainLast.mode || "auto_train_v3"}</div>
+            <div style={styles.subtle}>模式：{autoTrainLast.mode || "auto_train_v4"}</div>
             <div style={styles.subtle}>最新期數：第 {autoTrainLast.latest_draw_no ?? "未知"} 期</div>
             <div style={styles.subtle}>每輪比對上限：{autoTrainLast.compare_limit ?? 0} 筆</div>
             <div style={styles.subtle}>每輪新建上限：{autoTrainLast.create_limit ?? 0} 筆</div>
@@ -1038,9 +1136,10 @@ export default function App() {
                 <div style={styles.subtle}>策略模式：{testPlan.strategyMode}</div>
                 <div style={styles.subtle}>來源期數：第 {testPlan.sourceDrawNo} 期</div>
                 <div style={styles.subtle}>目標期數：第 {testPlan.targetDrawNo} 期</div>
+                <div style={styles.subtle}>估計成本：{testPlan.totalCost}</div>
 
                 {testPlan.groups.map((g, idx) => (
-                  <div key={idx} style={styles.groupCard}>
+                  <div key={`${g.key}-${idx}`} style={styles.groupCard}>
                     <div style={styles.groupTitle}>{g.label}</div>
                     <div style={styles.groupNums}>{g.nums.join(" ")}</div>
                     <div style={styles.subtle}>{g.reason}</div>
@@ -1079,13 +1178,14 @@ export default function App() {
                 <div style={styles.subtle}>策略模式：{formalPlan.strategyMode}</div>
                 <div style={styles.subtle}>來源期數：第 {formalPlan.sourceDrawNo} 期</div>
                 <div style={styles.subtle}>目標期數：第 {formalPlan.targetDrawNo} 期</div>
+                <div style={styles.subtle}>估計成本：{formalPlan.totalCost}</div>
 
                 <div style={{ marginTop: 12 }}>
-                  <div style={styles.groupTitle}>本次正式下注採用專業 AI 評估前 4 名</div>
+                  <div style={styles.groupTitle}>本次正式下注採用目前最佳 4 組策略</div>
                 </div>
 
                 {formalPlan.groups.map((g, idx) => (
-                  <div key={idx} style={styles.groupCard}>
+                  <div key={`${g.key}-${idx}`} style={styles.groupCard}>
                     <div style={styles.groupTitle}>{g.label}</div>
                     <div style={styles.groupNums}>{g.nums.join(" ")}</div>
                     <div style={styles.subtle}>{g.reason}</div>
