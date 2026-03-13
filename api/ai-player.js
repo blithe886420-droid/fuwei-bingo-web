@@ -1,64 +1,67 @@
 export default async function handler(req, res) {
-
   try {
 
     const SUPABASE_URL = process.env.SUPABASE_URL
-    const SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY
-    const APP_URL = process.env.APP_URL
+    const SUPABASE_SECRET_KEY =
+      process.env.SUPABASE_SECRET_KEY ||
+      process.env.SUPABASE_SERVICE_ROLE_KEY ||
+      process.env.SUPABASE_SERVICE_ROLE
 
-    if (!SUPABASE_URL || !SUPABASE_SECRET_KEY || !APP_URL) {
+    if (!SUPABASE_URL || !SUPABASE_SECRET_KEY) {
       return res.status(500).json({
         ok: false,
         error: "Missing environment variables"
       })
     }
 
-    // 檢查目前是否有 test prediction 正在跑
-    const runningRes = await fetch(
-      `${SUPABASE_URL}/rest/v1/bingo_predictions?mode=eq.test&status=eq.running`,
-      {
-        headers: {
-          apikey: SUPABASE_SECRET_KEY,
-          Authorization: `Bearer ${SUPABASE_SECRET_KEY}`
-        }
-      }
+    const headers = {
+      apikey: SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${SUPABASE_SECRET_KEY}`,
+      "Content-Type": "application/json"
+    }
+
+    const latestRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/bingo_predictions?mode=eq.test&status=eq.running&order=created_at.desc&limit=1`,
+      { headers }
     )
 
-    const running = await runningRes.json()
+    const latest = await latestRes.json()
 
-    if (Array.isArray(running) && running.length > 0) {
+    if (Array.isArray(latest) && latest.length > 0) {
       return res.status(200).json({
         ok: true,
         message: "test prediction already running"
       })
     }
 
-    // 取得策略生成
-    const strategyRes = await fetch(`${APP_URL}/api/strategy-generate`)
-    const strategyData = await strategyRes.json()
+    const strategyRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/strategy_pool_active?order=recent_50_roi.desc&limit=4`,
+      { headers }
+    )
 
-    if (!strategyData.ok) {
-      return res.status(500).json({
-        ok: false,
-        error: "strategy generate failed"
+    const strategies = await strategyRes.json()
+
+    if (!Array.isArray(strategies) || strategies.length === 0) {
+      return res.status(200).json({
+        ok: true,
+        message: "no strategy available"
       })
     }
 
-    const groups = strategyData.groups || []
+    const groups = strategies.slice(0, 4).map((s, i) => ({
+      key: s.key,
+      label: s.label,
+      nums: s.nums,
+      reason: `AI Player strategy ${s.label}`
+    }))
 
-    if (!groups.length) {
-      return res.status(500).json({
-        ok: false,
-        error: "no groups generated"
-      })
-    }
+    const sourceDrawNo = Date.now()
 
-    // 建立新的 AI 測試局
     const payload = {
       id: Date.now(),
       mode: "test",
-      status: "created",
-      source_draw_no: "AI_PLAYER",
+      status: "running",
+      source_draw_no: sourceDrawNo,
       target_periods: 2,
       groups_json: groups
     }
@@ -68,30 +71,31 @@ export default async function handler(req, res) {
       {
         method: "POST",
         headers: {
-          apikey: SUPABASE_SECRET_KEY,
-          Authorization: `Bearer ${SUPABASE_SECRET_KEY}`,
-          "Content-Type": "application/json",
+          ...headers,
           Prefer: "return=representation"
         },
         body: JSON.stringify(payload)
       }
     )
 
-    const row = await saveRes.json()
+    if (!saveRes.ok) {
+      const detail = await saveRes.text()
+      return res.status(500).json({
+        ok: false,
+        error: "create ai player prediction failed",
+        detail
+      })
+    }
 
     return res.status(200).json({
       ok: true,
-      created: true,
-      row
+      created: true
     })
 
   } catch (err) {
-
     return res.status(500).json({
       ok: false,
-      error: err.message
+      error: err.message || "ai player failed"
     })
-
   }
-
 }
