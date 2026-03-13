@@ -1,4 +1,4 @@
-// v4.1 PROFESSIONAL AI EVALUATION + CROSS DEVICE PLAN SYNC
+// v4.2 PROFESSIONAL AI EVALUATION + CROSS DEVICE PLAN SYNC
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { buildBingoV1Strategies } from "../lib/buildBingoV1Strategies";
 import {
@@ -9,16 +9,16 @@ import {
 } from "../lib/strategySelfOptimizer";
 
 const STORAGE_KEYS = {
-  latest: "fuwei_bingo_latest_v41_ai",
-  testPlan: "fuwei_bingo_test_plan_v41_ai",
-  formalPlan: "fuwei_bingo_formal_plan_v41_ai",
-  testResult: "fuwei_bingo_test_result_v41_ai",
-  formalResult: "fuwei_bingo_formal_result_v41_ai",
-  autoRunAt: "fuwei_bingo_auto_run_at_v41_ai",
-  autoTrainLast: "fuwei_bingo_auto_train_last_v41_ai",
-  autoTrainHistory: "fuwei_bingo_auto_train_history_v41_ai",
-  strategyLeaderboard: "fuwei_bingo_strategy_leaderboard_v41_ai",
-  autoTrainEnabled: "fuwei_bingo_auto_train_enabled_v41_ai"
+  latest: "fuwei_bingo_latest_v42_ai",
+  testPlan: "fuwei_bingo_test_plan_v42_ai",
+  formalPlan: "fuwei_bingo_formal_plan_v42_ai",
+  testResult: "fuwei_bingo_test_result_v42_ai",
+  formalResult: "fuwei_bingo_formal_result_v42_ai",
+  autoRunAt: "fuwei_bingo_auto_run_at_v42_ai",
+  autoTrainLast: "fuwei_bingo_auto_train_last_v42_ai",
+  autoTrainHistory: "fuwei_bingo_auto_train_history_v42_ai",
+  strategyLeaderboard: "fuwei_bingo_strategy_leaderboard_v42_ai",
+  autoTrainEnabled: "fuwei_bingo_auto_train_enabled_v42_ai"
 };
 
 const LEARNING_KEYS = createLearningStorageKeys("fuwei_bingo_strategy_learning_v2");
@@ -109,7 +109,7 @@ function isBingoRestTime() {
   const hour = now.getHours();
   const minute = now.getMinutes();
   const total = hour * 60 + minute;
-  return total < 450; // 00:00 ~ 07:29
+  return total < 450;
 }
 
 function getClockText() {
@@ -184,7 +184,7 @@ function buildPlanFromLatestPrediction(prediction, modeLabel) {
 
   const sourceDrawNo = normalizeNumber(prediction.sourceDrawNo, 0);
   const targetPeriods = normalizeNumber(prediction.targetPeriods, modeLabel === "formal" ? 4 : 2);
-  const groups = normalizeGroupsForUi(prediction.groups, modeLabel === "formal" ? "正式第" : "測試第");
+  const groups = normalizeGroupsForUi(prediction.groups, modeLabel === "formal" ? "正式第" : "AI第");
   const totalCost = calcPlanCost(groups.length || 4, targetPeriods);
 
   return {
@@ -196,7 +196,7 @@ function buildPlanFromLatestPrediction(prediction, modeLabel) {
     strategyMode:
       modeLabel === "formal"
         ? "formal_synced_from_server_prediction"
-        : "test_synced_from_server_prediction",
+        : "ai_auto_training_from_server_prediction",
     groups,
     predictionId: prediction.id || null,
     totalCost
@@ -394,7 +394,7 @@ export default function App() {
       }
 
       if (!silent) {
-        setNotice("已從伺服器同步最新測試模式與正式投注資料。");
+        setNotice("已從伺服器同步最新 AI 自動訓練與正式投注資料。");
       }
 
       return data;
@@ -578,7 +578,7 @@ export default function App() {
     const ranked = buildWeightedStrategies().sort((a, b) => b.score - a.score);
 
     return ranked.slice(0, 4).map((s, idx) => ({
-      label: `測試第${idx + 1}名｜${s.label}`,
+      label: `AI第${idx + 1}名｜${s.label}`,
       nums: normalizeGroupNumbers(s.nums, 4),
       reason: `${s.reason}（權重 ${s.weight.toFixed(2)} / 平均命中 ${s.avgHit.toFixed(2)} / 累計回合 ${s.rounds}）`,
       key: s.key,
@@ -593,7 +593,7 @@ export default function App() {
     if (!top4.length) {
       return fallback.map((g, idx) => ({
         ...g,
-        label: `正式第${idx + 1}名｜${String(g.label).replace(/^測試第\d+名｜/, "")}`,
+        label: `正式第${idx + 1}名｜${String(g.label).replace(/^AI第\d+名｜/, "")}`,
         reason: `暫無排行榜資料，退回本機權重模式：${g.reason}`
       }));
     }
@@ -625,67 +625,6 @@ export default function App() {
       .filter((g) => Array.isArray(g.nums) && g.nums.length === 4);
   }
 
-  async function startTestMode() {
-    const currentDrawNo = Number(recent20?.[0]?.draw_no || latest.drawNo || 0);
-    if (!currentDrawNo) {
-      setNotice("目前抓不到最新期數，請先按一次同步最新一期。");
-      return;
-    }
-
-    const localGroups = buildTestGroups();
-    const sourceGroups = normalizeGroupsForUi(localGroups, "測試第");
-
-    if (sourceGroups.length !== TEST_GROUP_COUNT) {
-      setNotice("測試模式本機策略不足 4 組，請先同步 recent20 或檢查策略來源。");
-      return;
-    }
-
-    const emptyPlan = {
-      mode: "test",
-      createdAt: new Date().toISOString(),
-      sourceDrawNo: currentDrawNo,
-      targetPeriods: TEST_TARGET_PERIODS,
-      targetDrawNo: currentDrawNo + TEST_TARGET_PERIODS,
-      strategyMode: "test_use_best_local_weighted_strategies_v41",
-      groups: sourceGroups,
-      predictionId: null,
-      totalCost: calcPlanCost(TEST_GROUP_COUNT, TEST_TARGET_PERIODS)
-    };
-
-    setTestPlan(emptyPlan);
-    setTestResult(null);
-    setNotice("測試模式建立中...");
-
-    try {
-      const saved = await savePrediction("test", TEST_TARGET_PERIODS, sourceGroups, currentDrawNo);
-
-      if (saved.ok) {
-        const finalGroups = normalizeGroupsForUi(
-          Array.isArray(saved.groups) ? saved.groups : sourceGroups,
-          "測試第"
-        );
-
-        const plan = {
-          ...emptyPlan,
-          predictionId: saved.id,
-          sourceDrawNo: Number(saved.source_draw_no || currentDrawNo),
-          targetPeriods: Number(saved.target_periods || TEST_TARGET_PERIODS),
-          targetDrawNo: Number(saved.source_draw_no || currentDrawNo) + Number(saved.target_periods || TEST_TARGET_PERIODS),
-          groups: finalGroups.length ? finalGroups : sourceGroups,
-          totalCost: normalizeNumber(saved.estimated_total_cost, calcPlanCost(TEST_GROUP_COUNT, TEST_TARGET_PERIODS))
-        };
-
-        setTestPlan(plan);
-        setNotice(`已建立四星賓果四組二期測試模式，來源第 ${plan.sourceDrawNo} 期。`);
-        await loadLatestPredictions(true);
-      } else {
-        setNotice(`測試模式建立失敗：${saved.error || "預測資料庫寫入失敗"}`);
-      }
-    } catch (err) {
-      setNotice(`測試模式建立失敗：${err.message}`);
-    }
-  }
-
   async function startFormalMode() {
     const currentDrawNo = Number(recent20?.[0]?.draw_no || latest.drawNo || 0);
     if (!currentDrawNo) {
@@ -701,7 +640,7 @@ export default function App() {
       sourceDrawNo: currentDrawNo,
       targetPeriods: FORMAL_TARGET_PERIODS,
       targetDrawNo: currentDrawNo + FORMAL_TARGET_PERIODS,
-      strategyMode: "formal_use_top4_leaderboard_or_server_auto_v41",
+      strategyMode: "formal_use_top4_leaderboard_or_server_auto_v42",
       groups: localFormalGroups,
       predictionId: null,
       totalCost: calcPlanCost(FORMAL_GROUP_COUNT, FORMAL_TARGET_PERIODS)
@@ -769,45 +708,6 @@ export default function App() {
 
     setStrategyStats(learned.stats);
     return learned;
-  }
-
-  async function compareTestMode() {
-    if (!testPlan?.predictionId) {
-      setNotice("測試模式尚未建立完成，無法比對。");
-      return;
-    }
-
-    if (!latest.drawNo || Number(latest.drawNo) < Number(testPlan.targetDrawNo || 0)) {
-      setNotice(`測試模式尚未到比對期數，目前第 ${latest.drawNo || "?"} 期，需等到第 ${testPlan.targetDrawNo} 期。`);
-      return;
-    }
-
-    const data = await comparePrediction(testPlan.predictionId);
-
-    if (!data.ok) {
-      if (data.waiting) {
-        setNotice(data.error || "尚未到比對期數");
-        return;
-      }
-      setNotice(`測試模式比對失敗：${data.error || "未知錯誤"}`);
-      return;
-    }
-
-    setTestResult(data.result);
-
-    const learned = learnFromCompare({
-      mode: "test",
-      predictionId: testPlan.predictionId,
-      compareResult: data.result
-    });
-
-    if (learned.applied) {
-      setNotice(`測試模式比對完成：${data.result.verdict}，系統已更新策略權重。`);
-    } else {
-      setNotice(`測試模式比對完成：${data.result.verdict}，此期已學習過。`);
-    }
-
-    await loadLatestPredictions(true);
   }
 
   async function compareFormalMode() {
@@ -881,22 +781,6 @@ export default function App() {
       let done = 0;
       let learnedCount = 0;
 
-      if (testPlan?.predictionId && Number(latestAfterSync.drawNo || 0) >= Number(testPlan.targetDrawNo || 0)) {
-        const result = await comparePrediction(testPlan.predictionId);
-        if (result.ok) {
-          setTestResult(result.result);
-          done += 1;
-
-          const learned = learnFromCompare({
-            mode: "test",
-            predictionId: testPlan.predictionId,
-            compareResult: result.result
-          });
-
-          if (learned.applied) learnedCount += 1;
-        }
-      }
-
       if (formalPlan?.predictionId && Number(latestAfterSync.drawNo || 0) >= Number(formalPlan.targetDrawNo || 0)) {
         const result = await comparePrediction(formalPlan.predictionId);
         if (result.ok) {
@@ -918,9 +802,9 @@ export default function App() {
       const inserted = Number(catchupData.inserted || 0);
 
       if (inserted > 0) {
-        setAutoStatus(`補抓成功，新增 ${inserted} 期；已處理 ${done} 筆預測；學習 ${learnedCount} 次。`);
+        setAutoStatus(`補抓成功，新增 ${inserted} 期；已處理 ${done} 筆正式比對；學習 ${learnedCount} 次。`);
       } else {
-        setAutoStatus(`補抓完成，沒有缺期；已處理 ${done} 筆預測；學習 ${learnedCount} 次。`);
+        setAutoStatus(`補抓完成，沒有缺期；已處理 ${done} 筆正式比對；學習 ${learnedCount} 次。`);
       }
 
       await loadLatestPredictions(true);
@@ -1043,9 +927,9 @@ export default function App() {
       <div style={styles.wrap}>
         <section style={styles.hero}>
           <div style={styles.kicker}>FUWEI BINGO SYSTEM</div>
-          <h1 style={styles.h1}>富緯賓果系統 v4.1 專業 AI 評估版</h1>
+          <h1 style={styles.h1}>富緯賓果系統 v4.2 專業 AI 評估版</h1>
           <p style={styles.p}>
-            已修正跨裝置同步。現在正式投注與測試模式會優先讀取伺服器最新 prediction，讓網頁與手機顯示一致。
+            已改為 AI 自動訓練與正式投注分線運作。左側顯示 AI 自動訓練資料，右側保留正式投注。
           </p>
 
           <div style={styles.notice}>{notice}</div>
@@ -1090,7 +974,7 @@ export default function App() {
           <div style={styles.btnRow}>
             <button style={styles.primaryBtn} onClick={syncLatest}>同步最新一期</button>
             <button style={styles.secondaryBtn} onClick={autoCatchupAndCompare}>立即補抓補比對</button>
-            <button style={styles.secondaryBtn} onClick={startTestMode}>建立測試模式</button>
+            <button style={styles.secondaryBtn} onClick={loadLatestPredictions}>刷新 AI 自動訓練資料</button>
             <button style={styles.secondaryBtn} onClick={startFormalMode}>建立正式投注</button>
           </div>
 
@@ -1159,7 +1043,7 @@ export default function App() {
         {autoTrainLast ? (
           <section style={styles.panel}>
             <h2 style={styles.h2}>自動訓練摘要</h2>
-            <div style={styles.subtle}>模式：{autoTrainLast.mode || "auto_train_v4.1"}</div>
+            <div style={styles.subtle}>模式：{autoTrainLast.mode || "auto_train_v4.2"}</div>
             <div style={styles.subtle}>最新期數：第 {autoTrainLast.latest_draw_no ?? "未知"} 期</div>
             <div style={styles.subtle}>每輪比對上限：{autoTrainLast.compare_limit ?? 0} 筆</div>
             <div style={styles.subtle}>每輪新建上限：{autoTrainLast.create_limit ?? 0} 筆</div>
@@ -1251,10 +1135,6 @@ export default function App() {
                   </div>
                 ))}
 
-                <div style={styles.btnRow}>
-                  <button style={styles.primaryBtn} onClick={compareTestMode}>用目標期數比對測試模式</button>
-                </div>
-
                 {testResult && (
                   <div style={styles.resultBox}>
                     <div style={styles.resultLine}>判定：<strong>{testResult.verdict}</strong></div>
@@ -1271,7 +1151,7 @@ export default function App() {
                 )}
               </>
             ) : (
-              <div style={styles.subtle}>尚未建立測試模式。</div>
+              <div style={styles.subtle}>尚未有 AI 自動訓練資料。</div>
             )}
           </section>
 
