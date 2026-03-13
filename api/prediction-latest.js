@@ -97,33 +97,41 @@ function normalizePredictionRow(row) {
   };
 }
 
-async function getLatestPredictionByMode(mode) {
-  const { data: createdData, error: createdError } = await supabase
+async function getLatestCreatedByMode(mode) {
+  const { data, error } = await supabase
     .from(PREDICTIONS_TABLE)
     .select('*')
     .eq('mode', mode)
     .eq('status', 'created')
+    .order('source_draw_no', { ascending: false })
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();
 
-  if (createdError) throw createdError;
+  if (error) throw error;
+  return data || null;
+}
 
-  if (createdData) {
-    return normalizePredictionRow(createdData);
-  }
-
-  const { data: anyData, error: anyError } = await supabase
+async function getLatestAnyByMode(mode) {
+  const { data, error } = await supabase
     .from(PREDICTIONS_TABLE)
     .select('*')
     .eq('mode', mode)
+    .order('source_draw_no', { ascending: false })
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();
 
-  if (anyError) throw anyError;
+  if (error) throw error;
+  return data || null;
+}
 
-  return normalizePredictionRow(anyData);
+async function getLatestPredictionByMode(mode) {
+  const createdRow = await getLatestCreatedByMode(mode);
+  if (createdRow) return normalizePredictionRow(createdRow);
+
+  const anyRow = await getLatestAnyByMode(mode);
+  return normalizePredictionRow(anyRow);
 }
 
 export default async function handler(req, res) {
