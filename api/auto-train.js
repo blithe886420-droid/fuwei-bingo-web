@@ -56,13 +56,11 @@ function uniqueAsc(nums) {
 function uniqueKeepOrder(nums) {
   const seen = new Set();
   const result = [];
-
   for (const n of nums.map((x) => Number(x)).filter(Number.isFinite)) {
     if (seen.has(n)) continue;
     seen.add(n);
     result.push(n);
   }
-
   return result;
 }
 
@@ -471,9 +469,9 @@ function buildRecent20Analysis(recent20) {
   const prevRow = rows[1] || null;
   const thirdRow = rows[2] || null;
 
-  const latestDraw = latestRow ? parseDrawNumbers(latestRow[DRAW_NUMBERS_COL]) : [];
-  const prevDraw = prevRow ? parseDrawNumbers(prevRow[DRAW_NUMBERS_COL]) : [];
-  const thirdDraw = thirdRow ? parseDrawNumbers(thirdRow[DRAW_NUMBERS_COL]) : [];
+  const latestDraw = latestRow ? parseDrawNumbers(rowOrEmpty(latestRow)[DRAW_NUMBERS_COL]) : [];
+  const prevDraw = prevRow ? parseDrawNumbers(rowOrEmpty(prevRow)[DRAW_NUMBERS_COL]) : [];
+  const thirdDraw = thirdRow ? parseDrawNumbers(rowOrEmpty(thirdRow)[DRAW_NUMBERS_COL]) : [];
 
   const freq = new Map();
   const tailFreq = new Map();
@@ -544,6 +542,10 @@ function buildRecent20Analysis(recent20) {
     pickByTail,
     pickByZone
   };
+}
+
+function rowOrEmpty(row) {
+  return row || {};
 }
 
 function geneCandidates(gene, analysis, context = {}) {
@@ -722,6 +724,10 @@ function mergeGeneLists(geneLists, strategyKey = '', variantIndex = 0) {
   return uniqueKeepOrder(result);
 }
 
+function getGroupSignature(nums) {
+  return uniqueAsc(nums).join('-');
+}
+
 function finalizeGroupNumbers(candidates, analysis, strategy, count = 4) {
   const merged = uniqueKeepOrder([
     ...candidates,
@@ -783,6 +789,96 @@ function finalizeGroupNumbers(candidates, analysis, strategy, count = 4) {
   }
 
   return uniqueAsc(selected.slice(0, count));
+}
+
+function mutateGroupToUnique(baseNums, analysis, strategy, usedSignatures = new Set()) {
+  const base = uniqueAsc(baseNums).slice(0, 4);
+  const fallbackPool = uniqueKeepOrder([
+    ...analysis.hottest,
+    ...analysis.warm,
+    ...analysis.coldest,
+    ...analysis.numbers1to80
+  ]);
+
+  const seed = stableHash(`${strategy.strategy_key}_${strategy.variantIndex || 0}_mutate`);
+  const rotatedPool = rotateList(fallbackPool, seed % Math.max(1, fallbackPool.length));
+
+  const originalSignature = getGroupSignature(base);
+  if (!usedSignatures.has(originalSignature)) {
+    return base;
+  }
+
+  const variants = [];
+
+  for (let i = 0; i < rotatedPool.length; i += 1) {
+    const candidate = rotatedPool[i];
+    if (base.includes(candidate)) continue;
+
+    for (let replaceIdx = 0; replaceIdx < base.length; replaceIdx += 1) {
+      const mutated = uniqueAsc([
+        ...base.filter((_, idx) => idx !== replaceIdx),
+        candidate
+      ]).slice(0, 4);
+
+      if (mutated.length === 4) {
+        variants.push(mutated);
+      }
+    }
+
+    if (variants.length >= 24) break;
+  }
+
+  for (const variant of variants) {
+    const signature = getGroupSignature(variant);
+    if (!usedSignatures.has(signature)) {
+      return variant;
+    }
+  }
+
+  for (let a = 0; a < rotatedPool.length; a += 1) {
+    for (let b = a + 1; b < rotatedPool.length; b += 1) {
+      const nums = uniqueAsc([base[0], base[1], rotatedPool[a], rotatedPool[b]]).slice(0, 4);
+      if (nums.length !== 4) continue;
+      const signature = getGroupSignature(nums);
+      if (!usedSignatures.has(signature)) {
+        return nums;
+      }
+    }
+    if (a > 12) break;
+  }
+
+  return base;
+}
+
+function ensureUniqueGroups(groups, analysis) {
+  const used = new Set();
+
+  return groups.map((group, idx) => {
+    const strategy = {
+      strategy_key: group.key || `group_${idx + 1}`,
+      variantIndex: idx
+    };
+
+    const originalNums = uniqueAsc(group.nums).slice(0, 4);
+    const originalSignature = getGroupSignature(originalNums);
+
+    let nums = originalNums;
+    if (used.has(originalSignature)) {
+      nums = mutateGroupToUnique(originalNums, analysis, strategy, used);
+    }
+
+    const finalSignature = getGroupSignature(nums);
+    used.add(finalSignature);
+
+    return {
+      ...group,
+      nums,
+      reason:
+        finalSignature !== originalSignature
+          ? `${group.reason}（已自動避開重複組合）`
+          : group.reason
+    };
+  });
 }
 
 function buildGroupReason(strategy, genes) {
@@ -921,19 +1017,24 @@ function buildFallbackSeedGroupsFromRecent20(recent20) {
     }
   ];
 
-  return fallbackStrategies.map((strategy, idx) => buildGroupFromStrategy(strategy, recent20, idx));
+  const rawGroups = fallbackStrategies.map((strategy, idx) => buildGroupFromStrategy(strategy, recent20, idx));
+  const analysis = buildRecent20Analysis(recent20);
+  return ensureUniqueGroups(rawGroups, analysis);
 }
 
 async function buildStrategyGroupsFromPool(recent20) {
   const activeStrategies = await getActiveStrategiesFromPool(BET_GROUP_COUNT);
+  const analysis = buildRecent20Analysis(recent20);
 
   if (!activeStrategies.length) {
     return buildFallbackSeedGroupsFromRecent20(recent20);
   }
 
-  const groups = activeStrategies
+  let groups = activeStrategies
     .map((strategy, idx) => buildGroupFromStrategy(strategy, recent20, idx))
     .filter((group) => Array.isArray(group.nums) && group.nums.length === 4);
+
+  groups = ensureUniqueGroups(groups, analysis);
 
   if (groups.length >= BET_GROUP_COUNT) {
     return groups.slice(0, BET_GROUP_COUNT);
@@ -948,7 +1049,8 @@ async function buildStrategyGroupsFromPool(recent20) {
     }
   }
 
-  return [...map.values()].slice(0, BET_GROUP_COUNT);
+  groups = ensureUniqueGroups([...map.values()].slice(0, BET_GROUP_COUNT), analysis);
+  return groups;
 }
 
 async function createNextTestPrediction() {
