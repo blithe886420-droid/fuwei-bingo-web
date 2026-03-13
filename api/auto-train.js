@@ -14,8 +14,10 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-const MODE = 'v3_auto_loop_test_2period';
-const TARGET_PERIODS = 2;
+const CURRENT_MODE = 'v4_auto_loop_test_4period';
+const ACCEPT_MODES = ['v3_auto_loop_test_2period', 'v4_auto_loop_test_4period'];
+
+const TARGET_PERIODS = 4;
 const BET_GROUP_COUNT = 4;
 const COST_PER_GROUP_PER_PERIOD = 25;
 
@@ -54,11 +56,13 @@ function uniqueAsc(nums) {
 function uniqueKeepOrder(nums) {
   const seen = new Set();
   const result = [];
+
   for (const n of nums.map((x) => Number(x)).filter(Number.isFinite)) {
     if (seen.has(n)) continue;
     seen.add(n);
     result.push(n);
   }
+
   return result;
 }
 
@@ -100,7 +104,7 @@ function parsePredictionGroups(prediction) {
           return {
             key: `group_${idx + 1}`,
             label: `第${idx + 1}組`,
-            nums: uniqueAsc(group),
+            nums: uniqueAsc(group).slice(0, 4),
             reason: '舊版資料',
             meta: { legacy: true }
           };
@@ -111,7 +115,7 @@ function parsePredictionGroups(prediction) {
           return {
             key: group.key || `group_${idx + 1}`,
             label: group.label || `第${idx + 1}組`,
-            nums: uniqueAsc(nums),
+            nums: uniqueAsc(nums).slice(0, 4),
             reason: group.reason || '',
             meta: group.meta || {}
           };
@@ -119,7 +123,8 @@ function parsePredictionGroups(prediction) {
 
         return null;
       })
-      .filter((g) => g && g.nums.length > 0);
+      .filter((g) => g && g.nums.length === 4)
+      .slice(0, BET_GROUP_COUNT);
   }
 
   if (typeof raw === 'string') {
@@ -162,8 +167,7 @@ async function getMaturedPredictions(limitCount) {
     .from(PREDICTIONS_TABLE)
     .select('*')
     .eq('status', 'created')
-    .eq('mode', MODE)
-    .eq('target_periods', TARGET_PERIODS)
+    .in('mode', ACCEPT_MODES)
     .order('created_at', { ascending: true })
     .limit(limitCount);
 
@@ -300,7 +304,7 @@ function buildComparePayload({ prediction, groups, drawRows }) {
     : null;
 
   const compareResult = {
-    mode: '4star_4group_2period',
+    mode: '4star_4group_4period',
     source_draw_no: sourceDrawNo,
     total_cost: totalCost,
     total_reward: totalReward,
@@ -385,11 +389,12 @@ async function comparePrediction(prediction) {
     };
   }
 
+  const targetPeriods = toInt(prediction.target_periods || TARGET_PERIODS);
   const drawRows = await getDrawRowsForPrediction(prediction);
 
-  if (drawRows.length < TARGET_PERIODS) {
+  if (drawRows.length < targetPeriods) {
     const startNo = toInt(prediction.source_draw_no) + 1;
-    const endNo = toInt(prediction.source_draw_no) + TARGET_PERIODS;
+    const endNo = toInt(prediction.source_draw_no) + targetPeriods;
 
     return {
       ok: false,
@@ -747,7 +752,6 @@ function finalizeGroupNumbers(candidates, analysis, strategy, count = 4) {
         const z = x <= 20 ? 1 : x <= 40 ? 2 : x <= 60 ? 3 : 4;
         return z === zone;
       }).length;
-
       if (zoneCount >= 1 && selected.length < 3) continue;
     }
 
@@ -805,15 +809,15 @@ function buildGroupFromStrategy(strategy, recent20, variantIndex = 0) {
   );
 
   return {
-    key: strategy.strategy_key,
-    label: strategy.strategy_name || strategy.strategy_key,
+    key: strategy.strategy_key || `group_${variantIndex + 1}`,
+    label: strategy.strategy_name || strategy.strategy_key || `第${variantIndex + 1}組`,
     nums,
     reason: buildGroupReason(strategy, genes),
     meta: {
-      model: 'v3.7',
+      model: 'v4.0',
       source: 'strategy_pool',
-      strategy_key: strategy.strategy_key,
-      strategy_name: strategy.strategy_name || strategy.strategy_key,
+      strategy_key: strategy.strategy_key || `group_${variantIndex + 1}`,
+      strategy_name: strategy.strategy_name || strategy.strategy_key || `第${variantIndex + 1}組`,
       gene_a: strategy.gene_a || '',
       gene_b: strategy.gene_b || '',
       protected_rank: Boolean(strategy.protected_rank),
@@ -947,37 +951,11 @@ async function buildStrategyGroupsFromPool(recent20) {
   return [...map.values()].slice(0, BET_GROUP_COUNT);
 }
 
-async function findExistingCreatedBySourceDrawNo(sourceDrawNo) {
-  const { data, error } = await supabase
-    .from(PREDICTIONS_TABLE)
-    .select('id')
-    .eq('mode', MODE)
-    .eq('target_periods', TARGET_PERIODS)
-    .eq('source_draw_no', String(sourceDrawNo))
-    .in('status', ['created', 'compared'])
-    .limit(1)
-    .maybeSingle();
-
-  if (error) throw error;
-  return data || null;
-}
-
 async function createNextTestPrediction() {
   const latestDrawNo = await getLatestDrawNo();
 
   if (!latestDrawNo) {
     return { ok: false, skipped: false, message: 'bingo_draws 尚無資料' };
-  }
-
-  const sourceDrawNo = String(latestDrawNo);
-  const existing = await findExistingCreatedBySourceDrawNo(sourceDrawNo);
-
-  if (existing) {
-    return {
-      ok: false,
-      skipped: true,
-      message: `source_draw_no ${sourceDrawNo} 已存在 prediction`
-    };
   }
 
   const recent20 = await getRecent20();
@@ -990,9 +968,9 @@ async function createNextTestPrediction() {
 
   const payload = {
     id,
-    mode: MODE,
+    mode: CURRENT_MODE,
     status: 'created',
-    source_draw_no: sourceDrawNo,
+    source_draw_no: String(latestDrawNo),
     target_periods: TARGET_PERIODS,
     groups_json: groups,
     created_at: new Date().toISOString()
@@ -1010,7 +988,7 @@ async function createNextTestPrediction() {
     ok: true,
     created: data,
     groups,
-    message: `已建立新測試 prediction，來源第 ${sourceDrawNo} 期`
+    message: `已建立新測試 prediction，來源第 ${latestDrawNo} 期`
   };
 }
 
@@ -1053,7 +1031,9 @@ async function buildLeaderboard(limitRows = 160) {
       }
 
       const entry = map.get(key);
-      const totalRounds = Array.isArray(group?.periods) ? group.periods.length : TARGET_PERIODS;
+      const totalRounds = Array.isArray(group?.periods)
+        ? group.periods.length
+        : toInt(row?.compare_result?.summary?.total_periods, TARGET_PERIODS);
       const totalHit = toInt(group?.total_hit_count, 0);
       const totalReward = toInt(group?.total_reward, 0);
       const payoutRounds = toInt(group?.payout_rounds, 0);
@@ -1163,6 +1143,7 @@ export default async function handler(req, res) {
             ? result.compareResult.groups.map((g) => ({
                 key: g.key,
                 label: g.label,
+                nums: g.nums,
                 total_hit_count: g.total_hit_count,
                 total_reward: g.total_reward,
                 total_cost: g.total_cost,
@@ -1195,6 +1176,8 @@ export default async function handler(req, res) {
         createdDetails.push({
           prediction_id: created.created.id,
           source_draw_no: created.created.source_draw_no,
+          target_periods: created.created.target_periods,
+          total_cost: BET_GROUP_COUNT * TARGET_PERIODS * COST_PER_GROUP_PER_PERIOD,
           strategies: created.groups.map((g) => ({
             key: g.key,
             label: g.label,
@@ -1227,8 +1210,12 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       ok: true,
-      mode: MODE,
+      mode: CURRENT_MODE,
       latest_draw_no: latestDrawNo,
+      target_periods: TARGET_PERIODS,
+      bet_group_count: BET_GROUP_COUNT,
+      cost_per_group_per_period: COST_PER_GROUP_PER_PERIOD,
+      estimated_total_cost: BET_GROUP_COUNT * TARGET_PERIODS * COST_PER_GROUP_PER_PERIOD,
       compare_limit: MAX_COMPARE_PER_RUN,
       create_limit: MAX_CREATE_PER_RUN,
       compared_count: comparedCount,
