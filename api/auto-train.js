@@ -14,10 +14,10 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-const CURRENT_MODE = 'v4_auto_loop_test_4period';
-const ACCEPT_MODES = ['v3_auto_loop_test_2period', 'v4_auto_loop_test_4period'];
+const CURRENT_MODE = 'test';
+const ACCEPT_MODES = ['test'];
 
-const TARGET_PERIODS = 4;
+const TARGET_PERIODS = 2;
 const BET_GROUP_COUNT = 4;
 const COST_PER_GROUP_PER_PERIOD = 25;
 
@@ -173,6 +173,20 @@ async function getMaturedPredictions(limitCount) {
   return data || [];
 }
 
+async function getActiveCreatedTestPrediction() {
+  const { data, error } = await supabase
+    .from(PREDICTIONS_TABLE)
+    .select('id')
+    .eq('mode', CURRENT_MODE)
+    .eq('status', 'created')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data || null;
+}
+
 async function getDrawRowsForPrediction(prediction) {
   const sourceDrawNo = toInt(prediction.source_draw_no);
   const targetPeriods = toInt(prediction.target_periods || TARGET_PERIODS);
@@ -302,7 +316,7 @@ function buildComparePayload({ prediction, groups, drawRows }) {
     : null;
 
   const compareResult = {
-    mode: '4star_4group_4period',
+    mode: '4star_4group_2period',
     source_draw_no: sourceDrawNo,
     total_cost: totalCost,
     total_reward: totalReward,
@@ -462,6 +476,10 @@ function rotateList(source, offset = 0) {
   return [...source.slice(safeOffset), ...source.slice(0, safeOffset)];
 }
 
+function rowOrEmpty(row) {
+  return row || {};
+}
+
 function buildRecent20Analysis(recent20) {
   const rows = Array.isArray(recent20) ? recent20 : [];
   const allNums = rows.flatMap((row) => parseDrawNumbers(row[DRAW_NUMBERS_COL]));
@@ -542,10 +560,6 @@ function buildRecent20Analysis(recent20) {
     pickByTail,
     pickByZone
   };
-}
-
-function rowOrEmpty(row) {
-  return row || {};
 }
 
 function geneCandidates(gene, analysis, context = {}) {
@@ -910,7 +924,7 @@ function buildGroupFromStrategy(strategy, recent20, variantIndex = 0) {
     nums,
     reason: buildGroupReason(strategy, genes),
     meta: {
-      model: 'v4.0',
+      model: 'v4.1',
       source: 'strategy_pool',
       strategy_key: strategy.strategy_key || `group_${variantIndex + 1}`,
       strategy_name: strategy.strategy_name || strategy.strategy_key || `第${variantIndex + 1}組`,
@@ -1060,6 +1074,15 @@ async function createNextTestPrediction() {
     return { ok: false, skipped: false, message: 'bingo_draws 尚無資料' };
   }
 
+  const existing = await getActiveCreatedTestPrediction();
+  if (existing) {
+    return {
+      ok: false,
+      skipped: true,
+      message: '已有 AI 自動訓練局進行中'
+    };
+  }
+
   const recent20 = await getRecent20();
   if (!recent20.length) {
     return { ok: false, skipped: false, message: '無 recent20 可建立測試 prediction' };
@@ -1090,7 +1113,7 @@ async function createNextTestPrediction() {
     ok: true,
     created: data,
     groups,
-    message: `已建立新測試 prediction，來源第 ${latestDrawNo} 期`
+    message: `已建立新 AI 自動訓練局，來源第 ${latestDrawNo} 期`
   };
 }
 
