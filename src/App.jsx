@@ -1,4 +1,4 @@
-// v4.0 PROFESSIONAL AI EVALUATION + AUTO TRAIN TOGGLE + FORMAL BET FIXED
+// v4.1 PROFESSIONAL AI EVALUATION + CROSS DEVICE PLAN SYNC
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { buildBingoV1Strategies } from "../lib/buildBingoV1Strategies";
 import {
@@ -9,16 +9,16 @@ import {
 } from "../lib/strategySelfOptimizer";
 
 const STORAGE_KEYS = {
-  latest: "fuwei_bingo_latest_v40_ai",
-  testPlan: "fuwei_bingo_test_plan_v40_ai",
-  formalPlan: "fuwei_bingo_formal_plan_v40_ai",
-  testResult: "fuwei_bingo_test_result_v40_ai",
-  formalResult: "fuwei_bingo_formal_result_v40_ai",
-  autoRunAt: "fuwei_bingo_auto_run_at_v40_ai",
-  autoTrainLast: "fuwei_bingo_auto_train_last_v40_ai",
-  autoTrainHistory: "fuwei_bingo_auto_train_history_v40_ai",
-  strategyLeaderboard: "fuwei_bingo_strategy_leaderboard_v40_ai",
-  autoTrainEnabled: "fuwei_bingo_auto_train_enabled_v40_ai"
+  latest: "fuwei_bingo_latest_v41_ai",
+  testPlan: "fuwei_bingo_test_plan_v41_ai",
+  formalPlan: "fuwei_bingo_formal_plan_v41_ai",
+  testResult: "fuwei_bingo_test_result_v41_ai",
+  formalResult: "fuwei_bingo_formal_result_v41_ai",
+  autoRunAt: "fuwei_bingo_auto_run_at_v41_ai",
+  autoTrainLast: "fuwei_bingo_auto_train_last_v41_ai",
+  autoTrainHistory: "fuwei_bingo_auto_train_history_v41_ai",
+  strategyLeaderboard: "fuwei_bingo_strategy_leaderboard_v41_ai",
+  autoTrainEnabled: "fuwei_bingo_auto_train_enabled_v41_ai"
 };
 
 const LEARNING_KEYS = createLearningStorageKeys("fuwei_bingo_strategy_learning_v2");
@@ -179,6 +179,52 @@ function buildTrendText(label, current, previous) {
   return `${label}持平`;
 }
 
+function buildPlanFromLatestPrediction(prediction, modeLabel) {
+  if (!prediction) return null;
+
+  const sourceDrawNo = normalizeNumber(prediction.sourceDrawNo, 0);
+  const targetPeriods = normalizeNumber(prediction.targetPeriods, modeLabel === "formal" ? 4 : 2);
+  const groups = normalizeGroupsForUi(prediction.groups, modeLabel === "formal" ? "正式第" : "測試第");
+  const totalCost = calcPlanCost(groups.length || 4, targetPeriods);
+
+  return {
+    mode: modeLabel,
+    createdAt: prediction.created_at || new Date().toISOString(),
+    sourceDrawNo,
+    targetPeriods,
+    targetDrawNo: normalizeNumber(prediction.targetDrawNo, sourceDrawNo + targetPeriods),
+    strategyMode:
+      modeLabel === "formal"
+        ? "formal_synced_from_server_prediction"
+        : "test_synced_from_server_prediction",
+    groups,
+    predictionId: prediction.id || null,
+    totalCost
+  };
+}
+
+function buildResultFromLatestPrediction(prediction) {
+  const compareResult =
+    prediction?.compare_result ||
+    prediction?.compare_result_json ||
+    null;
+
+  if (!compareResult) return null;
+
+  return {
+    verdict: compareResult?.verdict || compareResult?.summary?.verdict || "已完成比對",
+    sourceDrawNo: compareResult?.source_draw_no || prediction?.sourceDrawNo || "",
+    targetDrawNo:
+      normalizeNumber(prediction?.sourceDrawNo, 0) +
+      normalizeNumber(prediction?.targetPeriods, 0),
+    compareDrawNo: compareResult?.compare_draw_no || null,
+    compareDrawRange: compareResult?.compare_draw_range || "",
+    totalCost: normalizeNumber(compareResult?.total_cost, 0),
+    estimatedReturn: normalizeNumber(compareResult?.total_reward, 0),
+    profit: normalizeNumber(compareResult?.profit, 0)
+  };
+}
+
 export default function App() {
   const [latest, setLatest] = useState(() => readLocal(STORAGE_KEYS.latest, TXT_LATEST));
   const [recent20, setRecent20] = useState([]);
@@ -319,6 +365,47 @@ export default function App() {
     }
   }
 
+  async function loadLatestPredictions(silent = false) {
+    try {
+      const res = await fetch(withTs("/api/prediction-latest"), {
+        cache: "no-store"
+      });
+
+      const data = await res.json();
+
+      if (!data.ok) {
+        throw new Error(data.error || "prediction-latest failed");
+      }
+
+      if (data.test) {
+        const syncedTestPlan = buildPlanFromLatestPrediction(data.test, "test");
+        const syncedTestResult = buildResultFromLatestPrediction(data.test);
+
+        if (syncedTestPlan) setTestPlan(syncedTestPlan);
+        if (syncedTestResult) setTestResult(syncedTestResult);
+      }
+
+      if (data.formal) {
+        const syncedFormalPlan = buildPlanFromLatestPrediction(data.formal, "formal");
+        const syncedFormalResult = buildResultFromLatestPrediction(data.formal);
+
+        if (syncedFormalPlan) setFormalPlan(syncedFormalPlan);
+        if (syncedFormalResult) setFormalResult(syncedFormalResult);
+      }
+
+      if (!silent) {
+        setNotice("已從伺服器同步最新測試模式與正式投注資料。");
+      }
+
+      return data;
+    } catch (err) {
+      if (!silent) {
+        setNotice(`同步跨裝置投注資料失敗：${err.message}`);
+      }
+      return null;
+    }
+  }
+
   async function syncLatestCore(silent = false) {
     const res = await fetch(withTs("/api/sync"), { cache: "no-store" });
     const data = await res.json();
@@ -388,6 +475,7 @@ export default function App() {
     try {
       setSyncStatus("同步中...");
       await syncLatestCore(false);
+      await loadLatestPredictions(true);
     } catch (err) {
       setSyncStatus(`同步失敗：${err.message}`);
     }
@@ -417,6 +505,7 @@ export default function App() {
 
       await syncLatestCore(true);
       await loadRecent20(true);
+      await loadLatestPredictions(true);
 
       setAutoTrainLast(data);
       setAutoTrainHistory((prev) => mergeAutoTrainHistory(prev, data));
@@ -557,7 +646,7 @@ export default function App() {
       sourceDrawNo: currentDrawNo,
       targetPeriods: TEST_TARGET_PERIODS,
       targetDrawNo: currentDrawNo + TEST_TARGET_PERIODS,
-      strategyMode: "test_use_best_local_weighted_strategies_v40",
+      strategyMode: "test_use_best_local_weighted_strategies_v41",
       groups: sourceGroups,
       predictionId: null,
       totalCost: calcPlanCost(TEST_GROUP_COUNT, TEST_TARGET_PERIODS)
@@ -588,6 +677,7 @@ export default function App() {
 
         setTestPlan(plan);
         setNotice(`已建立四星賓果四組二期測試模式，來源第 ${plan.sourceDrawNo} 期。`);
+        await loadLatestPredictions(true);
       } else {
         setNotice(`測試模式建立失敗：${saved.error || "預測資料庫寫入失敗"}`);
       }
@@ -611,7 +701,7 @@ export default function App() {
       sourceDrawNo: currentDrawNo,
       targetPeriods: FORMAL_TARGET_PERIODS,
       targetDrawNo: currentDrawNo + FORMAL_TARGET_PERIODS,
-      strategyMode: "formal_use_top4_leaderboard_or_server_auto_v40",
+      strategyMode: "formal_use_top4_leaderboard_or_server_auto_v41",
       groups: localFormalGroups,
       predictionId: null,
       totalCost: calcPlanCost(FORMAL_GROUP_COUNT, FORMAL_TARGET_PERIODS)
@@ -658,6 +748,7 @@ export default function App() {
             : "本次直接採用目前最佳 4 策略建立正式投注。";
 
         setNotice(sourceText);
+        await loadLatestPredictions(true);
       } else {
         setNotice(`正式投注建立失敗：${saved.error || "預測資料庫寫入失敗"}`);
       }
@@ -715,6 +806,8 @@ export default function App() {
     } else {
       setNotice(`測試模式比對完成：${data.result.verdict}，此期已學習過。`);
     }
+
+    await loadLatestPredictions(true);
   }
 
   async function compareFormalMode() {
@@ -752,6 +845,8 @@ export default function App() {
     } else {
       setNotice(`正式投注比對完成：${data.result.verdict}，此期已學習過。`);
     }
+
+    await loadLatestPredictions(true);
   }
 
   async function autoCatchupAndCompare() {
@@ -827,6 +922,8 @@ export default function App() {
       } else {
         setAutoStatus(`補抓完成，沒有缺期；已處理 ${done} 筆預測；學習 ${learnedCount} 次。`);
       }
+
+      await loadLatestPredictions(true);
     } catch (err) {
       setAutoStatus(`補抓補比對失敗：${err.message}`);
     }
@@ -846,7 +943,10 @@ export default function App() {
     setLoopStatus(`自動循環執行中：${nowText}${fromTimer ? "（定時）" : "（啟動）"}`);
 
     try {
-      await syncLatest();
+      await syncLatestCore(true);
+      await loadRecent20(true);
+      await loadLatestPredictions(true);
+      setSyncStatus("已同步最新資料");
     } catch (err) {
       console.error("syncLatest failed:", err);
     }
@@ -877,8 +977,13 @@ export default function App() {
     autoRanRef.current = true;
 
     loadSystemConfig(true);
-    loadRecent20(true);
-    runAutoLoopOnce(false, true);
+
+    Promise.all([
+      loadRecent20(true),
+      loadLatestPredictions(true)
+    ]).finally(() => {
+      runAutoLoopOnce(false, true);
+    });
 
     const timer = setInterval(() => {
       runAutoLoopOnce(true, false);
@@ -938,9 +1043,9 @@ export default function App() {
       <div style={styles.wrap}>
         <section style={styles.hero}>
           <div style={styles.kicker}>FUWEI BINGO SYSTEM</div>
-          <h1 style={styles.h1}>富緯賓果系統 v4.0 專業 AI 評估版</h1>
+          <h1 style={styles.h1}>富緯賓果系統 v4.1 專業 AI 評估版</h1>
           <p style={styles.p}>
-            已修正正式下注流程，現在可直接依目前最佳 4 策略建立四組四期正式投注，並即時顯示成本與號碼。
+            已修正跨裝置同步。現在正式投注與測試模式會優先讀取伺服器最新 prediction，讓網頁與手機顯示一致。
           </p>
 
           <div style={styles.notice}>{notice}</div>
@@ -1054,7 +1159,7 @@ export default function App() {
         {autoTrainLast ? (
           <section style={styles.panel}>
             <h2 style={styles.h2}>自動訓練摘要</h2>
-            <div style={styles.subtle}>模式：{autoTrainLast.mode || "auto_train_v4"}</div>
+            <div style={styles.subtle}>模式：{autoTrainLast.mode || "auto_train_v4.1"}</div>
             <div style={styles.subtle}>最新期數：第 {autoTrainLast.latest_draw_no ?? "未知"} 期</div>
             <div style={styles.subtle}>每輪比對上限：{autoTrainLast.compare_limit ?? 0} 筆</div>
             <div style={styles.subtle}>每輪新建上限：{autoTrainLast.create_limit ?? 0} 筆</div>
