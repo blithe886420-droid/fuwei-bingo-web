@@ -300,6 +300,10 @@ function mergeGeneLists(geneLists, strategyKey = '', variantIndex = 0) {
   return uniqueKeepOrder(result);
 }
 
+function getGroupSignature(nums) {
+  return uniqueAsc(nums).join('-');
+}
+
 function finalizeGroupNumbers(candidates, analysis, strategy, count = 4) {
   const merged = uniqueKeepOrder([
     ...candidates,
@@ -320,6 +324,94 @@ function finalizeGroupNumbers(candidates, analysis, strategy, count = 4) {
   }
 
   return uniqueAsc(selected.slice(0, count));
+}
+
+function mutateGroupToUnique(baseNums, analysis, strategy, usedSignatures = new Set()) {
+  const base = uniqueAsc(baseNums).slice(0, 4);
+  const fallbackPool = uniqueKeepOrder([
+    ...analysis.hottest,
+    ...analysis.warm,
+    ...analysis.coldest,
+    ...analysis.numbers1to80
+  ]);
+
+  const seed = stableHash(`${strategy.strategy_key}_${strategy.variantIndex || 0}_mutate`);
+  const rotatedPool = rotateList(fallbackPool, seed % Math.max(1, fallbackPool.length));
+
+  const originalSignature = getGroupSignature(base);
+  if (!usedSignatures.has(originalSignature)) {
+    return base;
+  }
+
+  const variants = [];
+
+  for (let i = 0; i < rotatedPool.length; i += 1) {
+    const candidate = rotatedPool[i];
+    if (base.includes(candidate)) continue;
+
+    for (let replaceIdx = 0; replaceIdx < base.length; replaceIdx += 1) {
+      const mutated = uniqueAsc([
+        ...base.filter((_, idx) => idx !== replaceIdx),
+        candidate
+      ]).slice(0, 4);
+
+      if (mutated.length === 4) {
+        variants.push(mutated);
+      }
+    }
+
+    if (variants.length >= 24) break;
+  }
+
+  for (const variant of variants) {
+    const signature = getGroupSignature(variant);
+    if (!usedSignatures.has(signature)) {
+      return variant;
+    }
+  }
+
+  for (let a = 0; a < rotatedPool.length; a += 1) {
+    for (let b = a + 1; b < rotatedPool.length; b += 1) {
+      const nums = uniqueAsc([base[0], base[1], rotatedPool[a], rotatedPool[b]]).slice(0, 4);
+      if (nums.length !== 4) continue;
+      const signature = getGroupSignature(nums);
+      if (!usedSignatures.has(signature)) {
+        return nums;
+      }
+    }
+    if (a > 12) break;
+  }
+
+  return base;
+}
+
+function ensureUniqueGroups(groups, analysis) {
+  const used = new Set();
+
+  return groups.map((group, idx) => {
+    const strategy = {
+      strategy_key: group.key || `group_${idx + 1}`,
+      variantIndex: idx
+    };
+
+    let nums = uniqueAsc(group.nums).slice(0, 4);
+    let signature = getGroupSignature(nums);
+
+    if (used.has(signature)) {
+      nums = mutateGroupToUnique(nums, analysis, strategy, used);
+      signature = getGroupSignature(nums);
+    }
+
+    used.add(signature);
+
+    return {
+      ...group,
+      nums,
+      reason: used.has(signature) && getGroupSignature(group.nums) !== signature
+        ? `${group.reason}（已自動避開重複組合）`
+        : group.reason
+    };
+  });
 }
 
 function scoreActiveStrategy(row) {
@@ -439,7 +531,7 @@ function buildFallbackSeedGroupsFromRecent20(recent20) {
 
   const analysis = buildRecent20Analysis(recent20);
 
-  return fallbackStrategies.map((strategy, idx) => {
+  const rawGroups = fallbackStrategies.map((strategy, idx) => {
     const genes = uniqueKeepOrder([strategy.gene_a, strategy.gene_b].filter(Boolean));
     const candidateLists = genes.map((gene) =>
       geneCandidates(gene, analysis, {
@@ -448,7 +540,12 @@ function buildFallbackSeedGroupsFromRecent20(recent20) {
       })
     );
     const mergedCandidates = mergeGeneLists(candidateLists, strategy.strategy_key, idx);
-    const nums = finalizeGroupNumbers(mergedCandidates, analysis, { ...strategy, variantIndex: idx }, 4);
+    const nums = finalizeGroupNumbers(
+      mergedCandidates,
+      analysis,
+      { ...strategy, variantIndex: idx },
+      4
+    );
 
     return {
       key: strategy.strategy_key,
@@ -465,6 +562,8 @@ function buildFallbackSeedGroupsFromRecent20(recent20) {
       }
     };
   });
+
+  return ensureUniqueGroups(rawGroups, analysis);
 }
 
 async function buildStrategyGroupsFromPool(supabase, recent20) {
@@ -475,7 +574,7 @@ async function buildStrategyGroupsFromPool(supabase, recent20) {
     return buildFallbackSeedGroupsFromRecent20(recent20);
   }
 
-  const groups = activeStrategies
+  const rawGroups = activeStrategies
     .map((strategy, idx) => {
       const genes = uniqueKeepOrder([strategy.gene_a, strategy.gene_b].filter(Boolean));
       const candidateLists = genes.map((gene) =>
@@ -509,6 +608,8 @@ async function buildStrategyGroupsFromPool(supabase, recent20) {
     })
     .filter((group) => Array.isArray(group.nums) && group.nums.length === 4);
 
+  let groups = ensureUniqueGroups(rawGroups, analysis);
+
   if (groups.length >= BET_GROUP_COUNT) {
     return groups.slice(0, BET_GROUP_COUNT);
   }
@@ -522,7 +623,8 @@ async function buildStrategyGroupsFromPool(supabase, recent20) {
     }
   }
 
-  return [...map.values()].slice(0, BET_GROUP_COUNT);
+  groups = ensureUniqueGroups([...map.values()].slice(0, BET_GROUP_COUNT), analysis);
+  return groups;
 }
 
 export default async function handler(req, res) {
@@ -566,15 +668,21 @@ export default async function handler(req, res) {
     let groups = inputGroups;
     let groupSource = 'frontend';
 
-    if (groups.length < BET_GROUP_COUNT) {
-      const recent20 = await getRecent20(supabase);
-      if (!recent20.length) {
-        return res.status(500).json({
-          ok: false,
-          error: 'recent20 not found, unable to auto-generate 4 groups'
-        });
-      }
+    const recent20 = await getRecent20(supabase);
+    if (!recent20.length) {
+      return res.status(500).json({
+        ok: false,
+        error: 'recent20 not found'
+      });
+    }
 
+    const analysis = buildRecent20Analysis(recent20);
+
+    if (groups.length >= 1) {
+      groups = ensureUniqueGroups(groups, analysis);
+    }
+
+    if (groups.length < BET_GROUP_COUNT) {
       groups = await buildStrategyGroupsFromPool(supabase, recent20);
       groupSource = 'server_auto_generate';
     }
@@ -586,6 +694,8 @@ export default async function handler(req, res) {
         groups_count: Array.isArray(groups) ? groups.length : 0
       });
     }
+
+    groups = ensureUniqueGroups(groups, analysis);
 
     const latestDrawNo = await getLatestDrawNo(supabase);
     if (!latestDrawNo) {
