@@ -8,6 +8,26 @@ function isValidDrawTime(drawTime) {
   return typeof drawTime === "string" && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(drawTime);
 }
 
+function normalizeDrawRow(row) {
+  const drawNo = Number(row?.draw_no);
+  const drawTime = row?.draw_time || "";
+  const numbers = typeof row?.numbers === "string"
+    ? row.numbers
+    : Array.isArray(row?.numbers)
+      ? row.numbers.join(",")
+      : "";
+
+  if (!isValidDrawNo(drawNo)) return null;
+  if (!isValidDrawTime(drawTime)) return null;
+  if (!numbers) return null;
+
+  return {
+    draw_no: drawNo,
+    draw_time: drawTime,
+    numbers
+  };
+}
+
 export default async function handler(req, res) {
   try {
     if (req.method !== "POST") {
@@ -55,9 +75,9 @@ export default async function handler(req, res) {
     }
 
     const html = await response.text();
-    const draws = parseAuzoBingoDraws(html, dateStr);
+    const parsedDraws = parseAuzoBingoDraws(html, dateStr);
 
-    if (!Array.isArray(draws) || draws.length === 0) {
+    if (!Array.isArray(parsedDraws) || parsedDraws.length === 0) {
       return res.status(500).json({
         ok: false,
         error: "parse bingo rows failed",
@@ -65,40 +85,20 @@ export default async function handler(req, res) {
       });
     }
 
-    const latest = draws[0];
-    const latestDrawNo = Number(latest.draw_no);
-    const latestDrawTime = latest.draw_time;
-    const latestNumbers = latest.numbers;
+    const normalizedDraws = parsedDraws
+      .map(normalizeDrawRow)
+      .filter(Boolean)
+      .sort((a, b) => b.draw_no - a.draw_no);
 
-    if (!isValidDrawNo(latestDrawNo)) {
+    if (!normalizedDraws.length) {
       return res.status(500).json({
         ok: false,
-        error: "invalid draw_no parsed",
-        latest
+        error: "all parsed rows invalid",
+        source: sourceUrl
       });
     }
 
-    if (!isValidDrawTime(latestDrawTime)) {
-      return res.status(500).json({
-        ok: false,
-        error: "invalid draw_time parsed",
-        latest
-      });
-    }
-
-    if (!latestNumbers || typeof latestNumbers !== "string") {
-      return res.status(500).json({
-        ok: false,
-        error: "invalid numbers parsed",
-        latest
-      });
-    }
-
-    const insertPayload = {
-      draw_no: latestDrawNo,
-      draw_time: latestDrawTime,
-      numbers: latestNumbers
-    };
+    const latest = normalizedDraws[0];
 
     const insertResp = await fetch(
       `${SUPABASE_URL}/rest/v1/bingo_draws?on_conflict=draw_no`,
@@ -108,9 +108,9 @@ export default async function handler(req, res) {
           apikey: SUPABASE_KEY,
           Authorization: `Bearer ${SUPABASE_KEY}`,
           "Content-Type": "application/json",
-          Prefer: "resolution=ignore-duplicates,return=representation"
+          Prefer: "resolution=merge-duplicates,return=representation"
         },
-        body: JSON.stringify(insertPayload)
+        body: JSON.stringify(normalizedDraws)
       }
     );
 
@@ -121,7 +121,8 @@ export default async function handler(req, res) {
         ok: false,
         error: `insert failed: ${insertResp.status}`,
         rawPreview: insertText.slice(0, 500),
-        tryingToInsert: insertPayload
+        tryingToInsertCount: normalizedDraws.length,
+        tryingToInsertLatest: latest
       });
     }
 
@@ -186,13 +187,14 @@ export default async function handler(req, res) {
     deduped.sort((a, b) => b.draw_no - a.draw_no);
 
     const latestInDb = deduped[0] || null;
+    const insertedCount = Array.isArray(insertRows) ? insertRows.length : 0;
 
     let saved = false;
     let skipped = false;
 
-    if (Array.isArray(insertRows) && insertRows.length > 0) {
+    if (insertedCount > 0) {
       saved = true;
-    } else if (latestInDb && Number(latestInDb.draw_no) === latestDrawNo) {
+    } else if (latestInDb && Number(latestInDb.draw_no) === Number(latest.draw_no)) {
       skipped = true;
     }
 
@@ -200,11 +202,9 @@ export default async function handler(req, res) {
       ok: true,
       saved,
       skipped,
-      latest: {
-        draw_no: latestDrawNo,
-        draw_time: latestDrawTime,
-        numbers: latestNumbers
-      },
+      inserted_count: insertedCount,
+      parsed_count: normalizedDraws.length,
+      latest: latest,
       latestInDb,
       recent20: deduped.slice(0, 20)
     });
