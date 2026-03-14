@@ -27,12 +27,6 @@ function fmtPercent(v, digits = 1) {
   return `${n.toFixed(digits)}%`;
 }
 
-function fmtMoney(v) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return '--';
-  return `NT$ ${n.toLocaleString()}`;
-}
-
 function fmtText(v, fallback = '--') {
   if (v === null || v === undefined || v === '') return fallback;
   return String(v);
@@ -42,9 +36,7 @@ function fmtDateTime(v) {
   if (!v) return '--';
   const d = new Date(v);
   if (Number.isNaN(d.getTime())) return String(v);
-  return d.toLocaleString('zh-TW', {
-    hour12: false
-  });
+  return d.toLocaleString('zh-TW', { hour12: false });
 }
 
 function parseNums(input) {
@@ -123,7 +115,6 @@ function calcSimpleAiStatus(trainingPrediction, leaderboard) {
     .filter(Number.isFinite);
 
   const topScore = Number(lb?.[0]?.score);
-  const bestRoi = roiValues.length ? Math.max(...roiValues) : null;
   const avgRoi = roiValues.length
     ? roiValues.reduce((a, b) => a + b, 0) / roiValues.length
     : null;
@@ -152,11 +143,11 @@ function calcSimpleAiStatus(trainingPrediction, leaderboard) {
   confidence = Math.max(0, Math.min(100, Math.round(confidence)));
 
   let advice = '觀望';
-  let adviceColor = '#f59e0b';
+  let adviceColor = '#d97706';
 
   if (confidence >= 70) {
     advice = '可下注';
-    adviceColor = '#16a34a';
+    adviceColor = '#15803d';
   } else if (confidence <= 40) {
     advice = '先觀望';
     adviceColor = '#dc2626';
@@ -168,7 +159,6 @@ function calcSimpleAiStatus(trainingPrediction, leaderboard) {
     adviceColor,
     activeStrategies: active,
     avgRoi,
-    bestRoi,
     avgHit,
     latestTrainingMode: trainingPrediction?.mode || '--'
   };
@@ -386,7 +376,7 @@ export default function App() {
         <header style={styles.header}>
           <div>
             <div style={styles.brand}>FUWEI BINGO AI</div>
-            <div style={styles.headerSub}>把頁面整理乾淨，讓 AI 做 AI 的事。</div>
+            <div style={styles.headerSub}>把頁面整理得乾淨，讓 AI 做 AI 的事。</div>
           </div>
 
           <div style={styles.headerActions}>
@@ -419,15 +409,8 @@ export default function App() {
           })}
         </nav>
 
-        {error ? (
-          <div style={styles.errorBanner}>
-            {error}
-          </div>
-        ) : null}
-
-        {loading ? (
-          <div style={styles.loading}>讀取中...</div>
-        ) : null}
+        {error ? <div style={styles.errorBanner}>{error}</div> : null}
+        {loading ? <div style={styles.loading}>讀取中...</div> : null}
 
         {!loading && activeTab === TABS.DASHBOARD && (
           <div style={styles.sectionStack}>
@@ -466,14 +449,6 @@ export default function App() {
 
               <div style={styles.actionRow}>
                 <button
-                  style={styles.primaryButton}
-                  onClick={handleFormalBet}
-                  disabled={busyKey !== ''}
-                >
-                  {busyKey === 'formalBet' ? '建立中...' : '建立正式下注'}
-                </button>
-
-                <button
                   style={styles.secondaryButton}
                   onClick={handleRunAutoTrain}
                   disabled={busyKey !== ''}
@@ -485,7 +460,7 @@ export default function App() {
 
             <Card
               title="系統控制"
-              subtitle="這裡只留你平常真的會用到的控制項。"
+              subtitle="保留你平常真的會用到的控制項。"
             >
               <div style={styles.controlGrid}>
                 <div style={styles.controlItem}>
@@ -494,7 +469,7 @@ export default function App() {
                     目前狀態：
                     <span
                       style={{
-                        color: autoTrainEnabled ? '#16a34a' : '#dc2626',
+                        color: autoTrainEnabled ? '#15803d' : '#dc2626',
                         fontWeight: 800,
                         marginLeft: 6
                       }}
@@ -540,7 +515,7 @@ export default function App() {
 
             <Card
               title="訓練摘要"
-              subtitle="這塊保留重點，不再把整個訓練牆塞在首頁。"
+              subtitle="保留重點，不再把整個訓練牆塞在首頁。"
             >
               <div style={styles.statsGrid4}>
                 <StatBox
@@ -583,12 +558,8 @@ export default function App() {
           <div style={styles.sectionStack}>
             <Card
               title="正式下注"
-              subtitle="這裡只處理你真正要拿去買的組合。"
-              right={
-                <div style={styles.tag}>
-                  四星賓果 / 四組 / 四期
-                </div>
-              }
+              subtitle="正式下注的建立與重建，都集中在這一頁。"
+              right={<div style={styles.tag}>四星賓果 / 四組 / 四期</div>}
             >
               <div style={styles.summaryLine}>
                 <span>模式：</span>
@@ -601,7 +572,21 @@ export default function App() {
 
               <div style={styles.infoBanner}>
                 本次正式下注為固定追期模式：按一次正式下注後，4 組號碼固定追 4 期，
-                中途不換號；除非你再次手動建立正式下注。
+                中途不換號；除非你再次手動重建正式下注。
+              </div>
+
+              <div style={styles.actionRow}>
+                <button
+                  style={styles.primaryButton}
+                  onClick={handleFormalBet}
+                  disabled={busyKey !== ''}
+                >
+                  {busyKey === 'formalBet'
+                    ? '建立中...'
+                    : formalGroups.length
+                      ? '重新建立正式下注'
+                      : '建立正式下注'}
+                </button>
               </div>
 
               <div style={styles.groupGrid}>
@@ -627,16 +612,6 @@ export default function App() {
                 ) : (
                   <div style={styles.emptyBox}>目前還沒有正式下注資料。</div>
                 )}
-              </div>
-
-              <div style={styles.actionRow}>
-                <button
-                  style={styles.primaryButton}
-                  onClick={handleFormalBet}
-                  disabled={busyKey !== ''}
-                >
-                  {busyKey === 'formalBet' ? '建立中...' : '重新建立正式下注'}
-                </button>
               </div>
             </Card>
 
@@ -682,7 +657,7 @@ export default function App() {
 
             <Card
               title="策略排行榜（精簡版）"
-              subtitle="你不用每次看 50 個，先看前 10 名就夠。"
+              subtitle="先看前 10 名就夠，不要每次都被 50 個策略轟炸。"
             >
               <div style={styles.tableWrap}>
                 <table style={styles.table}>
@@ -721,7 +696,7 @@ export default function App() {
                     ) : (
                       <tr>
                         <td style={styles.td} colSpan={6}>
-                          目前尚無排行榜資料。
+                          目前無排行榜資料。
                         </td>
                       </tr>
                     )}
@@ -736,7 +711,7 @@ export default function App() {
           <div style={styles.sectionStack}>
             <Card
               title="最新開獎"
-              subtitle="先把市場資料跟 AI 頁分開，畫面就會乾淨很多。"
+              subtitle="先把市場資料跟 AI 頁分開，眼睛會輕鬆很多。"
             >
               <div style={styles.statsGrid4}>
                 <StatBox
@@ -770,7 +745,7 @@ export default function App() {
 
             <Card
               title="最近 20 期"
-              subtitle="市場資料頁只做資料，別再把策略和下注摻進來。"
+              subtitle="市場資料頁只放資料，不再把下注和策略摻在一起。"
             >
               <div style={styles.tableWrap}>
                 <table style={styles.table}>
@@ -826,8 +801,8 @@ export default function App() {
 const styles = {
   page: {
     minHeight: '100vh',
-    background: '#0f172a',
-    color: '#e5e7eb',
+    background: 'linear-gradient(180deg, #edf3fb 0%, #e6eef9 100%)',
+    color: '#24324a',
     padding: '20px 12px 90px'
   },
   app: {
@@ -845,10 +820,11 @@ const styles = {
   brand: {
     fontSize: 28,
     fontWeight: 900,
-    letterSpacing: 0.6
+    letterSpacing: 0.6,
+    color: '#183153'
   },
   headerSub: {
-    color: '#94a3b8',
+    color: '#5f7391',
     marginTop: 6,
     fontSize: 14
   },
@@ -864,34 +840,35 @@ const styles = {
     position: 'sticky',
     top: 8,
     zIndex: 5,
-    background: 'rgba(15,23,42,0.92)',
+    background: 'rgba(237,243,251,0.92)',
     padding: 8,
     borderRadius: 18,
     backdropFilter: 'blur(10px)'
   },
   tabButton: {
-    border: '1px solid #334155',
-    background: '#111827',
-    color: '#cbd5e1',
+    border: '1px solid #c8d7ea',
+    background: '#f7fbff',
+    color: '#355070',
     borderRadius: 14,
     padding: '14px 10px',
     fontSize: 15,
     fontWeight: 800,
-    cursor: 'pointer'
+    cursor: 'pointer',
+    boxShadow: '0 4px 12px rgba(120,140,170,0.08)'
   },
   tabButtonActive: {
-    background: '#2563eb',
-    color: '#fff',
-    borderColor: '#2563eb',
-    boxShadow: '0 8px 24px rgba(37,99,235,0.35)'
+    background: '#4f8cff',
+    color: '#ffffff',
+    borderColor: '#4f8cff',
+    boxShadow: '0 10px 24px rgba(79,140,255,0.24)'
   },
   tabIcon: {
     marginRight: 6
   },
   errorBanner: {
-    background: '#7f1d1d',
-    border: '1px solid #ef4444',
-    color: '#fee2e2',
+    background: '#fee2e2',
+    border: '1px solid #fca5a5',
+    color: '#991b1b',
     padding: 14,
     borderRadius: 14,
     marginBottom: 16,
@@ -900,18 +877,18 @@ const styles = {
   loading: {
     padding: 30,
     textAlign: 'center',
-    color: '#cbd5e1'
+    color: '#516781'
   },
   sectionStack: {
     display: 'grid',
     gap: 16
   },
   card: {
-    background: '#111827',
-    border: '1px solid #1f2937',
+    background: 'rgba(255,255,255,0.78)',
+    border: '1px solid #d8e3f1',
     borderRadius: 20,
     padding: 18,
-    boxShadow: '0 12px 30px rgba(0,0,0,0.22)'
+    boxShadow: '0 12px 30px rgba(98,128,170,0.10)'
   },
   cardHeader: {
     display: 'flex',
@@ -923,20 +900,21 @@ const styles = {
   },
   cardTitle: {
     fontSize: 22,
-    fontWeight: 900
+    fontWeight: 900,
+    color: '#183153'
   },
   cardSubtitle: {
     fontSize: 14,
-    color: '#94a3b8',
+    color: '#5f7391',
     marginTop: 6
   },
   tag: {
     padding: '8px 12px',
     borderRadius: 999,
-    background: '#1e293b',
-    border: '1px solid #334155',
+    background: '#eef5ff',
+    border: '1px solid #c7d9f3',
     fontSize: 13,
-    color: '#cbd5e1',
+    color: '#355070',
     fontWeight: 800
   },
   statsGrid4: {
@@ -945,25 +923,26 @@ const styles = {
     gap: 12
   },
   statBox: {
-    background: '#0b1220',
-    border: '1px solid #1f2937',
+    background: '#f8fbff',
+    border: '1px solid #d8e3f1',
     borderRadius: 16,
     padding: 16
   },
   statLabel: {
     fontSize: 13,
-    color: '#94a3b8',
+    color: '#6c7f99',
     marginBottom: 8
   },
   statValue: {
     fontSize: 28,
     fontWeight: 900,
-    lineHeight: 1.1
+    lineHeight: 1.1,
+    color: '#183153'
   },
   statHint: {
     marginTop: 8,
     fontSize: 12,
-    color: '#64748b'
+    color: '#7a8ea8'
   },
   actionRow: {
     display: 'flex',
@@ -974,17 +953,18 @@ const styles = {
   primaryButton: {
     border: 'none',
     borderRadius: 14,
-    background: '#2563eb',
+    background: '#4f8cff',
     color: '#fff',
     fontWeight: 900,
     padding: '12px 18px',
-    cursor: 'pointer'
+    cursor: 'pointer',
+    boxShadow: '0 8px 20px rgba(79,140,255,0.20)'
   },
   secondaryButton: {
-    border: '1px solid #334155',
+    border: '1px solid #c8d7ea',
     borderRadius: 14,
-    background: '#0f172a',
-    color: '#e5e7eb',
+    background: '#ffffff',
+    color: '#2e4967',
     fontWeight: 800,
     padding: '12px 18px',
     cursor: 'pointer'
@@ -992,7 +972,7 @@ const styles = {
   warnButton: {
     border: 'none',
     borderRadius: 14,
-    background: '#b91c1c',
+    background: '#ef4444',
     color: '#fff',
     fontWeight: 900,
     padding: '12px 18px',
@@ -1004,19 +984,20 @@ const styles = {
     gap: 14
   },
   controlItem: {
-    background: '#0b1220',
-    border: '1px solid #1f2937',
+    background: '#f8fbff',
+    border: '1px solid #d8e3f1',
     borderRadius: 16,
     padding: 16
   },
   controlTitle: {
     fontSize: 17,
     fontWeight: 900,
-    marginBottom: 8
+    marginBottom: 8,
+    color: '#183153'
   },
   controlText: {
     fontSize: 14,
-    color: '#cbd5e1',
+    color: '#415a77',
     marginBottom: 14
   },
   inlineButtons: {
@@ -1026,28 +1007,29 @@ const styles = {
   },
   resultPanel: {
     marginTop: 16,
-    background: '#0b1220',
-    border: '1px solid #1f2937',
+    background: '#f8fbff',
+    border: '1px solid #d8e3f1',
     borderRadius: 16,
     padding: 16
   },
   resultTitle: {
     fontWeight: 900,
-    marginBottom: 8
+    marginBottom: 8,
+    color: '#183153'
   },
   resultText: {
-    color: '#cbd5e1',
+    color: '#3f5875',
     lineHeight: 1.6
   },
   summaryLine: {
-    color: '#cbd5e1',
+    color: '#415a77',
     marginBottom: 14,
     lineHeight: 1.8
   },
   infoBanner: {
-    background: '#172554',
-    border: '1px solid #1d4ed8',
-    color: '#dbeafe',
+    background: '#edf5ff',
+    border: '1px solid #bfd7ff',
+    color: '#2f4f7f',
     padding: 14,
     borderRadius: 14,
     marginBottom: 16,
@@ -1059,8 +1041,8 @@ const styles = {
     gap: 14
   },
   groupCard: {
-    background: '#0b1220',
-    border: '1px solid #1f2937',
+    background: '#f9fbff',
+    border: '1px solid #d8e3f1',
     borderRadius: 18,
     padding: 16
   },
@@ -1073,11 +1055,12 @@ const styles = {
   },
   groupTitle: {
     fontSize: 16,
-    fontWeight: 900
+    fontWeight: 900,
+    color: '#183153'
   },
   groupMeta: {
     fontSize: 12,
-    color: '#94a3b8',
+    color: '#6c7f99',
     textAlign: 'right'
   },
   ballRow: {
@@ -1090,27 +1073,27 @@ const styles = {
     width: 52,
     height: 52,
     borderRadius: 999,
-    background: 'linear-gradient(135deg, #2563eb, #1d4ed8)',
+    background: 'linear-gradient(135deg, #5b95ff, #3f7df3)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     fontWeight: 900,
     fontSize: 18,
     color: '#fff',
-    boxShadow: '0 8px 20px rgba(37,99,235,0.35)'
+    boxShadow: '0 8px 18px rgba(79,140,255,0.20)'
   },
   groupReason: {
-    color: '#94a3b8',
+    color: '#5f7391',
     fontSize: 13,
     lineHeight: 1.6
   },
   emptyBox: {
-    background: '#0b1220',
-    border: '1px dashed #334155',
+    background: '#fbfdff',
+    border: '1px dashed #c8d7ea',
     borderRadius: 16,
     padding: 24,
     textAlign: 'center',
-    color: '#94a3b8'
+    color: '#6c7f99'
   },
   tableWrap: {
     overflowX: 'auto'
@@ -1123,15 +1106,15 @@ const styles = {
     textAlign: 'left',
     padding: '12px 10px',
     fontSize: 13,
-    color: '#94a3b8',
-    borderBottom: '1px solid #1f2937',
+    color: '#6c7f99',
+    borderBottom: '1px solid #d8e3f1',
     whiteSpace: 'nowrap'
   },
   td: {
     padding: '12px 10px',
-    borderBottom: '1px solid #1f2937',
+    borderBottom: '1px solid #e3ebf6',
     verticalAlign: 'top',
-    color: '#e5e7eb'
+    color: '#24324a'
   },
   marketBalls: {
     display: 'flex',
@@ -1143,13 +1126,13 @@ const styles = {
     width: 46,
     height: 46,
     borderRadius: 999,
-    background: '#1e293b',
-    border: '1px solid #334155',
+    background: '#f5f9ff',
+    border: '1px solid #cfdff3',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     fontWeight: 900,
-    color: '#f8fafc'
+    color: '#2d4a68'
   },
   numsInline: {
     display: 'flex',
@@ -1164,9 +1147,10 @@ const styles = {
     height: 30,
     padding: '0 8px',
     borderRadius: 999,
-    background: '#1e293b',
-    border: '1px solid #334155',
+    background: '#f5f9ff',
+    border: '1px solid #d2e0f2',
     fontSize: 13,
-    fontWeight: 800
+    fontWeight: 800,
+    color: '#2d4a68'
   }
 };
