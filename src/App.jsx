@@ -143,14 +143,14 @@ function calcSimpleAiStatus(trainingPrediction, leaderboard) {
   confidence = Math.max(0, Math.min(100, Math.round(confidence)));
 
   let advice = '觀望';
-  let adviceColor = '#d97706';
+  let adviceColor = '#b45309';
 
   if (confidence >= 70) {
     advice = '可下注';
-    adviceColor = '#15803d';
+    adviceColor = '#0f766e';
   } else if (confidence <= 40) {
     advice = '先觀望';
-    adviceColor = '#dc2626';
+    adviceColor = '#c2410c';
   }
 
   return {
@@ -376,7 +376,7 @@ export default function App() {
         <header style={styles.header}>
           <div>
             <div style={styles.brand}>FUWEI BINGO AI</div>
-            <div style={styles.headerSub}>把頁面整理得乾淨，讓 AI 做 AI 的事。</div>
+            <div style={styles.headerSub}>淺黃台彩風，舒服一點，也看得久一點。</div>
           </div>
 
           <div style={styles.headerActions}>
@@ -469,7 +469,7 @@ export default function App() {
                     目前狀態：
                     <span
                       style={{
-                        color: autoTrainEnabled ? '#15803d' : '#dc2626',
+                        color: autoTrainEnabled ? '#0f766e' : '#dc2626',
                         fontWeight: 800,
                         marginLeft: 6
                       }}
@@ -515,7 +515,7 @@ export default function App() {
 
             <Card
               title="訓練摘要"
-              subtitle="保留重點，不再把整個訓練牆塞在首頁。"
+              subtitle="保留重點，不再把整面訓練牆塞在首頁。"
             >
               <div style={styles.statsGrid4}>
                 <StatBox
@@ -525,7 +525,11 @@ export default function App() {
                 />
                 <StatBox
                   label="最佳策略分數"
-                  value={fmtText(leaderboard?.[0]?.score ? Number(leaderboard[0].score).toFixed(1) : '--')}
+                  value={fmtText(
+                    leaderboard?.[0]?.score
+                      ? Number(leaderboard[0].score).toFixed(1)
+                      : '--'
+                  )}
                   hint={leaderboard?.[0]?.label || '尚無資料'}
                 />
                 <StatBox
@@ -711,7 +715,7 @@ export default function App() {
           <div style={styles.sectionStack}>
             <Card
               title="最新開獎"
-              subtitle="先把市場資料跟 AI 頁分開，眼睛會輕鬆很多。"
+              subtitle="市場資料和 AI 頁分開後，資訊會清爽很多。"
             >
               <div style={styles.statsGrid4}>
                 <StatBox
@@ -801,8 +805,8 @@ export default function App() {
 const styles = {
   page: {
     minHeight: '100vh',
-    background: 'linear-gradient(180deg, #edf3fb 0%, #e6eef9 100%)',
-    color: '#24324a',
+    background: 'linear-gradient(180deg, #f7f0cb 0%, #f9f5df 48%, #fdfaf0 100%)',
+    color: '#4c4332',
     padding: '20px 12px 90px'
   },
   app: {
@@ -821,10 +825,10 @@ const styles = {
     fontSize: 28,
     fontWeight: 900,
     letterSpacing: 0.6,
-    color: '#183153'
+    color: '#176b5f'
   },
   headerSub: {
-    color: '#5f7391',
+    color: '#7b705d',
     marginTop: 6,
     fontSize: 14
   },
@@ -840,35 +844,35 @@ const styles = {
     position: 'sticky',
     top: 8,
     zIndex: 5,
-    background: 'rgba(237,243,251,0.92)',
+    background: 'rgba(249,245,223,0.9)',
     padding: 8,
     borderRadius: 18,
     backdropFilter: 'blur(10px)'
   },
   tabButton: {
-    border: '1px solid #c8d7ea',
-    background: '#f7fbff',
-    color: '#355070',
+    border: '1px solid #d8ceb1',
+    background: '#fffdf6',
+    color: '#5a5345',
     borderRadius: 14,
     padding: '14px 10px',
     fontSize: 15,
     fontWeight: 800,
     cursor: 'pointer',
-    boxShadow: '0 4px 12px rgba(120,140,170,0.08)'
+    boxShadow: '0 4px 12px rgba(180,160,110,0.08)'
   },
   tabButtonActive: {
-    background: '#4f8cff',
-    color: '#ffffff',
-    borderColor: '#4f8cff',
-    boxShadow: '0 10px 24px rgba(79,140,255,0.24)'
+    background: '#1c8a73',
+    color: '#fffef8',
+    borderColor: '#1c8a73',
+    boxShadow: '0 10px 24px rgba(28,138,115,0.22)'
   },
   tabIcon: {
     marginRight: 6
   },
   errorBanner: {
-    background: '#fee2e2',
-    border: '1px solid #fca5a5',
-    color: '#991b1b',
+    background: '#fff1f2',
+    border: '1px solid #fecdd3',
+    color: '#9f1239',
     padding: 14,
     borderRadius: 14,
     marginBottom: 16,
@@ -877,18 +881,18 @@ const styles = {
   loading: {
     padding: 30,
     textAlign: 'center',
-    color: '#516781'
+    color: '#7b705d'
   },
   sectionStack: {
     display: 'grid',
     gap: 16
   },
   card: {
-    background: 'rgba(255,255,255,0.78)',
-    border: '1px solid #d8e3f1',
+    background: 'rgba(255,250,240,0.88)',
+    border: '1px solid #e4d9bd',
     borderRadius: 20,
     padding: 18,
-    boxShadow: '0 12px 30px rgba(98,128,170,0.10)'
+    boxShadow: '0 12px 24px rgba(179,161,111,0.10)'
   },
   cardHeader: {
     display: 'flex',
@@ -901,20 +905,20 @@ const styles = {
   cardTitle: {
     fontSize: 22,
     fontWeight: 900,
-    color: '#183153'
+    color: '#176b5f'
   },
   cardSubtitle: {
     fontSize: 14,
-    color: '#5f7391',
+    color: '#877b68',
     marginTop: 6
   },
   tag: {
     padding: '8px 12px',
     borderRadius: 999,
-    background: '#eef5ff',
-    border: '1px solid #c7d9f3',
+    background: '#f4ecd3',
+    border: '1px solid #ddd0aa',
     fontSize: 13,
-    color: '#355070',
+    color: '#5c5344',
     fontWeight: 800
   },
   statsGrid4: {
@@ -923,26 +927,26 @@ const styles = {
     gap: 12
   },
   statBox: {
-    background: '#f8fbff',
-    border: '1px solid #d8e3f1',
+    background: '#fffdf8',
+    border: '1px solid #e7dcc0',
     borderRadius: 16,
     padding: 16
   },
   statLabel: {
     fontSize: 13,
-    color: '#6c7f99',
+    color: '#8a7d66',
     marginBottom: 8
   },
   statValue: {
     fontSize: 28,
     fontWeight: 900,
     lineHeight: 1.1,
-    color: '#183153'
+    color: '#4b4334'
   },
   statHint: {
     marginTop: 8,
     fontSize: 12,
-    color: '#7a8ea8'
+    color: '#9a8e77'
   },
   actionRow: {
     display: 'flex',
@@ -953,18 +957,18 @@ const styles = {
   primaryButton: {
     border: 'none',
     borderRadius: 14,
-    background: '#4f8cff',
-    color: '#fff',
+    background: '#1c8a73',
+    color: '#fffef8',
     fontWeight: 900,
     padding: '12px 18px',
     cursor: 'pointer',
-    boxShadow: '0 8px 20px rgba(79,140,255,0.20)'
+    boxShadow: '0 8px 18px rgba(28,138,115,0.18)'
   },
   secondaryButton: {
-    border: '1px solid #c8d7ea',
+    border: '1px solid #d8ceb1',
     borderRadius: 14,
-    background: '#ffffff',
-    color: '#2e4967',
+    background: '#fffdf6',
+    color: '#5a5345',
     fontWeight: 800,
     padding: '12px 18px',
     cursor: 'pointer'
@@ -972,8 +976,8 @@ const styles = {
   warnButton: {
     border: 'none',
     borderRadius: 14,
-    background: '#ef4444',
-    color: '#fff',
+    background: '#d97706',
+    color: '#fffef8',
     fontWeight: 900,
     padding: '12px 18px',
     cursor: 'pointer'
@@ -984,8 +988,8 @@ const styles = {
     gap: 14
   },
   controlItem: {
-    background: '#f8fbff',
-    border: '1px solid #d8e3f1',
+    background: '#fffdf8',
+    border: '1px solid #e7dcc0',
     borderRadius: 16,
     padding: 16
   },
@@ -993,11 +997,11 @@ const styles = {
     fontSize: 17,
     fontWeight: 900,
     marginBottom: 8,
-    color: '#183153'
+    color: '#176b5f'
   },
   controlText: {
     fontSize: 14,
-    color: '#415a77',
+    color: '#685f50',
     marginBottom: 14
   },
   inlineButtons: {
@@ -1007,29 +1011,29 @@ const styles = {
   },
   resultPanel: {
     marginTop: 16,
-    background: '#f8fbff',
-    border: '1px solid #d8e3f1',
+    background: '#fffdf8',
+    border: '1px solid #e7dcc0',
     borderRadius: 16,
     padding: 16
   },
   resultTitle: {
     fontWeight: 900,
     marginBottom: 8,
-    color: '#183153'
+    color: '#176b5f'
   },
   resultText: {
-    color: '#3f5875',
+    color: '#63594b',
     lineHeight: 1.6
   },
   summaryLine: {
-    color: '#415a77',
+    color: '#61584a',
     marginBottom: 14,
     lineHeight: 1.8
   },
   infoBanner: {
-    background: '#edf5ff',
-    border: '1px solid #bfd7ff',
-    color: '#2f4f7f',
+    background: '#fff7dd',
+    border: '1px solid #ebdca3',
+    color: '#6d5f36',
     padding: 14,
     borderRadius: 14,
     marginBottom: 16,
@@ -1041,8 +1045,8 @@ const styles = {
     gap: 14
   },
   groupCard: {
-    background: '#f9fbff',
-    border: '1px solid #d8e3f1',
+    background: '#fffef9',
+    border: '1px solid #e8ddc1',
     borderRadius: 18,
     padding: 16
   },
@@ -1056,11 +1060,11 @@ const styles = {
   groupTitle: {
     fontSize: 16,
     fontWeight: 900,
-    color: '#183153'
+    color: '#176b5f'
   },
   groupMeta: {
     fontSize: 12,
-    color: '#6c7f99',
+    color: '#8e826d',
     textAlign: 'right'
   },
   ballRow: {
@@ -1073,27 +1077,27 @@ const styles = {
     width: 52,
     height: 52,
     borderRadius: 999,
-    background: 'linear-gradient(135deg, #5b95ff, #3f7df3)',
+    background: 'linear-gradient(135deg, #f3b63f, #e8a51e)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     fontWeight: 900,
     fontSize: 18,
-    color: '#fff',
-    boxShadow: '0 8px 18px rgba(79,140,255,0.20)'
+    color: '#fffef8',
+    boxShadow: '0 8px 16px rgba(232,165,30,0.20)'
   },
   groupReason: {
-    color: '#5f7391',
+    color: '#817562',
     fontSize: 13,
     lineHeight: 1.6
   },
   emptyBox: {
-    background: '#fbfdff',
-    border: '1px dashed #c8d7ea',
+    background: '#fffef9',
+    border: '1px dashed #d8ceb1',
     borderRadius: 16,
     padding: 24,
     textAlign: 'center',
-    color: '#6c7f99'
+    color: '#8c816c'
   },
   tableWrap: {
     overflowX: 'auto'
@@ -1106,15 +1110,15 @@ const styles = {
     textAlign: 'left',
     padding: '12px 10px',
     fontSize: 13,
-    color: '#6c7f99',
-    borderBottom: '1px solid #d8e3f1',
+    color: '#8a7d66',
+    borderBottom: '1px solid #eadfc6',
     whiteSpace: 'nowrap'
   },
   td: {
     padding: '12px 10px',
-    borderBottom: '1px solid #e3ebf6',
+    borderBottom: '1px solid #efe7d2',
     verticalAlign: 'top',
-    color: '#24324a'
+    color: '#4c4332'
   },
   marketBalls: {
     display: 'flex',
@@ -1126,13 +1130,13 @@ const styles = {
     width: 46,
     height: 46,
     borderRadius: 999,
-    background: '#f5f9ff',
-    border: '1px solid #cfdff3',
+    background: '#fffdf8',
+    border: '1px solid #dfd4b9',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     fontWeight: 900,
-    color: '#2d4a68'
+    color: '#5b5345'
   },
   numsInline: {
     display: 'flex',
@@ -1147,10 +1151,10 @@ const styles = {
     height: 30,
     padding: '0 8px',
     borderRadius: 999,
-    background: '#f5f9ff',
-    border: '1px solid #d2e0f2',
+    background: '#fffdf8',
+    border: '1px solid #e2d8bc',
     fontSize: 13,
     fontWeight: 800,
-    color: '#2d4a68'
+    color: '#5a5244'
   }
 };
