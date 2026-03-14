@@ -228,7 +228,7 @@ function buildPatternStructure(todayRows, recent20Rows, recent80Rows) {
   return {
     key: "pattern_structure",
     label: "第4組｜盤型結構型",
-    reason: `同尾優先，輔以鄰號與盤型結構（權重 1.00）`,
+    reason: "同尾優先，輔以鄰號與盤型結構（權重 1.00）",
     candidates
   };
 }
@@ -261,12 +261,14 @@ function buildGroupsFromRows(rows) {
 
   const diversified = diversifyGroups(rawGroups);
 
-  return diversified.map((g) => ({
-    key: g.key,
-    label: g.label,
-    nums: uniq(g.nums).slice(0, 4).map(n => Number(n)),
-    reason: g.reason
-  })).filter(g => g.nums.length === 4);
+  return diversified
+    .map((g) => ({
+      key: g.key,
+      label: g.label,
+      nums: uniq(g.nums).slice(0, 4).map(n => Number(n)),
+      reason: g.reason
+    }))
+    .filter(g => g.nums.length === 4);
 }
 
 export default async function handler(req, res) {
@@ -292,7 +294,7 @@ export default async function handler(req, res) {
     };
 
     const runningRes = await fetch(
-      `${SUPABASE_URL}/rest/v1/bingo_predictions?select=id,created_at,source_draw_no&mode=eq.test&status=eq.created&order=source_draw_no.desc,created_at.desc&limit=1`,
+      `${SUPABASE_URL}/rest/v1/bingo_predictions?select=id,created_at,source_draw_no&mode=eq.ai_train&status=eq.created&order=source_draw_no.desc,created_at.desc&limit=1`,
       { headers }
     );
 
@@ -320,7 +322,7 @@ export default async function handler(req, res) {
     if (Array.isArray(runningRows) && runningRows.length > 0) {
       return res.status(200).json({
         ok: true,
-        message: "test prediction already running"
+        message: "ai_train prediction already running"
       });
     }
 
@@ -370,7 +372,7 @@ export default async function handler(req, res) {
 
     const payload = {
       id: Date.now(),
-      mode: "test",
+      mode: "ai_train",
       status: "created",
       source_draw_no: String(latestDrawNo),
       target_periods: 2,
@@ -395,7 +397,7 @@ export default async function handler(req, res) {
     if (!saveRes.ok) {
       return res.status(500).json({
         ok: false,
-        error: "create ai player prediction failed",
+        error: "create ai_train prediction failed",
         detail: saveText.slice(0, 500)
       });
     }
