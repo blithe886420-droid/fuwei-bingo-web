@@ -1,6 +1,11 @@
 import { createClient } from '@supabase/supabase-js';
 import { recordStrategyCompareResult } from '../lib/strategyStatsRecorder.js';
 import { maybeRunStrategyEvolution } from '../lib/strategyEvolutionEngine.js';
+import {
+  parsePredictionGroups,
+  buildComparePayload,
+  parseDrawNumbers
+} from '../lib/buildComparePayload.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY =
@@ -64,77 +69,24 @@ function uniqueKeepOrder(nums) {
   return result;
 }
 
-function parseDrawNumbers(value) {
-  if (Array.isArray(value)) {
-    return value.map(Number).filter(Number.isFinite);
+function stableHash(text = '') {
+  let h = 0;
+  const s = String(text);
+  for (let i = 0; i < s.length; i += 1) {
+    h = (h * 31 + s.charCodeAt(i)) >>> 0;
   }
-
-  if (typeof value === 'string') {
-    return value
-      .split(/[,\s]+/)
-      .map((s) => Number(s.trim()))
-      .filter(Number.isFinite);
-  }
-
-  return [];
+  return h;
 }
 
-function getHitNumbers(predicted, drawNumbers) {
-  const drawSet = new Set(drawNumbers.map(Number));
-  return predicted.map(Number).filter((n) => drawSet.has(n)).sort((a, b) => a - b);
+function rotateList(source, offset = 0) {
+  if (!Array.isArray(source) || source.length === 0) return [];
+  const len = source.length;
+  const safeOffset = ((offset % len) + len) % len;
+  return [...source.slice(safeOffset), ...source.slice(0, safeOffset)];
 }
 
-function calcRewardByHitCount(hitCount) {
-  if (hitCount >= 4) return 1000;
-  if (hitCount === 3) return 100;
-  if (hitCount === 2) return 25;
-  return 0;
-}
-
-function parsePredictionGroups(prediction) {
-  const raw = prediction?.groups_json ?? null;
-  if (!raw) return [];
-
-  if (Array.isArray(raw)) {
-    return raw
-      .map((group, idx) => {
-        if (Array.isArray(group)) {
-          return {
-            key: `group_${idx + 1}`,
-            label: `第${idx + 1}組`,
-            nums: uniqueAsc(group).slice(0, 4),
-            reason: '舊版資料',
-            meta: { legacy: true }
-          };
-        }
-
-        if (group && typeof group === 'object') {
-          const nums = Array.isArray(group.nums) ? group.nums : [];
-          return {
-            key: group.key || `group_${idx + 1}`,
-            label: group.label || `第${idx + 1}組`,
-            nums: uniqueAsc(nums).slice(0, 4),
-            reason: group.reason || '',
-            meta: group.meta || {}
-          };
-        }
-
-        return null;
-      })
-      .filter((g) => g && g.nums.length === 4)
-      .slice(0, BET_GROUP_COUNT);
-  }
-
-  if (typeof raw === 'string') {
-    try {
-      const parsed = JSON.parse(raw);
-      return parsePredictionGroups({ groups_json: parsed });
-    } catch {
-      return [];
-    }
-  }
-
-  return [];
+function rowOrEmpty(row) {
+  return row || {};
 }
 
 async function getLatestDrawNo() {
@@ -206,191 +158,8 @@ async function getDrawRowsForPrediction(prediction) {
   return (data || []).filter((row) => parseDrawNumbers(row[DRAW_NUMBERS_COL]).length > 0);
 }
 
-function buildComparePayload({ prediction, groups, drawRows }) {
-  const sourceDrawNo = String(prediction.source_draw_no || '');
-  const targetPeriods = toInt(prediction.target_periods || TARGET_PERIODS);
-
-  const groupResults = [];
-  const periodResults = [];
-
-  let totalReward = 0;
-  let totalHitCount = 0;
-  let bestSingleHit = 0;
-
-  for (const drawRow of drawRows) {
-    const drawNo = toInt(drawRow[DRAW_NO_COL]);
-    const drawTime = drawRow[DRAW_TIME_COL] || '';
-    const drawNumbers = parseDrawNumbers(drawRow[DRAW_NUMBERS_COL]);
-
-    let periodReward = 0;
-
-    for (const group of groups) {
-      const hitNumbers = getHitNumbers(group.nums, drawNumbers);
-      const hitCount = hitNumbers.length;
-      const reward = calcRewardByHitCount(hitCount);
-
-      let targetGroup = groupResults.find((g) => g.key === group.key);
-      if (!targetGroup) {
-        targetGroup = {
-          key: group.key,
-          label: group.label,
-          nums: group.nums,
-          reason: group.reason || '',
-          meta: group.meta || {},
-          total_hit_count: 0,
-          best_single_hit: 0,
-          total_reward: 0,
-          hit2_count: 0,
-          hit3_count: 0,
-          hit4_count: 0,
-          payout_rounds: 0,
-          profit_rounds: 0,
-          total_cost: 0,
-          total_profit: 0,
-          periods: []
-        };
-        groupResults.push(targetGroup);
-      }
-
-      const cost = COST_PER_GROUP_PER_PERIOD;
-      const profit = reward - cost;
-
-      targetGroup.total_hit_count += hitCount;
-      targetGroup.best_single_hit = Math.max(targetGroup.best_single_hit, hitCount);
-      targetGroup.total_reward += reward;
-      targetGroup.total_cost += cost;
-      targetGroup.total_profit += profit;
-
-      if (hitCount === 2) targetGroup.hit2_count += 1;
-      if (hitCount === 3) targetGroup.hit3_count += 1;
-      if (hitCount >= 4) targetGroup.hit4_count += 1;
-      if (reward > 0) targetGroup.payout_rounds += 1;
-      if (profit > 0) targetGroup.profit_rounds += 1;
-
-      targetGroup.periods.push({
-        draw_no: drawNo,
-        draw_time: drawTime,
-        hit_numbers: hitNumbers,
-        hit_count: hitCount,
-        reward,
-        cost,
-        profit
-      });
-
-      totalHitCount += hitCount;
-      bestSingleHit = Math.max(bestSingleHit, hitCount);
-      periodReward += reward;
-      totalReward += reward;
-    }
-
-    periodResults.push({
-      draw_no: drawNo,
-      draw_time: drawTime,
-      reward: periodReward
-    });
-  }
-
-  for (const group of groupResults) {
-    const totalRounds = group.periods.length || targetPeriods;
-    group.avg_hit = round2(group.total_hit_count / totalRounds);
-    group.avg_reward = round2(group.total_reward / totalRounds);
-    group.avg_profit = round2(group.total_profit / totalRounds);
-    group.payout_rate = round2((group.payout_rounds / totalRounds) * 100);
-    group.profit_win_rate = round2((group.profit_rounds / totalRounds) * 100);
-    group.roi = group.total_cost > 0
-      ? round2((group.total_profit / group.total_cost) * 100)
-      : 0;
-  }
-
-  const totalCost = groups.length * targetPeriods * COST_PER_GROUP_PER_PERIOD;
-  const profit = totalReward - totalCost;
-  const compareDrawRange =
-    drawRows.length > 0
-      ? `${drawRows[0][DRAW_NO_COL]} ~ ${drawRows[drawRows.length - 1][DRAW_NO_COL]}`
-      : '';
-
-  const maxTotalHit = Math.max(0, ...groupResults.map((g) => g.total_hit_count));
-  const verdict = `${targetPeriods}期累計最佳 ${maxTotalHit} 碼 / 單期最佳中${bestSingleHit}`;
-  const compareDrawNo = drawRows.length
-    ? toInt(drawRows[drawRows.length - 1][DRAW_NO_COL])
-    : null;
-
-  const compareResult = {
-    mode: '4star_4group_2period',
-    source_draw_no: sourceDrawNo,
-    total_cost: totalCost,
-    total_reward: totalReward,
-    profit,
-    total_hit_count: totalHitCount,
-    best_single_hit: bestSingleHit,
-    compare_draw_range: compareDrawRange,
-    groups: groupResults,
-    period_results: periodResults,
-    summary: {
-      total_groups: groups.length,
-      total_periods: drawRows.length,
-      total_hit_count: totalHitCount,
-      best_single_hit: bestSingleHit
-    }
-  };
-
-  const resultForApp = {
-    verdict,
-    sourceDrawNo,
-    targetDrawNo: toInt(sourceDrawNo) + targetPeriods,
-    compareDrawNo,
-    compareDrawRange,
-    totalCost,
-    estimatedReturn: totalReward,
-    profit,
-    compareRounds: drawRows.map((drawRow) => ({
-      drawNo: toInt(drawRow[DRAW_NO_COL]),
-      drawTime: drawRow[DRAW_TIME_COL] || '',
-      drawNumbers: parseDrawNumbers(drawRow[DRAW_NUMBERS_COL])
-    })),
-    results: groupResults.map((g) => ({
-      key: g.key,
-      strategyKey: g.key,
-      strategy: g.key,
-      label: g.label,
-      nums: g.nums,
-      hitCount: g.total_hit_count,
-      bestSingleHit: g.best_single_hit,
-      totalReward: g.total_reward,
-      totalCost: g.total_cost,
-      totalProfit: g.total_profit,
-      roi: g.roi,
-      hit2Count: g.hit2_count,
-      hit3Count: g.hit3_count,
-      hit4Count: g.hit4_count,
-      payoutRate: g.payout_rate,
-      profitWinRate: g.profit_win_rate,
-      periodHits: (g.periods || []).map((p) => ({
-        drawNo: p.draw_no,
-        drawTime: p.draw_time,
-        hitNumbers: p.hit_numbers,
-        hitCount: p.hit_count,
-        reward: p.reward,
-        cost: p.cost,
-        profit: p.profit
-      }))
-    }))
-  };
-
-  return {
-    compareResult,
-    compareResultJson: compareResult,
-    resultForApp,
-    verdict,
-    hitCount: totalHitCount,
-    bestSingleHit,
-    comparedDrawCount: drawRows.length,
-    compareDrawNo
-  };
-}
-
 async function comparePrediction(prediction) {
-  const groups = parsePredictionGroups(prediction);
+  const groups = parsePredictionGroups(prediction, BET_GROUP_COUNT);
 
   if (!groups.length) {
     return {
@@ -416,7 +185,15 @@ async function comparePrediction(prediction) {
     };
   }
 
-  const built = buildComparePayload({ prediction, groups, drawRows });
+  const built = buildComparePayload({
+    prediction,
+    groups,
+    drawRows,
+    drawNoCol: DRAW_NO_COL,
+    drawTimeCol: DRAW_TIME_COL,
+    drawNumbersCol: DRAW_NUMBERS_COL,
+    costPerGroupPerPeriod: COST_PER_GROUP_PER_PERIOD
+  });
 
   const { error } = await supabase
     .from(PREDICTIONS_TABLE)
@@ -458,26 +235,6 @@ async function comparePrediction(prediction) {
     bestSingleHit: built.bestSingleHit,
     compareDrawNo: built.compareDrawNo
   };
-}
-
-function stableHash(text = '') {
-  let h = 0;
-  const s = String(text);
-  for (let i = 0; i < s.length; i += 1) {
-    h = (h * 31 + s.charCodeAt(i)) >>> 0;
-  }
-  return h;
-}
-
-function rotateList(source, offset = 0) {
-  if (!Array.isArray(source) || source.length === 0) return [];
-  const len = source.length;
-  const safeOffset = ((offset % len) + len) % len;
-  return [...source.slice(safeOffset), ...source.slice(0, safeOffset)];
-}
-
-function rowOrEmpty(row) {
-  return row || {};
 }
 
 function buildRecent20Analysis(recent20) {
@@ -924,7 +681,7 @@ function buildGroupFromStrategy(strategy, recent20, variantIndex = 0) {
     nums,
     reason: buildGroupReason(strategy, genes),
     meta: {
-      model: 'v4.1',
+      model: 'v4.3',
       source: 'strategy_pool',
       strategy_key: strategy.strategy_key || `group_${variantIndex + 1}`,
       strategy_name: strategy.strategy_name || strategy.strategy_key || `第${variantIndex + 1}組`,
@@ -1117,111 +874,82 @@ async function createNextTestPrediction() {
   };
 }
 
-async function buildLeaderboard(limitRows = 160) {
-  const { data, error } = await supabase
-    .from(PREDICTIONS_TABLE)
-    .select('id, mode, compare_result, compared_at')
-    .eq('status', 'compared')
-    .not('compare_result', 'is', null)
-    .order('compared_at', { ascending: false })
-    .limit(limitRows);
+async function buildLeaderboard(limitRows = 50) {
+  const { data: poolRows, error: poolError } = await supabase
+    .from(STRATEGY_POOL_TABLE)
+    .select('*')
+    .eq('status', 'active');
 
-  if (error) throw error;
+  if (poolError) throw poolError;
 
-  const map = new Map();
+  const activeRows = poolRows || [];
+  if (!activeRows.length) return [];
 
-  for (const row of data || []) {
-    const groups = Array.isArray(row?.compare_result?.groups) ? row.compare_result.groups : [];
-    for (const group of groups) {
-      const key = group?.key || 'unknown';
-      const label = group?.label || key;
+  const strategyKeys = activeRows.map((row) => row.strategy_key);
 
-      if (!map.has(key)) {
-        map.set(key, {
-          key,
-          label,
-          rounds: 0,
-          totalHit: 0,
-          totalReward: 0,
-          totalCost: 0,
-          totalProfit: 0,
-          payoutRounds: 0,
-          profitRounds: 0,
-          bestHit: 0,
-          hit1: 0,
-          hit2: 0,
-          hit3: 0,
-          hit4: 0
-        });
-      }
+  const { data: statsRows, error: statsError } = await supabase
+    .from(STRATEGY_STATS_TABLE)
+    .select('*')
+    .in('strategy_key', strategyKeys);
 
-      const entry = map.get(key);
-      const totalRounds = Array.isArray(group?.periods)
-        ? group.periods.length
-        : toInt(row?.compare_result?.summary?.total_periods, TARGET_PERIODS);
-      const totalHit = toInt(group?.total_hit_count, 0);
-      const totalReward = toInt(group?.total_reward, 0);
-      const payoutRounds = toInt(group?.payout_rounds, 0);
-      const profitRounds = toInt(group?.profit_rounds, 0);
-      const totalCost = toInt(group?.total_cost, totalRounds * COST_PER_GROUP_PER_PERIOD);
-      const totalProfit = toInt(group?.total_profit, totalReward - totalCost);
+  if (statsError) throw statsError;
 
-      entry.rounds += totalRounds;
-      entry.totalHit += totalHit;
-      entry.totalReward += totalReward;
-      entry.totalCost += totalCost;
-      entry.totalProfit += totalProfit;
-      entry.payoutRounds += payoutRounds;
-      entry.profitRounds += profitRounds;
-      entry.bestHit = Math.max(entry.bestHit, toInt(group?.best_single_hit, 0));
-      entry.hit2 += toInt(group?.hit2_count, 0);
-      entry.hit3 += toInt(group?.hit3_count, 0);
-      entry.hit4 += toInt(group?.hit4_count, 0);
-      entry.hit1 += Math.max(
-        0,
-        totalRounds -
-          toInt(group?.hit2_count, 0) -
-          toInt(group?.hit3_count, 0) -
-          toInt(group?.hit4_count, 0)
-      );
-    }
-  }
+  const statsMap = new Map((statsRows || []).map((row) => [row.strategy_key, row]));
 
-  const leaderboard = [...map.values()]
-    .map((item) => {
-      const avgHit = item.rounds ? item.totalHit / item.rounds : 0;
-      const avgReward = item.rounds ? item.totalReward / item.rounds : 0;
-      const avgProfit = item.rounds ? item.totalProfit / item.rounds : 0;
-      const payoutRate = item.rounds ? (item.payoutRounds / item.rounds) * 100 : 0;
-      const profitWinRate = item.rounds ? (item.profitRounds / item.rounds) * 100 : 0;
-      const roi = item.totalCost > 0 ? (item.totalProfit / item.totalCost) * 100 : 0;
+  return activeRows
+    .map((row) => {
+      const stat = statsMap.get(row.strategy_key) || {};
+      const totalRounds = toInt(stat.total_rounds, 0);
+      const totalHits = toInt(stat.total_hits, 0);
+      const avgHit = Number(stat.avg_hit || 0);
+      const totalCost = Number(stat.total_cost || 0);
+      const totalReward = Number(stat.total_reward || 0);
+      const totalProfit = Number(stat.total_profit || 0);
+      const roi = Number(stat.roi || 0);
+      const recent50Roi = Number(stat.recent_50_roi || 0);
+      const hit2 = toInt(stat.hit2, 0);
+      const hit3 = toInt(stat.hit3, 0);
+      const hit4 = toInt(stat.hit4, 0);
+      const hit1 = toInt(stat.hit1, 0);
+      const hit0 = toInt(stat.hit0, 0);
 
-      const explosionScore = item.hit2 * 3 + item.hit3 * 8 + item.hit4 * 20;
-      const stabilityScore = avgHit * 50 + avgReward * 5;
-      const score = round2(explosionScore + stabilityScore);
+      const score = round2(scoreActiveStrategy({
+        ...row,
+        ...stat
+      }));
 
       return {
-        key: item.key,
-        label: item.label,
-        total_rounds: item.rounds,
+        key: row.strategy_key,
+        label: row.strategy_name || row.strategy_key,
+        status: row.status,
+        source_type: row.source_type || 'seed',
+        generation: toInt(row.generation, 1),
+        protected_rank: Boolean(row.protected_rank),
+        gene_a: row.gene_a || '',
+        gene_b: row.gene_b || '',
+        total_rounds: totalRounds,
+        total_hits: totalHits,
         avg_hit: round2(avgHit),
-        avg_reward: round2(avgReward),
-        avg_profit: round2(avgProfit),
-        payout_rate: round2(payoutRate),
-        profit_win_rate: round2(profitWinRate),
+        total_cost: round2(totalCost),
+        total_reward: round2(totalReward),
+        total_profit: round2(totalProfit),
         roi: round2(roi),
-        hit1: item.hit1,
-        hit2: item.hit2,
-        hit3: item.hit3,
-        hit4: item.hit4,
-        best_hit: item.bestHit,
+        recent_50_roi: round2(recent50Roi),
+        hit0,
+        hit1,
+        hit2,
+        hit3,
+        hit4,
         score
       };
     })
-    .filter((item) => item.key !== 'unknown')
-    .sort((a, b) => b.score - a.score);
-
-  return leaderboard;
+    .sort((a, b) => {
+      if (Boolean(a.protected_rank) !== Boolean(b.protected_rank)) {
+        return Number(b.protected_rank) - Number(a.protected_rank);
+      }
+      return b.score - a.score;
+    })
+    .slice(0, limitRows);
 }
 
 export default async function handler(req, res) {
@@ -1322,7 +1050,7 @@ export default async function handler(req, res) {
       }
     }
 
-    const leaderboard = await buildLeaderboard(160);
+    const leaderboard = await buildLeaderboard(50);
 
     let evolutionResult = null;
 
