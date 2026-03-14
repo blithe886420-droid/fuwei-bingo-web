@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import { rebuildStrategyStats } from '../lib/rebuildStrategyStats.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY =
@@ -13,6 +14,8 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const CONFIG_KEY = 'auto_train_enabled';
+const ADMIN_REBUILD_TOKEN =
+  process.env.ADMIN_REBUILD_TOKEN || 'fw_rebuild_20260314';
 
 function toBool(value, fallback = false) {
   if (typeof value === 'boolean') return value;
@@ -26,6 +29,37 @@ function toBool(value, fallback = false) {
 
 export default async function handler(req, res) {
   try {
+    const action = req.query?.action || req.body?.action || '';
+    const token = req.query?.token || req.body?.token || '';
+
+    // 維修入口：重建 strategy_stats
+    if (action === 'rebuild_strategy_stats') {
+      if (token !== ADMIN_REBUILD_TOKEN) {
+        return res.status(403).json({
+          ok: false,
+          error: 'forbidden'
+        });
+      }
+
+      try {
+        const result = await rebuildStrategyStats();
+
+        return res.status(200).json({
+          ok: true,
+          action: 'rebuild_strategy_stats',
+          result
+        });
+      } catch (error) {
+        console.error('rebuild_strategy_stats error:', error);
+
+        return res.status(500).json({
+          ok: false,
+          action: 'rebuild_strategy_stats',
+          error: error.message || 'rebuild failed'
+        });
+      }
+    }
+
     // 讀取開關
     if (req.method === 'GET') {
       const { data, error } = await supabase
