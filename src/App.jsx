@@ -1,1273 +1,823 @@
-// v4.2 PROFESSIONAL AI EVALUATION + AI_TRAIN / FORMAL UNIFIED
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { buildBingoV1Strategies } from "../lib/buildBingoV1Strategies";
-import {
-  applyCompareLearningOnce,
-  createLearningStorageKeys,
-  getStrategyWeightMap,
-  readStrategyStats
-} from "../lib/strategySelfOptimizer";
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 
-const STORAGE_KEYS = {
-  latest: "fuwei_bingo_latest_v42_ai",
-  aiTrainPlan: "fuwei_bingo_ai_train_plan_v42_ai",
-  formalPlan: "fuwei_bingo_formal_plan_v42_ai",
-  aiTrainResult: "fuwei_bingo_ai_train_result_v42_ai",
-  formalResult: "fuwei_bingo_formal_result_v42_ai",
-  autoRunAt: "fuwei_bingo_auto_run_at_v42_ai",
-  autoTrainLast: "fuwei_bingo_auto_train_last_v42_ai",
-  autoTrainHistory: "fuwei_bingo_auto_train_history_v42_ai",
-  strategyLeaderboard: "fuwei_bingo_strategy_leaderboard_v42_ai",
-  autoTrainEnabled: "fuwei_bingo_auto_train_enabled_v42_ai"
+const TABS = {
+  DASHBOARD: 'dashboard',
+  PREDICT: 'predict',
+  MARKET: 'market'
 };
 
-const LEARNING_KEYS = createLearningStorageKeys("fuwei_bingo_strategy_learning_v2");
+const TAB_ITEMS = [
+  { key: TABS.DASHBOARD, label: 'AI狀態', icon: '🏠' },
+  { key: TABS.PREDICT, label: '預測下注', icon: '🎯' },
+  { key: TABS.MARKET, label: '市場資料', icon: '📊' }
+];
 
-const TXT_LATEST = {
-  drawNo: 115013398,
-  drawTime: "TXT 匯入",
-  numbers: [
-    "01", "08", "11", "15", "18", "22", "25", "39", "41", "43",
-    "46", "51", "55", "60", "61", "65", "66", "69", "73", "76"
-  ],
-  source: "3/7 完整 TXT 匯入"
-};
-
-const AI_TRAIN_GROUP_COUNT = 4;
-const AI_TRAIN_TARGET_PERIODS = 2;
-const FORMAL_GROUP_COUNT = 4;
-const FORMAL_TARGET_PERIODS = 4;
-const COST_PER_GROUP_PER_PERIOD = 25;
-
-function readLocal(key, fallback) {
-  try {
-    const raw = localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : fallback;
-  } catch {
-    return fallback;
-  }
+function toArray(v) {
+  return Array.isArray(v) ? v : [];
 }
 
-function writeLocal(key, value) {
-  localStorage.setItem(key, JSON.stringify(value));
-}
-
-function parseNumbers(str) {
-  if (Array.isArray(str)) {
-    return str.map((x) => String(x).padStart(2, "0")).slice(0, 20);
-  }
-
-  return String(str || "")
-    .split(/[,\s]+/)
-    .map((x) => x.trim())
-    .filter(Boolean)
-    .map((x) => String(x).padStart(2, "0"))
-    .slice(0, 20);
-}
-
-function normalizeGroupNumbers(nums, max = 4) {
-  if (!Array.isArray(nums)) return [];
-  const unique = [...new Set(nums.map((x) => String(x).padStart(2, "0")))];
-  return unique.slice(0, max);
-}
-
-function normalizeGroupsForUi(groups, prefix = "第") {
-  if (!Array.isArray(groups)) return [];
-
-  return groups
-    .map((g, idx) => {
-      const nums = normalizeGroupNumbers(
-        Array.isArray(g?.nums)
-          ? g.nums
-          : Array.isArray(g?.numbers)
-            ? g.numbers
-            : [],
-        4
-      );
-
-      if (nums.length !== 4) return null;
-
-      return {
-        key: g?.key || `group_${idx + 1}`,
-        label: g?.label || `${prefix}${idx + 1}組`,
-        nums,
-        reason: g?.reason || "",
-        meta: g?.meta || {}
-      };
-    })
-    .filter(Boolean)
-    .slice(0, 4);
-}
-
-function withTs(url) {
-  const sep = url.includes("?") ? "&" : "?";
-  return `${url}${sep}ts=${Date.now()}`;
-}
-
-function isBingoRestTime() {
-  const now = new Date();
-  const hour = now.getHours();
-  const minute = now.getMinutes();
-  const total = hour * 60 + minute;
-  return total < 450;
-}
-
-function getClockText() {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, "0");
-  const d = String(now.getDate()).padStart(2, "0");
-  const hh = String(now.getHours()).padStart(2, "0");
-  const mm = String(now.getMinutes()).padStart(2, "0");
-  const ss = String(now.getSeconds()).padStart(2, "0");
-  return `${y}-${m}-${d} ${hh}:${mm}:${ss}`;
-}
-
-function normalizeNumber(value, fallback = 0) {
-  const n = Number(value);
+function toNum(v, fallback = 0) {
+  const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
 }
 
-function round1(value) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n.toFixed(1) : "0.0";
+function fmtPercent(v, digits = 1) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '--';
+  return `${n.toFixed(digits)}%`;
 }
 
-function calcPlanCost(groupCount, targetPeriods) {
-  return normalizeNumber(groupCount, 0) * normalizeNumber(targetPeriods, 0) * COST_PER_GROUP_PER_PERIOD;
+function fmtMoney(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '--';
+  return `NT$ ${n.toLocaleString()}`;
 }
 
-function mergeAutoTrainHistory(prevHistory, autoTrainData) {
-  const prev = Array.isArray(prevHistory) ? prevHistory : [];
-  const compared = Array.isArray(autoTrainData?.compared_details)
-    ? autoTrainData.compared_details
-    : [];
+function fmtText(v, fallback = '--') {
+  if (v === null || v === undefined || v === '') return fallback;
+  return String(v);
+}
 
-  if (!compared.length) return prev;
-
-  const map = new Map(prev.map((item) => [String(item.predictionId), item]));
-  const now = Date.now();
-
-  compared.forEach((item, idx) => {
-    const predictionId = String(item?.prediction_id ?? `${now}-${idx}`);
-    const previous = map.get(predictionId) || {};
-
-    map.set(predictionId, {
-      ...previous,
-      predictionId,
-      sourceDrawNo: String(item?.source_draw_no ?? ""),
-      totalCost: normalizeNumber(item?.total_cost, 0),
-      totalReward: normalizeNumber(item?.total_reward, 0),
-      profit: normalizeNumber(item?.profit, 0),
-      bestSingleHit: normalizeNumber(item?.best_single_hit, 0),
-      totalHitCount: normalizeNumber(item?.total_hit_count, 0),
-      strategies: Array.isArray(item?.strategies) ? item.strategies : previous.strategies || [],
-      comparedAt: now + idx
-    });
+function fmtDateTime(v) {
+  if (!v) return '--';
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return String(v);
+  return d.toLocaleString('zh-TW', {
+    hour12: false
   });
-
-  return [...map.values()]
-    .sort((a, b) => normalizeNumber(b.comparedAt, 0) - normalizeNumber(a.comparedAt, 0))
-    .slice(0, 150);
 }
 
-function buildTrendText(label, current, previous) {
-  if (!Number.isFinite(current)) return `${label}：尚無資料`;
-  if (!Number.isFinite(previous)) return `${label}：資料不足`;
-  if (current > previous) return `${label}比前 5 次高`;
-  if (current < previous) return `${label}比前 5 次低`;
-  return `${label}持平`;
+function parseNums(input) {
+  if (Array.isArray(input)) {
+    return input.map(Number).filter(Number.isFinite);
+  }
+  if (typeof input === 'string') {
+    return input
+      .split(/[,\s]+/)
+      .map((x) => Number(x.trim()))
+      .filter(Number.isFinite);
+  }
+  return [];
 }
 
-function buildPlanFromLatestPrediction(prediction, modeLabel) {
-  if (!prediction) return null;
+function getRecentRows(data) {
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.rows)) return data.rows;
+  if (Array.isArray(data?.recent20)) return data.recent20;
+  if (Array.isArray(data?.data)) return data.data;
+  return [];
+}
 
-  const sourceDrawNo = normalizeNumber(prediction.sourceDrawNo, 0);
-  const targetPeriods = normalizeNumber(
-    prediction.targetPeriods,
-    modeLabel === "formal" ? FORMAL_TARGET_PERIODS : AI_TRAIN_TARGET_PERIODS
+function getPredictionGroups(row) {
+  const groups =
+    row?.groups_json ||
+    row?.groups ||
+    row?.strategies ||
+    row?.prediction_groups ||
+    [];
+  return Array.isArray(groups) ? groups : [];
+}
+
+function groupTitle(group, idx) {
+  return (
+    group?.label ||
+    group?.name ||
+    group?.strategy_name ||
+    group?.key ||
+    `第${idx + 1}組`
   );
-  const groups = normalizeGroupsForUi(prediction.groups, modeLabel === "formal" ? "正式第" : "AI第");
-  const totalCost = calcPlanCost(groups.length || 4, targetPeriods);
+}
+
+function groupReason(group) {
+  return group?.reason || group?.meta?.strategy_name || group?.meta?.strategy_key || '--';
+}
+
+function safeFetchJson(url, options) {
+  return fetch(url, options).then(async (res) => {
+    const text = await res.text();
+    let json = {};
+    try {
+      json = text ? JSON.parse(text) : {};
+    } catch {
+      json = { raw: text };
+    }
+
+    if (!res.ok) {
+      throw new Error(json?.error || json?.message || `${url} ${res.status}`);
+    }
+
+    return json;
+  });
+}
+
+function calcSimpleAiStatus(trainingPrediction, leaderboard) {
+  const lb = toArray(leaderboard);
+  const active = lb.length;
+
+  const roiValues = lb
+    .map((x) => Number(x?.recent_50_roi ?? x?.roi))
+    .filter(Number.isFinite);
+
+  const avgHitValues = lb
+    .map((x) => Number(x?.avg_hit))
+    .filter(Number.isFinite);
+
+  const topScore = Number(lb?.[0]?.score);
+  const bestRoi = roiValues.length ? Math.max(...roiValues) : null;
+  const avgRoi = roiValues.length
+    ? roiValues.reduce((a, b) => a + b, 0) / roiValues.length
+    : null;
+  const avgHit = avgHitValues.length
+    ? avgHitValues.reduce((a, b) => a + b, 0) / avgHitValues.length
+    : null;
+
+  let confidence = 50;
+
+  if (Number.isFinite(avgRoi)) {
+    if (avgRoi >= 10) confidence += 20;
+    else if (avgRoi >= 0) confidence += 10;
+    else if (avgRoi <= -20) confidence -= 15;
+    else if (avgRoi < 0) confidence -= 8;
+  }
+
+  if (Number.isFinite(avgHit)) {
+    if (avgHit >= 2) confidence += 18;
+    else if (avgHit >= 1.5) confidence += 10;
+    else if (avgHit < 1) confidence -= 10;
+  }
+
+  if (active >= 10) confidence += 5;
+  if (Number.isFinite(topScore) && topScore > 0) confidence += 5;
+
+  confidence = Math.max(0, Math.min(100, Math.round(confidence)));
+
+  let advice = '觀望';
+  let adviceColor = '#f59e0b';
+
+  if (confidence >= 70) {
+    advice = '可下注';
+    adviceColor = '#16a34a';
+  } else if (confidence <= 40) {
+    advice = '先觀望';
+    adviceColor = '#dc2626';
+  }
 
   return {
-    mode: modeLabel,
-    createdAt: prediction.created_at || new Date().toISOString(),
-    sourceDrawNo,
-    targetPeriods,
-    targetDrawNo: normalizeNumber(prediction.targetDrawNo, sourceDrawNo + targetPeriods),
-    strategyMode:
-      modeLabel === "formal"
-        ? "formal_synced_from_server_prediction"
-        : "ai_train_synced_from_server_prediction",
-    groups,
-    predictionId: prediction.id || null,
-    totalCost
+    confidence,
+    advice,
+    adviceColor,
+    activeStrategies: active,
+    avgRoi,
+    bestRoi,
+    avgHit,
+    latestTrainingMode: trainingPrediction?.mode || '--'
   };
 }
 
-function buildResultFromLatestPrediction(prediction) {
-  const compareResult =
-    prediction?.compare_result ||
-    prediction?.compare_result_json ||
-    null;
+function getPredictionLatestRow(data, preferMode) {
+  const rows = [
+    data?.row,
+    ...(Array.isArray(data?.rows) ? data.rows : []),
+    ...(Array.isArray(data?.predictions) ? data.predictions : []),
+    ...(Array.isArray(data?.data) ? data.data : [])
+  ].filter(Boolean);
 
-  if (!compareResult) return null;
+  if (!rows.length) return null;
 
-  return {
-    verdict: compareResult?.verdict || compareResult?.summary?.verdict || "已完成比對",
-    sourceDrawNo: compareResult?.source_draw_no || prediction?.sourceDrawNo || "",
-    targetDrawNo:
-      normalizeNumber(prediction?.sourceDrawNo, 0) +
-      normalizeNumber(prediction?.targetPeriods, 0),
-    compareDrawNo: compareResult?.compare_draw_no || null,
-    compareDrawRange: compareResult?.compare_draw_range || "",
-    totalCost: normalizeNumber(compareResult?.total_cost, 0),
-    estimatedReturn: normalizeNumber(compareResult?.total_reward, 0),
-    profit: normalizeNumber(compareResult?.profit, 0)
-  };
+  if (preferMode) {
+    const found = rows.find((r) => String(r?.mode || '').includes(preferMode));
+    if (found) return found;
+  }
+
+  return rows[0];
+}
+
+function Card({ title, subtitle, right, children }) {
+  return (
+    <div style={styles.card}>
+      <div style={styles.cardHeader}>
+        <div>
+          <div style={styles.cardTitle}>{title}</div>
+          {subtitle ? <div style={styles.cardSubtitle}>{subtitle}</div> : null}
+        </div>
+        {right ? <div>{right}</div> : null}
+      </div>
+      <div>{children}</div>
+    </div>
+  );
+}
+
+function StatBox({ label, value, hint, valueStyle }) {
+  return (
+    <div style={styles.statBox}>
+      <div style={styles.statLabel}>{label}</div>
+      <div style={{ ...styles.statValue, ...valueStyle }}>{value}</div>
+      {hint ? <div style={styles.statHint}>{hint}</div> : null}
+    </div>
+  );
 }
 
 export default function App() {
-  const [latest, setLatest] = useState(() => readLocal(STORAGE_KEYS.latest, TXT_LATEST));
+  const [activeTab, setActiveTab] = useState(TABS.DASHBOARD);
+  const [loading, setLoading] = useState(true);
+  const [busyKey, setBusyKey] = useState('');
+  const [error, setError] = useState('');
+
   const [recent20, setRecent20] = useState([]);
-  const [recent20Status, setRecent20Status] = useState("尚未載入 recent20");
+  const [trainingLatest, setTrainingLatest] = useState(null);
+  const [formalLatest, setFormalLatest] = useState(null);
+  const [leaderboard, setLeaderboard] = useState([]);
+  const [autoTrainEnabled, setAutoTrainEnabled] = useState(false);
+  const [autoTrainResult, setAutoTrainResult] = useState(null);
 
-  const [autoTrainLast, setAutoTrainLast] = useState(() =>
-    readLocal(STORAGE_KEYS.autoTrainLast, null)
-  );
-  const [autoTrainHistory, setAutoTrainHistory] = useState(() =>
-    readLocal(STORAGE_KEYS.autoTrainHistory, [])
-  );
-  const [strategyLeaderboard, setStrategyLeaderboard] = useState(() =>
-    readLocal(STORAGE_KEYS.strategyLeaderboard, [])
-  );
-  const [autoTrainEnabled, setAutoTrainEnabled] = useState(() =>
-    readLocal(STORAGE_KEYS.autoTrainEnabled, true)
-  );
-
-  const [syncStatus, setSyncStatus] = useState("尚未同步");
-  const [notice, setNotice] = useState("系統啟動中，準備接即時資料。");
-  const [autoStatus, setAutoStatus] = useState("尚未執行補抓補比對");
-  const [loopStatus, setLoopStatus] = useState("自動循環待啟動");
-
-  const [aiTrainPlan, setAiTrainPlan] = useState(() =>
-    readLocal(STORAGE_KEYS.aiTrainPlan, null)
-  );
-  const [formalPlan, setFormalPlan] = useState(() =>
-    readLocal(STORAGE_KEYS.formalPlan, null)
-  );
-  const [aiTrainResult, setAiTrainResult] = useState(() =>
-    readLocal(STORAGE_KEYS.aiTrainResult, null)
-  );
-  const [formalResult, setFormalResult] = useState(() =>
-    readLocal(STORAGE_KEYS.formalResult, null)
-  );
-
-  const [strategyStats, setStrategyStats] = useState(() =>
-    readStrategyStats(LEARNING_KEYS.stats)
-  );
-
-  const autoRanRef = useRef(false);
-
-  useEffect(() => writeLocal(STORAGE_KEYS.latest, latest), [latest]);
-  useEffect(() => writeLocal(STORAGE_KEYS.aiTrainPlan, aiTrainPlan), [aiTrainPlan]);
-  useEffect(() => writeLocal(STORAGE_KEYS.formalPlan, formalPlan), [formalPlan]);
-  useEffect(() => writeLocal(STORAGE_KEYS.aiTrainResult, aiTrainResult), [aiTrainResult]);
-  useEffect(() => writeLocal(STORAGE_KEYS.formalResult, formalResult), [formalResult]);
-  useEffect(() => writeLocal(STORAGE_KEYS.autoTrainLast, autoTrainLast), [autoTrainLast]);
-  useEffect(() => writeLocal(STORAGE_KEYS.autoTrainHistory, autoTrainHistory), [autoTrainHistory]);
-  useEffect(() => writeLocal(STORAGE_KEYS.strategyLeaderboard, strategyLeaderboard), [strategyLeaderboard]);
-  useEffect(() => writeLocal(STORAGE_KEYS.autoTrainEnabled, autoTrainEnabled), [autoTrainEnabled]);
-
-  async function loadSystemConfig(silent = false) {
-    try {
-      const res = await fetch(withTs("/api/system-config"), {
-        cache: "no-store"
-      });
-      const data = await res.json();
-
-      if (!data.ok) {
-        throw new Error(data.error || "system-config failed");
-      }
-
-      const enabled = !!data.value;
-      setAutoTrainEnabled(enabled);
-      return enabled;
-    } catch (err) {
-      if (!silent) {
-        setNotice(`讀取自動訓練開關失敗：${err.message}`);
-      }
-      return autoTrainEnabled;
-    }
-  }
-
-  async function setSystemAutoTrain(enabled) {
-    try {
-      const res = await fetch(withTs("/api/system-config"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        cache: "no-store",
-        body: JSON.stringify({ enabled })
-      });
-
-      const data = await res.json();
-
-      if (!data.ok) {
-        throw new Error(data.error || "system-config POST failed");
-      }
-
-      setAutoTrainEnabled(!!data.value);
-
-      if (data.value) {
-        setNotice("自動訓練已開啟，立即執行一輪訓練。");
-        await runAutoTrain();
-      } else {
-        setAutoStatus("自動訓練已關閉，本輪後不再自動執行。");
-        setNotice("自動訓練已關閉。");
-      }
-    } catch (err) {
-      setNotice(`切換自動訓練失敗：${err.message}`);
-    }
-  }
-
-  async function loadRecent20(silent = false) {
-    try {
-      const res = await fetch(withTs("/api/recent20"), {
-        cache: "no-store"
-      });
-      const data = await res.json();
-
-      if (!data.ok) {
-        throw new Error(data.error || "recent20 載入失敗");
-      }
-
-      const rows = Array.isArray(data.recent20) ? data.recent20 : [];
-      setRecent20(rows);
-
-      if (rows.length > 0) {
-        const newest = rows[0];
-        setLatest((prev) => ({
-          drawNo: Number(newest.draw_no || prev?.drawNo || 0) || prev?.drawNo || null,
-          drawTime: newest.draw_time || prev?.drawTime || "即時更新",
-          numbers: parseNumbers(newest.numbers || prev?.numbers || []),
-          source: "recent20 最新期數"
-        }));
-      }
-
-      if (!silent) {
-        setRecent20Status(`recent20 已更新，共 ${rows.length} 期。`);
-      }
-
-      return rows;
-    } catch (err) {
-      if (!silent) {
-        setRecent20Status(`recent20 載入失敗：${err.message}`);
-      }
-      return [];
-    }
-  }
-
-  async function loadLatestPredictions(silent = false) {
-    try {
-      const res = await fetch(withTs("/api/prediction-latest"), {
-        cache: "no-store"
-      });
-
-      const data = await res.json();
-
-      if (!data.ok) {
-        throw new Error(data.error || "prediction-latest failed");
-      }
-
-      if (data.ai_train) {
-        const syncedAiPlan = buildPlanFromLatestPrediction(data.ai_train, "ai_train");
-        const syncedAiResult = buildResultFromLatestPrediction(data.ai_train);
-
-        if (syncedAiPlan) setAiTrainPlan(syncedAiPlan);
-        if (syncedAiResult) setAiTrainResult(syncedAiResult);
-      }
-
-      if (data.formal) {
-        const syncedFormalPlan = buildPlanFromLatestPrediction(data.formal, "formal");
-        const syncedFormalResult = buildResultFromLatestPrediction(data.formal);
-
-        if (syncedFormalPlan) setFormalPlan(syncedFormalPlan);
-        if (syncedFormalResult) setFormalResult(syncedFormalResult);
-      }
-
-      if (!silent) {
-        setNotice("已從伺服器同步最新 AI訓練 與 正式投注 資料。");
-      }
-
-      return data;
-    } catch (err) {
-      if (!silent) {
-        setNotice(`同步跨裝置投注資料失敗：${err.message}`);
-      }
-      return null;
-    }
-  }
-
-  async function syncLatestCore(silent = false) {
-    const res = await fetch(withTs("/api/sync"), { cache: "no-store" });
-    const data = await res.json();
-
-    if (!data.ok) {
-      throw new Error(data.error || "同步失敗");
-    }
-
-    const numbers = Array.isArray(data.numbers)
-      ? data.numbers
-      : Array.isArray(data.latest?.numbers)
-        ? data.latest.numbers
-        : [];
-
-    if (numbers.length !== 20) {
-      throw new Error("未取得完整 20 顆號碼");
-    }
-
-    const newLatest = {
-      drawNo: Number(data.draw_no || data.latest?.drawNo || 0) || null,
-      drawTime: data.draw_time || data.capturedAt || data.latest?.drawTime || "即時更新",
-      numbers,
-      source: "澳所即時同步"
-    };
-
-    setLatest(newLatest);
+  const loadAll = useCallback(async () => {
+    setLoading(true);
+    setError('');
 
     try {
-      const saveRes = await fetch(withTs("/api/save"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        cache: "no-store",
-        body: JSON.stringify({})
-      });
+      const [recentRes, predictionRes, configRes] = await Promise.all([
+        safeFetchJson('/api/recent20'),
+        safeFetchJson('/api/prediction-latest').catch(() => ({})),
+        safeFetchJson('/api/system-config').catch(() => ({}))
+      ]);
 
-      const saveData = await saveRes.json();
+      const recentRows = getRecentRows(recentRes);
+      setRecent20(recentRows);
 
-      if (saveData.ok && Array.isArray(saveData.recent20) && saveData.recent20.length > 0) {
-        setRecent20(saveData.recent20);
-        setRecent20Status(`recent20 已更新，共 ${saveData.recent20.length} 期。`);
-
-        const newest = saveData.recent20[0];
-        if (newest) {
-          setLatest({
-            drawNo: Number(newest.draw_no || newLatest.drawNo || 0) || newLatest.drawNo,
-            drawTime: newest.draw_time || newLatest.drawTime,
-            numbers: parseNumbers(newest.numbers || newLatest.numbers),
-            source: "recent20 最新期數"
-          });
-        }
-      } else {
-        await loadRecent20(true);
-      }
-    } catch {
-      await loadRecent20(true);
-    }
-
-    if (!silent) {
-      setSyncStatus("已同步最新資料");
-      setNotice("已抓到最新 20 顆號碼，並已同步更新。");
-    }
-
-    return newLatest;
-  }
-
-  async function syncLatest() {
-    try {
-      setSyncStatus("同步中...");
-      await syncLatestCore(false);
-      await loadLatestPredictions(true);
-    } catch (err) {
-      setSyncStatus(`同步失敗：${err.message}`);
-    }
-  }
-
-  async function runAiPlayer() {
-    try {
-      const res = await fetch(withTs("/api/ai-player"), {
-        method: "GET",
-        cache: "no-store"
-      });
-
-      const data = await res.json();
-
-      if (!data.ok) {
-        throw new Error(data.error || "ai-player failed");
-      }
-
-      return data;
-    } catch (err) {
-      setNotice(`AI自動訓練建立失敗：${err.message}`);
-      return null;
-    }
-  }
-
-  async function runAutoTrain() {
-    try {
-      setAutoStatus("自動訓練執行中...");
-
-      const res = await fetch(withTs("/api/auto-train"), {
-        method: "GET",
-        cache: "no-store"
-      });
-
-      const raw = await res.text();
-      let data = null;
-
-      try {
-        data = JSON.parse(raw);
-      } catch {
-        throw new Error(`auto-train 回傳非 JSON：${raw.slice(0, 120)}`);
-      }
-
-      if (!data.ok) {
-        throw new Error(data.error || "auto-train failed");
-      }
-
-      await runAiPlayer();
-      await syncLatestCore(true);
-      await loadRecent20(true);
-      await loadLatestPredictions(true);
-
-      setAutoTrainLast(data);
-      setAutoTrainHistory((prev) => mergeAutoTrainHistory(prev, data));
-      setStrategyLeaderboard(Array.isArray(data.leaderboard) ? data.leaderboard : []);
-
-      const latestDrawNo = data?.latest_draw_no ?? "未知";
-      const comparedCount = Number(data?.compared_count || 0);
-      const createdCount = Number(data?.created_count || 0);
-
-      setAutoStatus(`自動訓練完成：到期比對 ${comparedCount} 筆，新建訓練 ${createdCount} 筆。`);
-      setNotice(`自動訓練已完成，目前最新期數第 ${latestDrawNo} 期。`);
-    } catch (err) {
-      setAutoStatus(`自動訓練失敗：${err.message}`);
-    }
-  }
-
-  async function savePrediction(mode, targetPeriods, groups, sourceDrawNo) {
-    const res = await fetch(withTs("/api/prediction-save"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      cache: "no-store",
-      body: JSON.stringify({
-        mode,
-        sourceDrawNo,
-        targetPeriods,
-        groups
-      })
-    });
-
-    return await res.json();
-  }
-
-  async function comparePrediction(predictionId) {
-    const res = await fetch(withTs("/api/prediction-compare"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      cache: "no-store",
-      body: JSON.stringify({ predictionId })
-    });
-
-    return await res.json();
-  }
-
-  function buildWeightedStrategies() {
-    const weightMap = getStrategyWeightMap(strategyStats);
-    const built = buildBingoV1Strategies(recent20, weightMap);
-
-    return built.strategies.map((s) => {
-      const weight = Number(s.meta?.optimizerWeight || 1);
-      const rounds = normalizeNumber(strategyStats?.[s.key]?.rounds, 0);
-      const avgHit = normalizeNumber(strategyStats?.[s.key]?.avgHit, 0);
-      const score = weight * 100 + avgHit * 10 + rounds * 0.1;
-
-      return {
-        key: s.key,
-        groupNo: s.groupNo,
-        label: s.label,
-        nums: normalizeGroupNumbers(s.nums, 4),
-        reason: s.reason,
-        meta: s.meta || {},
-        weight,
-        rounds,
-        avgHit,
-        score
-      };
-    });
-  }
-
-  function buildFormalGroupsFromLeaderboard() {
-    const top4 = Array.isArray(strategyLeaderboard) ? strategyLeaderboard.slice(0, 4) : [];
-    const built = buildWeightedStrategies();
-    const strategyMap = new Map(built.map((s) => [s.key, s]));
-
-    if (!top4.length) {
-      return built
-        .sort((a, b) => b.score - a.score)
-        .slice(0, 4)
-        .map((g, idx) => ({
-          label: `正式第${idx + 1}名｜${g.label}`,
-          nums: normalizeGroupNumbers(g.nums, 4),
-          reason: `暫無排行榜資料，退回本機權重模式：${g.reason}`,
-          key: g.key,
-          meta: { ...g.meta, rank: idx + 1 }
-        }));
-    }
-
-    return top4
-      .map((ranked, idx) => {
-        const matched = strategyMap.get(ranked.key);
-
-        return {
-          label: `正式第${idx + 1}名｜${ranked.label}`,
-          nums: normalizeGroupNumbers(matched?.nums || [], 4),
-          reason: `採用排行榜第 ${idx + 1} 名：平均命中 ${ranked.avg_hit} / 平均淨損益 ${ranked.avg_profit} / 中獎率 ${ranked.payout_rate}% / 盈利率 ${ranked.profit_win_rate}% / ROI ${ranked.roi}%`,
-          key: ranked.key,
-          meta: {
-            rank: idx + 1,
-            avgHit: ranked.avg_hit,
-            avgProfit: ranked.avg_profit,
-            payoutRate: ranked.payout_rate,
-            profitWinRate: ranked.profit_win_rate,
-            roi: ranked.roi,
-            totalRounds: ranked.total_rounds,
-            score: ranked.score
-          }
-        };
-      })
-      .filter((g) => Array.isArray(g.nums) && g.nums.length === 4);
-  }
-
-  async function startFormalMode() {
-    const currentDrawNo = Number(recent20?.[0]?.draw_no || latest.drawNo || 0);
-    if (!currentDrawNo) {
-      setNotice("目前抓不到最新期數，請先按一次同步最新一期。");
-      return;
-    }
-
-    const localFormalGroups = normalizeGroupsForUi(buildFormalGroupsFromLeaderboard(), "正式第");
-
-    const emptyPlan = {
-      mode: "formal",
-      createdAt: new Date().toISOString(),
-      sourceDrawNo: currentDrawNo,
-      targetPeriods: FORMAL_TARGET_PERIODS,
-      targetDrawNo: currentDrawNo + FORMAL_TARGET_PERIODS,
-      strategyMode: "formal_use_top4_leaderboard_or_server_auto_v42",
-      groups: localFormalGroups,
-      predictionId: null,
-      totalCost: calcPlanCost(FORMAL_GROUP_COUNT, FORMAL_TARGET_PERIODS)
-    };
-
-    setFormalPlan(emptyPlan);
-    setFormalResult(null);
-    setNotice("正式投注建立中，系統正在讀取最佳 4 策略並生成號碼...");
-
-    try {
-      const saved = await savePrediction(
-        "formal",
-        FORMAL_TARGET_PERIODS,
-        localFormalGroups,
-        currentDrawNo
-      );
-
-      if (saved.ok) {
-        const finalGroups = normalizeGroupsForUi(
-          Array.isArray(saved.groups) ? saved.groups : localFormalGroups,
-          "正式第"
+      const trainingRow =
+        getPredictionLatestRow(
+          {
+            rows: toArray(predictionRes?.rows).filter((r) =>
+              String(r?.mode || '').includes('ai_train') ||
+              String(r?.mode || '').includes('test')
+            )
+          },
+          'ai_train'
+        ) ||
+        getPredictionLatestRow(
+          {
+            rows: toArray(predictionRes?.rows).filter((r) =>
+              String(r?.mode || '').includes('test')
+            )
+          },
+          'test'
         );
 
-        const plan = {
-          ...emptyPlan,
-          predictionId: saved.id,
-          sourceDrawNo: Number(saved.source_draw_no || currentDrawNo),
-          targetPeriods: Number(saved.target_periods || FORMAL_TARGET_PERIODS),
-          targetDrawNo:
-            Number(saved.source_draw_no || currentDrawNo) +
-            Number(saved.target_periods || FORMAL_TARGET_PERIODS),
-          groups: finalGroups.length ? finalGroups : localFormalGroups,
-          totalCost: normalizeNumber(
-            saved.estimated_total_cost,
-            calcPlanCost(FORMAL_GROUP_COUNT, FORMAL_TARGET_PERIODS)
-          )
-        };
+      const formalRow =
+        getPredictionLatestRow(
+          {
+            rows: toArray(predictionRes?.rows).filter((r) =>
+              String(r?.mode || '').includes('formal')
+            )
+          },
+          'formal'
+        ) || null;
 
-        setFormalPlan(plan);
-        setNotice("本次直接採用目前最佳 4 策略建立正式投注。");
-        await loadLatestPredictions(true);
-      } else {
-        setNotice(`正式投注建立失敗：${saved.error || "預測資料庫寫入失敗"}`);
+      setTrainingLatest(trainingRow || predictionRes?.training || null);
+      setFormalLatest(formalRow || predictionRes?.formal || null);
+
+      const cfgRows = toArray(configRes?.rows || configRes?.data || []);
+      const autoCfg = cfgRows.find((r) => r?.key === 'auto_train_enabled');
+      setAutoTrainEnabled(String(autoCfg?.value || 'false') === 'true');
+
+      const lb =
+        predictionRes?.leaderboard ||
+        predictionRes?.auto_train_result?.leaderboard ||
+        [];
+      setLeaderboard(toArray(lb));
+
+      if (predictionRes?.auto_train_result) {
+        setAutoTrainResult(predictionRes.auto_train_result);
       }
     } catch (err) {
-      setNotice(`正式投注建立失敗：${err.message}`);
+      setError(err.message || '讀取資料失敗');
+    } finally {
+      setLoading(false);
     }
-  }
-
-  function learnFromCompare({ mode, predictionId, compareResult }) {
-    const learned = applyCompareLearningOnce({
-      statsKey: LEARNING_KEYS.stats,
-      seenKey: LEARNING_KEYS.seen,
-      mode,
-      predictionId,
-      drawNo: compareResult?.compareDrawNo,
-      compareResult
-    });
-
-    setStrategyStats(learned.stats);
-    return learned;
-  }
-
-  async function compareAiTrainMode() {
-    if (!aiTrainPlan?.predictionId) {
-      setNotice("AI自動訓練尚未建立完成，無法比對。");
-      return;
-    }
-
-    if (!latest.drawNo || Number(latest.drawNo) < Number(aiTrainPlan.targetDrawNo || 0)) {
-      setNotice(`AI自動訓練尚未到比對期數，目前第 ${latest.drawNo || "?"} 期，需等到第 ${aiTrainPlan.targetDrawNo} 期。`);
-      return;
-    }
-
-    const data = await comparePrediction(aiTrainPlan.predictionId);
-
-    if (!data.ok) {
-      if (data.waiting) {
-        setNotice(data.error || "尚未到比對期數");
-        return;
-      }
-      setNotice(`AI自動訓練比對失敗：${data.error || "未知錯誤"}`);
-      return;
-    }
-
-    setAiTrainResult(data.result);
-
-    const learned = learnFromCompare({
-      mode: "ai_train",
-      predictionId: aiTrainPlan.predictionId,
-      compareResult: data.result
-    });
-
-    if (learned.applied) {
-      setNotice(`AI自動訓練比對完成：${data.result.verdict}，系統已更新策略權重。`);
-    } else {
-      setNotice(`AI自動訓練比對完成：${data.result.verdict}，此期已學習過。`);
-    }
-
-    await loadLatestPredictions(true);
-  }
-
-  async function compareFormalMode() {
-    if (!formalPlan?.predictionId) {
-      setNotice("正式投注尚未建立完成，無法比對。");
-      return;
-    }
-
-    if (!latest.drawNo || Number(latest.drawNo) < Number(formalPlan.targetDrawNo || 0)) {
-      setNotice(`正式投注尚未到比對期數，目前第 ${latest.drawNo || "?"} 期，需等到第 ${formalPlan.targetDrawNo} 期。`);
-      return;
-    }
-
-    const data = await comparePrediction(formalPlan.predictionId);
-
-    if (!data.ok) {
-      if (data.waiting) {
-        setNotice(data.error || "尚未到比對期數");
-        return;
-      }
-      setNotice(`正式投注比對失敗：${data.error || "未知錯誤"}`);
-      return;
-    }
-
-    setFormalResult(data.result);
-
-    const learned = learnFromCompare({
-      mode: "formal",
-      predictionId: formalPlan.predictionId,
-      compareResult: data.result
-    });
-
-    if (learned.applied) {
-      setNotice(`正式投注比對完成：${data.result.verdict}，系統已更新策略權重。`);
-    } else {
-      setNotice(`正式投注比對完成：${data.result.verdict}，此期已學習過。`);
-    }
-
-    await loadLatestPredictions(true);
-  }
-
-  async function autoCatchupAndCompare() {
-    try {
-      setAutoStatus("自動補抓補比對執行中...");
-
-      const lastRun = readLocal(STORAGE_KEYS.autoRunAt, null);
-      const now = Date.now();
-
-      if (lastRun && now - Number(lastRun) < 60 * 1000) {
-        setAutoStatus("1 分鐘內已執行過補抓補比對，略過。");
-        return;
-      }
-
-      const catchupRes = await fetch(withTs("/api/catchup"), { cache: "no-store" });
-      const catchupRaw = await catchupRes.text();
-
-      let catchupData = null;
-      try {
-        catchupData = JSON.parse(catchupRaw);
-      } catch {
-        throw new Error(`catchup 回傳非 JSON：${catchupRaw.slice(0, 120)}`);
-      }
-
-      if (!catchupData.ok) {
-        throw new Error(catchupData.error || catchupData.message || "補抓失敗");
-      }
-
-      const latestAfterSync = await syncLatestCore(true);
-      await loadRecent20(true);
-
-      let done = 0;
-      let learnedCount = 0;
-
-      if (aiTrainPlan?.predictionId && Number(latestAfterSync.drawNo || 0) >= Number(aiTrainPlan.targetDrawNo || 0)) {
-        const result = await comparePrediction(aiTrainPlan.predictionId);
-        if (result.ok) {
-          setAiTrainResult(result.result);
-          done += 1;
-
-          const learned = learnFromCompare({
-            mode: "ai_train",
-            predictionId: aiTrainPlan.predictionId,
-            compareResult: result.result
-          });
-
-          if (learned.applied) learnedCount += 1;
-        }
-      }
-
-      if (formalPlan?.predictionId && Number(latestAfterSync.drawNo || 0) >= Number(formalPlan.targetDrawNo || 0)) {
-        const result = await comparePrediction(formalPlan.predictionId);
-        if (result.ok) {
-          setFormalResult(result.result);
-          done += 1;
-
-          const learned = learnFromCompare({
-            mode: "formal",
-            predictionId: formalPlan.predictionId,
-            compareResult: result.result
-          });
-
-          if (learned.applied) learnedCount += 1;
-        }
-      }
-
-      writeLocal(STORAGE_KEYS.autoRunAt, now);
-
-      const inserted = Number(catchupData.inserted || 0);
-
-      if (inserted > 0) {
-        setAutoStatus(`補抓成功，新增 ${inserted} 期；已處理 ${done} 筆預測；學習 ${learnedCount} 次。`);
-      } else {
-        setAutoStatus(`補抓完成，沒有缺期；已處理 ${done} 筆預測；學習 ${learnedCount} 次。`);
-      }
-
-      await loadLatestPredictions(true);
-    } catch (err) {
-      setAutoStatus(`補抓補比對失敗：${err.message}`);
-    }
-  }
-
-  async function runAutoLoopOnce(fromTimer = false, skipTrain = false) {
-    const nowText = getClockText();
-
-    if (isBingoRestTime()) {
-      setLoopStatus(`目前為休息時段（00:00~07:29），已暫停自動更新。${nowText}`);
-      setNotice("目前為休息時段（00:00~07:29），系統暫停自動同步與訓練。");
-      return;
-    }
-
-    const enabled = await loadSystemConfig(true);
-
-    setLoopStatus(`自動循環執行中：${nowText}${fromTimer ? "（定時）" : "（啟動）"}`);
-
-    try {
-      await syncLatestCore(true);
-      await loadRecent20(true);
-      await loadLatestPredictions(true);
-      setSyncStatus("已同步最新資料");
-    } catch (err) {
-      console.error("syncLatest failed:", err);
-    }
-
-    try {
-      await autoCatchupAndCompare();
-    } catch (err) {
-      console.error("autoCatchupAndCompare failed:", err);
-    }
-
-    if (skipTrain) {
-      setAutoStatus("啟動時先不自動訓練，等待你手動開啟。");
-    } else if (enabled) {
-      try {
-        await runAutoTrain();
-      } catch (err) {
-        console.error("runAutoTrain failed:", err);
-      }
-    } else {
-      setAutoStatus("自動訓練已關閉，本輪僅執行同步 / 補抓 / 比對。");
-    }
-
-    setLoopStatus(`自動循環完成：${getClockText()}`);
-  }
-
-  useEffect(() => {
-    if (autoRanRef.current) return;
-    autoRanRef.current = true;
-
-    loadSystemConfig(true);
-
-    Promise.all([
-      loadRecent20(true),
-      loadLatestPredictions(true)
-    ]).finally(() => {
-      runAutoLoopOnce(false, true);
-    });
-
-    const timer = setInterval(() => {
-      runAutoLoopOnce(true, false);
-    }, 180000);
-
-    return () => clearInterval(timer);
   }, []);
 
-  const trainingProgress = useMemo(() => {
-    const history = Array.isArray(autoTrainHistory)
-      ? [...autoTrainHistory].sort((a, b) => normalizeNumber(b.comparedAt, 0) - normalizeNumber(a.comparedAt, 0))
-      : [];
+  useEffect(() => {
+    loadAll();
+  }, [loadAll]);
 
-    const recent10 = history.slice(0, 10);
-    const latest5 = history.slice(0, 5);
-    const previous5 = history.slice(5, 10);
+  const runAction = useCallback(
+    async (key, fn) => {
+      try {
+        setBusyKey(key);
+        setError('');
+        await fn();
+        await loadAll();
+      } catch (err) {
+        setError(err.message || '操作失敗');
+      } finally {
+        setBusyKey('');
+      }
+    },
+    [loadAll]
+  );
 
-    const avgOf = (arr, getter) => {
-      if (!arr.length) return NaN;
-      return arr.reduce((sum, item) => sum + getter(item), 0) / arr.length;
-    };
+  const handleToggleAutoTrain = async () => {
+    await runAction('toggleAutoTrain', async () => {
+      await safeFetchJson('/api/system-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          key: 'auto_train_enabled',
+          value: autoTrainEnabled ? 'false' : 'true'
+        })
+      });
+    });
+  };
 
-    const avgHit10 = avgOf(recent10, (item) => normalizeNumber(item.totalHitCount, 0));
-    const avgReward10 = avgOf(recent10, (item) => normalizeNumber(item.totalReward, 0));
-    const avgProfit10 = avgOf(recent10, (item) => normalizeNumber(item.profit, 0));
-    const bestHit10 = recent10.length
-      ? Math.max(...recent10.map((item) => normalizeNumber(item.bestSingleHit, 0)))
-      : 0;
+  const handleRunAutoTrain = async () => {
+    await runAction('autoTrain', async () => {
+      const data = await safeFetchJson('/api/auto-train', {
+        method: 'POST'
+      });
+      setAutoTrainResult(data);
+    });
+  };
 
-    const latest5AvgHit = avgOf(latest5, (item) => normalizeNumber(item.totalHitCount, 0));
-    const previous5AvgHit = avgOf(previous5, (item) => normalizeNumber(item.totalHitCount, 0));
+  const handleSync = async () => {
+    await runAction('sync', async () => {
+      await safeFetchJson('/api/sync', { method: 'POST' }).catch(async () => {
+        await safeFetchJson('/api/sync');
+      });
+    });
+  };
 
-    const latest5AvgReward = avgOf(latest5, (item) => normalizeNumber(item.totalReward, 0));
-    const previous5AvgReward = avgOf(previous5, (item) => normalizeNumber(item.totalReward, 0));
+  const handleCatchup = async () => {
+    await runAction('catchup', async () => {
+      await safeFetchJson('/api/catchup', { method: 'POST' }).catch(async () => {
+        await safeFetchJson('/api/catchup');
+      });
+    });
+  };
 
-    const latest5BestHit = latest5.length
-      ? Math.max(...latest5.map((item) => normalizeNumber(item.bestSingleHit, 0)))
-      : NaN;
-    const previous5BestHit = previous5.length
-      ? Math.max(...previous5.map((item) => normalizeNumber(item.bestSingleHit, 0)))
-      : NaN;
+  const handleFormalBet = async () => {
+    await runAction('formalBet', async () => {
+      await safeFetchJson('/api/prediction-save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mode: 'formal_synced_from_server_prediction',
+          targetPeriods: 4
+        })
+      });
+    });
+  };
 
-    return {
-      count: history.length,
-      avgHit10,
-      avgReward10,
-      avgProfit10,
-      bestHit10,
-      hitTrend: buildTrendText("最近 5 次平均命中", latest5AvgHit, previous5AvgHit),
-      rewardTrend: buildTrendText("最近 5 次平均中獎", latest5AvgReward, previous5AvgReward),
-      bestHitTrend: buildTrendText("最近 5 次最佳單期命中", latest5BestHit, previous5BestHit)
-    };
-  }, [autoTrainHistory]);
+  const aiStatus = useMemo(
+    () => calcSimpleAiStatus(trainingLatest, leaderboard),
+    [trainingLatest, leaderboard]
+  );
+
+  const latestDraw = recent20[0] || null;
+  const latestDrawNo = latestDraw?.draw_no || latestDraw?.drawNo || '--';
+  const latestDrawTime = latestDraw?.draw_time || latestDraw?.drawTime || '--';
+  const latestNumbers = parseNums(latestDraw?.numbers || latestDraw?.nums || []);
+
+  const trainingGroups = getPredictionGroups(trainingLatest);
+  const formalGroups = getPredictionGroups(formalLatest);
 
   return (
     <div style={styles.page}>
-      <div style={styles.wrap}>
-        <section style={styles.hero}>
-          <div style={styles.kicker}>FUWEI BINGO SYSTEM</div>
-          <h1 style={styles.h1}>富緯賓果系統 v4.2 專業 AI 評估版</h1>
-          <p style={styles.p}>
-            已統一模式為 AI訓練 與 正式投注。現在左側只讀 ai_train，右側只讀 formal。
-          </p>
-
-          <div style={styles.notice}>{notice}</div>
-          <div style={{ ...styles.notice, marginTop: 12, background: "#0a2440" }}>{autoStatus}</div>
-          <div style={{ ...styles.notice, marginTop: 12, background: "#0d2744" }}>{recent20Status}</div>
-          <div style={{ ...styles.notice, marginTop: 12, background: "#12345b" }}>{loopStatus}</div>
-
-          <div
-            style={{
-              ...styles.notice,
-              marginTop: 12,
-              background: autoTrainEnabled ? "#0b3a21" : "#4a1f1f"
-            }}
-          >
-            自動訓練狀態：{autoTrainEnabled ? "開啟中" : "已關閉"}
+      <div style={styles.app}>
+        <header style={styles.header}>
+          <div>
+            <div style={styles.brand}>FUWEI BINGO AI</div>
+            <div style={styles.headerSub}>把頁面整理乾淨，讓 AI 做 AI 的事。</div>
           </div>
 
-          <div style={styles.statsGrid}>
-            <div style={styles.statCard}>
-              <div style={styles.statLabel}>最新期數</div>
-              <div style={styles.statValue}>
-                {latest.drawNo ? `第 ${latest.drawNo} 期` : "即時同步"}
-              </div>
-            </div>
-
-            <div style={styles.statCard}>
-              <div style={styles.statLabel}>最新時間</div>
-              <div style={styles.statValue}>{latest.drawTime || "即時更新"}</div>
-            </div>
-
-            <div style={styles.statCard}>
-              <div style={styles.statLabel}>資料來源</div>
-              <div style={styles.statValue}>{latest.source || "澳所即時同步"}</div>
-            </div>
-
-            <div style={styles.statCard}>
-              <div style={styles.statLabel}>同步狀態</div>
-              <div style={styles.statValue}>{syncStatus}</div>
-            </div>
-          </div>
-
-          <div style={styles.btnRow}>
-            <button style={styles.primaryBtn} onClick={syncLatest}>同步最新一期</button>
-            <button style={styles.secondaryBtn} onClick={autoCatchupAndCompare}>立即補抓補比對</button>
-            <button style={styles.secondaryBtn} onClick={startFormalMode}>建立正式投注</button>
-          </div>
-
-          <div style={styles.btnRow}>
+          <div style={styles.headerActions}>
             <button
-              style={{ ...styles.primaryBtn, background: "#33c46b" }}
-              onClick={() => setSystemAutoTrain(true)}
+              style={styles.secondaryButton}
+              onClick={loadAll}
+              disabled={busyKey !== ''}
             >
-              開啟自動訓練
-            </button>
-            <button
-              style={{ ...styles.primaryBtn, background: "#d9534f", color: "#fff" }}
-              onClick={() => setSystemAutoTrain(false)}
-            >
-              關閉自動訓練
+              重新整理
             </button>
           </div>
-        </section>
+        </header>
 
-        <section style={styles.panel}>
-          <h2 style={styles.h2}>最新一期資訊</h2>
-          <div style={styles.subtle}>
-            {latest.drawNo ? `第 ${latest.drawNo} 期` : "即時同步"} / {latest.source || "澳所即時同步"}
+        <nav style={styles.tabBar}>
+          {TAB_ITEMS.map((tab) => {
+            const active = activeTab === tab.key;
+            return (
+              <button
+                key={tab.key}
+                onClick={() => setActiveTab(tab.key)}
+                style={{
+                  ...styles.tabButton,
+                  ...(active ? styles.tabButtonActive : {})
+                }}
+              >
+                <span style={styles.tabIcon}>{tab.icon}</span>
+                {tab.label}
+              </button>
+            );
+          })}
+        </nav>
+
+        {error ? (
+          <div style={styles.errorBanner}>
+            {error}
           </div>
-
-          <div style={styles.numbersWrap}>
-            {(latest.numbers || []).map((n, i) => (
-              <span key={i} style={styles.numBall}>{n}</span>
-            ))}
-          </div>
-
-          <div style={styles.subtle}>來源：{latest.source || "澳所即時同步"}</div>
-        </section>
-
-        <section style={styles.panel}>
-          <h2 style={styles.h2}>AI 策略排行榜（專業版）</h2>
-          <div style={styles.subtle}>
-            勝率已拆成「中獎率」與「盈利率」。平均收益為平均淨損益，ROI 為總淨損益 ÷ 總成本。
-          </div>
-
-          {Array.isArray(strategyLeaderboard) && strategyLeaderboard.length > 0 ? (
-            <div style={{ marginTop: 14 }}>
-              {strategyLeaderboard.map((item, idx) => (
-                <div key={item.key} style={styles.groupCard}>
-                  <div style={styles.groupTitle}>
-                    {idx + 1}️⃣ {item.label}（{item.key}）
-                  </div>
-                  <div style={styles.subtle}>平均命中：{item.avg_hit}</div>
-                  <div style={styles.subtle}>平均收益：{item.avg_profit}</div>
-                  <div style={styles.subtle}>中獎率：{item.payout_rate}%</div>
-                  <div style={styles.subtle}>盈利率：{item.profit_win_rate}%</div>
-                  <div style={styles.subtle}>ROI：{item.roi}%</div>
-                  <div style={styles.subtle}>最佳單期命中：{item.best_hit}</div>
-                  <div style={styles.subtle}>累計回合：{item.total_rounds}</div>
-                  <div style={styles.subtle}>綜合分數：{item.score}</div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div style={{ ...styles.subtle, marginTop: 14 }}>
-              目前尚未建立排行榜，但正式投注仍可依現有最佳策略建立。
-            </div>
-          )}
-        </section>
-
-        {autoTrainLast ? (
-          <section style={styles.panel}>
-            <h2 style={styles.h2}>自動訓練摘要</h2>
-            <div style={styles.subtle}>模式：{autoTrainLast.mode || "auto_train_v4.2"}</div>
-            <div style={styles.subtle}>最新期數：第 {autoTrainLast.latest_draw_no ?? "未知"} 期</div>
-            <div style={styles.subtle}>每輪比對上限：{autoTrainLast.compare_limit ?? 0} 筆</div>
-            <div style={styles.subtle}>每輪新建上限：{autoTrainLast.create_limit ?? 0} 筆</div>
-            <div style={styles.subtle}>到期比對：{autoTrainLast.compared_count ?? 0} 筆</div>
-            <div style={styles.subtle}>新建訓練：{autoTrainLast.created_count ?? 0} 筆</div>
-            <div style={styles.subtle}>最佳單期命中：{autoTrainLast.best_single_hit ?? 0}</div>
-            <div style={styles.subtle}>訊息：{autoTrainLast.message || "無"}</div>
-          </section>
         ) : null}
 
-        <section style={styles.panel}>
-          <h2 style={styles.h2}>訓練進步面板</h2>
-          <div style={styles.subtle}>
-            顯示最近 10 次訓練成果，觀察系統是否正在朝更高命中與更低虧損前進。
-          </div>
+        {loading ? (
+          <div style={styles.loading}>讀取中...</div>
+        ) : null}
 
-          {trainingProgress.count > 0 ? (
-            <>
-              <div style={styles.progressGrid}>
-                <div style={styles.progressCard}>
-                  <div style={styles.statLabel}>最近 10 次平均命中</div>
-                  <div style={styles.progressValue}>{round1(trainingProgress.avgHit10)} 碼</div>
-                </div>
-
-                <div style={styles.progressCard}>
-                  <div style={styles.statLabel}>最近 10 次平均中獎</div>
-                  <div style={styles.progressValue}>{round1(trainingProgress.avgReward10)} 元</div>
-                </div>
-
-                <div style={styles.progressCard}>
-                  <div style={styles.statLabel}>最近 10 次平均損益</div>
-                  <div style={styles.progressValue}>{round1(trainingProgress.avgProfit10)} 元</div>
-                </div>
-
-                <div style={styles.progressCard}>
-                  <div style={styles.statLabel}>最近 10 次最佳單期命中</div>
-                  <div style={styles.progressValue}>{trainingProgress.bestHit10} 碼</div>
-                </div>
+        {!loading && activeTab === TABS.DASHBOARD && (
+          <div style={styles.sectionStack}>
+            <Card
+              title="AI 狀態總覽"
+              subtitle="先看 AI 狀態，再決定要不要正式下注。"
+            >
+              <div style={styles.statsGrid4}>
+                <StatBox
+                  label="AI 信心指數"
+                  value={`${aiStatus.confidence} / 100`}
+                  hint={`模式：${aiStatus.latestTrainingMode}`}
+                  valueStyle={{ color: aiStatus.adviceColor }}
+                />
+                <StatBox
+                  label="平均 ROI"
+                  value={fmtPercent(aiStatus.avgRoi)}
+                  hint="來自目前策略池"
+                />
+                <StatBox
+                  label="平均命中"
+                  value={
+                    Number.isFinite(aiStatus.avgHit)
+                      ? aiStatus.avgHit.toFixed(2)
+                      : '--'
+                  }
+                  hint="策略池平均"
+                />
+                <StatBox
+                  label="建議狀態"
+                  value={aiStatus.advice}
+                  hint={`活躍策略：${aiStatus.activeStrategies}`}
+                  valueStyle={{ color: aiStatus.adviceColor }}
+                />
               </div>
 
-              <div style={{ marginTop: 18 }}>
-                <div style={styles.groupTitle}>最近 5 次是否有進步</div>
-                <div style={styles.subtle}>• {trainingProgress.hitTrend}</div>
-                <div style={styles.subtle}>• {trainingProgress.rewardTrend}</div>
-                <div style={styles.subtle}>• {trainingProgress.bestHitTrend}</div>
+              <div style={styles.actionRow}>
+                <button
+                  style={styles.primaryButton}
+                  onClick={handleFormalBet}
+                  disabled={busyKey !== ''}
+                >
+                  {busyKey === 'formalBet' ? '建立中...' : '建立正式下注'}
+                </button>
+
+                <button
+                  style={styles.secondaryButton}
+                  onClick={handleRunAutoTrain}
+                  disabled={busyKey !== ''}
+                >
+                  {busyKey === 'autoTrain' ? '訓練中...' : '執行一次 AI 自動訓練'}
+                </button>
               </div>
-            </>
-          ) : (
-            <div style={{ ...styles.subtle, marginTop: 14 }}>
-              目前尚未累積到足夠已比對成果。
-            </div>
-          )}
-        </section>
+            </Card>
 
-        <section style={styles.panel}>
-          <h2 style={styles.h2}>最近 20 期底稿</h2>
-          <div style={styles.subtle}>
-            固定優先讀取 /api/recent20，供策略生成與補比對使用。
-          </div>
-          <div style={{ maxHeight: 260, overflow: "auto", marginTop: 12 }}>
-            {recent20.map((row, idx) => (
-              <div
-                key={`${row.draw_no}-${idx}`}
-                style={{ ...styles.row, borderBottom: "1px solid rgba(255,255,255,0.08)" }}
-              >
-                <span>{row.draw_no || "-"}</span>
-                <span style={{ fontSize: 12, opacity: 0.8 }}>{row.draw_time || ""}</span>
+            <Card
+              title="系統控制"
+              subtitle="這裡只留你平常真的會用到的控制項。"
+            >
+              <div style={styles.controlGrid}>
+                <div style={styles.controlItem}>
+                  <div style={styles.controlTitle}>自動訓練開關</div>
+                  <div style={styles.controlText}>
+                    目前狀態：
+                    <span
+                      style={{
+                        color: autoTrainEnabled ? '#16a34a' : '#dc2626',
+                        fontWeight: 800,
+                        marginLeft: 6
+                      }}
+                    >
+                      {autoTrainEnabled ? '開啟中' : '已關閉'}
+                    </span>
+                  </div>
+                  <button
+                    style={autoTrainEnabled ? styles.warnButton : styles.primaryButton}
+                    onClick={handleToggleAutoTrain}
+                    disabled={busyKey !== ''}
+                  >
+                    {busyKey === 'toggleAutoTrain'
+                      ? '切換中...'
+                      : autoTrainEnabled
+                        ? '關閉自動訓練'
+                        : '開啟自動訓練'}
+                  </button>
+                </div>
+
+                <div style={styles.controlItem}>
+                  <div style={styles.controlTitle}>資料同步</div>
+                  <div style={styles.controlText}>同步最新開獎與補抓遺漏期數。</div>
+                  <div style={styles.inlineButtons}>
+                    <button
+                      style={styles.secondaryButton}
+                      onClick={handleSync}
+                      disabled={busyKey !== ''}
+                    >
+                      {busyKey === 'sync' ? '同步中...' : '同步最新期數'}
+                    </button>
+                    <button
+                      style={styles.secondaryButton}
+                      onClick={handleCatchup}
+                      disabled={busyKey !== ''}
+                    >
+                      {busyKey === 'catchup' ? '補抓中...' : '補抓期數'}
+                    </button>
+                  </div>
+                </div>
               </div>
-            ))}
+            </Card>
+
+            <Card
+              title="訓練摘要"
+              subtitle="這塊保留重點，不再把整個訓練牆塞在首頁。"
+            >
+              <div style={styles.statsGrid4}>
+                <StatBox
+                  label="最新訓練期數"
+                  value={fmtText(trainingLatest?.source_draw_no)}
+                  hint={`目標：${fmtText(trainingLatest?.target_periods)} 期`}
+                />
+                <StatBox
+                  label="最佳策略分數"
+                  value={fmtText(leaderboard?.[0]?.score ? Number(leaderboard[0].score).toFixed(1) : '--')}
+                  hint={leaderboard?.[0]?.label || '尚無資料'}
+                />
+                <StatBox
+                  label="最佳策略 ROI"
+                  value={fmtPercent(leaderboard?.[0]?.recent_50_roi ?? leaderboard?.[0]?.roi)}
+                  hint="取排行榜第一名"
+                />
+                <StatBox
+                  label="最新開獎期數"
+                  value={fmtText(latestDrawNo)}
+                  hint={fmtDateTime(latestDrawTime)}
+                />
+              </div>
+
+              {autoTrainResult ? (
+                <div style={styles.resultPanel}>
+                  <div style={styles.resultTitle}>最近一次 auto-train 結果</div>
+                  <div style={styles.resultText}>
+                    到期比對：{toNum(autoTrainResult?.compared_count)} 筆，
+                    新建訓練：{toNum(autoTrainResult?.created_count)} 筆，
+                    最佳單組命中：{toNum(autoTrainResult?.best_single_hit)}。
+                  </div>
+                </div>
+              ) : null}
+            </Card>
           </div>
-        </section>
+        )}
 
-        <div style={styles.grid2}>
-          <section style={styles.panel}>
-            <h2 style={styles.h2}>AI自動訓練（四星賓果 / 四組 / 二期）</h2>
-            {aiTrainPlan ? (
-              <>
-                <div style={styles.subtle}>Prediction ID：{aiTrainPlan.predictionId || "尚未寫入"}</div>
-                <div style={styles.subtle}>策略模式：{aiTrainPlan.strategyMode}</div>
-                <div style={styles.subtle}>來源期數：第 {aiTrainPlan.sourceDrawNo} 期</div>
-                <div style={styles.subtle}>目標期數：第 {aiTrainPlan.targetDrawNo} 期</div>
-                <div style={styles.subtle}>估計成本：{aiTrainPlan.totalCost}</div>
+        {!loading && activeTab === TABS.PREDICT && (
+          <div style={styles.sectionStack}>
+            <Card
+              title="正式下注"
+              subtitle="這裡只處理你真正要拿去買的組合。"
+              right={
+                <div style={styles.tag}>
+                  四星賓果 / 四組 / 四期
+                </div>
+              }
+            >
+              <div style={styles.summaryLine}>
+                <span>模式：</span>
+                <strong>{fmtText(formalLatest?.mode, 'formal')}</strong>
+                <span style={{ marginLeft: 16 }}>來源期數：</span>
+                <strong>{fmtText(formalLatest?.source_draw_no)}</strong>
+                <span style={{ marginLeft: 16 }}>目標期數：</span>
+                <strong>{fmtText(formalLatest?.target_periods)}</strong>
+              </div>
 
-                {aiTrainPlan.groups.map((g, idx) => (
-                  <div key={`${g.key}-${idx}`} style={styles.groupCard}>
-                    <div style={styles.groupTitle}>{g.label}</div>
-                    <div style={styles.groupNums}>{g.nums.join(" ")}</div>
-                    <div style={styles.subtle}>{g.reason}</div>
+              <div style={styles.infoBanner}>
+                本次正式下注為固定追期模式：按一次正式下注後，4 組號碼固定追 4 期，
+                中途不換號；除非你再次手動建立正式下注。
+              </div>
+
+              <div style={styles.groupGrid}>
+                {formalGroups.length ? (
+                  formalGroups.map((group, idx) => (
+                    <div key={`${group?.key || idx}`} style={styles.groupCard}>
+                      <div style={styles.groupHead}>
+                        <div style={styles.groupTitle}>{groupTitle(group, idx)}</div>
+                        <div style={styles.groupMeta}>
+                          {fmtText(group?.meta?.strategy_key || group?.key)}
+                        </div>
+                      </div>
+                      <div style={styles.ballRow}>
+                        {parseNums(group?.nums).map((n) => (
+                          <div key={n} style={styles.ballLarge}>
+                            {String(n).padStart(2, '0')}
+                          </div>
+                        ))}
+                      </div>
+                      <div style={styles.groupReason}>{groupReason(group)}</div>
+                    </div>
+                  ))
+                ) : (
+                  <div style={styles.emptyBox}>目前還沒有正式下注資料。</div>
+                )}
+              </div>
+
+              <div style={styles.actionRow}>
+                <button
+                  style={styles.primaryButton}
+                  onClick={handleFormalBet}
+                  disabled={busyKey !== ''}
+                >
+                  {busyKey === 'formalBet' ? '建立中...' : '重新建立正式下注'}
+                </button>
+              </div>
+            </Card>
+
+            <Card
+              title="AI 自動訓練"
+              subtitle="這塊是養 AI 用，不代表你一定要買。"
+              right={<div style={styles.tag}>四星賓果 / 四組 / 二期</div>}
+            >
+              <div style={styles.summaryLine}>
+                <span>模式：</span>
+                <strong>{fmtText(trainingLatest?.mode, 'ai_train')}</strong>
+                <span style={{ marginLeft: 16 }}>來源期數：</span>
+                <strong>{fmtText(trainingLatest?.source_draw_no)}</strong>
+                <span style={{ marginLeft: 16 }}>目標期數：</span>
+                <strong>{fmtText(trainingLatest?.target_periods)}</strong>
+              </div>
+
+              <div style={styles.groupGrid}>
+                {trainingGroups.length ? (
+                  trainingGroups.map((group, idx) => (
+                    <div key={`${group?.key || idx}`} style={styles.groupCard}>
+                      <div style={styles.groupHead}>
+                        <div style={styles.groupTitle}>{groupTitle(group, idx)}</div>
+                        <div style={styles.groupMeta}>
+                          {fmtText(group?.meta?.strategy_key || group?.key)}
+                        </div>
+                      </div>
+                      <div style={styles.ballRow}>
+                        {parseNums(group?.nums).map((n) => (
+                          <div key={n} style={styles.ballLarge}>
+                            {String(n).padStart(2, '0')}
+                          </div>
+                        ))}
+                      </div>
+                      <div style={styles.groupReason}>{groupReason(group)}</div>
+                    </div>
+                  ))
+                ) : (
+                  <div style={styles.emptyBox}>目前還沒有自動訓練資料。</div>
+                )}
+              </div>
+            </Card>
+
+            <Card
+              title="策略排行榜（精簡版）"
+              subtitle="你不用每次看 50 個，先看前 10 名就夠。"
+            >
+              <div style={styles.tableWrap}>
+                <table style={styles.table}>
+                  <thead>
+                    <tr>
+                      <th style={styles.th}>排名</th>
+                      <th style={styles.th}>策略</th>
+                      <th style={styles.th}>平均命中</th>
+                      <th style={styles.th}>ROI</th>
+                      <th style={styles.th}>回合</th>
+                      <th style={styles.th}>分數</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {leaderboard.length ? (
+                      leaderboard.slice(0, 10).map((row, idx) => (
+                        <tr key={row?.key || idx}>
+                          <td style={styles.td}>{idx + 1}</td>
+                          <td style={styles.td}>{fmtText(row?.label || row?.key)}</td>
+                          <td style={styles.td}>
+                            {Number.isFinite(Number(row?.avg_hit))
+                              ? Number(row.avg_hit).toFixed(2)
+                              : '--'}
+                          </td>
+                          <td style={styles.td}>
+                            {fmtPercent(row?.recent_50_roi ?? row?.roi)}
+                          </td>
+                          <td style={styles.td}>{fmtText(row?.total_rounds)}</td>
+                          <td style={styles.td}>
+                            {Number.isFinite(Number(row?.score))
+                              ? Number(row.score).toFixed(1)
+                              : '--'}
+                          </td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td style={styles.td} colSpan={6}>
+                          目前尚無排行榜資料。
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          </div>
+        )}
+
+        {!loading && activeTab === TABS.MARKET && (
+          <div style={styles.sectionStack}>
+            <Card
+              title="最新開獎"
+              subtitle="先把市場資料跟 AI 頁分開，畫面就會乾淨很多。"
+            >
+              <div style={styles.statsGrid4}>
+                <StatBox
+                  label="最新期數"
+                  value={fmtText(latestDrawNo)}
+                  hint={fmtDateTime(latestDrawTime)}
+                />
+                <StatBox
+                  label="開出號碼數"
+                  value={latestNumbers.length}
+                  hint="BINGO 1~80"
+                />
+                <StatBox
+                  label="奇數數量"
+                  value={latestNumbers.filter((n) => n % 2 === 1).length}
+                />
+                <StatBox
+                  label="偶數數量"
+                  value={latestNumbers.filter((n) => n % 2 === 0).length}
+                />
+              </div>
+
+              <div style={styles.marketBalls}>
+                {latestNumbers.map((n) => (
+                  <div key={n} style={styles.marketBall}>
+                    {String(n).padStart(2, '0')}
                   </div>
                 ))}
+              </div>
+            </Card>
 
-                <div style={styles.btnRow}>
-                  <button style={styles.primaryBtn} onClick={compareAiTrainMode}>用目標期數比對AI自動訓練</button>
-                </div>
-
-                {aiTrainResult && (
-                  <div style={styles.resultBox}>
-                    <div style={styles.resultLine}>判定：<strong>{aiTrainResult.verdict}</strong></div>
-                    <div style={styles.resultLine}>來源期數：{aiTrainResult.sourceDrawNo}</div>
-                    <div style={styles.resultLine}>目標期數：{aiTrainResult.targetDrawNo}</div>
-                    <div style={styles.resultLine}>實際比對期數：{aiTrainResult.compareDrawNo}</div>
-                    {aiTrainResult.compareDrawRange && (
-                      <div style={styles.resultLine}>比對區間：{aiTrainResult.compareDrawRange}</div>
+            <Card
+              title="最近 20 期"
+              subtitle="市場資料頁只做資料，別再把策略和下注摻進來。"
+            >
+              <div style={styles.tableWrap}>
+                <table style={styles.table}>
+                  <thead>
+                    <tr>
+                      <th style={styles.th}>期數</th>
+                      <th style={styles.th}>時間</th>
+                      <th style={styles.th}>號碼</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {recent20.length ? (
+                      recent20.map((row, idx) => {
+                        const nums = parseNums(row?.numbers || row?.nums);
+                        return (
+                          <tr key={row?.draw_no || row?.drawNo || idx}>
+                            <td style={styles.td}>
+                              {fmtText(row?.draw_no || row?.drawNo)}
+                            </td>
+                            <td style={styles.td}>
+                              {fmtDateTime(row?.draw_time || row?.drawTime)}
+                            </td>
+                            <td style={styles.td}>
+                              <div style={styles.numsInline}>
+                                {nums.map((n) => (
+                                  <span key={n} style={styles.numChip}>
+                                    {String(n).padStart(2, '0')}
+                                  </span>
+                                ))}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    ) : (
+                      <tr>
+                        <td style={styles.td} colSpan={3}>
+                          沒有 recent20 資料。
+                        </td>
+                      </tr>
                     )}
-                    <div style={styles.resultLine}>估計成本：{aiTrainResult.totalCost}</div>
-                    <div style={styles.resultLine}>估計回收：{aiTrainResult.estimatedReturn}</div>
-                    <div style={styles.resultLine}>估計損益：{aiTrainResult.profit}</div>
-                  </div>
-                )}
-              </>
-            ) : (
-              <div style={styles.subtle}>尚未建立 AI自動訓練。</div>
-            )}
-          </section>
-
-          <section style={styles.panel}>
-            <h2 style={styles.h2}>正式投注（四星賓果 / 四組 / 四期）</h2>
-            {formalPlan ? (
-              <>
-                <div style={styles.subtle}>Prediction ID：{formalPlan.predictionId || "尚未寫入"}</div>
-                <div style={styles.subtle}>策略模式：{formalPlan.strategyMode}</div>
-                <div style={styles.subtle}>來源期數：第 {formalPlan.sourceDrawNo} 期</div>
-                <div style={styles.subtle}>目標期數：第 {formalPlan.targetDrawNo} 期</div>
-                <div style={styles.subtle}>估計成本：{formalPlan.totalCost}</div>
-
-                <div style={{ marginTop: 12 }}>
-                  <div style={styles.groupTitle}>本次正式下注採用目前最佳 4 組策略</div>
-                </div>
-
-                {formalPlan.groups.map((g, idx) => (
-                  <div key={`${g.key}-${idx}`} style={styles.groupCard}>
-                    <div style={styles.groupTitle}>{g.label}</div>
-                    <div style={styles.groupNums}>{g.nums.join(" ")}</div>
-                    <div style={styles.subtle}>{g.reason}</div>
-                  </div>
-                ))}
-
-                <div style={styles.btnRow}>
-                  <button style={styles.primaryBtn} onClick={compareFormalMode}>用目標期數比對正式投注</button>
-                </div>
-
-                {formalResult && (
-                  <div style={styles.resultBox}>
-                    <div style={styles.resultLine}>判定：<strong>{formalResult.verdict}</strong></div>
-                    <div style={styles.resultLine}>來源期數：{formalResult.sourceDrawNo}</div>
-                    <div style={styles.resultLine}>目標期數：{formalResult.targetDrawNo}</div>
-                    <div style={styles.resultLine}>實際比對期數：{formalResult.compareDrawNo}</div>
-                    {formalResult.compareDrawRange && (
-                      <div style={styles.resultLine}>比對區間：{formalResult.compareDrawRange}</div>
-                    )}
-                    <div style={styles.resultLine}>估計成本：{formalResult.totalCost}</div>
-                    <div style={styles.resultLine}>估計回收：{formalResult.estimatedReturn}</div>
-                    <div style={styles.resultLine}>估計損益：{formalResult.profit}</div>
-                  </div>
-                )}
-              </>
-            ) : (
-              <div style={styles.subtle}>尚未建立正式投注。</div>
-            )}
-          </section>
-        </div>
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1275,183 +825,348 @@ export default function App() {
 
 const styles = {
   page: {
-    background: "#020b25",
-    minHeight: "100vh",
-    color: "#f3f6ff",
-    padding: "24px"
+    minHeight: '100vh',
+    background: '#0f172a',
+    color: '#e5e7eb',
+    padding: '20px 12px 90px'
   },
-  wrap: {
-    maxWidth: "1200px",
-    margin: "0 auto"
+  app: {
+    maxWidth: 1200,
+    margin: '0 auto'
   },
-  hero: {
-    background: "linear-gradient(180deg, #071938 0%, #09142b 100%)",
-    border: "1px solid rgba(100,180,255,0.18)",
-    borderRadius: 28,
-    padding: 28,
-    boxShadow: "0 20px 50px rgba(0,0,0,0.35)"
-  },
-  kicker: {
-    color: "#ffcf4d",
-    letterSpacing: 3,
-    fontSize: 14,
-    marginBottom: 10
-  },
-  h1: {
-    margin: 0,
-    fontSize: 44,
-    lineHeight: 1.15
-  },
-  p: {
-    color: "#b7c5e4",
-    fontSize: 18,
-    lineHeight: 1.8,
-    marginTop: 16
-  },
-  notice: {
-    marginTop: 18,
-    border: "1px solid #1f88c7",
-    background: "#083150",
-    color: "#dff2ff",
-    borderRadius: 18,
-    padding: "16px 18px",
-    fontSize: 18
-  },
-  statsGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))",
+  header: {
+    display: 'flex',
+    justifyContent: 'space-between',
     gap: 16,
-    marginTop: 22
+    alignItems: 'center',
+    marginBottom: 16,
+    flexWrap: 'wrap'
   },
-  statCard: {
-    background: "#081731",
+  brand: {
+    fontSize: 28,
+    fontWeight: 900,
+    letterSpacing: 0.6
+  },
+  headerSub: {
+    color: '#94a3b8',
+    marginTop: 6,
+    fontSize: 14
+  },
+  headerActions: {
+    display: 'flex',
+    gap: 10
+  },
+  tabBar: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+    gap: 10,
+    marginBottom: 16,
+    position: 'sticky',
+    top: 8,
+    zIndex: 5,
+    background: 'rgba(15,23,42,0.92)',
+    padding: 8,
+    borderRadius: 18,
+    backdropFilter: 'blur(10px)'
+  },
+  tabButton: {
+    border: '1px solid #334155',
+    background: '#111827',
+    color: '#cbd5e1',
+    borderRadius: 14,
+    padding: '14px 10px',
+    fontSize: 15,
+    fontWeight: 800,
+    cursor: 'pointer'
+  },
+  tabButtonActive: {
+    background: '#2563eb',
+    color: '#fff',
+    borderColor: '#2563eb',
+    boxShadow: '0 8px 24px rgba(37,99,235,0.35)'
+  },
+  tabIcon: {
+    marginRight: 6
+  },
+  errorBanner: {
+    background: '#7f1d1d',
+    border: '1px solid #ef4444',
+    color: '#fee2e2',
+    padding: 14,
+    borderRadius: 14,
+    marginBottom: 16,
+    fontWeight: 700
+  },
+  loading: {
+    padding: 30,
+    textAlign: 'center',
+    color: '#cbd5e1'
+  },
+  sectionStack: {
+    display: 'grid',
+    gap: 16
+  },
+  card: {
+    background: '#111827',
+    border: '1px solid #1f2937',
     borderRadius: 20,
-    padding: 18
+    padding: 18,
+    boxShadow: '0 12px 30px rgba(0,0,0,0.22)'
+  },
+  cardHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    gap: 12,
+    alignItems: 'flex-start',
+    marginBottom: 16,
+    flexWrap: 'wrap'
+  },
+  cardTitle: {
+    fontSize: 22,
+    fontWeight: 900
+  },
+  cardSubtitle: {
+    fontSize: 14,
+    color: '#94a3b8',
+    marginTop: 6
+  },
+  tag: {
+    padding: '8px 12px',
+    borderRadius: 999,
+    background: '#1e293b',
+    border: '1px solid #334155',
+    fontSize: 13,
+    color: '#cbd5e1',
+    fontWeight: 800
+  },
+  statsGrid4: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+    gap: 12
+  },
+  statBox: {
+    background: '#0b1220',
+    border: '1px solid #1f2937',
+    borderRadius: 16,
+    padding: 16
   },
   statLabel: {
-    color: "#9eb4dc",
-    fontSize: 14,
+    fontSize: 13,
+    color: '#94a3b8',
     marginBottom: 8
   },
   statValue: {
-    fontSize: 18,
-    fontWeight: 700
+    fontSize: 28,
+    fontWeight: 900,
+    lineHeight: 1.1
   },
-  btnRow: {
-    display: "flex",
-    flexWrap: "wrap",
-    gap: 12,
-    marginTop: 20
+  statHint: {
+    marginTop: 8,
+    fontSize: 12,
+    color: '#64748b'
   },
-  primaryBtn: {
-    background: "#f7bf19",
-    color: "#111",
-    border: 0,
-    borderRadius: 18,
-    padding: "14px 22px",
-    fontSize: 18,
-    fontWeight: 700,
-    cursor: "pointer"
-  },
-  secondaryBtn: {
-    background: "transparent",
-    color: "#eef4ff",
-    border: "1px solid rgba(255,255,255,0.18)",
-    borderRadius: 18,
-    padding: "14px 22px",
-    fontSize: 18,
-    fontWeight: 700,
-    cursor: "pointer"
-  },
-  panel: {
-    background: "#071938",
-    borderRadius: 28,
-    padding: 24,
-    border: "1px solid rgba(255,255,255,0.06)",
-    marginTop: 20
-  },
-  h2: {
-    marginTop: 0,
-    fontSize: 24
-  },
-  subtle: {
-    color: "#9eb4dc",
-    fontSize: 16,
-    lineHeight: 1.7
-  },
-  numbersWrap: {
-    display: "flex",
-    flexWrap: "wrap",
+  actionRow: {
+    display: 'flex',
     gap: 10,
-    marginTop: 16,
-    marginBottom: 16
-  },
-  numBall: {
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    minWidth: 52,
-    height: 52,
-    borderRadius: 999,
-    background: "#b11f2d",
-    color: "#fff",
-    fontWeight: 800,
-    fontSize: 22
-  },
-  row: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    padding: "10px 0"
-  },
-  groupCard: {
-    background: "#0b203f",
-    borderRadius: 20,
-    padding: 18,
-    marginTop: 12
-  },
-  groupTitle: {
-    color: "#ffcf4d",
-    fontSize: 18,
-    fontWeight: 700
-  },
-  groupNums: {
-    marginTop: 10,
-    fontSize: 30,
-    fontWeight: 800,
-    letterSpacing: 1
-  },
-  resultBox: {
-    marginTop: 18,
-    background: "#081731",
-    borderRadius: 18,
-    padding: 18
-  },
-  resultLine: {
-    fontSize: 18,
-    marginBottom: 8
-  },
-  grid2: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit,minmax(320px,1fr))",
-    gap: 18,
-    marginTop: 20
-  },
-  progressGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))",
-    gap: 14,
+    flexWrap: 'wrap',
     marginTop: 16
   },
-  progressCard: {
-    background: "#0b203f",
-    borderRadius: 20,
-    padding: 18
+  primaryButton: {
+    border: 'none',
+    borderRadius: 14,
+    background: '#2563eb',
+    color: '#fff',
+    fontWeight: 900,
+    padding: '12px 18px',
+    cursor: 'pointer'
   },
-  progressValue: {
-    fontSize: 28,
+  secondaryButton: {
+    border: '1px solid #334155',
+    borderRadius: 14,
+    background: '#0f172a',
+    color: '#e5e7eb',
     fontWeight: 800,
-    marginTop: 10,
-    color: "#ffffff"
+    padding: '12px 18px',
+    cursor: 'pointer'
+  },
+  warnButton: {
+    border: 'none',
+    borderRadius: 14,
+    background: '#b91c1c',
+    color: '#fff',
+    fontWeight: 900,
+    padding: '12px 18px',
+    cursor: 'pointer'
+  },
+  controlGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+    gap: 14
+  },
+  controlItem: {
+    background: '#0b1220',
+    border: '1px solid #1f2937',
+    borderRadius: 16,
+    padding: 16
+  },
+  controlTitle: {
+    fontSize: 17,
+    fontWeight: 900,
+    marginBottom: 8
+  },
+  controlText: {
+    fontSize: 14,
+    color: '#cbd5e1',
+    marginBottom: 14
+  },
+  inlineButtons: {
+    display: 'flex',
+    gap: 10,
+    flexWrap: 'wrap'
+  },
+  resultPanel: {
+    marginTop: 16,
+    background: '#0b1220',
+    border: '1px solid #1f2937',
+    borderRadius: 16,
+    padding: 16
+  },
+  resultTitle: {
+    fontWeight: 900,
+    marginBottom: 8
+  },
+  resultText: {
+    color: '#cbd5e1',
+    lineHeight: 1.6
+  },
+  summaryLine: {
+    color: '#cbd5e1',
+    marginBottom: 14,
+    lineHeight: 1.8
+  },
+  infoBanner: {
+    background: '#172554',
+    border: '1px solid #1d4ed8',
+    color: '#dbeafe',
+    padding: 14,
+    borderRadius: 14,
+    marginBottom: 16,
+    lineHeight: 1.7
+  },
+  groupGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
+    gap: 14
+  },
+  groupCard: {
+    background: '#0b1220',
+    border: '1px solid #1f2937',
+    borderRadius: 18,
+    padding: 16
+  },
+  groupHead: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    gap: 10,
+    alignItems: 'flex-start',
+    marginBottom: 12
+  },
+  groupTitle: {
+    fontSize: 16,
+    fontWeight: 900
+  },
+  groupMeta: {
+    fontSize: 12,
+    color: '#94a3b8',
+    textAlign: 'right'
+  },
+  ballRow: {
+    display: 'flex',
+    gap: 10,
+    flexWrap: 'wrap',
+    marginBottom: 10
+  },
+  ballLarge: {
+    width: 52,
+    height: 52,
+    borderRadius: 999,
+    background: 'linear-gradient(135deg, #2563eb, #1d4ed8)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontWeight: 900,
+    fontSize: 18,
+    color: '#fff',
+    boxShadow: '0 8px 20px rgba(37,99,235,0.35)'
+  },
+  groupReason: {
+    color: '#94a3b8',
+    fontSize: 13,
+    lineHeight: 1.6
+  },
+  emptyBox: {
+    background: '#0b1220',
+    border: '1px dashed #334155',
+    borderRadius: 16,
+    padding: 24,
+    textAlign: 'center',
+    color: '#94a3b8'
+  },
+  tableWrap: {
+    overflowX: 'auto'
+  },
+  table: {
+    width: '100%',
+    borderCollapse: 'collapse'
+  },
+  th: {
+    textAlign: 'left',
+    padding: '12px 10px',
+    fontSize: 13,
+    color: '#94a3b8',
+    borderBottom: '1px solid #1f2937',
+    whiteSpace: 'nowrap'
+  },
+  td: {
+    padding: '12px 10px',
+    borderBottom: '1px solid #1f2937',
+    verticalAlign: 'top',
+    color: '#e5e7eb'
+  },
+  marketBalls: {
+    display: 'flex',
+    gap: 10,
+    flexWrap: 'wrap',
+    marginTop: 18
+  },
+  marketBall: {
+    width: 46,
+    height: 46,
+    borderRadius: 999,
+    background: '#1e293b',
+    border: '1px solid #334155',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontWeight: 900,
+    color: '#f8fafc'
+  },
+  numsInline: {
+    display: 'flex',
+    gap: 6,
+    flexWrap: 'wrap'
+  },
+  numChip: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: 34,
+    height: 30,
+    padding: '0 8px',
+    borderRadius: 999,
+    background: '#1e293b',
+    border: '1px solid #334155',
+    fontSize: 13,
+    fontWeight: 800
   }
 };
