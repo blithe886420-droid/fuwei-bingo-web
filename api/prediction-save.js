@@ -9,6 +9,7 @@ const DRAWS_TABLE = 'bingo_draws';
 const STRATEGY_POOL_TABLE = 'strategy_pool';
 const STRATEGY_STATS_TABLE = 'strategy_stats';
 const PREDICTIONS_TABLE = 'bingo_predictions';
+const PREDICTION_STRATEGY_MAP_TABLE = 'prediction_strategy_map';
 
 function toInt(value, fallback = 0) {
   const n = Number(value);
@@ -370,18 +371,6 @@ function mutateGroupToUnique(baseNums, analysis, strategy, usedSignatures = new 
     }
   }
 
-  for (let a = 0; a < rotatedPool.length; a += 1) {
-    for (let b = a + 1; b < rotatedPool.length; b += 1) {
-      const nums = uniqueAsc([base[0], base[1], rotatedPool[a], rotatedPool[b]]).slice(0, 4);
-      if (nums.length !== 4) continue;
-      const signature = getGroupSignature(nums);
-      if (!usedSignatures.has(signature)) {
-        return nums;
-      }
-    }
-    if (a > 12) break;
-  }
-
   return base;
 }
 
@@ -395,21 +384,22 @@ function ensureUniqueGroups(groups, analysis) {
     };
 
     let nums = uniqueAsc(group.nums).slice(0, 4);
-    let signature = getGroupSignature(nums);
+    const originalSignature = getGroupSignature(nums);
 
-    if (used.has(signature)) {
+    if (used.has(originalSignature)) {
       nums = mutateGroupToUnique(nums, analysis, strategy, used);
-      signature = getGroupSignature(nums);
     }
 
-    used.add(signature);
+    const finalSignature = getGroupSignature(nums);
+    used.add(finalSignature);
 
     return {
       ...group,
       nums,
-      reason: used.has(signature) && getGroupSignature(group.nums) !== signature
-        ? `${group.reason}（已自動避開重複組合）`
-        : group.reason
+      reason:
+        finalSignature !== originalSignature
+          ? `${group.reason}（已自動避開重複組合）`
+          : group.reason
     };
   });
 }
@@ -553,7 +543,7 @@ function buildFallbackSeedGroupsFromRecent20(recent20) {
       nums,
       reason: `fallback 生成 ${strategy.strategy_name}`,
       meta: {
-        model: 'v4.0',
+        model: 'v4.3',
         source: 'fallback',
         strategy_key: strategy.strategy_key,
         strategy_name: strategy.strategy_name,
@@ -584,7 +574,12 @@ async function buildStrategyGroupsFromPool(supabase, recent20) {
         })
       );
       const mergedCandidates = mergeGeneLists(candidateLists, strategy.strategy_key, idx);
-      const nums = finalizeGroupNumbers(mergedCandidates, analysis, { ...strategy, variantIndex: idx }, 4);
+      const nums = finalizeGroupNumbers(
+        mergedCandidates,
+        analysis,
+        { ...strategy, variantIndex: idx },
+        4
+      );
 
       return {
         key: strategy.strategy_key,
@@ -592,7 +587,7 @@ async function buildStrategyGroupsFromPool(supabase, recent20) {
         nums,
         reason: `來自 strategy_pool active 策略 ${strategy.strategy_name || strategy.strategy_key}`,
         meta: {
-          model: 'v4.0',
+          model: 'v4.3',
           source: 'strategy_pool',
           strategy_key: strategy.strategy_key,
           strategy_name: strategy.strategy_name || strategy.strategy_key,
@@ -625,6 +620,37 @@ async function buildStrategyGroupsFromPool(supabase, recent20) {
 
   groups = ensureUniqueGroups([...map.values()].slice(0, BET_GROUP_COUNT), analysis);
   return groups;
+}
+
+async function insertPredictionStrategyMap(supabase, predictionId, payload) {
+  const groups = Array.isArray(payload.groups) ? payload.groups : [];
+  if (!groups.length) return { ok: true, inserted_count: 0 };
+
+  const rows = groups.map((group, idx) => ({
+    prediction_id: predictionId,
+    strategy_key:
+      group?.meta?.strategy_key ||
+      group?.key ||
+      `group_${idx + 1}`,
+    group_index: idx + 1,
+    group_key: group?.key || `group_${idx + 1}`,
+    group_label: group?.label || `第${idx + 1}組`,
+    nums: Array.isArray(group?.nums) ? group.nums : [],
+    mode: payload.mode || DEFAULT_MODE,
+    source_draw_no: toInt(payload.source_draw_no, 0),
+    created_at: new Date().toISOString()
+  }));
+
+  const { error } = await supabase
+    .from(PREDICTION_STRATEGY_MAP_TABLE)
+    .insert(rows);
+
+  if (error) throw error;
+
+  return {
+    ok: true,
+    inserted_count: rows.length
+  };
 }
 
 export default async function handler(req, res) {
@@ -731,6 +757,14 @@ export default async function handler(req, res) {
       });
     }
 
+    let predictionStrategyMapResult = null;
+
+    try {
+      predictionStrategyMapResult = await insertPredictionStrategyMap(supabase, id, payload);
+    } catch (mapErr) {
+      console.error('insertPredictionStrategyMap error:', mapErr.message);
+    }
+
     return res.status(200).json({
       ok: true,
       id,
@@ -739,6 +773,7 @@ export default async function handler(req, res) {
       target_periods: targetPeriods,
       group_source: groupSource,
       groups,
+      prediction_strategy_map_result: predictionStrategyMapResult,
       bet_group_count: BET_GROUP_COUNT,
       cost_per_group_per_period: COST_PER_GROUP_PER_PERIOD,
       estimated_total_cost: BET_GROUP_COUNT * targetPeriods * COST_PER_GROUP_PER_PERIOD
