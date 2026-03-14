@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import { ensureStrategyPoolStrategies } from '../lib/ensureStrategyPoolStrategies.js';
 
 const BET_GROUP_COUNT = 4;
 const TARGET_PERIODS = 4;
