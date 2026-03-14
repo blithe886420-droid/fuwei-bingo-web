@@ -79,7 +79,7 @@ function normalizePredictionRow(row) {
 
   const mode = String(row.mode || '').toLowerCase();
   const sourceDrawNo = toInt(row.source_draw_no, 0);
-  const targetPeriods = toInt(row.target_periods, mode === 'test' ? 2 : 4);
+  const targetPeriods = toInt(row.target_periods, mode === 'formal' ? 4 : 2);
 
   return {
     id: row.id,
@@ -143,14 +143,14 @@ export default async function handler(req, res) {
   }
 
   try {
-    const [testPrediction, formalPrediction] = await Promise.all([
-      getLatestPredictionByMode('test'),
+    const [aiTrainPrediction, formalPrediction] = await Promise.all([
+      getLatestPredictionByMode('ai_train'),
       getLatestPredictionByMode('formal')
     ]);
 
     return res.status(200).json({
       ok: true,
-      test: testPrediction,
+      ai_train: aiTrainPrediction,
       formal: formalPrediction
     });
   } catch (error) {
