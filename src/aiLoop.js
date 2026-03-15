@@ -1,5 +1,10 @@
 let loopTimer = null;
+let nightPauseTimer = null;
 let isCycleRunning = false;
+
+const LOOP_INTERVAL_MS = 180000;
+const NIGHT_STOP_START_MINUTES = 0;
+const NIGHT_STOP_END_MINUTES = 7 * 60 + 30;
 
 async function safeFetchJson(url, options) {
   const res = await fetch(url, options);
@@ -17,6 +22,28 @@ async function safeFetchJson(url, options) {
   }
 
   return json;
+}
+
+function getNowMinutes() {
+  const now = new Date();
+  return now.getHours() * 60 + now.getMinutes();
+}
+
+function isNightStopWindow() {
+  const minutes = getNowMinutes();
+  return minutes >= NIGHT_STOP_START_MINUTES && minutes < NIGHT_STOP_END_MINUTES;
+}
+
+function msUntilNightWindowEnd() {
+  const now = new Date();
+  const target = new Date(now);
+  target.setHours(7, 30, 0, 0);
+
+  if (target.getTime() <= now.getTime()) {
+    target.setDate(target.getDate() + 1);
+  }
+
+  return Math.max(1000, target.getTime() - now.getTime());
 }
 
 async function loadConfig() {
@@ -77,11 +104,28 @@ function buildLoopStatusText(result) {
   return '待命中';
 }
 
+function clearAllTimers() {
+  if (loopTimer) {
+    clearTimeout(loopTimer);
+    loopTimer = null;
+  }
+
+  if (nightPauseTimer) {
+    clearTimeout(nightPauseTimer);
+    nightPauseTimer = null;
+  }
+}
+
 async function runAiCycle(setStatus) {
   if (isCycleRunning) return null;
   isCycleRunning = true;
 
   try {
+    if (isNightStopWindow()) {
+      setStatus('夜間停訓中（00:00～07:30 不訓練）');
+      return null;
+    }
+
     setStatus('同步期數中...');
     await safeFetchJson('/api/sync', { method: 'POST' }).catch(async () => {
       await safeFetchJson('/api/sync');
@@ -109,31 +153,67 @@ async function runAiCycle(setStatus) {
   }
 }
 
+function scheduleNightResume(setStatus) {
+  clearAllTimers();
+  setStatus('夜間停訓中（00:00～07:30 不訓練）');
+
+  nightPauseTimer = setTimeout(async () => {
+    const cfg = await loadConfig();
+    const enabled = readAutoTrainEnabled(cfg);
+
+    if (!enabled) {
+      setStatus('已停止');
+      return;
+    }
+
+    await runAiCycle(setStatus);
+    startAiLoop(setStatus);
+  }, msUntilNightWindowEnd());
+}
+
 export async function runAiLoopOnce(setStatus) {
   return await runAiCycle(setStatus);
 }
 
 export async function startAiLoop(setStatus) {
-  if (loopTimer) return;
+  clearAllTimers();
+
+  const cfg = await loadConfig();
+  const enabled = readAutoTrainEnabled(cfg);
+
+  if (!enabled) {
+    setStatus('已停止');
+    return;
+  }
+
+  if (isNightStopWindow()) {
+    scheduleNightResume(setStatus);
+    return;
+  }
 
   setStatus('AI LOOP 啟動');
   await runAiCycle(setStatus);
 
-  loopTimer = setInterval(async () => {
-    if (isCycleRunning) return;
+  loopTimer = setTimeout(async function loopRunner() {
+    const latestCfg = await loadConfig();
+    const latestEnabled = readAutoTrainEnabled(latestCfg);
 
-    const cfg = await loadConfig();
-    const enabled = readAutoTrainEnabled(cfg);
+    if (!latestEnabled) {
+      clearAllTimers();
+      setStatus('已停止');
+      return;
+    }
 
-    if (!enabled) return;
+    if (isNightStopWindow()) {
+      scheduleNightResume(setStatus);
+      return;
+    }
 
     await runAiCycle(setStatus);
-  }, 20000);
+    loopTimer = setTimeout(loopRunner, LOOP_INTERVAL_MS);
+  }, LOOP_INTERVAL_MS);
 }
 
 export function stopAiLoop() {
-  if (loopTimer) {
-    clearInterval(loopTimer);
-    loopTimer = null;
-  }
+  clearAllTimers();
 }
