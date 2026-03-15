@@ -227,6 +227,7 @@ export default function App() {
   const schedulerRef = useRef(null);
   const cycleRunningRef = useRef(false);
   const autoTrainEnabledRef = useRef(false);
+  const sessionStartedRef = useRef(false);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -302,6 +303,7 @@ export default function App() {
           String(configRes?.auto_train_enabled) === 'true';
       }
 
+      // 只更新按鈕顯示，不在載入頁面時自動啟動循環
       setAutoTrainEnabled(enabled);
       autoTrainEnabledRef.current = enabled;
     } catch (err) {
@@ -401,8 +403,11 @@ export default function App() {
 
     schedulerRef.current = setTimeout(async () => {
       if (!autoTrainEnabledRef.current) return;
+      if (!sessionStartedRef.current) return;
+
       await runAiCycle();
-      if (autoTrainEnabledRef.current) {
+
+      if (autoTrainEnabledRef.current && sessionStartedRef.current) {
         scheduleNextAiCycle(LOOP_INTERVAL_MS);
       }
     }, delay);
@@ -422,17 +427,25 @@ export default function App() {
     autoTrainEnabledRef.current = autoTrainEnabled;
   }, [autoTrainEnabled]);
 
+  // 關鍵修正：頁面載入時不自動啟動訓練
   useEffect(() => {
     if (!mountedRef.current) return;
 
     stopAiLoop();
 
-    if (autoTrainEnabled) {
-      setLoopStatusText('AI 循環啟動');
-      scheduleNextAiCycle(0);
-    } else {
+    if (!autoTrainEnabled) {
+      sessionStartedRef.current = false;
       setLoopStatusText('待命中');
+      return;
     }
+
+    if (!sessionStartedRef.current) {
+      setLoopStatusText('待命中');
+      return;
+    }
+
+    setLoopStatusText('AI 循環啟動');
+    scheduleNextAiCycle(0);
 
     return () => {
       stopAiLoop();
@@ -456,8 +469,12 @@ export default function App() {
       autoTrainEnabledRef.current = nextEnabled;
 
       if (nextEnabled) {
+        sessionStartedRef.current = true;
         setLoopStatusText('AI 循環啟動');
+        stopAiLoop();
+        scheduleNextAiCycle(0);
       } else {
+        sessionStartedRef.current = false;
         stopAiLoop();
         setLoopStatusText('已停止');
       }
@@ -629,7 +646,7 @@ export default function App() {
                     </span>
                   </div>
                   <div style={styles.controlHint}>
-                    開啟後會立刻跑一次，之後每 20 秒循環；新版已避免重複連打 auto-train。
+                    打開網頁不會自動訓練；只有你手動按下開啟後，才會開始循環。
                   </div>
                   <button
                     style={autoTrainEnabled ? styles.warnButton : styles.primaryButton}
