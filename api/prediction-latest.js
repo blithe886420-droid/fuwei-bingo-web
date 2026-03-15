@@ -71,6 +71,10 @@ function parseGroupsJson(value) {
     }
   }
 
+  if (value && typeof value === 'object') {
+    return normalizeGroups(value);
+  }
+
   return [];
 }
 
@@ -79,17 +83,30 @@ function normalizePredictionRow(row) {
 
   const mode = String(row.mode || '').toLowerCase();
   const sourceDrawNo = toInt(row.source_draw_no, 0);
-  const targetPeriods = toInt(row.target_periods, mode === 'formal' ? 4 : 2);
+  const targetPeriods = toInt(
+    row.target_periods,
+    mode === 'formal' ? 4 : 2
+  );
+
+  const groups = parseGroupsJson(row.groups_json);
 
   return {
     id: row.id,
     mode,
     status: row.status || 'created',
     created_at: row.created_at || null,
+
+    // 前端舊新寫法都兼容
+    source_draw_no: sourceDrawNo,
+    target_periods: targetPeriods,
     sourceDrawNo,
     targetPeriods,
     targetDrawNo: sourceDrawNo ? sourceDrawNo + targetPeriods : 0,
-    groups: parseGroupsJson(row.groups_json),
+
+    groups_json: groups,
+    groups,
+    prediction_groups: groups,
+
     compare_result: row.compare_result || null,
     compare_result_json: row.compare_result_json || null,
     compare_status: row.compare_status || null,
@@ -143,17 +160,30 @@ export default async function handler(req, res) {
   }
 
   try {
-    const [aiTrainPrediction, formalPrediction] = await Promise.all([
-      getLatestPredictionByMode('ai_train'),
+    // 你的 auto-train.js 寫入的是 test，不是 ai_train
+    const [trainingPrediction, formalPrediction] = await Promise.all([
+      getLatestPredictionByMode('test'),
       getLatestPredictionByMode('formal')
     ]);
 
+    const rows = [trainingPrediction, formalPrediction].filter(Boolean);
+
     return res.status(200).json({
       ok: true,
-      ai_train: aiTrainPrediction,
-      formal: formalPrediction
+
+      // 給前端現在的 fallback 使用
+      training: trainingPrediction,
+      formal: formalPrediction,
+
+      // 保留舊命名，相容其他地方
+      ai_train: trainingPrediction,
+
+      // 給 App.jsx 的 rows/filter 流程使用
+      rows
     });
   } catch (error) {
+    console.error('prediction-latest error:', error);
+
     return res.status(500).json({
       ok: false,
       error: error.message || 'prediction-latest failed'
