@@ -1,245 +1,194 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 
 export default function App() {
 
-  const [config, setConfig] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [config, setConfig] = useState({});
+  const [statusText, setStatusText] = useState("系統啟動中...");
+  const loopRef = useRef(null);
 
-  const [aiStatus, setAiStatus] = useState({
-    score: 0,
-    roi: 0,
-    hit: 0,
-    mode: "test",
-    strategies: 0
-  });
-
-  // 讀 system config
+  // 讀 system-config
   async function loadConfig() {
     try {
       const res = await fetch("/api/system-config");
       const data = await res.json();
-
-      setConfig(data);
-    } catch (err) {
-      console.error("loadConfig error", err);
+      setConfig(data || {});
+      return data;
+    } catch (e) {
+      console.error("loadConfig error", e);
+      return {};
     }
   }
 
-  // 讀 AI 狀態
-  async function loadStatus() {
+  // AI 主循環
+  async function runAiCycle() {
     try {
-      const res = await fetch("/api/prediction-latest");
-      const data = await res.json();
 
-      if (data && data.ok && data.data) {
-        setAiStatus({
-          score: data.data.score || 0,
-          roi: data.data.roi || 0,
-          hit: data.data.hit || 0,
-          mode: data.data.mode || "test",
-          strategies: data.data.strategy_count || 0
-        });
-      }
+      setStatusText("同步期數中...");
+      await fetch("/api/sync");
+
+      setStatusText("更新 recent20...");
+      await fetch("/api/recent20");
+
+      setStatusText("更新 prediction...");
+      await fetch("/api/prediction-latest");
+
+      setStatusText("檢查補期...");
+      await fetch("/api/catchup");
+
+      setStatusText("AI 訓練中...");
+      await fetch("/api/auto-train", { method: "POST" });
+
+      setStatusText("AI 訓練完成");
+
     } catch (err) {
-      console.error("loadStatus error", err);
+      console.error("AI cycle error", err);
+      setStatusText("AI 循環發生錯誤");
     }
   }
 
-  // 初始載入
+  // 啟動 AI LOOP
+  function startLoop() {
+
+    if (loopRef.current) return;
+
+    setStatusText("AI 循環啟動");
+
+    loopRef.current = setInterval(async () => {
+
+      const cfg = await loadConfig();
+
+      if (
+        cfg.auto_train_enabled === true ||
+        cfg.auto_train_enabled === "true"
+      ) {
+        await runAiCycle();
+      }
+
+    }, 20000);
+  }
+
+  // 停止 AI LOOP
+  function stopLoop() {
+
+    if (loopRef.current) {
+      clearInterval(loopRef.current);
+      loopRef.current = null;
+      setStatusText("AI 循環已停止");
+    }
+
+  }
+
+  // 開啟自動訓練
+  async function enableAutoTrain() {
+
+    await fetch("/api/system-config", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        key: "auto_train_enabled",
+        value: true
+      })
+    });
+
+    await loadConfig();
+    setStatusText("自動訓練已開啟");
+
+  }
+
+  // 關閉自動訓練
+  async function disableAutoTrain() {
+
+    await fetch("/api/system-config", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        key: "auto_train_enabled",
+        value: false
+      })
+    });
+
+    await loadConfig();
+    setStatusText("自動訓練已關閉");
+
+  }
+
+  // 初始化
   useEffect(() => {
+
     async function init() {
       await loadConfig();
-      await loadStatus();
-      setLoading(false);
+      startLoop();
     }
 
     init();
+
+    return () => stopLoop();
+
   }, []);
 
-  // 啟動自動訓練
-  async function startAutoTrain() {
-
-    try {
-
-      await fetch("/api/system-config", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          key: "auto_train_enabled",
-          value: true
-        })
-      });
-
-      const res = await fetch("/api/auto-train", {
-        method: "POST"
-      });
-
-      const data = await res.json();
-
-      console.log("auto-train result", data);
-
-      await loadConfig();
-
-    } catch (err) {
-
-      console.error("startAutoTrain error", err);
-
-    }
-
-  }
-
-  // 停止自動訓練
-  async function stopAutoTrain() {
-
-    try {
-
-      await fetch("/api/system-config", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          key: "auto_train_enabled",
-          value: false
-        })
-      });
-
-      await loadConfig();
-
-    } catch (err) {
-
-      console.error("stopAutoTrain error", err);
-
-    }
-
-  }
-
-  if (loading) {
-    return <div style={{ padding: 40 }}>載入中...</div>;
-  }
-
   const autoTrainEnabled =
-    config?.auto_train_enabled === true ||
-    config?.auto_train_enabled === "true";
+    config.auto_train_enabled === true ||
+    config.auto_train_enabled === "true";
 
   return (
     <div
       style={{
-        background: "#F6F0D6",
+        background: "#0B2340",
         minHeight: "100vh",
-        padding: "30px",
+        color: "#fff",
+        padding: "40px",
         fontFamily: "Arial"
       }}
     >
+      <h1>富緯賓果系統 v4.3 AI LOOP 版</h1>
 
-      <h1 style={{ color: "#2F6B5F" }}>
-        FUWEI BINGO AI
-      </h1>
+      <p>AI 狀態：{statusText}</p>
 
-      <p style={{ color: "#555" }}>
-        淺黃台彩風，舒服一點，也看得久一點。
-      </p>
+      <div style={{ marginTop: 30 }}>
 
-      <div
-        style={{
-          background: "#FFFFFF",
-          borderRadius: 12,
-          padding: 20,
-          marginTop: 20
-        }}
-      >
-
-        <h2>AI 狀態總覽</h2>
-
-        <div style={{ display: "flex", gap: 20 }}>
-
-          <div>
-            <b>AI 信心指數</b>
-            <div style={{ fontSize: 28 }}>
-              {aiStatus.score} / 100
-            </div>
-          </div>
-
-          <div>
-            <b>平均 ROI</b>
-            <div style={{ fontSize: 28 }}>
-              {aiStatus.roi}%
-            </div>
-          </div>
-
-          <div>
-            <b>平均命中</b>
-            <div style={{ fontSize: 28 }}>
-              {aiStatus.hit}
-            </div>
-          </div>
-
-          <div>
-            <b>策略數量</b>
-            <div style={{ fontSize: 28 }}>
-              {aiStatus.strategies}
-            </div>
-          </div>
-
-        </div>
-
-      </div>
-
-
-      <div
-        style={{
-          background: "#FFFFFF",
-          borderRadius: 12,
-          padding: 20,
-          marginTop: 20
-        }}
-      >
-
-        <h2>系統控制</h2>
-
-        <div style={{ marginBottom: 10 }}>
-          目前狀態：
+        <p>
+          自動訓練狀態：
           <b style={{ marginLeft: 10 }}>
             {autoTrainEnabled ? "開啟中" : "關閉"}
           </b>
-        </div>
+        </p>
 
         {!autoTrainEnabled && (
           <button
-            onClick={startAutoTrain}
+            onClick={enableAutoTrain}
             style={{
               padding: "10px 20px",
-              background: "#2F6B5F",
-              color: "#fff",
+              background: "#1abc9c",
               border: "none",
               borderRadius: 6,
-              cursor: "pointer"
+              cursor: "pointer",
+              marginRight: 10
             }}
           >
-            啟動自動訓練
+            開啟自動訓練
           </button>
         )}
 
         {autoTrainEnabled && (
           <button
-            onClick={stopAutoTrain}
+            onClick={disableAutoTrain}
             style={{
               padding: "10px 20px",
-              background: "#D96C3B",
-              color: "#fff",
+              background: "#e74c3c",
               border: "none",
               borderRadius: 6,
               cursor: "pointer"
             }}
           >
-            停止自動訓練
+            關閉自動訓練
           </button>
         )}
 
       </div>
-
     </div>
   );
 }
