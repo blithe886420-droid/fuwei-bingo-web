@@ -1,23 +1,10 @@
 import { createClient } from '@supabase/supabase-js';
 import { recordStrategyCompareResult } from '../lib/strategyStatsRecorder.js';
-import { maybeRunStrategyEvolution } from '../lib/strategyEvolutionEngine.js';
 import {
   parsePredictionGroups,
   buildComparePayload,
   parseDrawNumbers
 } from '../lib/buildComparePayload.js';
-
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY =
-  process.env.SUPABASE_SERVICE_ROLE_KEY ||
-  process.env.SUPABASE_SECRET_KEY ||
-  process.env.SUPABASE_KEY;
-
-if (!SUPABASE_URL || !SUPABASE_KEY) {
-  throw new Error('Missing SUPABASE_URL or SUPABASE key');
-}
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const CURRENT_MODE = 'test';
 const ACCEPT_MODES = ['test'];
@@ -38,6 +25,35 @@ const STRATEGY_STATS_TABLE = 'strategy_stats';
 const DRAW_NO_COL = 'draw_no';
 const DRAW_TIME_COL = 'draw_time';
 const DRAW_NUMBERS_COL = 'numbers';
+
+let cachedSupabase = null;
+
+function getSupabase() {
+  if (cachedSupabase) return cachedSupabase;
+
+  const url =
+    process.env.SUPABASE_URL ||
+    process.env.VITE_SUPABASE_URL ||
+    process.env.NEXT_PUBLIC_SUPABASE_URL;
+
+  const key =
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_SECRET_KEY ||
+    process.env.SUPABASE_KEY ||
+    process.env.SUPABASE_ANON_KEY ||
+    process.env.VITE_SUPABASE_ANON_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  if (!url || !key) {
+    throw new Error('Missing SUPABASE_URL or SUPABASE key');
+  }
+
+  cachedSupabase = createClient(url, key, {
+    auth: { persistSession: false }
+  });
+
+  return cachedSupabase;
+}
 
 function nowTs() {
   return Date.now();
@@ -90,6 +106,8 @@ function rowOrEmpty(row) {
 }
 
 async function getLatestDrawNo() {
+  const supabase = getSupabase();
+
   const { data, error } = await supabase
     .from(DRAWS_TABLE)
     .select(DRAW_NO_COL)
@@ -102,6 +120,8 @@ async function getLatestDrawNo() {
 }
 
 async function getRecent20() {
+  const supabase = getSupabase();
+
   const { data, error } = await supabase
     .from(DRAWS_TABLE)
     .select(`${DRAW_NO_COL}, ${DRAW_TIME_COL}, ${DRAW_NUMBERS_COL}`)
@@ -113,6 +133,8 @@ async function getRecent20() {
 }
 
 async function getMaturedPredictions(limitCount) {
+  const supabase = getSupabase();
+
   const { data, error } = await supabase
     .from(PREDICTIONS_TABLE)
     .select('*')
@@ -126,6 +148,8 @@ async function getMaturedPredictions(limitCount) {
 }
 
 async function getActiveCreatedTestPrediction() {
+  const supabase = getSupabase();
+
   const { data, error } = await supabase
     .from(PREDICTIONS_TABLE)
     .select('id')
@@ -140,6 +164,8 @@ async function getActiveCreatedTestPrediction() {
 }
 
 async function getDrawRowsForPrediction(prediction) {
+  const supabase = getSupabase();
+
   const sourceDrawNo = toInt(prediction.source_draw_no);
   const targetPeriods = toInt(prediction.target_periods || TARGET_PERIODS);
 
@@ -159,6 +185,7 @@ async function getDrawRowsForPrediction(prediction) {
 }
 
 async function comparePrediction(prediction) {
+  const supabase = getSupabase();
   const groups = parsePredictionGroups(prediction, BET_GROUP_COUNT);
 
   if (!groups.length) {
@@ -221,7 +248,7 @@ async function comparePrediction(prediction) {
       compareResult: built.resultForApp
     });
   } catch (err) {
-    console.error('recordStrategyCompareResult error:', err.message);
+    console.error('recordStrategyCompareResult error:', err?.message || err);
   }
 
   return {
@@ -714,6 +741,8 @@ function scoreActiveStrategy(row) {
 }
 
 async function getActiveStrategiesFromPool(limitCount = BET_GROUP_COUNT) {
+  const supabase = getSupabase();
+
   const { data: activeRows, error: activeError } = await supabase
     .from(STRATEGY_POOL_TABLE)
     .select('*')
@@ -788,7 +817,9 @@ function buildFallbackSeedGroupsFromRecent20(recent20) {
     }
   ];
 
-  const rawGroups = fallbackStrategies.map((strategy, idx) => buildGroupFromStrategy(strategy, recent20, idx));
+  const rawGroups = fallbackStrategies.map((strategy, idx) =>
+    buildGroupFromStrategy(strategy, recent20, idx)
+  );
   const analysis = buildRecent20Analysis(recent20);
   return ensureUniqueGroups(rawGroups, analysis);
 }
@@ -825,6 +856,7 @@ async function buildStrategyGroupsFromPool(recent20) {
 }
 
 async function createNextTestPrediction() {
+  const supabase = getSupabase();
   const latestDrawNo = await getLatestDrawNo();
 
   if (!latestDrawNo) {
@@ -875,6 +907,8 @@ async function createNextTestPrediction() {
 }
 
 async function buildLeaderboard(limitRows = 50) {
+  const supabase = getSupabase();
+
   const { data: poolRows, error: poolError } = await supabase
     .from(STRATEGY_POOL_TABLE)
     .select('*')
@@ -1051,15 +1085,7 @@ export default async function handler(req, res) {
     }
 
     const leaderboard = await buildLeaderboard(50);
-
-    let evolutionResult = null;
-
-    try {
-      evolutionResult = await maybeRunStrategyEvolution();
-      console.log('strategy evolution result:', evolutionResult);
-    } catch (err) {
-      console.error('maybeRunStrategyEvolution error:', err.message);
-    }
+    const evolutionResult = null;
 
     return res.status(200).json({
       ok: true,
@@ -1086,7 +1112,7 @@ export default async function handler(req, res) {
 
     return res.status(500).json({
       ok: false,
-      error: error.message || 'Unknown auto-train error'
+      error: error?.message || 'Unknown auto-train error'
     });
   }
 }
