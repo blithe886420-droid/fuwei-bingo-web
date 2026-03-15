@@ -226,7 +226,6 @@ export default function App() {
   const mountedRef = useRef(false);
   const schedulerRef = useRef(null);
   const cycleRunningRef = useRef(false);
-  const autoTrainEnabledRef = useRef(false);
   const sessionStartedRef = useRef(false);
 
   const loadAll = useCallback(async () => {
@@ -234,10 +233,9 @@ export default function App() {
     setError('');
 
     try {
-      const [recentRes, predictionRes, configRes] = await Promise.all([
+      const [recentRes, predictionRes] = await Promise.all([
         safeFetchJson('/api/recent20').catch(() => ({})),
-        safeFetchJson('/api/prediction-latest').catch(() => ({})),
-        safeFetchJson('/api/system-config').catch(() => ({}))
+        safeFetchJson('/api/prediction-latest').catch(() => ({}))
       ]);
 
       const recentRows = getRecentRows(recentRes);
@@ -285,27 +283,6 @@ export default function App() {
         predictionRes?.auto_train_result?.leaderboard ||
         [];
       setLeaderboard(toArray(lb));
-
-      const cfgRows = toArray(configRes?.rows || configRes?.data || []);
-      const cfgFromRows = cfgRows.find((r) => r?.key === 'auto_train_enabled');
-
-      let enabled = false;
-
-      if (cfgFromRows) {
-        enabled = String(cfgFromRows?.value) === 'true';
-      } else if (configRes?.key === 'auto_train_enabled') {
-        enabled =
-          configRes?.value === true ||
-          String(configRes?.value) === 'true';
-      } else if (typeof configRes?.auto_train_enabled !== 'undefined') {
-        enabled =
-          configRes?.auto_train_enabled === true ||
-          String(configRes?.auto_train_enabled) === 'true';
-      }
-
-      // 只更新按鈕顯示，不在載入頁面時自動啟動循環
-      setAutoTrainEnabled(enabled);
-      autoTrainEnabledRef.current = enabled;
     } catch (err) {
       setError(err.message || '讀取資料失敗');
     } finally {
@@ -402,12 +379,9 @@ export default function App() {
     stopAiLoop();
 
     schedulerRef.current = setTimeout(async () => {
-      if (!autoTrainEnabledRef.current) return;
       if (!sessionStartedRef.current) return;
-
       await runAiCycle();
-
-      if (autoTrainEnabledRef.current && sessionStartedRef.current) {
+      if (sessionStartedRef.current) {
         scheduleNextAiCycle(LOOP_INTERVAL_MS);
       }
     }, delay);
@@ -415,65 +389,30 @@ export default function App() {
 
   useEffect(() => {
     mountedRef.current = true;
+    sessionStartedRef.current = false;
+    setAutoTrainEnabled(false);
+    setLoopStatusText('待命中');
     loadAll();
 
     return () => {
       mountedRef.current = false;
+      sessionStartedRef.current = false;
       stopAiLoop();
     };
   }, [loadAll, stopAiLoop]);
-
-  useEffect(() => {
-    autoTrainEnabledRef.current = autoTrainEnabled;
-  }, [autoTrainEnabled]);
-
-  // 關鍵修正：頁面載入時不自動啟動訓練
-  useEffect(() => {
-    if (!mountedRef.current) return;
-
-    stopAiLoop();
-
-    if (!autoTrainEnabled) {
-      sessionStartedRef.current = false;
-      setLoopStatusText('待命中');
-      return;
-    }
-
-    if (!sessionStartedRef.current) {
-      setLoopStatusText('待命中');
-      return;
-    }
-
-    setLoopStatusText('AI 循環啟動');
-    scheduleNextAiCycle(0);
-
-    return () => {
-      stopAiLoop();
-    };
-  }, [autoTrainEnabled, scheduleNextAiCycle, stopAiLoop]);
 
   const handleToggleAutoTrain = async () => {
     await runAction('toggleAutoTrain', async () => {
       const nextEnabled = !autoTrainEnabled;
 
-      await safeFetchJson('/api/system-config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          key: 'auto_train_enabled',
-          value: nextEnabled ? 'true' : 'false'
-        })
-      });
-
-      setAutoTrainEnabled(nextEnabled);
-      autoTrainEnabledRef.current = nextEnabled;
-
       if (nextEnabled) {
+        setAutoTrainEnabled(true);
         sessionStartedRef.current = true;
         setLoopStatusText('AI 循環啟動');
         stopAiLoop();
         scheduleNextAiCycle(0);
       } else {
+        setAutoTrainEnabled(false);
         sessionStartedRef.current = false;
         stopAiLoop();
         setLoopStatusText('已停止');
@@ -646,7 +585,7 @@ export default function App() {
                     </span>
                   </div>
                   <div style={styles.controlHint}>
-                    打開網頁不會自動訓練；只有你手動按下開啟後，才會開始循環。
+                    打開網頁一律不自動訓練；只有你手動按下開關後，才會開始循環。
                   </div>
                   <button
                     style={autoTrainEnabled ? styles.warnButton : styles.primaryButton}
