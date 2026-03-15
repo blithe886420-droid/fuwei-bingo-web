@@ -221,9 +221,12 @@ export default function App() {
   const [formalLatest, setFormalLatest] = useState(null);
   const [leaderboard, setLeaderboard] = useState([]);
   const [autoTrainEnabled, setAutoTrainEnabled] = useState(false);
+  const [lastAutoTrainResult, setLastAutoTrainResult] = useState(null);
 
-  const loopTimerRef = useRef(null);
-  const loopRunningRef = useRef(false);
+  const mountedRef = useRef(false);
+  const schedulerRef = useRef(null);
+  const cycleRunningRef = useRef(false);
+  const autoTrainEnabledRef = useRef(false);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -300,6 +303,7 @@ export default function App() {
       }
 
       setAutoTrainEnabled(enabled);
+      autoTrainEnabledRef.current = enabled;
     } catch (err) {
       setError(err.message || '讀取資料失敗');
     } finally {
@@ -323,9 +327,45 @@ export default function App() {
     [loadAll]
   );
 
+  const buildLoopStatusText = useCallback((result) => {
+    const compared = toNum(result?.compared_count, 0);
+    const created = toNum(result?.created_count, 0);
+    const pending = toArray(result?.pending_details);
+    const activeCreated = result?.active_created_prediction || null;
+
+    if (compared > 0 || created > 0) {
+      const parts = [`本輪完成：比對 ${compared} 筆 / 新建 ${created} 筆`];
+      if (activeCreated?.source_draw_no) {
+        parts.push(`目前訓練來源期數 ${activeCreated.source_draw_no}`);
+      }
+      return parts.join('，');
+    }
+
+    if (pending.length > 0) {
+      const msg = pending[0]?.message || '等待下一期資料';
+      if (activeCreated?.source_draw_no) {
+        return `等待中：${msg}（目前訓練來源期數 ${activeCreated.source_draw_no}）`;
+      }
+      return `等待中：${msg}`;
+    }
+
+    if (activeCreated?.source_draw_no) {
+      return `待命中，目前訓練來源期數 ${activeCreated.source_draw_no}`;
+    }
+
+    return '待命中';
+  }, []);
+
+  const stopAiLoop = useCallback(() => {
+    if (schedulerRef.current) {
+      clearTimeout(schedulerRef.current);
+      schedulerRef.current = null;
+    }
+  }, []);
+
   const runAiCycle = useCallback(async () => {
-    if (loopRunningRef.current) return;
-    loopRunningRef.current = true;
+    if (cycleRunningRef.current) return;
+    cycleRunningRef.current = true;
 
     try {
       setLoopStatusText('同步期數中...');
@@ -336,56 +376,60 @@ export default function App() {
       setLoopStatusText('更新 recent20...');
       await safeFetchJson('/api/recent20');
 
-      setLoopStatusText('更新 prediction...');
-      await safeFetchJson('/api/prediction-latest');
-
       setLoopStatusText('檢查補期...');
       await safeFetchJson('/api/catchup', { method: 'POST' }).catch(async () => {
         await safeFetchJson('/api/catchup');
       });
 
       setLoopStatusText('AI 訓練中...');
-      await safeFetchJson('/api/auto-train', { method: 'POST' });
+      const autoTrainRes = await safeFetchJson('/api/auto-train', { method: 'POST' });
+      setLastAutoTrainResult(autoTrainRes);
+      setLoopStatusText(buildLoopStatusText(autoTrainRes));
 
-      setLoopStatusText('AI 訓練完成');
       await loadAll();
     } catch (err) {
       console.error('AI cycle error:', err);
       setLoopStatusText('AI 循環發生錯誤');
       setError(err.message || 'AI 循環發生錯誤');
     } finally {
-      loopRunningRef.current = false;
+      cycleRunningRef.current = false;
     }
-  }, [loadAll]);
+  }, [buildLoopStatusText, loadAll]);
 
-  const stopAiLoop = useCallback(() => {
-    if (loopTimerRef.current) {
-      clearInterval(loopTimerRef.current);
-      loopTimerRef.current = null;
-    }
-  }, []);
+  const scheduleNextAiCycle = useCallback((delay = LOOP_INTERVAL_MS) => {
+    stopAiLoop();
 
-  const startAiLoop = useCallback(() => {
-    if (loopTimerRef.current) return;
-
-    setLoopStatusText('AI 循環啟動');
-
-    loopTimerRef.current = setInterval(async () => {
-      if (!autoTrainEnabled) return;
+    schedulerRef.current = setTimeout(async () => {
+      if (!autoTrainEnabledRef.current) return;
       await runAiCycle();
-    }, LOOP_INTERVAL_MS);
-  }, [autoTrainEnabled, runAiCycle]);
+      if (autoTrainEnabledRef.current) {
+        scheduleNextAiCycle(LOOP_INTERVAL_MS);
+      }
+    }, delay);
+  }, [runAiCycle, stopAiLoop]);
 
   useEffect(() => {
+    mountedRef.current = true;
     loadAll();
-  }, [loadAll]);
+
+    return () => {
+      mountedRef.current = false;
+      stopAiLoop();
+    };
+  }, [loadAll, stopAiLoop]);
 
   useEffect(() => {
+    autoTrainEnabledRef.current = autoTrainEnabled;
+  }, [autoTrainEnabled]);
+
+  useEffect(() => {
+    if (!mountedRef.current) return;
+
     stopAiLoop();
 
     if (autoTrainEnabled) {
-      startAiLoop();
-      runAiCycle();
+      setLoopStatusText('AI 循環啟動');
+      scheduleNextAiCycle(0);
     } else {
       setLoopStatusText('待命中');
     }
@@ -393,7 +437,7 @@ export default function App() {
     return () => {
       stopAiLoop();
     };
-  }, [autoTrainEnabled, startAiLoop, stopAiLoop, runAiCycle]);
+  }, [autoTrainEnabled, scheduleNextAiCycle, stopAiLoop]);
 
   const handleToggleAutoTrain = async () => {
     await runAction('toggleAutoTrain', async () => {
@@ -408,9 +452,11 @@ export default function App() {
         })
       });
 
+      setAutoTrainEnabled(nextEnabled);
+      autoTrainEnabledRef.current = nextEnabled;
+
       if (nextEnabled) {
-        setLoopStatusText('手動啟動中...');
-        await safeFetchJson('/api/auto-train', { method: 'POST' });
+        setLoopStatusText('AI 循環啟動');
       } else {
         stopAiLoop();
         setLoopStatusText('已停止');
@@ -459,6 +505,23 @@ export default function App() {
 
   const trainingGroups = getPredictionGroups(trainingLatest);
   const formalGroups = getPredictionGroups(formalLatest);
+
+  const lastCycleSummary = useMemo(() => {
+    if (!lastAutoTrainResult) return '--';
+    const compared = toNum(lastAutoTrainResult?.compared_count, 0);
+    const created = toNum(lastAutoTrainResult?.created_count, 0);
+    const activeCreated = lastAutoTrainResult?.active_created_prediction;
+
+    if (compared > 0 || created > 0) {
+      return `比對 ${compared} / 新建 ${created}`;
+    }
+
+    if (activeCreated?.source_draw_no) {
+      return `目前掛單訓練來源 ${activeCreated.source_draw_no}`;
+    }
+
+    return '本輪無異動';
+  }, [lastAutoTrainResult]);
 
   return (
     <div style={styles.page}>
@@ -540,6 +603,9 @@ export default function App() {
               <div style={styles.resultPanel}>
                 <div style={styles.resultTitle}>AI 循環狀態</div>
                 <div style={styles.resultText}>{loopStatusText}</div>
+                <div style={{ ...styles.resultText, marginTop: 8, color: '#8a7d66' }}>
+                  最近一輪摘要：{lastCycleSummary}
+                </div>
               </div>
             </Card>
 
@@ -563,7 +629,7 @@ export default function App() {
                     </span>
                   </div>
                   <div style={styles.controlHint}>
-                    開啟後會立刻跑一次，之後每 20 秒持續循環。關閉後停止自動訓練。
+                    開啟後會立刻跑一次，之後每 20 秒循環；新版已避免重複連打 auto-train。
                   </div>
                   <button
                     style={autoTrainEnabled ? styles.warnButton : styles.primaryButton}
