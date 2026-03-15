@@ -10,12 +10,25 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
   throw new Error('Missing SUPABASE_URL or SUPABASE key');
 }
 
-createClient(SUPABASE_URL, SUPABASE_KEY);
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const SOFT_TIMEOUT_MS = 20000;
 
 function nowTs() {
   return Date.now();
+}
+
+function toBool(value, fallback = false) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const v = value.trim().toLowerCase();
+    if (v === 'true') return true;
+    if (v === 'false') return false;
+  }
+  if (typeof value === 'number') {
+    return value !== 0;
+  }
+  return fallback;
 }
 
 function buildBaseUrl(req) {
@@ -73,6 +86,21 @@ async function callInternalApi(baseUrl, path, { method = 'GET', body } = {}) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function getAutoTrainEnabled() {
+  const { data, error } = await supabase
+    .from('system_config')
+    .select('key, value, updated_at')
+    .eq('key', 'auto_train_enabled')
+    .maybeSingle();
+
+  if (error) throw error;
+
+  return {
+    enabled: toBool(data?.value, false),
+    updated_at: data?.updated_at || null
+  };
 }
 
 async function runSyncFlow(baseUrl, startedAt) {
@@ -199,15 +227,69 @@ export default async function handler(req, res) {
       });
     }
 
+    if (action === 'auto-train') {
+      const result = await callInternalApi(baseUrl, '/api/auto-train', {
+        method: 'POST'
+      });
+      return res.status(200).json({
+        ok: result.ok,
+        mode: 'cron-sync',
+        action,
+        result
+      });
+    }
+
+    // 預設 run：先同步，再看是否啟用自動訓練
     const flow = await runSyncFlow(baseUrl, startedAt);
 
+    if (!flow.ok) {
+      return res.status(200).json({
+        ok: false,
+        mode: 'cron-sync',
+        action: 'run',
+        auto_train_enabled: false,
+        step_count: flow.steps.length,
+        steps: flow.steps,
+        duration_ms: nowTs() - startedAt,
+        error: flow.error || 'sync flow failed'
+      });
+    }
+
+    const cfg = await getAutoTrainEnabled();
+
+    // 沒開啟自動訓練：只同步，不訓練
+    if (!cfg.enabled) {
+      return res.status(200).json({
+        ok: true,
+        mode: 'cron-sync',
+        action: 'run',
+        auto_train_enabled: false,
+        message: '自動訓練未啟用，本次排程只執行同步流程。',
+        system_config_updated_at: cfg.updated_at,
+        step_count: flow.steps.length,
+        steps: flow.steps,
+        duration_ms: nowTs() - startedAt,
+        auto_train_result: null,
+        error: flow.error || null
+      });
+    }
+
+    // 已開啟自動訓練：同步後再跑 auto-train
+    const autoTrainResult = await callInternalApi(baseUrl, '/api/auto-train', {
+      method: 'POST'
+    });
+
     return res.status(200).json({
-      ok: flow.ok,
+      ok: flow.ok && autoTrainResult.ok,
       mode: 'cron-sync',
       action: 'run',
-      step_count: flow.steps.length,
-      steps: flow.steps,
+      auto_train_enabled: true,
+      message: '自動訓練已啟用，本次排程已執行同步流程與 auto-train。',
+      system_config_updated_at: cfg.updated_at,
+      step_count: flow.steps.length + 1,
+      steps: [...flow.steps, autoTrainResult],
       duration_ms: nowTs() - startedAt,
+      auto_train_result: autoTrainResult,
       error: flow.error || null
     });
   } catch (error) {
