@@ -239,7 +239,6 @@ export default async function handler(req, res) {
       });
     }
 
-    // 預設 run：先同步，再看是否啟用自動訓練
     const flow = await runSyncFlow(baseUrl, startedAt);
 
     if (!flow.ok) {
@@ -257,7 +256,6 @@ export default async function handler(req, res) {
 
     const cfg = await getAutoTrainEnabled();
 
-    // 沒開啟自動訓練：只同步，不訓練
     if (!cfg.enabled) {
       return res.status(200).json({
         ok: true,
@@ -274,7 +272,6 @@ export default async function handler(req, res) {
       });
     }
 
-    // 已開啟自動訓練：同步後再跑 auto-train
     const autoTrainResult = await callInternalApi(baseUrl, '/api/auto-train', {
       method: 'POST'
     });
@@ -301,3 +298,4 @@ export default async function handler(req, res) {
     });
   }
 }
+
