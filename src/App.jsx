@@ -263,11 +263,30 @@ export default function App() {
           'formal'
         ) || null;
 
-      setTrainingLatest(trainingRow || predictionRes?.training || null);
-      setFormalLatest(formalRow || predictionRes?.formal || null);
+      setTrainingLatest(
+        trainingRow ||
+        predictionRes?.training ||
+        predictionRes?.ai_train ||
+        null
+      );
+
+      setFormalLatest(
+        formalRow ||
+        predictionRes?.formal ||
+        null
+      );
 
       const cfgRows = toArray(configRes?.rows || configRes?.data || []);
-      const autoCfg = cfgRows.find((r) => r?.key === 'auto_train_enabled');
+      const autoCfg =
+        cfgRows.find((r) => r?.key === 'auto_train_enabled') ||
+        (configRes?.key === 'auto_train_enabled'
+          ? {
+              key: configRes.key,
+              value: configRes.value,
+              updated_at: configRes.updated_at
+            }
+          : null);
+
       setAutoTrainEnabled(String(autoCfg?.value || 'false') === 'true');
 
       const lb =
@@ -306,6 +325,7 @@ export default function App() {
     [loadAll]
   );
 
+  // 手動觸發版：只切換開關，不自動執行訓練
   const handleToggleAutoTrain = async () => {
     await runAction('toggleAutoTrain', async () => {
       const nextEnabled = !autoTrainEnabled;
@@ -318,16 +338,10 @@ export default function App() {
           value: nextEnabled ? 'true' : 'false'
         })
       });
-
-      if (nextEnabled) {
-        const data = await safeFetchJson('/api/auto-train', {
-          method: 'POST'
-        });
-        setAutoTrainResult(data);
-      }
     });
   };
 
+  // 只有這顆按鈕才真的執行一次 AI 自動訓練
   const handleRunAutoTrain = async () => {
     await runAction('autoTrain', async () => {
       const data = await safeFetchJson('/api/auto-train', {
@@ -483,11 +497,12 @@ export default function App() {
                         marginLeft: 6
                       }}
                     >
-                      {autoTrainEnabled ? '開啟中（啟用後會立即跑一次）' : '已關閉'}
+                      {autoTrainEnabled ? '開啟中' : '已關閉'}
                     </span>
                   </div>
                   <div style={styles.controlHint}>
-                    這個開關是系統旗標；開啟時會順便立即執行一次訓練。
+                    這個開關只切換系統旗標，不會因為打開網頁就自動執行訓練。
+                    要真的跑訓練，請按上方「執行一次 AI 自動訓練」。
                   </div>
                   <button
                     style={autoTrainEnabled ? styles.warnButton : styles.primaryButton}
