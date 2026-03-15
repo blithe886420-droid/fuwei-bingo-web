@@ -50,7 +50,14 @@ function normalizeGroups(groups) {
 
       if (!g || typeof g !== 'object') return null;
 
-      const nums = uniqueAsc(Array.isArray(g.nums) ? g.nums : []).slice(0, 4);
+      const nums = uniqueAsc(
+        Array.isArray(g.nums)
+          ? g.nums
+          : Array.isArray(g.numbers)
+            ? g.numbers
+            : []
+      ).slice(0, 4);
+
       if (nums.length !== 4) return null;
 
       return {
@@ -88,11 +95,7 @@ function normalizePredictionRow(row) {
 
   const mode = String(row.mode || '').toLowerCase();
   const sourceDrawNo = toInt(row.source_draw_no, 0);
-  const targetPeriods = toInt(
-    row.target_periods,
-    mode === 'formal' ? 4 : 2
-  );
-
+  const targetPeriods = toInt(row.target_periods, mode.includes('formal') ? 4 : 2);
   const groups = parseGroupsJson(row.groups_json);
 
   return {
@@ -140,15 +143,15 @@ function normalizeLeaderboardRow(row) {
 
   return {
     key: row.strategy_key || '',
-    label: row.strategy_key || '',
+    label: row.strategy_name || row.strategy_key || '',
     strategy_key: row.strategy_key || '',
     total_rounds: totalRounds,
     total_hits: toNum(row.total_hits, 0),
     hit0: toNum(row.hit0, 0),
     hit1: toNum(row.hit1, 0),
     hit2: toNum(row.hit2, 0),
-    hit3: hit3,
-    hit4: hit4,
+    hit3,
+    hit4,
     avg_hit: Number.isFinite(avgHit) ? Number(avgHit.toFixed(6)) : 0,
     hit_rate: Number.isFinite(hitRate) ? Number(hitRate.toFixed(6)) : 0,
     total_profit: Number.isFinite(Number(row.total_profit))
@@ -173,41 +176,74 @@ function normalizeLeaderboardRow(row) {
   };
 }
 
-async function getLatestCreatedByMode(mode) {
-  const { data, error } = await supabase
-    .from(PREDICTIONS_TABLE)
-    .select('*')
-    .eq('mode', mode)
-    .eq('status', 'created')
-    .order('source_draw_no', { ascending: false })
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+async function getLatestPredictionByMatchers({ modeMatchers = [], preferredStatuses = ['created'] }) {
+  let matchedRows = [];
 
-  if (error) throw error;
-  return data || null;
+  for (const matcher of modeMatchers) {
+    let query = supabase
+      .from(PREDICTIONS_TABLE)
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(20);
+
+    if (matcher.type === 'eq') {
+      query = query.eq('mode', matcher.value);
+    } else if (matcher.type === 'like') {
+      query = query.like('mode', matcher.value);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    if (Array.isArray(data) && data.length) {
+      matchedRows.push(...data);
+    }
+  }
+
+  if (!matchedRows.length) return null;
+
+  const dedupedMap = new Map();
+  for (const row of matchedRows) {
+    if (!row?.id) continue;
+    if (!dedupedMap.has(row.id)) {
+      dedupedMap.set(row.id, row);
+    }
+  }
+
+  const dedupedRows = [...dedupedMap.values()].sort((a, b) => {
+    const aCreated = new Date(a.created_at || 0).getTime();
+    const bCreated = new Date(b.created_at || 0).getTime();
+    return bCreated - aCreated;
+  });
+
+  for (const status of preferredStatuses) {
+    const found = dedupedRows.find((row) => String(row.status || '') === status);
+    if (found) return normalizePredictionRow(found);
+  }
+
+  return normalizePredictionRow(dedupedRows[0]);
 }
 
-async function getLatestAnyByMode(mode) {
-  const { data, error } = await supabase
-    .from(PREDICTIONS_TABLE)
-    .select('*')
-    .eq('mode', mode)
-    .order('source_draw_no', { ascending: false })
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (error) throw error;
-  return data || null;
+async function getLatestTrainingPrediction() {
+  return getLatestPredictionByMatchers({
+    modeMatchers: [
+      { type: 'eq', value: 'test' },
+      { type: 'eq', value: 'ai_train' },
+      { type: 'like', value: '%test%' },
+      { type: 'like', value: '%ai_train%' }
+    ],
+    preferredStatuses: ['created', 'compared']
+  });
 }
 
-async function getLatestPredictionByMode(mode) {
-  const createdRow = await getLatestCreatedByMode(mode);
-  if (createdRow) return normalizePredictionRow(createdRow);
-
-  const anyRow = await getLatestAnyByMode(mode);
-  return normalizePredictionRow(anyRow);
+async function getLatestFormalPrediction() {
+  return getLatestPredictionByMatchers({
+    modeMatchers: [
+      { type: 'eq', value: 'formal' },
+      { type: 'like', value: '%formal%' }
+    ],
+    preferredStatuses: ['created', 'compared']
+  });
 }
 
 async function getLeaderboard(limit = 50) {
@@ -260,8 +296,8 @@ export default async function handler(req, res) {
 
   try {
     const [trainingPrediction, formalPrediction, rankingResult] = await Promise.all([
-      getLatestPredictionByMode('test'),
-      getLatestPredictionByMode('formal'),
+      getLatestTrainingPrediction(),
+      getLatestFormalPrediction(),
       getLeaderboard(50)
     ]);
 
@@ -269,13 +305,10 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       ok: true,
-
       training: trainingPrediction,
       formal: formalPrediction,
       ai_train: trainingPrediction,
-
       rows,
-
       leaderboard: rankingResult.leaderboard,
       leaderboard_source: rankingResult.source
     });
