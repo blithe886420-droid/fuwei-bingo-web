@@ -12,7 +12,7 @@ const TAB_ITEMS = [
   { key: TABS.MARKET, label: '市場資料', icon: '📊' }
 ];
 
-const LOOP_INTERVAL_MS = 20000;
+const LOOP_INTERVAL_MS = 180000;
 
 function toArray(v) {
   return Array.isArray(v) ? v : [];
@@ -585,7 +585,7 @@ export default function App() {
                     </span>
                   </div>
                   <div style={styles.controlHint}>
-                    打開網頁一律不自動訓練；只有你手動按下開關後，才會開始循環。
+                    打開網頁一律不自動訓練；只有你手動按下開關後，才會開始循環。循環頻率：每 180 秒。
                   </div>
                   <button
                     style={autoTrainEnabled ? styles.warnButton : styles.primaryButton}
