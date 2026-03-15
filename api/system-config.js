@@ -24,6 +24,9 @@ function toBool(value, fallback = false) {
     if (v === 'true') return true;
     if (v === 'false') return false;
   }
+  if (typeof value === 'number') {
+    return value !== 0;
+  }
   return fallback;
 }
 
@@ -32,7 +35,6 @@ export default async function handler(req, res) {
     const action = req.query?.action || req.body?.action || '';
     const token = req.query?.token || req.body?.token || '';
 
-    // 維修入口：重建 strategy_stats
     if (action === 'rebuild_strategy_stats') {
       if (token !== ADMIN_REBUILD_TOKEN) {
         return res.status(403).json({
@@ -60,7 +62,6 @@ export default async function handler(req, res) {
       }
     }
 
-    // 讀取開關
     if (req.method === 'GET') {
       const { data, error } = await supabase
         .from('system_config')
@@ -72,17 +73,33 @@ export default async function handler(req, res) {
 
       const enabled = toBool(data?.value, false);
 
+      // 同時回單筆格式 + rows 陣列格式，前端舊新版本都能吃
       return res.status(200).json({
         ok: true,
         key: CONFIG_KEY,
         value: enabled,
-        updated_at: data?.updated_at || null
+        updated_at: data?.updated_at || null,
+        rows: [
+          {
+            key: CONFIG_KEY,
+            value: enabled,
+            updated_at: data?.updated_at || null
+          }
+        ]
       });
     }
 
-    // 更新開關
     if (req.method === 'POST') {
-      const enabled = toBool(req.body?.enabled, false);
+      // 兼容兩種前端送法：
+      // 1. { enabled: true/false }
+      // 2. { key: 'auto_train_enabled', value: 'true'/'false' }
+      const rawEnabled =
+        req.body?.enabled ??
+        req.body?.value ??
+        req.query?.enabled ??
+        req.query?.value;
+
+      const enabled = toBool(rawEnabled, false);
       const value = enabled ? 'true' : 'false';
       const updatedAt = new Date().toISOString();
 
@@ -101,11 +118,20 @@ export default async function handler(req, res) {
 
       if (error) throw error;
 
+      const enabledValue = toBool(data?.value, false);
+
       return res.status(200).json({
         ok: true,
         key: data.key,
-        value: toBool(data.value, false),
-        updated_at: data.updated_at
+        value: enabledValue,
+        updated_at: data.updated_at,
+        rows: [
+          {
+            key: data.key,
+            value: enabledValue,
+            updated_at: data.updated_at
+          }
+        ]
       });
     }
 
