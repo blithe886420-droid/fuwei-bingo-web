@@ -308,14 +308,23 @@ export default function App() {
 
   const handleToggleAutoTrain = async () => {
     await runAction('toggleAutoTrain', async () => {
+      const nextEnabled = !autoTrainEnabled;
+
       await safeFetchJson('/api/system-config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           key: 'auto_train_enabled',
-          value: autoTrainEnabled ? 'false' : 'true'
+          value: nextEnabled ? 'true' : 'false'
         })
       });
+
+      if (nextEnabled) {
+        const data = await safeFetchJson('/api/auto-train', {
+          method: 'POST'
+        });
+        setAutoTrainResult(data);
+      }
     });
   };
 
@@ -464,7 +473,7 @@ export default function App() {
             >
               <div style={styles.controlGrid}>
                 <div style={styles.controlItem}>
-                  <div style={styles.controlTitle}>自動訓練開關</div>
+                  <div style={styles.controlTitle}>自動訓練模式</div>
                   <div style={styles.controlText}>
                     目前狀態：
                     <span
@@ -474,8 +483,11 @@ export default function App() {
                         marginLeft: 6
                       }}
                     >
-                      {autoTrainEnabled ? '開啟中' : '已關閉'}
+                      {autoTrainEnabled ? '開啟中（啟用後會立即跑一次）' : '已關閉'}
                     </span>
+                  </div>
+                  <div style={styles.controlHint}>
+                    這個開關是系統旗標；開啟時會順便立即執行一次訓練。
                   </div>
                   <button
                     style={autoTrainEnabled ? styles.warnButton : styles.primaryButton}
@@ -485,8 +497,8 @@ export default function App() {
                     {busyKey === 'toggleAutoTrain'
                       ? '切換中...'
                       : autoTrainEnabled
-                        ? '關閉自動訓練'
-                        : '開啟自動訓練'}
+                        ? '停用自動訓練模式'
+                        : '啟用自動訓練模式'}
                   </button>
                 </div>
 
@@ -1002,7 +1014,13 @@ const styles = {
   controlText: {
     fontSize: 14,
     color: '#685f50',
-    marginBottom: 14
+    marginBottom: 8
+  },
+  controlHint: {
+    fontSize: 12,
+    color: '#8f836d',
+    marginBottom: 14,
+    lineHeight: 1.6
   },
   inlineButtons: {
     display: 'flex',
