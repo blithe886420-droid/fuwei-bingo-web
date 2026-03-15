@@ -4,6 +4,7 @@ export default function App() {
 
   const [config, setConfig] = useState({});
   const [statusText, setStatusText] = useState("系統啟動中...");
+  const [page, setPage] = useState("ai"); // ai / predict / market
   const loopRef = useRef(null);
 
   // 讀 system-config
@@ -67,15 +68,11 @@ export default function App() {
     }, 20000);
   }
 
-  // 停止 AI LOOP
   function stopLoop() {
-
     if (loopRef.current) {
       clearInterval(loopRef.current);
       loopRef.current = null;
-      setStatusText("AI 循環已停止");
     }
-
   }
 
   // 開啟自動訓練
@@ -93,8 +90,6 @@ export default function App() {
     });
 
     await loadConfig();
-    setStatusText("自動訓練已開啟");
-
   }
 
   // 關閉自動訓練
@@ -112,11 +107,8 @@ export default function App() {
     });
 
     await loadConfig();
-    setStatusText("自動訓練已關閉");
-
   }
 
-  // 初始化
   useEffect(() => {
 
     async function init() {
@@ -135,60 +127,62 @@ export default function App() {
     config.auto_train_enabled === "true";
 
   return (
-    <div
-      style={{
-        background: "#0B2340",
-        minHeight: "100vh",
-        color: "#fff",
-        padding: "40px",
-        fontFamily: "Arial"
-      }}
-    >
-      <h1>富緯賓果系統 v4.3 AI LOOP 版</h1>
+    <div style={{background:"#0B2340",minHeight:"100vh",color:"#fff",padding:"30px"}}>
 
-      <p>AI 狀態：{statusText}</p>
+      <h1>富緯賓果系統 v4.3</h1>
 
-      <div style={{ marginTop: 30 }}>
-
-        <p>
-          自動訓練狀態：
-          <b style={{ marginLeft: 10 }}>
-            {autoTrainEnabled ? "開啟中" : "關閉"}
-          </b>
-        </p>
-
-        {!autoTrainEnabled && (
-          <button
-            onClick={enableAutoTrain}
-            style={{
-              padding: "10px 20px",
-              background: "#1abc9c",
-              border: "none",
-              borderRadius: 6,
-              cursor: "pointer",
-              marginRight: 10
-            }}
-          >
-            開啟自動訓練
-          </button>
-        )}
-
-        {autoTrainEnabled && (
-          <button
-            onClick={disableAutoTrain}
-            style={{
-              padding: "10px 20px",
-              background: "#e74c3c",
-              border: "none",
-              borderRadius: 6,
-              cursor: "pointer"
-            }}
-          >
-            關閉自動訓練
-          </button>
-        )}
-
+      {/* 頁面切換 */}
+      <div style={{marginBottom:20}}>
+        <button onClick={()=>setPage("ai")}>AI狀態</button>
+        <button onClick={()=>setPage("predict")}>預測下注</button>
+        <button onClick={()=>setPage("market")}>市場資料</button>
       </div>
+
+      {/* AI狀態頁 */}
+      {page === "ai" && (
+        <div>
+          <h2>AI狀態</h2>
+
+          <p>AI 狀態：{statusText}</p>
+
+          <p>
+            自動訓練狀態：
+            <b style={{marginLeft:10}}>
+              {autoTrainEnabled ? "開啟中" : "關閉"}
+            </b>
+          </p>
+
+          {!autoTrainEnabled && (
+            <button onClick={enableAutoTrain}>
+              開啟自動訓練
+            </button>
+          )}
+
+          {autoTrainEnabled && (
+            <button onClick={disableAutoTrain}>
+              關閉自動訓練
+            </button>
+          )}
+
+        </div>
+      )}
+
+      {/* 預測下注 */}
+      {page === "predict" && (
+        <div>
+          <h2>預測下注</h2>
+          <p>這裡放正式投注 / 測試投注畫面</p>
+        </div>
+      )}
+
+      {/* 市場資料 */}
+      {page === "market" && (
+        <div>
+          <h2>市場資料</h2>
+          <p>這裡顯示 recent20 / 開獎資料</p>
+        </div>
+      )}
+
     </div>
   );
 }
