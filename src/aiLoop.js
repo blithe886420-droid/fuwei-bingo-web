@@ -1,76 +1,139 @@
 let loopTimer = null;
+let isCycleRunning = false;
+
+async function safeFetchJson(url, options) {
+  const res = await fetch(url, options);
+  const text = await res.text();
+
+  let json = {};
+  try {
+    json = text ? JSON.parse(text) : {};
+  } catch {
+    json = { raw: text };
+  }
+
+  if (!res.ok) {
+    throw new Error(json?.error || json?.message || `${url} ${res.status}`);
+  }
+
+  return json;
+}
 
 async function loadConfig() {
   try {
-    const res = await fetch("/api/system-config");
-    const data = await res.json();
+    const data = await safeFetchJson('/api/system-config');
     return data || {};
   } catch (err) {
-    console.error("AI LOOP loadConfig error", err);
+    console.error('AI LOOP loadConfig error', err);
     return {};
   }
 }
 
-async function runAiCycle(setStatus) {
+function readAutoTrainEnabled(cfg) {
+  const rows = Array.isArray(cfg?.rows) ? cfg.rows : [];
+  const row = rows.find((r) => r?.key === 'auto_train_enabled');
 
-  try {
-
-    setStatus("同步期數中...");
-    await fetch("/api/sync");
-
-    setStatus("更新 recent20...");
-    await fetch("/api/recent20");
-
-    setStatus("更新 prediction...");
-    await fetch("/api/prediction-latest");
-
-    setStatus("檢查補期...");
-    await fetch("/api/catchup");
-
-    setStatus("AI 訓練中...");
-    await fetch("/api/auto-train", { method: "POST" });
-
-    setStatus("AI 訓練完成");
-
-  } catch (err) {
-
-    console.error("AI LOOP error", err);
-    setStatus("AI 循環錯誤");
-
+  if (row) {
+    return row.value === true || String(row.value) === 'true';
   }
 
+  if (cfg?.key === 'auto_train_enabled') {
+    return cfg.value === true || String(cfg.value) === 'true';
+  }
+
+  if (typeof cfg?.auto_train_enabled !== 'undefined') {
+    return cfg.auto_train_enabled === true || String(cfg.auto_train_enabled) === 'true';
+  }
+
+  return false;
 }
 
-export function startAiLoop(setStatus) {
+function buildLoopStatusText(result) {
+  const compared = Number(result?.compared_count || 0);
+  const created = Number(result?.created_count || 0);
+  const pending = Array.isArray(result?.pending_details) ? result.pending_details : [];
+  const activeCreated = result?.active_created_prediction || null;
 
+  if (compared > 0 || created > 0) {
+    const parts = [`本輪完成：比對 ${compared} 筆 / 新建 ${created} 筆`];
+    if (activeCreated?.source_draw_no) {
+      parts.push(`目前訓練來源期數 ${activeCreated.source_draw_no}`);
+    }
+    return parts.join('，');
+  }
+
+  if (pending.length > 0) {
+    const msg = pending[0]?.message || '等待下一期資料';
+    if (activeCreated?.source_draw_no) {
+      return `等待中：${msg}（目前訓練來源期數 ${activeCreated.source_draw_no}）`;
+    }
+    return `等待中：${msg}`;
+  }
+
+  if (activeCreated?.source_draw_no) {
+    return `待命中，目前訓練來源期數 ${activeCreated.source_draw_no}`;
+  }
+
+  return '待命中';
+}
+
+async function runAiCycle(setStatus) {
+  if (isCycleRunning) return null;
+  isCycleRunning = true;
+
+  try {
+    setStatus('同步期數中...');
+    await safeFetchJson('/api/sync', { method: 'POST' }).catch(async () => {
+      await safeFetchJson('/api/sync');
+    });
+
+    setStatus('更新 recent20...');
+    await safeFetchJson('/api/recent20');
+
+    setStatus('檢查補期...');
+    await safeFetchJson('/api/catchup', { method: 'POST' }).catch(async () => {
+      await safeFetchJson('/api/catchup');
+    });
+
+    setStatus('AI 訓練中...');
+    const autoTrainResult = await safeFetchJson('/api/auto-train', { method: 'POST' });
+
+    setStatus(buildLoopStatusText(autoTrainResult));
+    return autoTrainResult;
+  } catch (err) {
+    console.error('AI LOOP error', err);
+    setStatus('AI 循環錯誤');
+    return null;
+  } finally {
+    isCycleRunning = false;
+  }
+}
+
+export async function runAiLoopOnce(setStatus) {
+  return await runAiCycle(setStatus);
+}
+
+export async function startAiLoop(setStatus) {
   if (loopTimer) return;
 
-  setStatus("AI LOOP 啟動");
+  setStatus('AI LOOP 啟動');
+  await runAiCycle(setStatus);
 
   loopTimer = setInterval(async () => {
+    if (isCycleRunning) return;
 
     const cfg = await loadConfig();
+    const enabled = readAutoTrainEnabled(cfg);
 
-    if (
-      cfg.auto_train_enabled === true ||
-      cfg.auto_train_enabled === "true"
-    ) {
+    if (!enabled) return;
 
-      await runAiCycle(setStatus);
-
-    }
-
+    await runAiCycle(setStatus);
   }, 20000);
-
 }
 
 export function stopAiLoop() {
-
   if (loopTimer) {
-
     clearInterval(loopTimer);
     loopTimer = null;
-
   }
-
 }
