@@ -208,7 +208,8 @@ function geneCandidates(gene, analysis, context = {}) {
 
   const variant = toInt(context.variantIndex, 0);
   const key = String(context.strategyKey || '');
-  const hash = stableHash(`${key}_${variant}_${gene}`);
+  const seed = String(context.generationSeed || '');
+  const hash = stableHash(`${key}_${variant}_${gene}_${seed}`);
   const latestSet = new Set(latestDraw);
   const prevSet = new Set(prevDraw);
   const thirdSet = new Set(thirdDraw);
@@ -286,11 +287,11 @@ function geneCandidates(gene, analysis, context = {}) {
   }
 }
 
-function mergeGeneLists(geneLists, strategyKey = '', variantIndex = 0) {
+function mergeGeneLists(geneLists, strategyKey = '', variantIndex = 0, generationSeed = '') {
   const normalized = geneLists.filter((list) => Array.isArray(list) && list.length > 0);
   if (!normalized.length) return [];
 
-  const seed = stableHash(`${strategyKey}_${variantIndex}`);
+  const seed = stableHash(`${strategyKey}_${variantIndex}_${generationSeed}`);
   const result = [];
 
   for (let i = 0; i < normalized.length; i += 1) {
@@ -315,7 +316,9 @@ function finalizeGroupNumbers(candidates, analysis, strategy, count = 4) {
     ...analysis.numbers1to80
   ]);
 
-  const seed = stableHash(`${strategy.strategy_key}_${strategy.variantIndex || 0}`);
+  const seed = stableHash(
+    `${strategy.strategy_key}_${strategy.variantIndex || 0}_${strategy.generationSeed || ''}`
+  );
   const rotated = rotateList(merged, seed % Math.max(1, merged.length));
 
   const selected = [];
@@ -337,7 +340,9 @@ function mutateGroupToUnique(baseNums, analysis, strategy, usedSignatures = new 
     ...analysis.numbers1to80
   ]);
 
-  const seed = stableHash(`${strategy.strategy_key}_${strategy.variantIndex || 0}_mutate`);
+  const seed = stableHash(
+    `${strategy.strategy_key}_${strategy.variantIndex || 0}_mutate_${strategy.generationSeed || ''}`
+  );
   const rotatedPool = rotateList(fallbackPool, seed % Math.max(1, fallbackPool.length));
 
   const originalSignature = getGroupSignature(base);
@@ -375,13 +380,14 @@ function mutateGroupToUnique(baseNums, analysis, strategy, usedSignatures = new 
   return base;
 }
 
-function ensureUniqueGroups(groups, analysis) {
+function ensureUniqueGroups(groups, analysis, generationSeed = '') {
   const used = new Set();
 
   return groups.map((group, idx) => {
     const strategy = {
       strategy_key: group.key || `group_${idx + 1}`,
-      variantIndex: idx
+      variantIndex: idx,
+      generationSeed
     };
 
     let nums = uniqueAsc(group.nums).slice(0, 4);
@@ -488,7 +494,7 @@ async function getActiveStrategiesFromPool(supabase, limitCount = BET_GROUP_COUN
     .slice(0, limitCount);
 }
 
-function buildFallbackSeedGroupsFromRecent20(recent20) {
+function buildFallbackSeedGroupsFromRecent20(recent20, generationSeed) {
   const fallbackStrategies = [
     {
       strategy_key: 'hot_balanced',
@@ -527,14 +533,20 @@ function buildFallbackSeedGroupsFromRecent20(recent20) {
     const candidateLists = genes.map((gene) =>
       geneCandidates(gene, analysis, {
         variantIndex: idx,
-        strategyKey: strategy.strategy_key
+        strategyKey: strategy.strategy_key,
+        generationSeed
       })
     );
-    const mergedCandidates = mergeGeneLists(candidateLists, strategy.strategy_key, idx);
+    const mergedCandidates = mergeGeneLists(
+      candidateLists,
+      strategy.strategy_key,
+      idx,
+      generationSeed
+    );
     const nums = finalizeGroupNumbers(
       mergedCandidates,
       analysis,
-      { ...strategy, variantIndex: idx },
+      { ...strategy, variantIndex: idx, generationSeed },
       4
     );
 
@@ -544,25 +556,26 @@ function buildFallbackSeedGroupsFromRecent20(recent20) {
       nums,
       reason: `fallback 生成 ${strategy.strategy_name}`,
       meta: {
-        model: 'v4.3',
+        model: 'v4.4',
         source: 'fallback',
         strategy_key: strategy.strategy_key,
         strategy_name: strategy.strategy_name,
         gene_a: strategy.gene_a,
-        gene_b: strategy.gene_b
+        gene_b: strategy.gene_b,
+        generation_seed: generationSeed
       }
     };
   });
 
-  return ensureUniqueGroups(rawGroups, analysis);
+  return ensureUniqueGroups(rawGroups, analysis, generationSeed);
 }
 
-async function buildStrategyGroupsFromPool(supabase, recent20) {
+async function buildStrategyGroupsFromPool(supabase, recent20, generationSeed) {
   const analysis = buildRecent20Analysis(recent20);
   const activeStrategies = await getActiveStrategiesFromPool(supabase, BET_GROUP_COUNT);
 
   if (!activeStrategies.length) {
-    return buildFallbackSeedGroupsFromRecent20(recent20);
+    return buildFallbackSeedGroupsFromRecent20(recent20, generationSeed);
   }
 
   const rawGroups = activeStrategies
@@ -571,14 +584,20 @@ async function buildStrategyGroupsFromPool(supabase, recent20) {
       const candidateLists = genes.map((gene) =>
         geneCandidates(gene, analysis, {
           variantIndex: idx,
-          strategyKey: strategy.strategy_key
+          strategyKey: strategy.strategy_key,
+          generationSeed
         })
       );
-      const mergedCandidates = mergeGeneLists(candidateLists, strategy.strategy_key, idx);
+      const mergedCandidates = mergeGeneLists(
+        candidateLists,
+        strategy.strategy_key,
+        idx,
+        generationSeed
+      );
       const nums = finalizeGroupNumbers(
         mergedCandidates,
         analysis,
-        { ...strategy, variantIndex: idx },
+        { ...strategy, variantIndex: idx, generationSeed },
         4
       );
 
@@ -588,7 +607,7 @@ async function buildStrategyGroupsFromPool(supabase, recent20) {
         nums,
         reason: `來自 strategy_pool active 策略 ${strategy.strategy_name || strategy.strategy_key}`,
         meta: {
-          model: 'v4.3',
+          model: 'v4.4',
           source: 'strategy_pool',
           strategy_key: strategy.strategy_key,
           strategy_name: strategy.strategy_name || strategy.strategy_key,
@@ -598,19 +617,20 @@ async function buildStrategyGroupsFromPool(supabase, recent20) {
           total_rounds: toInt(strategy.total_rounds, 0),
           avg_hit: Number(strategy.avg_hit || 0),
           roi: Number(strategy.roi || 0),
-          recent_50_roi: Number(strategy.recent_50_roi || 0)
+          recent_50_roi: Number(strategy.recent_50_roi || 0),
+          generation_seed: generationSeed
         }
       };
     })
     .filter((group) => Array.isArray(group.nums) && group.nums.length === 4);
 
-  let groups = ensureUniqueGroups(rawGroups, analysis);
+  let groups = ensureUniqueGroups(rawGroups, analysis, generationSeed);
 
   if (groups.length >= BET_GROUP_COUNT) {
     return groups.slice(0, BET_GROUP_COUNT);
   }
 
-  const fallbackGroups = buildFallbackSeedGroupsFromRecent20(recent20);
+  const fallbackGroups = buildFallbackSeedGroupsFromRecent20(recent20, generationSeed);
   const map = new Map(groups.map((g) => [g.key, g]));
 
   for (const fallback of fallbackGroups) {
@@ -619,8 +639,44 @@ async function buildStrategyGroupsFromPool(supabase, recent20) {
     }
   }
 
-  groups = ensureUniqueGroups([...map.values()].slice(0, BET_GROUP_COUNT), analysis);
+  groups = ensureUniqueGroups([...map.values()].slice(0, BET_GROUP_COUNT), analysis, generationSeed);
   return groups;
+}
+
+async function archivePreviousFormalPredictions(supabase, mode) {
+  if (!String(mode || '').includes('formal')) {
+    return { ok: true, archived_count: 0 };
+  }
+
+  const { data: existingRows, error: selectError } = await supabase
+    .from(PREDICTIONS_TABLE)
+    .select('id')
+    .like('mode', '%formal%')
+    .eq('status', 'created');
+
+  if (selectError) throw selectError;
+
+  const ids = (existingRows || []).map((row) => row.id).filter(Boolean);
+  if (!ids.length) {
+    return { ok: true, archived_count: 0 };
+  }
+
+  const { error: updateError } = await supabase
+    .from(PREDICTIONS_TABLE)
+    .update({
+      status: 'replaced',
+      compare_status: 'replaced',
+      updated_at: new Date().toISOString()
+    })
+    .in('id', ids);
+
+  if (updateError) throw updateError;
+
+  return {
+    ok: true,
+    archived_count: ids.length,
+    archived_ids: ids
+  };
 }
 
 async function insertPredictionStrategyMap(supabase, predictionId, payload) {
@@ -681,6 +737,8 @@ export default async function handler(req, res) {
 
     const mode = body.mode || DEFAULT_MODE;
     const targetPeriods = Number(body.targetPeriods || TARGET_PERIODS);
+    const generationSeed =
+      String(body.generationSeed || body.forceSeed || `${Date.now()}_${Math.random()}`);
 
     const inputGroups = normalizeIncomingGroups(
       Array.isArray(body.groups)
@@ -706,11 +764,11 @@ export default async function handler(req, res) {
     const analysis = buildRecent20Analysis(recent20);
 
     if (groups.length >= 1) {
-      groups = ensureUniqueGroups(groups, analysis);
+      groups = ensureUniqueGroups(groups, analysis, generationSeed);
     }
 
     if (groups.length < BET_GROUP_COUNT) {
-      groups = await buildStrategyGroupsFromPool(supabase, recent20);
+      groups = await buildStrategyGroupsFromPool(supabase, recent20, generationSeed);
       groupSource = 'server_auto_generate';
     }
 
@@ -722,13 +780,38 @@ export default async function handler(req, res) {
       });
     }
 
-    groups = ensureUniqueGroups(groups, analysis);
+    groups = ensureUniqueGroups(groups, analysis, generationSeed);
+
+    try {
+      await ensureStrategyPoolStrategies({
+        groups: groups.map((group) => ({
+          key: group.key,
+          label: group.label,
+          meta: group.meta || {}
+        })),
+        sourceType: 'manual_save',
+        status: 'disabled'
+      });
+    } catch (poolErr) {
+      console.error('ensureStrategyPoolStrategies error:', poolErr.message);
+    }
 
     const latestDrawNo = await getLatestDrawNo(supabase);
     if (!latestDrawNo) {
       return res.status(500).json({
         ok: false,
         error: 'latest draw not found'
+      });
+    }
+
+    let archiveResult = null;
+    try {
+      archiveResult = await archivePreviousFormalPredictions(supabase, mode);
+    } catch (archiveErr) {
+      return res.status(500).json({
+        ok: false,
+        error: 'archive previous formal predictions failed',
+        detail: archiveErr.message
       });
     }
 
@@ -773,6 +856,8 @@ export default async function handler(req, res) {
       source_draw_no: payload.source_draw_no,
       target_periods: targetPeriods,
       group_source: groupSource,
+      generation_seed: generationSeed,
+      archive_result: archiveResult,
       groups,
       prediction_strategy_map_result: predictionStrategyMapResult,
       bet_group_count: BET_GROUP_COUNT,
