@@ -665,8 +665,7 @@ async function archivePreviousFormalPredictions(supabase, mode) {
     .from(PREDICTIONS_TABLE)
     .update({
       status: 'replaced',
-      compare_status: 'replaced',
-      updated_at: new Date().toISOString()
+      compare_status: 'replaced'
     })
     .in('id', ids);
 
@@ -861,7 +860,7 @@ export default async function handler(req, res) {
       groups,
       prediction_strategy_map_result: predictionStrategyMapResult,
       bet_group_count: BET_GROUP_COUNT,
-      cost_per_group_per_period: COST_PER_GROUP_PER_PERIOD,
+      cost_per_group_per_period: COST_PER_GROUP_COUNT,
       estimated_total_cost: BET_GROUP_COUNT * targetPeriods * COST_PER_GROUP_PER_PERIOD
     });
   } catch (err) {
