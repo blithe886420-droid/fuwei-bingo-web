@@ -13,6 +13,8 @@ const TAB_ITEMS = [
 ];
 
 const LOOP_INTERVAL_MS = 180000;
+const NIGHT_STOP_START_MINUTES = 0;
+const NIGHT_STOP_END_MINUTES = 7 * 60 + 30;
 
 function toArray(v) {
   return Array.isArray(v) ? v : [];
@@ -184,6 +186,28 @@ function getPredictionLatestRow(data, preferMode) {
   return rows[0];
 }
 
+function getNowMinutes() {
+  const now = new Date();
+  return now.getHours() * 60 + now.getMinutes();
+}
+
+function isNightStopWindow() {
+  const minutes = getNowMinutes();
+  return minutes >= NIGHT_STOP_START_MINUTES && minutes < NIGHT_STOP_END_MINUTES;
+}
+
+function msUntilNightWindowEnd() {
+  const now = new Date();
+  const target = new Date(now);
+  target.setHours(7, 30, 0, 0);
+
+  if (target.getTime() <= now.getTime()) {
+    target.setDate(target.getDate() + 1);
+  }
+
+  return Math.max(1000, target.getTime() - now.getTime());
+}
+
 function Card({ title, subtitle, right, children }) {
   return (
     <div style={styles.card}>
@@ -223,10 +247,10 @@ export default function App() {
   const [autoTrainEnabled, setAutoTrainEnabled] = useState(false);
   const [lastAutoTrainResult, setLastAutoTrainResult] = useState(null);
 
-  const mountedRef = useRef(false);
   const schedulerRef = useRef(null);
   const cycleRunningRef = useRef(false);
   const sessionStartedRef = useRef(false);
+  const nightPauseTimerRef = useRef(null);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -335,10 +359,14 @@ export default function App() {
     return '待命中';
   }, []);
 
-  const stopAiLoop = useCallback(() => {
+  const clearAllTimers = useCallback(() => {
     if (schedulerRef.current) {
       clearTimeout(schedulerRef.current);
       schedulerRef.current = null;
+    }
+    if (nightPauseTimerRef.current) {
+      clearTimeout(nightPauseTimerRef.current);
+      nightPauseTimerRef.current = null;
     }
   }, []);
 
@@ -347,6 +375,11 @@ export default function App() {
     cycleRunningRef.current = true;
 
     try {
+      if (isNightStopWindow()) {
+        setLoopStatusText('夜間停訓中（00:00～07:30 不訓練）');
+        return;
+      }
+
       setLoopStatusText('同步期數中...');
       await safeFetchJson('/api/sync', { method: 'POST' }).catch(async () => {
         await safeFetchJson('/api/sync');
@@ -375,31 +408,73 @@ export default function App() {
     }
   }, [buildLoopStatusText, loadAll]);
 
-  const scheduleNextAiCycle = useCallback((delay = LOOP_INTERVAL_MS) => {
-    stopAiLoop();
+  const scheduleNightResume = useCallback(() => {
+    if (nightPauseTimerRef.current) {
+      clearTimeout(nightPauseTimerRef.current);
+    }
 
-    schedulerRef.current = setTimeout(async () => {
+    nightPauseTimerRef.current = setTimeout(() => {
       if (!sessionStartedRef.current) return;
-      await runAiCycle();
-      if (sessionStartedRef.current) {
-        scheduleNextAiCycle(LOOP_INTERVAL_MS);
+      setLoopStatusText('夜間停訓結束，準備恢復訓練...');
+      runAiCycle().finally(() => {
+        if (!sessionStartedRef.current) return;
+
+        schedulerRef.current = setTimeout(async function loopRunner() {
+          if (!sessionStartedRef.current) return;
+
+          if (isNightStopWindow()) {
+            setLoopStatusText('夜間停訓中（00:00～07:30 不訓練）');
+            scheduleNightResume();
+            return;
+          }
+
+          await runAiCycle();
+          if (!sessionStartedRef.current) return;
+
+          schedulerRef.current = setTimeout(loopRunner, LOOP_INTERVAL_MS);
+        }, LOOP_INTERVAL_MS);
+      });
+    }, msUntilNightWindowEnd());
+  }, [runAiCycle]);
+
+  const startLoopScheduler = useCallback((delay = 0) => {
+    clearAllTimers();
+
+    if (!sessionStartedRef.current) return;
+
+    if (isNightStopWindow()) {
+      setLoopStatusText('夜間停訓中（00:00～07:30 不訓練）');
+      scheduleNightResume();
+      return;
+    }
+
+    schedulerRef.current = setTimeout(async function loopRunner() {
+      if (!sessionStartedRef.current) return;
+
+      if (isNightStopWindow()) {
+        setLoopStatusText('夜間停訓中（00:00～07:30 不訓練）');
+        scheduleNightResume();
+        return;
       }
+
+      await runAiCycle();
+
+      if (!sessionStartedRef.current) return;
+      schedulerRef.current = setTimeout(loopRunner, LOOP_INTERVAL_MS);
     }, delay);
-  }, [runAiCycle, stopAiLoop]);
+  }, [clearAllTimers, runAiCycle, scheduleNightResume]);
 
   useEffect(() => {
-    mountedRef.current = true;
     sessionStartedRef.current = false;
     setAutoTrainEnabled(false);
-    setLoopStatusText('待命中');
+    setLoopStatusText(isNightStopWindow() ? '夜間停訓中（00:00～07:30 不訓練）' : '待命中');
     loadAll();
 
     return () => {
-      mountedRef.current = false;
       sessionStartedRef.current = false;
-      stopAiLoop();
+      clearAllTimers();
     };
-  }, [loadAll, stopAiLoop]);
+  }, [loadAll, clearAllTimers]);
 
   const handleToggleAutoTrain = async () => {
     await runAction('toggleAutoTrain', async () => {
@@ -408,13 +483,18 @@ export default function App() {
       if (nextEnabled) {
         setAutoTrainEnabled(true);
         sessionStartedRef.current = true;
-        setLoopStatusText('AI 循環啟動');
-        stopAiLoop();
-        scheduleNextAiCycle(0);
+
+        if (isNightStopWindow()) {
+          setLoopStatusText('夜間停訓中（00:00～07:30 不訓練）');
+          scheduleNightResume();
+        } else {
+          setLoopStatusText('AI 循環啟動');
+          startLoopScheduler(0);
+        }
       } else {
         setAutoTrainEnabled(false);
         sessionStartedRef.current = false;
-        stopAiLoop();
+        clearAllTimers();
         setLoopStatusText('已停止');
       }
     });
@@ -463,7 +543,11 @@ export default function App() {
   const formalGroups = getPredictionGroups(formalLatest);
 
   const lastCycleSummary = useMemo(() => {
-    if (!lastAutoTrainResult) return '--';
+    if (!lastAutoTrainResult) {
+      if (isNightStopWindow()) return '夜間停訓中';
+      return '--';
+    }
+
     const compared = toNum(lastAutoTrainResult?.compared_count, 0);
     const created = toNum(lastAutoTrainResult?.created_count, 0);
     const activeCreated = lastAutoTrainResult?.active_created_prediction;
@@ -585,7 +669,7 @@ export default function App() {
                     </span>
                   </div>
                   <div style={styles.controlHint}>
-                    打開網頁一律不自動訓練；只有你手動按下開關後，才會開始循環。循環頻率：每 180 秒。
+                    打開網頁一律不自動訓練；只有你手動按下開關後，才會開始循環。夜間 00:00～07:30 自動停訓。循環頻率：每 180 秒。
                   </div>
                   <button
                     style={autoTrainEnabled ? styles.warnButton : styles.primaryButton}
