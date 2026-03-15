@@ -152,7 +152,7 @@ async function getActiveCreatedTestPrediction() {
 
   const { data, error } = await supabase
     .from(PREDICTIONS_TABLE)
-    .select('id')
+    .select('*')
     .eq('mode', CURRENT_MODE)
     .eq('status', 'created')
     .order('created_at', { ascending: false })
@@ -1084,6 +1084,7 @@ export default async function handler(req, res) {
       }
     }
 
+    const activeCreatedPrediction = await getActiveCreatedTestPrediction();
     const leaderboard = await buildLeaderboard(50);
     const evolutionResult = null;
 
@@ -1103,6 +1104,16 @@ export default async function handler(req, res) {
       compared_details: comparedDetails,
       pending_details: pendingDetails,
       created_details: createdDetails,
+      active_created_prediction: activeCreatedPrediction
+        ? {
+            prediction_id: activeCreatedPrediction.id,
+            source_draw_no: activeCreatedPrediction.source_draw_no,
+            target_periods: activeCreatedPrediction.target_periods,
+            created_at: activeCreatedPrediction.created_at,
+            mode: activeCreatedPrediction.mode,
+            status: activeCreatedPrediction.status
+          }
+        : null,
       leaderboard,
       evolution_result: evolutionResult,
       message: `auto-train 完成：到期比對 ${comparedCount} 筆，新建訓練 ${createdCount} 筆`
