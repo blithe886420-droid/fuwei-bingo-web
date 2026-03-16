@@ -1,4 +1,4 @@
-// v2.6 full rewrite readable auto-train summary
+// v2.7 full rewrite + AI evolution speed card
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { buildBingoV1Strategies } from "../lib/buildBingoV1Strategies";
 import {
@@ -10,14 +10,15 @@ import {
 } from "../lib/strategySelfOptimizer";
 
 const STORAGE_KEYS = {
-  latest: "fuwei_bingo_latest_v26_hobby",
-  testPlan: "fuwei_bingo_test_plan_v26_hobby",
-  formalPlan: "fuwei_bingo_formal_plan_v26_hobby",
-  testResult: "fuwei_bingo_test_result_v26_hobby",
-  formalResult: "fuwei_bingo_formal_result_v26_hobby",
-  autoRunAt: "fuwei_bingo_auto_run_at_v26_hobby",
-  generatedPlan: "fuwei_bingo_generated_plan_v26_hobby",
-  autoTrainLast: "fuwei_bingo_auto_train_last_v26_hobby_clean"
+  latest: "fuwei_bingo_latest_v27_hobby",
+  testPlan: "fuwei_bingo_test_plan_v27_hobby",
+  formalPlan: "fuwei_bingo_formal_plan_v27_hobby",
+  testResult: "fuwei_bingo_test_result_v27_hobby",
+  formalResult: "fuwei_bingo_formal_result_v27_hobby",
+  autoRunAt: "fuwei_bingo_auto_run_at_v27_hobby",
+  generatedPlan: "fuwei_bingo_generated_plan_v27_hobby",
+  autoTrainLast: "fuwei_bingo_auto_train_last_v27_hobby_clean",
+  aiEvolutionLast: "fuwei_bingo_ai_evolution_last_v27_hobby"
 };
 
 const LEARNING_KEYS = createLearningStorageKeys("fuwei_bingo_strategy_learning_v2");
@@ -96,7 +97,6 @@ function compareTone(verdict) {
 
 function normalizeAutoTrainResult(data) {
   const list = Array.isArray(data?.compareResults) ? data.compareResults : [];
-
   return {
     mode: data?.mode || "unknown",
     latestDrawNo: Number(data?.latestDrawNo || 0) || null,
@@ -118,6 +118,38 @@ function normalizeAutoTrainResult(data) {
   };
 }
 
+function normalizeAiEvolution(data) {
+  const strength = Math.max(0, Math.min(100, Number(data?.trainingStrength || 0)));
+  const arrow = data?.statusArrow || "→";
+  const label = data?.statusLabel || "探索中";
+  const color = data?.statusColor || "#79b8ff";
+
+  return {
+    ok: !!data?.ok,
+    statusArrow: arrow,
+    statusLabel: label,
+    statusText: data?.statusText || "AI 正在觀察與測試策略。",
+    trainingStrength: strength,
+    trainingStrengthText: `訓練強度 ${strength}%`,
+    statusColor: color,
+    comparedLastHour: Number(data?.comparedLastHour || 0),
+    createdLastHour: Number(data?.createdLastHour || 0),
+    retiredLastHour: Number(data?.retiredLastHour || 0),
+    activeCount: Number(data?.activeCount || 0),
+    topStrategyKey: data?.topStrategyKey || "-",
+    topStrategyScore: Number(data?.topStrategyScore || 0),
+    topStrategyAvgHit: Number(data?.topStrategyAvgHit || 0),
+    topStrategyRoi: Number(data?.topStrategyRoi || 0),
+    topStrategyRecent50Roi: Number(data?.topStrategyRecent50Roi || 0),
+    sinceText: data?.sinceText || "最近 1 小時"
+  };
+}
+
+function getEvolutionFillWidth(value) {
+  const v = Math.max(0, Math.min(100, Number(value || 0)));
+  return `${v}%`;
+}
+
 export default function App() {
   const [latest, setLatest] = useState(() =>
     readLocal(STORAGE_KEYS.latest, TXT_LATEST)
@@ -132,6 +164,28 @@ export default function App() {
 
   const [autoTrainLast, setAutoTrainLast] = useState(() =>
     readLocal(STORAGE_KEYS.autoTrainLast, null)
+  );
+
+  const [aiEvolution, setAiEvolution] = useState(() =>
+    readLocal(STORAGE_KEYS.aiEvolutionLast, {
+      ok: true,
+      statusArrow: "→",
+      statusLabel: "探索中",
+      statusText: "AI 正在測試新策略。",
+      trainingStrength: 0,
+      trainingStrengthText: "訓練強度 0%",
+      statusColor: "#79b8ff",
+      comparedLastHour: 0,
+      createdLastHour: 0,
+      retiredLastHour: 0,
+      activeCount: 0,
+      topStrategyKey: "-",
+      topStrategyScore: 0,
+      topStrategyAvgHit: 0,
+      topStrategyRoi: 0,
+      topStrategyRecent50Roi: 0,
+      sinceText: "最近 1 小時"
+    })
   );
 
   const [syncStatus, setSyncStatus] = useState("尚未同步");
@@ -163,6 +217,7 @@ export default function App() {
   useEffect(() => writeLocal(STORAGE_KEYS.formalResult, formalResult), [formalResult]);
   useEffect(() => writeLocal(STORAGE_KEYS.generatedPlan, generatedPlan), [generatedPlan]);
   useEffect(() => writeLocal(STORAGE_KEYS.autoTrainLast, autoTrainLast), [autoTrainLast]);
+  useEffect(() => writeLocal(STORAGE_KEYS.aiEvolutionLast, aiEvolution), [aiEvolution]);
 
   async function loadRecent20(silent = false) {
     try {
@@ -186,6 +241,31 @@ export default function App() {
         setRecent20Status(`recent20 載入失敗：${err.message}`);
       }
       return [];
+    }
+  }
+
+  async function loadAiEvolution(silent = false) {
+    try {
+      const res = await fetch("/api/ai-player");
+      const data = await res.json();
+
+      if (!data.ok) {
+        throw new Error(data.error || "AI 進化速度載入失敗");
+      }
+
+      const normalized = normalizeAiEvolution(data);
+      setAiEvolution(normalized);
+
+      if (!silent) {
+        setNotice(`AI進化速度：${normalized.statusArrow} ${normalized.statusLabel}`);
+      }
+
+      return normalized;
+    } catch (err) {
+      if (!silent) {
+        setNotice(`AI進化速度載入失敗：${err.message}`);
+      }
+      return null;
     }
   }
 
@@ -261,6 +341,7 @@ export default function App() {
     try {
       setSyncStatus("同步中...");
       await syncLatestCore(false);
+      await loadAiEvolution(true);
     } catch (err) {
       setSyncStatus(`同步失敗：${err.message}`);
     }
@@ -302,6 +383,7 @@ export default function App() {
 
       await syncLatestCore(true);
       await loadRecent20(true);
+      await loadAiEvolution(true);
 
       const generated = {
         ok: true,
@@ -473,7 +555,6 @@ export default function App() {
     });
 
     setStrategyStats(learned.stats);
-
     return learned;
   }
 
@@ -506,6 +587,8 @@ export default function App() {
       predictionId: testPlan.predictionId,
       compareResult: data.result
     });
+
+    await loadAiEvolution(true);
 
     if (learned.applied) {
       setNotice(`測試模式比對完成：${data.result.verdict}，系統已更新策略權重。`);
@@ -543,6 +626,8 @@ export default function App() {
       predictionId: formalPlan.predictionId,
       compareResult: data.result
     });
+
+    await loadAiEvolution(true);
 
     if (learned.applied) {
       setNotice(`正式投注比對完成：${data.result.verdict}，系統已更新策略權重。`);
@@ -616,6 +701,7 @@ export default function App() {
       }
 
       writeLocal(STORAGE_KEYS.autoRunAt, now);
+      await loadAiEvolution(true);
 
       const inserted = Number(catchupData.inserted || 0);
 
@@ -631,12 +717,21 @@ export default function App() {
 
   useEffect(() => {
     loadRecent20(false);
+    loadAiEvolution(true);
   }, []);
 
   useEffect(() => {
     if (autoRanRef.current) return;
     autoRanRef.current = true;
     autoCatchupAndCompare();
+  }, []);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      loadAiEvolution(true);
+    }, 60 * 1000);
+
+    return () => clearInterval(timer);
   }, []);
 
   const core8 = useMemo(() => {
@@ -667,9 +762,10 @@ export default function App() {
       <div style={styles.wrap}>
         <section style={styles.hero}>
           <div style={styles.kicker}>FUWEI BINGO SYSTEM</div>
-          <h1 style={styles.h1}>富緯賓果系統 v2.6 全覆蓋摘要版</h1>
+          <h1 style={styles.h1}>富緯賓果系統 v2.7 AI進化速度版</h1>
           <p style={styles.p}>
-            自動訓練摘要已重寫，只顯示來源期數、目標期數、實際比對期數與錯誤，不再用 prediction id 當主資訊。
+            首頁直接顯示 AI 有沒有進步，不再只看數字。你現在看到的是最直白版本：
+            進化中、探索中、停滯，外加訓練強度條。
           </p>
 
           <div style={styles.notice}>{notice}</div>
@@ -697,6 +793,69 @@ export default function App() {
             <div style={styles.statCard}>
               <div style={styles.statLabel}>同步狀態</div>
               <div style={styles.statValue}>{syncStatus}</div>
+            </div>
+          </div>
+
+          <div style={styles.evolutionCard}>
+            <div style={styles.evolutionHead}>
+              <div>
+                <div style={styles.evolutionTitle}>AI進化速度</div>
+                <div
+                  style={{
+                    ...styles.evolutionStatus,
+                    color: aiEvolution.statusColor
+                  }}
+                >
+                  {aiEvolution.statusArrow} {aiEvolution.statusLabel}
+                </div>
+              </div>
+
+              <div style={styles.evolutionMiniStats}>
+                <div style={styles.evolutionMiniItem}>
+                  <span style={styles.evolutionMiniLabel}>最近1小時 Compare</span>
+                  <strong style={styles.evolutionMiniValue}>{aiEvolution.comparedLastHour}</strong>
+                </div>
+                <div style={styles.evolutionMiniItem}>
+                  <span style={styles.evolutionMiniLabel}>最近1小時 Create</span>
+                  <strong style={styles.evolutionMiniValue}>{aiEvolution.createdLastHour}</strong>
+                </div>
+                <div style={styles.evolutionMiniItem}>
+                  <span style={styles.evolutionMiniLabel}>最近1小時 淘汰</span>
+                  <strong style={styles.evolutionMiniValue}>{aiEvolution.retiredLastHour}</strong>
+                </div>
+              </div>
+            </div>
+
+            <div style={styles.evolutionText}>{aiEvolution.statusText}</div>
+
+            <div style={styles.evolutionBarWrap}>
+              <div style={styles.evolutionBarBg}>
+                <div
+                  style={{
+                    ...styles.evolutionBarFill,
+                    width: getEvolutionFillWidth(aiEvolution.trainingStrength),
+                    background: aiEvolution.statusColor
+                  }}
+                />
+              </div>
+              <div style={styles.evolutionStrengthText}>
+                {aiEvolution.trainingStrengthText}
+              </div>
+            </div>
+
+            <div style={styles.evolutionFoot}>
+              <div style={styles.evolutionFootItem}>
+                <span style={styles.evolutionFootLabel}>活躍策略</span>
+                <strong>{aiEvolution.activeCount}</strong>
+              </div>
+              <div style={styles.evolutionFootItem}>
+                <span style={styles.evolutionFootLabel}>第一名策略</span>
+                <strong>{aiEvolution.topStrategyKey || "-"}</strong>
+              </div>
+              <div style={styles.evolutionFootItem}>
+                <span style={styles.evolutionFootLabel}>第一名分數</span>
+                <strong>{Number(aiEvolution.topStrategyScore || 0).toFixed(1)}</strong>
+              </div>
             </div>
           </div>
 
@@ -991,6 +1150,97 @@ const styles = {
   statValue: {
     fontSize: 18,
     fontWeight: 700
+  },
+  evolutionCard: {
+    marginTop: 22,
+    background: "linear-gradient(180deg, #0b203f 0%, #091a34 100%)",
+    borderRadius: 24,
+    padding: 22,
+    border: "1px solid rgba(255,255,255,0.08)"
+  },
+  evolutionHead: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 16,
+    flexWrap: "wrap"
+  },
+  evolutionTitle: {
+    fontSize: 18,
+    color: "#9eb4dc",
+    marginBottom: 8
+  },
+  evolutionStatus: {
+    fontSize: 34,
+    fontWeight: 800,
+    lineHeight: 1.2
+  },
+  evolutionText: {
+    marginTop: 12,
+    color: "#dce9ff",
+    fontSize: 18,
+    lineHeight: 1.7
+  },
+  evolutionMiniStats: {
+    display: "grid",
+    gridTemplateColumns: "repeat(3,minmax(120px,1fr))",
+    gap: 12,
+    minWidth: "340px"
+  },
+  evolutionMiniItem: {
+    background: "#081731",
+    borderRadius: 16,
+    padding: 14
+  },
+  evolutionMiniLabel: {
+    display: "block",
+    color: "#9eb4dc",
+    fontSize: 13,
+    marginBottom: 8
+  },
+  evolutionMiniValue: {
+    fontSize: 24,
+    fontWeight: 800,
+    color: "#f3f6ff"
+  },
+  evolutionBarWrap: {
+    marginTop: 18
+  },
+  evolutionBarBg: {
+    width: "100%",
+    height: 20,
+    borderRadius: 999,
+    background: "#162947",
+    overflow: "hidden",
+    border: "1px solid rgba(255,255,255,0.08)"
+  },
+  evolutionBarFill: {
+    height: "100%",
+    borderRadius: 999,
+    transition: "width 0.3s ease"
+  },
+  evolutionStrengthText: {
+    marginTop: 10,
+    fontSize: 18,
+    fontWeight: 800,
+    color: "#f7cf52"
+  },
+  evolutionFoot: {
+    marginTop: 16,
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))",
+    gap: 12
+  },
+  evolutionFootItem: {
+    background: "#081731",
+    borderRadius: 16,
+    padding: 14
+  },
+  evolutionFootLabel: {
+    display: "block",
+    color: "#9eb4dc",
+    fontSize: 13,
+    marginBottom: 8
   },
   btnRow: {
     display: "flex",
