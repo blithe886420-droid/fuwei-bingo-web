@@ -62,7 +62,7 @@ function normalizeGroups(groups) {
 
       return {
         key: g.key || `group_${idx + 1}`,
-        label: g.label || `第${idx + 1}組`,
+        label: g.label || g.name || g.strategy_name || `第${idx + 1}組`,
         nums,
         reason: g.reason || '',
         meta: g.meta || {}
@@ -232,7 +232,7 @@ async function getLatestTrainingPrediction() {
       { type: 'like', value: '%test%' },
       { type: 'like', value: '%ai_train%' }
     ],
-    preferredStatuses: ['created', 'compared']
+    preferredStatuses: ['created', 'compared', 'replaced']
   });
 }
 
@@ -242,7 +242,7 @@ async function getLatestFormalPrediction() {
       { type: 'eq', value: 'formal' },
       { type: 'like', value: '%formal%' }
     ],
-    preferredStatuses: ['created', 'compared']
+    preferredStatuses: ['created', 'compared', 'replaced']
   });
 }
 
@@ -305,10 +305,27 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       ok: true,
-      training: trainingPrediction,
-      formal: formalPrediction,
-      ai_train: trainingPrediction,
+
+      training: {
+        row: trainingPrediction,
+        rows: trainingPrediction ? [trainingPrediction] : []
+      },
+      formal: {
+        row: formalPrediction,
+        rows: formalPrediction ? [formalPrediction] : []
+      },
+
+      ai_train: {
+        row: trainingPrediction,
+        rows: trainingPrediction ? [trainingPrediction] : []
+      },
+
+      training_row: trainingPrediction,
+      formal_row: formalPrediction,
+
+      row: trainingPrediction || formalPrediction || null,
       rows,
+
       leaderboard: rankingResult.leaderboard,
       leaderboard_source: rankingResult.source
     });
