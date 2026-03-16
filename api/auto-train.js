@@ -14,8 +14,8 @@ const TARGET_PERIODS = 2;
 const BET_GROUP_COUNT = 4;
 const COST_PER_GROUP_PER_PERIOD = 25;
 
-const MAX_COMPARE_PER_RUN = 1;
-const MAX_CREATE_PER_RUN = 1;
+const MAX_COMPARE_PER_RUN = 3;
+const MAX_CREATE_PER_RUN = 2;
 const SOFT_TIMEOUT_MS = 8000;
 
 const DRAWS_TABLE = 'bingo_draws';
