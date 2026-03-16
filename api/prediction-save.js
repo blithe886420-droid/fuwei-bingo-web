@@ -422,7 +422,7 @@ function scoreActiveStrategy(row) {
   const totalRounds = Number(row.total_rounds || 0);
 
   const explosionScore = hit2 * 3 + hit3 * 8 + hit4 * 20;
-  const stabilityScore = avgHit * 50 + recent50Roi * 35 + roi * 10;
+  const stabilityScore = avgHit * 60 + recent50Roi * 45 + roi * 10;
   const matureBonus = totalRounds >= 30 ? 25 : totalRounds >= 15 ? 10 : 0;
 
   return protectedBonus + explosionScore + stabilityScore + matureBonus;
@@ -734,7 +734,12 @@ export default async function handler(req, res) {
     const supabase = createClient(SUPABASE_URL, SUPABASE_SECRET_KEY);
     const body = req.body || {};
 
-    const mode = body.mode || DEFAULT_MODE;
+    const rawMode = String(body.mode || DEFAULT_MODE);
+    const mode =
+      rawMode === 'formal_synced_from_server_prediction'
+        ? 'formal'
+        : rawMode;
+
     const targetPeriods = Number(body.targetPeriods || TARGET_PERIODS);
     const generationSeed =
       String(body.generationSeed || body.forceSeed || `${Date.now()}_${Math.random()}`);
@@ -854,6 +859,7 @@ export default async function handler(req, res) {
       row: data,
       source_draw_no: payload.source_draw_no,
       target_periods: targetPeriods,
+      targetDrawNo: toInt(payload.source_draw_no, 0) + toInt(targetPeriods, 0),
       group_source: groupSource,
       generation_seed: generationSeed,
       archive_result: archiveResult,
