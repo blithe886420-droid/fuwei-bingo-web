@@ -761,7 +761,7 @@ function scoreActiveStrategy(row) {
   const totalRounds = Number(row.total_rounds || 0);
 
   const explosionScore = hit2 * 3 + hit3 * 8 + hit4 * 20;
-  const stabilityScore = avgHit * 50 + recent50Roi * 35 + roi * 10;
+  const stabilityScore = avgHit * 60 + recent50Roi * 45 + roi * 10;
   const matureBonus = totalRounds >= 30 ? 25 : totalRounds >= 15 ? 10 : 0;
 
   return protectedBonus + explosionScore + stabilityScore + matureBonus;
