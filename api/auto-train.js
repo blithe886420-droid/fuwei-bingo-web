@@ -34,6 +34,10 @@ const RETIRE_ROI_THRESHOLD = -40;
 const RETIRE_RECENT50_ROI_THRESHOLD = -30;
 const RETIRE_AVG_HIT_THRESHOLD = 1.3;
 
+const PROTECTED_TOP_N = 10;
+const TRAINING_CORE_GROUP_COUNT = 3;
+const TRAINING_EXPLORATION_GROUP_COUNT = 1;
+
 const GENE_POOL = [
   'hot',
   'chase',
@@ -706,7 +710,7 @@ function buildGroupReason(strategy, genes) {
   return `來自 strategy_pool active 策略 ${strategyName}，基因 ${genes.join(' + ')}`;
 }
 
-function buildGroupFromStrategy(strategy, recent20, variantIndex = 0) {
+function buildGroupFromStrategy(strategy, recent20, variantIndex = 0, reasonPrefix = '') {
   const analysis = buildRecent20Analysis(recent20);
   const genes = uniqueKeepOrder([strategy.gene_a, strategy.gene_b].filter(Boolean));
 
@@ -728,10 +732,12 @@ function buildGroupFromStrategy(strategy, recent20, variantIndex = 0) {
     key: strategy.strategy_key || `group_${variantIndex + 1}`,
     label: strategy.strategy_name || strategy.strategy_key || `第${variantIndex + 1}組`,
     nums,
-    reason: buildGroupReason(strategy, genes),
+    reason: reasonPrefix
+      ? `${reasonPrefix}｜${buildGroupReason(strategy, genes)}`
+      : buildGroupReason(strategy, genes),
     meta: {
-      model: 'v4.4',
-      source: 'strategy_pool',
+      model: 'v5.2',
+      source: strategy.source_type || 'strategy_pool',
       strategy_key: strategy.strategy_key || `group_${variantIndex + 1}`,
       strategy_name: strategy.strategy_name || strategy.strategy_key || `第${variantIndex + 1}組`,
       gene_a: strategy.gene_a || '',
@@ -740,7 +746,8 @@ function buildGroupFromStrategy(strategy, recent20, variantIndex = 0) {
       total_rounds: toInt(strategy.total_rounds, 0),
       avg_hit: Number(strategy.avg_hit || 0),
       roi: Number(strategy.roi || 0),
-      recent_50_roi: Number(strategy.recent_50_roi || 0)
+      recent_50_roi: Number(strategy.recent_50_roi || 0),
+      strategy_score: round2(strategy.strategy_score || scoreActiveStrategy(strategy))
     }
   };
 }
@@ -798,6 +805,20 @@ async function getPoolWithStats() {
   }));
 }
 
+function sortStrategiesByStrength(rows = []) {
+  return [...rows]
+    .map((row) => ({
+      ...row,
+      strategy_score: scoreActiveStrategy(row)
+    }))
+    .sort((a, b) => {
+      if (Boolean(a.protected_rank) !== Boolean(b.protected_rank)) {
+        return Boolean(b.protected_rank) - Boolean(a.protected_rank);
+      }
+      return Number(b.strategy_score || 0) - Number(a.strategy_score || 0);
+    });
+}
+
 async function getActiveStrategiesFromPool(limitCount = BET_GROUP_COUNT) {
   const rows = await getPoolWithStats();
 
@@ -811,18 +832,7 @@ async function getActiveStrategiesFromPool(limitCount = BET_GROUP_COUNT) {
 
   if (!activeStrategies.length) return [];
 
-  return activeStrategies
-    .map((row) => ({
-      ...row,
-      strategy_score: scoreActiveStrategy(row)
-    }))
-    .sort((a, b) => {
-      if (Boolean(a.protected_rank) !== Boolean(b.protected_rank)) {
-        return Boolean(b.protected_rank) - Boolean(a.protected_rank);
-      }
-      return Number(b.strategy_score || 0) - Number(a.strategy_score || 0);
-    })
-    .slice(0, limitCount);
+  return sortStrategiesByStrength(activeStrategies).slice(0, limitCount);
 }
 
 function buildFallbackSeedGroupsFromRecent20(recent20) {
@@ -832,48 +842,114 @@ function buildFallbackSeedGroupsFromRecent20(recent20) {
       strategy_name: 'Hot Balanced',
       gene_a: 'hot',
       gene_b: 'balanced',
-      protected_rank: false
+      protected_rank: false,
+      source_type: 'seed'
     },
     {
       strategy_key: 'balanced_zone',
       strategy_name: 'Balanced Zone',
       gene_a: 'balanced',
       gene_b: 'zone',
-      protected_rank: false
+      protected_rank: false,
+      source_type: 'seed'
     },
     {
       strategy_key: 'hot_chase',
       strategy_name: '熱門追擊型',
       gene_a: 'hot',
       gene_b: 'chase',
-      protected_rank: false
+      protected_rank: false,
+      source_type: 'seed'
     },
     {
       strategy_key: 'repeat_guard',
       strategy_name: '重號防守型',
       gene_a: 'repeat',
       gene_b: 'guard',
-      protected_rank: false
+      protected_rank: false,
+      source_type: 'seed'
     }
   ];
 
   const rawGroups = fallbackStrategies.map((strategy, idx) =>
-    buildGroupFromStrategy(strategy, recent20, idx)
+    buildGroupFromStrategy(strategy, recent20, idx, 'fallback')
   );
   const analysis = buildRecent20Analysis(recent20);
   return ensureUniqueGroups(rawGroups, analysis);
 }
 
 async function buildStrategyGroupsFromPool(recent20) {
-  const activeStrategies = await getActiveStrategiesFromPool(BET_GROUP_COUNT);
   const analysis = buildRecent20Analysis(recent20);
+  const activeStrategies = await getActiveStrategiesFromPool(ACTIVE_TARGET_MAX);
 
   if (!activeStrategies.length) {
     return buildFallbackSeedGroupsFromRecent20(recent20);
   }
 
-  let groups = activeStrategies
-    .map((strategy, idx) => buildGroupFromStrategy(strategy, recent20, idx))
+  const protectedStrategies = activeStrategies.filter((row) => Boolean(row.protected_rank));
+  const nonProtectedStrategies = activeStrategies.filter((row) => !row.protected_rank);
+
+  const selected = [];
+  const usedKeys = new Set();
+
+  for (const row of protectedStrategies.slice(0, TRAINING_CORE_GROUP_COUNT)) {
+    if (usedKeys.has(row.strategy_key)) continue;
+    usedKeys.add(row.strategy_key);
+    selected.push({ ...row, _bucket: 'core' });
+    if (selected.length >= TRAINING_CORE_GROUP_COUNT) break;
+  }
+
+  if (selected.length < TRAINING_CORE_GROUP_COUNT) {
+    for (const row of nonProtectedStrategies) {
+      if (usedKeys.has(row.strategy_key)) continue;
+      usedKeys.add(row.strategy_key);
+      selected.push({ ...row, _bucket: 'core' });
+      if (selected.length >= TRAINING_CORE_GROUP_COUNT) break;
+    }
+  }
+
+  const explorationCandidates = nonProtectedStrategies.filter(
+    (row) =>
+      !usedKeys.has(row.strategy_key) &&
+      String(row.source_type || '') === 'exploration'
+  );
+
+  for (const row of explorationCandidates.slice(0, TRAINING_EXPLORATION_GROUP_COUNT)) {
+    if (usedKeys.has(row.strategy_key)) continue;
+    usedKeys.add(row.strategy_key);
+    selected.push({ ...row, _bucket: 'exploration' });
+    if (selected.length >= BET_GROUP_COUNT) break;
+  }
+
+  if (selected.length < BET_GROUP_COUNT) {
+    for (const row of nonProtectedStrategies) {
+      if (usedKeys.has(row.strategy_key)) continue;
+      usedKeys.add(row.strategy_key);
+      selected.push({ ...row, _bucket: 'support' });
+      if (selected.length >= BET_GROUP_COUNT) break;
+    }
+  }
+
+  if (selected.length < BET_GROUP_COUNT) {
+    for (const row of protectedStrategies) {
+      if (usedKeys.has(row.strategy_key)) continue;
+      usedKeys.add(row.strategy_key);
+      selected.push({ ...row, _bucket: 'support' });
+      if (selected.length >= BET_GROUP_COUNT) break;
+    }
+  }
+
+  let groups = selected
+    .map((strategy, idx) => {
+      const reasonPrefix =
+        strategy._bucket === 'core'
+          ? '主力策略'
+          : strategy._bucket === 'exploration'
+            ? '探索策略'
+            : '補位策略';
+
+      return buildGroupFromStrategy(strategy, recent20, idx, reasonPrefix);
+    })
     .filter((group) => Array.isArray(group.nums) && group.nums.length === 4);
 
   groups = ensureUniqueGroups(groups, analysis);
@@ -952,7 +1028,7 @@ async function buildLeaderboard(limitRows = 50) {
   const activeRows = rows.filter((row) => row.status === 'active');
   if (!activeRows.length) return [];
 
-  return activeRows
+  return sortStrategiesByStrength(activeRows)
     .map((row) => {
       const totalRounds = toInt(row.total_rounds, 0);
       const totalHits = toInt(row.total_hits, 0);
@@ -994,12 +1070,6 @@ async function buildLeaderboard(limitRows = 50) {
         hit4,
         score
       };
-    })
-    .sort((a, b) => {
-      if (Boolean(a.protected_rank) !== Boolean(b.protected_rank)) {
-        return Number(b.protected_rank) - Number(a.protected_rank);
-      }
-      return b.score - a.score;
     })
     .slice(0, limitRows);
 }
@@ -1112,6 +1182,52 @@ function buildCandidateStrategyRows(existingRows, desiredCount = 8) {
   return inserted;
 }
 
+async function updateProtectedTopStrategies(rows) {
+  const supabase = getSupabase();
+  const activeRows = rows.filter((row) => row.status === 'active');
+  const ranked = sortStrategiesByStrength(activeRows);
+
+  const protectKeys = ranked.slice(0, PROTECTED_TOP_N).map((row) => row.strategy_key);
+  const protectSet = new Set(protectKeys);
+
+  const toProtect = activeRows
+    .filter((row) => protectSet.has(row.strategy_key) && !row.protected_rank)
+    .map((row) => row.strategy_key);
+
+  const toUnprotect = activeRows
+    .filter((row) => !protectSet.has(row.strategy_key) && row.protected_rank)
+    .map((row) => row.strategy_key);
+
+  if (toProtect.length) {
+    const { error } = await supabase
+      .from(STRATEGY_POOL_TABLE)
+      .update({
+        protected_rank: true,
+        updated_at: new Date().toISOString()
+      })
+      .in('strategy_key', toProtect);
+
+    if (error) throw error;
+  }
+
+  if (toUnprotect.length) {
+    const { error } = await supabase
+      .from(STRATEGY_POOL_TABLE)
+      .update({
+        protected_rank: false,
+        updated_at: new Date().toISOString()
+      })
+      .in('strategy_key', toUnprotect);
+
+    if (error) throw error;
+  }
+
+  return {
+    protected_top_keys: protectKeys,
+    protected_changed_count: toProtect.length + toUnprotect.length
+  };
+}
+
 async function maybeRunStrategyEvolution() {
   const supabase = getSupabase();
 
@@ -1122,11 +1238,16 @@ async function maybeRunStrategyEvolution() {
       retired_count: 0,
       activated_count: 0,
       inserted_count: 0,
+      protected_changed_count: 0,
+      protected_top_keys: [],
       message: 'strategy_pool 尚無資料'
     };
   }
 
-  const activeRows = poolWithStats.filter((row) => row.status === 'active');
+  const protectedUpdateBefore = await updateProtectedTopStrategies(poolWithStats);
+
+  const rowsAfterProtect = await getPoolWithStats();
+  const activeRows = rowsAfterProtect.filter((row) => row.status === 'active');
   const retireRows = activeRows.filter((row) => shouldRetireStrategy(row));
 
   let retiredCount = 0;
@@ -1149,18 +1270,9 @@ async function maybeRunStrategyEvolution() {
   let refreshedActive = refreshedRows.filter((row) => row.status === 'active');
   let activeCount = refreshedActive.length;
 
-  const disabledCandidates = refreshedRows
-    .filter((row) => row.status === 'disabled' && !shouldRetireStrategy(row))
-    .map((row) => ({
-      ...row,
-      strategy_score: scoreActiveStrategy(row)
-    }))
-    .sort((a, b) => {
-      if (Boolean(a.protected_rank) !== Boolean(b.protected_rank)) {
-        return Boolean(b.protected_rank) - Boolean(a.protected_rank);
-      }
-      return Number(b.strategy_score || 0) - Number(a.strategy_score || 0);
-    });
+  const disabledCandidates = sortStrategiesByStrength(
+    refreshedRows.filter((row) => row.status === 'disabled' && !shouldRetireStrategy(row))
+  );
 
   let activatedCount = 0;
 
@@ -1201,34 +1313,33 @@ async function maybeRunStrategyEvolution() {
     }
   }
 
-  const finalRows = await getPoolWithStats();
-  const finalActive = finalRows.filter((row) => row.status === 'active');
+  const finalRowsBeforeTrim = await getPoolWithStats();
+  const finalActiveBeforeTrim = finalRowsBeforeTrim.filter((row) => row.status === 'active');
 
-  if (finalActive.length > ACTIVE_TARGET_MAX) {
-    const nonProtectedWeak = finalActive
-      .filter((row) => !row.protected_rank)
-      .map((row) => ({
-        ...row,
-        strategy_score: scoreActiveStrategy(row)
-      }))
-      .sort((a, b) => Number(a.strategy_score || 0) - Number(b.strategy_score || 0));
+  let disabled_overflow_count = 0;
+  if (finalActiveBeforeTrim.length > ACTIVE_TARGET_MAX) {
+    const rankedActive = sortStrategiesByStrength(finalActiveBeforeTrim);
+    const keepKeys = new Set(rankedActive.slice(0, ACTIVE_TARGET_MAX).map((row) => row.strategy_key));
+    const disableKeys = rankedActive
+      .filter((row) => !keepKeys.has(row.strategy_key) && !row.protected_rank)
+      .map((row) => row.strategy_key);
 
-    const overCount = finalActive.length - ACTIVE_TARGET_MAX;
-    const pauseKeys = nonProtectedWeak.slice(0, overCount).map((row) => row.strategy_key);
-
-    if (pauseKeys.length) {
+    if (disableKeys.length) {
       const { error: pauseError } = await supabase
         .from(STRATEGY_POOL_TABLE)
         .update({
           status: 'disabled',
           updated_at: new Date().toISOString()
         })
-        .in('strategy_key', pauseKeys);
+        .in('strategy_key', disableKeys);
 
       if (pauseError) throw pauseError;
+      disabled_overflow_count = disableKeys.length;
     }
   }
 
+  const finalRows = await getPoolWithStats();
+  const protectedUpdateAfter = await updateProtectedTopStrategies(finalRows);
   const afterRows = await getPoolWithStats();
 
   return {
@@ -1236,9 +1347,14 @@ async function maybeRunStrategyEvolution() {
     retired_count: retiredCount,
     activated_count: activatedCount,
     inserted_count: insertedCount,
+    disabled_overflow_count,
     active_count: afterRows.filter((row) => row.status === 'active').length,
     retired_keys: retireRows.map((row) => row.strategy_key),
-    message: 'strategy evolution done'
+    protected_changed_count:
+      protectedUpdateBefore.protected_changed_count +
+      protectedUpdateAfter.protected_changed_count,
+    protected_top_keys: protectedUpdateAfter.protected_top_keys,
+    message: 'strategy convergence v2 done'
   };
 }
 
