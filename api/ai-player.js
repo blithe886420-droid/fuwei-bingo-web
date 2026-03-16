@@ -120,6 +120,7 @@ function calculateTrainingStrength({
   else convergeScore = 2;
 
   let qualityScore = 0;
+
   if (topStrategyAvgHit >= 2.2) qualityScore += 8;
   else if (topStrategyAvgHit >= 1.9) qualityScore += 6;
   else if (topStrategyAvgHit >= 1.6) qualityScore += 4;
@@ -146,7 +147,7 @@ async function getPoolWithStats(supabase) {
 
   if (poolError) throw poolError;
 
-  const strategyKeys = (poolRows || []).map(row => row.strategy_key).filter(Boolean);
+  const strategyKeys = (poolRows || []).map((row) => row.strategy_key).filter(Boolean);
   const statsMap = new Map();
 
   if (strategyKeys.length) {
@@ -162,7 +163,7 @@ async function getPoolWithStats(supabase) {
     }
   }
 
-  return (poolRows || []).map(row => ({
+  return (poolRows || []).map((row) => ({
     ...row,
     ...(statsMap.get(row.strategy_key) || {})
   }));
@@ -184,18 +185,18 @@ export default async function handler(req, res) {
 
       supabase
         .from(PREDICTIONS_TABLE)
-        .select('id, compared_at', { count: 'exact', head: true })
+        .select('id', { count: 'exact', head: true })
         .eq('status', 'compared')
         .gte('compared_at', sinceIso),
 
       supabase
         .from(PREDICTIONS_TABLE)
-        .select('id, created_at', { count: 'exact', head: true })
+        .select('id', { count: 'exact', head: true })
         .gte('created_at', sinceIso),
 
       supabase
         .from(STRATEGY_POOL_TABLE)
-        .select('strategy_key, updated_at', { count: 'exact', head: true })
+        .select('strategy_key', { count: 'exact', head: true })
         .eq('status', 'retired')
         .gte('updated_at', sinceIso),
 
@@ -212,10 +213,10 @@ export default async function handler(req, res) {
     if (retiredRes.error) throw retiredRes.error;
     if (latestDrawRes.error) throw latestDrawRes.error;
 
-    const activeRows = poolWithStats.filter(row => row.status === 'active');
+    const activeRows = poolWithStats.filter((row) => row.status === 'active');
 
     const leaderboard = activeRows
-      .map(row => ({
+      .map((row) => ({
         ...row,
         strategy_score: scoreActiveStrategy(row)
       }))
@@ -273,7 +274,6 @@ export default async function handler(req, res) {
       topStrategyRoi,
       topStrategyRecent50Roi,
       trainingStrength,
-      trainingStrengthText: `訓練強度 ${trainingStrength}%`,
       ...status
     });
   } catch (error) {
