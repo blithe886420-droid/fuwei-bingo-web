@@ -73,7 +73,7 @@ function decideEvolutionStatus({
     return {
       statusArrow: "↓",
       statusLabel: "停滯",
-      statusText: "AI最近沒有明顯進步，訓練引擎可能暫時沒有吃到新成果。",
+      statusText: "AI最近沒有明顯進步。",
       statusColor: "#ff8d8d"
     };
   }
@@ -87,7 +87,7 @@ function decideEvolutionStatus({
     return {
       statusArrow: "↑",
       statusLabel: "進化中",
-      statusText: "AI正在淘汰弱策略並強化強策略，整體方向是往上走的。",
+      statusText: "AI正在淘汰弱策略並強化強策略。",
       statusColor: "#7ef0a5"
     };
   }
@@ -95,7 +95,7 @@ function decideEvolutionStatus({
   return {
     statusArrow: "→",
     statusLabel: "探索中",
-    statusText: "AI正在測試新策略，還在找更穩定的強者組合。",
+    statusText: "AI正在測試新策略。",
     statusColor: "#79b8ff"
   };
 }
@@ -178,8 +178,7 @@ export default async function handler(req, res) {
       poolWithStats,
       comparedRes,
       createdRes,
-      retiredRes,
-      latestDrawRes
+      retiredRes
     ] = await Promise.all([
       getPoolWithStats(supabase),
 
@@ -198,20 +197,12 @@ export default async function handler(req, res) {
         .from(STRATEGY_POOL_TABLE)
         .select('strategy_key', { count: 'exact', head: true })
         .eq('status', 'retired')
-        .gte('updated_at', sinceIso),
-
-      supabase
-        .from(DRAWS_TABLE)
-        .select('draw_no, draw_time')
-        .order('draw_no', { ascending: false })
-        .limit(1)
-        .maybeSingle()
+        .gte('updated_at', sinceIso)
     ]);
 
     if (comparedRes.error) throw comparedRes.error;
     if (createdRes.error) throw createdRes.error;
     if (retiredRes.error) throw retiredRes.error;
-    if (latestDrawRes.error) throw latestDrawRes.error;
 
     const activeRows = poolWithStats.filter((row) => row.status === 'active');
 
@@ -261,8 +252,6 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       ok: true,
-      latestDrawNo: Number(latestDrawRes.data?.draw_no || 0) || null,
-      latestDrawTime: latestDrawRes.data?.draw_time || "",
       sinceText: "最近 1 小時",
       comparedLastHour,
       createdLastHour,
@@ -270,9 +259,6 @@ export default async function handler(req, res) {
       activeCount,
       topStrategyKey,
       topStrategyScore,
-      topStrategyAvgHit,
-      topStrategyRoi,
-      topStrategyRecent50Roi,
       trainingStrength,
       ...status
     });
