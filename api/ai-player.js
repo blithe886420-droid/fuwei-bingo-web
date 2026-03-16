@@ -1,418 +1,285 @@
-function pad2(value) {
-  return String(value).padStart(2, "0");
-}
+import { createClient } from '@supabase/supabase-js';
 
-function parseNumbers(str) {
-  return String(str || "")
-    .split(/[,\s]+/)
-    .map(x => x.trim())
-    .filter(Boolean)
-    .map(x => pad2(x))
-    .slice(0, 20);
-}
+const DRAWS_TABLE = 'bingo_draws';
+const PREDICTIONS_TABLE = 'bingo_predictions';
+const STRATEGY_POOL_TABLE = 'strategy_pool';
+const STRATEGY_STATS_TABLE = 'strategy_stats';
 
-function countFreq(rows, weight = 1) {
-  const map = {};
-  for (const row of rows) {
-    const nums = parseNumbers(row.numbers);
-    for (const n of nums) {
-      map[n] = (map[n] || 0) + weight;
-    }
-  }
-  return map;
-}
+function getSupabase() {
+  const url =
+    process.env.SUPABASE_URL ||
+    process.env.VITE_SUPABASE_URL ||
+    process.env.NEXT_PUBLIC_SUPABASE_URL;
 
-function mergeScores(...maps) {
-  const merged = {};
-  for (const map of maps) {
-    for (const [num, score] of Object.entries(map)) {
-      merged[num] = (merged[num] || 0) + score;
-    }
-  }
-  return merged;
-}
+  const key =
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_SECRET_KEY ||
+    process.env.SUPABASE_SERVICE_ROLE ||
+    process.env.SUPABASE_KEY ||
+    process.env.SUPABASE_ANON_KEY ||
+    process.env.VITE_SUPABASE_ANON_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-function sortByScore(scoreMap) {
-  return Object.entries(scoreMap)
-    .map(([num, score]) => ({ num, score }))
-    .sort((a, b) => b.score - a.score || Number(a.num) - Number(b.num));
-}
-
-function uniq(arr) {
-  return [...new Set(arr)];
-}
-
-function getZone(num) {
-  const n = Number(num);
-  if (n <= 20) return "01-20";
-  if (n <= 40) return "21-40";
-  if (n <= 60) return "41-60";
-  return "61-80";
-}
-
-function getTail(num) {
-  return Number(num) % 10;
-}
-
-function takeCandidates(sorted, count = 20) {
-  return sorted.slice(0, count).map(x => x.num);
-}
-
-function fillFallbackAny(usageMap, result, need = 4, limitPerNum = 3) {
-  for (let i = 1; i <= 80; i++) {
-    const num = pad2(i);
-    const used = usageMap[num] || 0;
-    if (used >= limitPerNum) continue;
-    if (result.includes(num)) continue;
-
-    result.push(num);
-    usageMap[num] = used + 1;
-    if (result.length >= need) break;
-  }
-  return result.slice(0, need);
-}
-
-function diversifyGroups(groups) {
-  const usageMap = {};
-  const diversified = [];
-
-  for (let i = 0; i < groups.length; i++) {
-    const g = groups[i];
-    const candidates = uniq(g.candidates || []);
-    let result = [];
-
-    for (const num of candidates) {
-      if (result.length >= 4) break;
-      const used = usageMap[num] || 0;
-      if (used >= 2) continue;
-      if (result.includes(num)) continue;
-
-      result.push(num);
-      usageMap[num] = used + 1;
-    }
-
-    if (result.length < 4) {
-      for (const num of candidates) {
-        if (result.length >= 4) break;
-        const used = usageMap[num] || 0;
-        if (used >= 3) continue;
-        if (result.includes(num)) continue;
-
-        result.push(num);
-        usageMap[num] = used + 1;
-      }
-    }
-
-    if (result.length < 4) {
-      result = fillFallbackAny(usageMap, result, 4, 3);
-    }
-
-    diversified.push({
-      ...g,
-      nums: result.slice(0, 4)
-    });
+  if (!url || !key) {
+    throw new Error('Missing SUPABASE env');
   }
 
-  return diversified;
+  return createClient(url, key, {
+    auth: { persistSession: false }
+  });
 }
 
-function buildHotChase(todayRows, recent20Rows, recent80Rows) {
-  const todayScore = countFreq(todayRows, 5);
-  const recent20Score = countFreq(recent20Rows, 3);
-  const recent80Score = countFreq(recent80Rows, 1);
+function toNum(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
 
-  const merged = mergeScores(todayScore, recent20Score, recent80Score);
-  const sorted = sortByScore(merged);
+function round1(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Number(n.toFixed(1));
+}
+
+function isoHourAgo(hours = 1) {
+  return new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+}
+
+function scoreActiveStrategy(row) {
+  const protectedBonus = row?.protected_rank ? 9999 : 0;
+  const avgHit = toNum(row?.avg_hit, 0);
+  const roi = toNum(row?.roi, 0);
+  const recent50Roi = toNum(row?.recent_50_roi, 0);
+  const hit2 = toNum(row?.hit2, 0);
+  const hit3 = toNum(row?.hit3, 0);
+  const hit4 = toNum(row?.hit4, 0);
+  const totalRounds = toNum(row?.total_rounds, 0);
+
+  const explosionScore = hit2 * 3 + hit3 * 8 + hit4 * 20;
+  const stabilityScore = avgHit * 60 + recent50Roi * 45 + roi * 10;
+  const matureBonus = totalRounds >= 30 ? 25 : totalRounds >= 15 ? 10 : 0;
+
+  return protectedBonus + explosionScore + stabilityScore + matureBonus;
+}
+
+function decideEvolutionStatus({
+  comparedLastHour,
+  createdLastHour,
+  retiredLastHour,
+  activeCount,
+  topStrategyAvgHit,
+  topStrategyRecent50Roi
+}) {
+  if (comparedLastHour <= 0 && createdLastHour <= 0 && retiredLastHour <= 0) {
+    return {
+      statusArrow: "↓",
+      statusLabel: "停滯",
+      statusText: "AI最近沒有明顯進步，訓練引擎可能暫時沒有吃到新成果。",
+      statusColor: "#ff8d8d"
+    };
+  }
+
+  if (
+    retiredLastHour >= 1 ||
+    activeCount <= 45 ||
+    topStrategyAvgHit >= 1.9 ||
+    topStrategyRecent50Roi >= 0
+  ) {
+    return {
+      statusArrow: "↑",
+      statusLabel: "進化中",
+      statusText: "AI正在淘汰弱策略並強化強策略，整體方向是往上走的。",
+      statusColor: "#7ef0a5"
+    };
+  }
 
   return {
-    key: "hot_chase",
-    label: "第1組｜熱門追擊型",
-    reason: "今日盤高頻 + 近20期熱號 + 長期底盤（權重 1.00）",
-    candidates: takeCandidates(sorted, 16)
+    statusArrow: "→",
+    statusLabel: "探索中",
+    statusText: "AI正在測試新策略，還在找更穩定的強者組合。",
+    statusColor: "#79b8ff"
   };
 }
 
-function buildRebound(todayRows, recent20Rows, recent80Rows) {
-  const todayScore = countFreq(todayRows, 1);
-  const recent20Score = countFreq(recent20Rows, 1);
-  const recent80Score = countFreq(recent80Rows, 4);
+function calculateTrainingStrength({
+  comparedLastHour,
+  createdLastHour,
+  retiredLastHour,
+  activeCount,
+  topStrategyAvgHit,
+  topStrategyRoi,
+  topStrategyRecent50Roi
+}) {
+  const compareScore = Math.min(35, comparedLastHour * 2);
+  const createScore = Math.min(20, createdLastHour * 2);
+  const retireScore = Math.min(15, retiredLastHour * 5);
 
-  const reboundMap = {};
-  const baseSorted = sortByScore(recent80Score);
+  let convergeScore = 0;
+  if (activeCount <= 36) convergeScore = 15;
+  else if (activeCount <= 45) convergeScore = 10;
+  else if (activeCount <= 50) convergeScore = 6;
+  else convergeScore = 2;
 
-  for (const item of baseSorted) {
-    const num = item.num;
-    const base = recent80Score[num] || 0;
-    const today = todayScore[num] || 0;
-    const recent = recent20Score[num] || 0;
-    reboundMap[num] = base - today * 1.25 - recent * 0.85;
-  }
+  let qualityScore = 0;
+  if (topStrategyAvgHit >= 2.2) qualityScore += 8;
+  else if (topStrategyAvgHit >= 1.9) qualityScore += 6;
+  else if (topStrategyAvgHit >= 1.6) qualityScore += 4;
+  else if (topStrategyAvgHit >= 1.3) qualityScore += 2;
 
-  const sorted = sortByScore(reboundMap).filter(x => (recent80Score[x.num] || 0) > 0);
+  if (topStrategyRecent50Roi >= 10) qualityScore += 7;
+  else if (topStrategyRecent50Roi >= 0) qualityScore += 5;
+  else if (topStrategyRecent50Roi >= -20) qualityScore += 3;
+  else if (topStrategyRecent50Roi >= -40) qualityScore += 1;
 
-  return {
-    key: "rebound",
-    label: "第2組｜回補反彈型",
-    reason: "近80期常見，但今日與近20期相對沉寂（權重 1.00）",
-    candidates: takeCandidates(sorted, 20)
-  };
+  if (topStrategyRoi >= 0) qualityScore += 8;
+  else if (topStrategyRoi >= -20) qualityScore += 5;
+  else if (topStrategyRoi >= -40) qualityScore += 3;
+  else if (topStrategyRoi >= -60) qualityScore += 1;
+
+  const total = compareScore + createScore + retireScore + convergeScore + qualityScore;
+  return Math.max(0, Math.min(100, Math.round(total)));
 }
 
-function buildZoneBalanced(todayRows, recent20Rows, recent80Rows) {
-  const merged = mergeScores(
-    countFreq(todayRows, 3),
-    countFreq(recent20Rows, 2),
-    countFreq(recent80Rows, 1)
-  );
+async function getPoolWithStats(supabase) {
+  const { data: poolRows, error: poolError } = await supabase
+    .from(STRATEGY_POOL_TABLE)
+    .select('*');
 
-  const sorted = sortByScore(merged);
-  const zones = ["01-20", "21-40", "41-60", "61-80"];
-  const zoneFirst = [];
+  if (poolError) throw poolError;
 
-  for (const zone of zones) {
-    const one = sorted.find(x => getZone(x.num) === zone);
-    if (one) zoneFirst.push(one.num);
-  }
+  const strategyKeys = (poolRows || []).map(row => row.strategy_key).filter(Boolean);
+  const statsMap = new Map();
 
-  const allCandidates = uniq([
-    ...zoneFirst,
-    ...takeCandidates(sorted, 20)
-  ]);
+  if (strategyKeys.length) {
+    const { data: statsRows, error: statsError } = await supabase
+      .from(STRATEGY_STATS_TABLE)
+      .select('*')
+      .in('strategy_key', strategyKeys);
 
-  return {
-    key: "zone_balanced",
-    label: "第3組｜區段平衡型",
-    reason: "四大區段分散配置，降低單區過熱風險（權重 1.00）",
-    candidates: allCandidates
-  };
-}
+    if (statsError) throw statsError;
 
-function buildPatternStructure(todayRows, recent20Rows, recent80Rows) {
-  const merged = mergeScores(
-    countFreq(todayRows, 4),
-    countFreq(recent20Rows, 2),
-    countFreq(recent80Rows, 1)
-  );
-
-  const sorted = sortByScore(merged).slice(0, 24);
-  const tailMap = {};
-
-  for (const item of sorted) {
-    const t = getTail(item.num);
-    tailMap[t] = (tailMap[t] || 0) + item.score;
-  }
-
-  const bestTail = Object.entries(tailMap)
-    .sort((a, b) => b[1] - a[1])[0]?.[0];
-
-  const sameTail = sorted
-    .filter(x => String(getTail(x.num)) === String(bestTail))
-    .map(x => x.num);
-
-  const ordered = sorted.map(x => Number(x.num)).sort((a, b) => a - b);
-  const nearNums = [];
-
-  for (let i = 0; i < ordered.length; i++) {
-    const n = ordered[i];
-    if (ordered.includes(n + 1)) {
-      nearNums.push(pad2(n), pad2(n + 1));
+    for (const row of statsRows || []) {
+      statsMap.set(row.strategy_key, row);
     }
   }
 
-  const candidates = uniq([
-    ...sameTail,
-    ...nearNums,
-    ...takeCandidates(sorted, 20)
-  ]);
-
-  return {
-    key: "pattern_structure",
-    label: "第4組｜盤型結構型",
-    reason: "同尾優先，輔以鄰號與盤型結構（權重 1.00）",
-    candidates
-  };
-}
-
-function buildGroupsFromRows(rows) {
-  const cleanRows = rows
-    .filter(r =>
-      Number.isInteger(Number(r.draw_no)) &&
-      typeof r.draw_time === "string" &&
-      typeof r.numbers === "string"
-    )
-    .map(r => ({
-      draw_no: Number(r.draw_no),
-      draw_time: r.draw_time,
-      numbers: r.numbers
-    }));
-
-  if (cleanRows.length < 20) return [];
-
-  const recent20Rows = cleanRows.slice(0, 20);
-  const todayRows = cleanRows.slice(0, Math.min(120, cleanRows.length));
-  const recent80Rows = cleanRows.slice(0, Math.min(80, cleanRows.length));
-
-  const rawGroups = [
-    buildHotChase(todayRows, recent20Rows, recent80Rows),
-    buildRebound(todayRows, recent20Rows, recent80Rows),
-    buildZoneBalanced(todayRows, recent20Rows, recent80Rows),
-    buildPatternStructure(todayRows, recent20Rows, recent80Rows)
-  ];
-
-  const diversified = diversifyGroups(rawGroups);
-
-  return diversified
-    .map((g) => ({
-      key: g.key,
-      label: g.label,
-      nums: uniq(g.nums).slice(0, 4).map(n => Number(n)),
-      reason: g.reason
-    }))
-    .filter(g => g.nums.length === 4);
+  return (poolRows || []).map(row => ({
+    ...row,
+    ...(statsMap.get(row.strategy_key) || {})
+  }));
 }
 
 export default async function handler(req, res) {
   try {
-    const SUPABASE_URL = process.env.SUPABASE_URL;
-    const SUPABASE_KEY =
-      process.env.SUPABASE_SECRET_KEY ||
-      process.env.SUPABASE_SERVICE_ROLE_KEY ||
-      process.env.SUPABASE_SERVICE_ROLE ||
-      process.env.SUPABASE_KEY;
+    const supabase = getSupabase();
+    const sinceIso = isoHourAgo(1);
 
-    if (!SUPABASE_URL || !SUPABASE_KEY) {
-      return res.status(500).json({
-        ok: false,
-        error: "Missing environment variables"
+    const [
+      poolWithStats,
+      comparedRes,
+      createdRes,
+      retiredRes,
+      latestDrawRes
+    ] = await Promise.all([
+      getPoolWithStats(supabase),
+
+      supabase
+        .from(PREDICTIONS_TABLE)
+        .select('id, compared_at', { count: 'exact', head: true })
+        .eq('status', 'compared')
+        .gte('compared_at', sinceIso),
+
+      supabase
+        .from(PREDICTIONS_TABLE)
+        .select('id, created_at', { count: 'exact', head: true })
+        .gte('created_at', sinceIso),
+
+      supabase
+        .from(STRATEGY_POOL_TABLE)
+        .select('strategy_key, updated_at', { count: 'exact', head: true })
+        .eq('status', 'retired')
+        .gte('updated_at', sinceIso),
+
+      supabase
+        .from(DRAWS_TABLE)
+        .select('draw_no, draw_time')
+        .order('draw_no', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+    ]);
+
+    if (comparedRes.error) throw comparedRes.error;
+    if (createdRes.error) throw createdRes.error;
+    if (retiredRes.error) throw retiredRes.error;
+    if (latestDrawRes.error) throw latestDrawRes.error;
+
+    const activeRows = poolWithStats.filter(row => row.status === 'active');
+
+    const leaderboard = activeRows
+      .map(row => ({
+        ...row,
+        strategy_score: scoreActiveStrategy(row)
+      }))
+      .sort((a, b) => {
+        if (Boolean(a.protected_rank) !== Boolean(b.protected_rank)) {
+          return Number(Boolean(b.protected_rank)) - Number(Boolean(a.protected_rank));
+        }
+        return toNum(b.strategy_score, 0) - toNum(a.strategy_score, 0);
       });
-    }
 
-    const headers = {
-      apikey: SUPABASE_KEY,
-      Authorization: `Bearer ${SUPABASE_KEY}`,
-      "Content-Type": "application/json"
-    };
+    const top = leaderboard[0] || null;
 
-    const runningRes = await fetch(
-      `${SUPABASE_URL}/rest/v1/bingo_predictions?select=id,created_at,source_draw_no&mode=eq.ai_train&status=eq.created&order=source_draw_no.desc,created_at.desc&limit=1`,
-      { headers }
-    );
+    const comparedLastHour = Number(comparedRes.count || 0);
+    const createdLastHour = Number(createdRes.count || 0);
+    const retiredLastHour = Number(retiredRes.count || 0);
+    const activeCount = activeRows.length;
 
-    const runningText = await runningRes.text();
+    const topStrategyKey = top?.strategy_key || '-';
+    const topStrategyScore = round1(top?.strategy_score || 0);
+    const topStrategyAvgHit = round1(top?.avg_hit || 0);
+    const topStrategyRoi = round1(top?.roi || 0);
+    const topStrategyRecent50Roi = round1(top?.recent_50_roi || 0);
 
-    if (!runningRes.ok) {
-      return res.status(500).json({
-        ok: false,
-        error: "check running prediction failed",
-        detail: runningText.slice(0, 500)
-      });
-    }
+    const status = decideEvolutionStatus({
+      comparedLastHour,
+      createdLastHour,
+      retiredLastHour,
+      activeCount,
+      topStrategyAvgHit,
+      topStrategyRecent50Roi
+    });
 
-    let runningRows = [];
-    try {
-      runningRows = JSON.parse(runningText);
-    } catch {
-      return res.status(500).json({
-        ok: false,
-        error: "running prediction parse failed",
-        detail: runningText.slice(0, 500)
-      });
-    }
-
-    if (Array.isArray(runningRows) && runningRows.length > 0) {
-      return res.status(200).json({
-        ok: true,
-        message: "ai_train prediction already running"
-      });
-    }
-
-    const recentRes = await fetch(
-      `${SUPABASE_URL}/rest/v1/bingo_draws?select=draw_no,draw_time,numbers&order=draw_no.desc&limit=120`,
-      { headers }
-    );
-
-    const recentText = await recentRes.text();
-
-    if (!recentRes.ok) {
-      return res.status(500).json({
-        ok: false,
-        error: "recent draws fetch failed",
-        detail: recentText.slice(0, 500)
-      });
-    }
-
-    let rows = [];
-    try {
-      rows = JSON.parse(recentText);
-    } catch {
-      return res.status(500).json({
-        ok: false,
-        error: "recent draws parse failed",
-        detail: recentText.slice(0, 500)
-      });
-    }
-
-    const groups = buildGroupsFromRows(rows);
-
-    if (!groups.length) {
-      return res.status(200).json({
-        ok: true,
-        message: "no strategy available"
-      });
-    }
-
-    const latestDrawNo = Number(rows?.[0]?.draw_no || 0);
-
-    if (!Number.isInteger(latestDrawNo) || latestDrawNo <= 0) {
-      return res.status(500).json({
-        ok: false,
-        error: "invalid latest draw no"
-      });
-    }
-
-    const payload = {
-      id: Date.now(),
-      mode: "ai_train",
-      status: "created",
-      source_draw_no: String(latestDrawNo),
-      target_periods: 2,
-      groups_json: groups,
-      created_at: new Date().toISOString()
-    };
-
-    const saveRes = await fetch(
-      `${SUPABASE_URL}/rest/v1/bingo_predictions`,
-      {
-        method: "POST",
-        headers: {
-          ...headers,
-          Prefer: "return=representation"
-        },
-        body: JSON.stringify(payload)
-      }
-    );
-
-    const saveText = await saveRes.text();
-
-    if (!saveRes.ok) {
-      return res.status(500).json({
-        ok: false,
-        error: "create ai_train prediction failed",
-        detail: saveText.slice(0, 500)
-      });
-    }
+    const trainingStrength = calculateTrainingStrength({
+      comparedLastHour,
+      createdLastHour,
+      retiredLastHour,
+      activeCount,
+      topStrategyAvgHit,
+      topStrategyRoi,
+      topStrategyRecent50Roi
+    });
 
     return res.status(200).json({
       ok: true,
-      created: true,
-      source_draw_no: String(latestDrawNo),
-      target_periods: 2,
-      groups
+      latestDrawNo: Number(latestDrawRes.data?.draw_no || 0) || null,
+      latestDrawTime: latestDrawRes.data?.draw_time || "",
+      sinceText: "最近 1 小時",
+      comparedLastHour,
+      createdLastHour,
+      retiredLastHour,
+      activeCount,
+      topStrategyKey,
+      topStrategyScore,
+      topStrategyAvgHit,
+      topStrategyRoi,
+      topStrategyRecent50Roi,
+      trainingStrength,
+      trainingStrengthText: `訓練強度 ${trainingStrength}%`,
+      ...status
     });
-  } catch (err) {
+  } catch (error) {
     return res.status(500).json({
       ok: false,
-      error: err.message || "ai player failed"
+      error: error?.message || "ai-player failed"
     });
   }
 }
