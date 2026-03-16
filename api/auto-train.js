@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { recordStrategyCompareResult } from '../lib/strategyStatsRecorder.js';
+import { ensureStrategyPoolStrategies } from '../lib/ensureStrategyPoolStrategies.js';
 import {
   parsePredictionGroups,
   buildComparePayload,
@@ -25,6 +26,32 @@ const STRATEGY_STATS_TABLE = 'strategy_stats';
 const DRAW_NO_COL = 'draw_no';
 const DRAW_TIME_COL = 'draw_time';
 const DRAW_NUMBERS_COL = 'numbers';
+
+const ACTIVE_TARGET_MIN = 24;
+const ACTIVE_TARGET_MAX = 36;
+const RETIRE_MIN_ROUNDS = 50;
+const RETIRE_ROI_THRESHOLD = -40;
+const RETIRE_RECENT50_ROI_THRESHOLD = -30;
+const RETIRE_AVG_HIT_THRESHOLD = 1.3;
+
+const GENE_POOL = [
+  'hot',
+  'chase',
+  'balanced',
+  'zone',
+  'tail',
+  'mix',
+  'rebound',
+  'warm',
+  'repeat',
+  'guard',
+  'cold',
+  'jump',
+  'follow',
+  'pattern',
+  'structure',
+  'split'
+];
 
 let cachedSupabase = null;
 
@@ -64,6 +91,11 @@ function toInt(value, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function toNum(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 function round2(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return 0;
@@ -77,11 +109,13 @@ function uniqueAsc(nums) {
 function uniqueKeepOrder(nums) {
   const seen = new Set();
   const result = [];
+
   for (const n of nums.map((x) => Number(x)).filter(Number.isFinite)) {
     if (seen.has(n)) continue;
     seen.add(n);
     result.push(n);
   }
+
   return result;
 }
 
@@ -522,10 +556,6 @@ function mergeGeneLists(geneLists, strategyKey = '', variantIndex = 0) {
   return uniqueKeepOrder(result);
 }
 
-function getGroupSignature(nums) {
-  return uniqueAsc(nums).join('-');
-}
-
 function finalizeGroupNumbers(candidates, analysis, strategy, count = 4) {
   const merged = uniqueKeepOrder([
     ...candidates,
@@ -589,6 +619,10 @@ function finalizeGroupNumbers(candidates, analysis, strategy, count = 4) {
   return uniqueAsc(selected.slice(0, count));
 }
 
+function getGroupSignature(nums) {
+  return uniqueAsc(nums).join('-');
+}
+
 function mutateGroupToUnique(baseNums, analysis, strategy, usedSignatures = new Set()) {
   const base = uniqueAsc(baseNums).slice(0, 4);
   const fallbackPool = uniqueKeepOrder([
@@ -631,18 +665,6 @@ function mutateGroupToUnique(baseNums, analysis, strategy, usedSignatures = new 
     if (!usedSignatures.has(signature)) {
       return variant;
     }
-  }
-
-  for (let a = 0; a < rotatedPool.length; a += 1) {
-    for (let b = a + 1; b < rotatedPool.length; b += 1) {
-      const nums = uniqueAsc([base[0], base[1], rotatedPool[a], rotatedPool[b]]).slice(0, 4);
-      if (nums.length !== 4) continue;
-      const signature = getGroupSignature(nums);
-      if (!usedSignatures.has(signature)) {
-        return nums;
-      }
-    }
-    if (a > 12) break;
   }
 
   return base;
@@ -708,7 +730,7 @@ function buildGroupFromStrategy(strategy, recent20, variantIndex = 0) {
     nums,
     reason: buildGroupReason(strategy, genes),
     meta: {
-      model: 'v4.3',
+      model: 'v4.4',
       source: 'strategy_pool',
       strategy_key: strategy.strategy_key || `group_${variantIndex + 1}`,
       strategy_name: strategy.strategy_name || strategy.strategy_key || `第${variantIndex + 1}組`,
@@ -721,6 +743,11 @@ function buildGroupFromStrategy(strategy, recent20, variantIndex = 0) {
       recent_50_roi: Number(strategy.recent_50_roi || 0)
     }
   };
+}
+
+function makeStrategyKey(geneA, geneB, suffix = '') {
+  const base = `${geneA}_${geneB}`;
+  return suffix ? `${base}_${suffix}` : base;
 }
 
 function scoreActiveStrategy(row) {
@@ -740,41 +767,54 @@ function scoreActiveStrategy(row) {
   return protectedBonus + explosionScore + stabilityScore + matureBonus;
 }
 
-async function getActiveStrategiesFromPool(limitCount = BET_GROUP_COUNT) {
+async function getPoolWithStats() {
   const supabase = getSupabase();
 
-  const { data: activeRows, error: activeError } = await supabase
+  const { data: poolRows, error: poolError } = await supabase
     .from(STRATEGY_POOL_TABLE)
-    .select('*')
-    .eq('status', 'active');
+    .select('*');
 
-  if (activeError) throw activeError;
+  if (poolError) throw poolError;
 
-  const activeStrategies = (activeRows || []).filter(
-    (row) => String(row.strategy_key || '').trim() && row.gene_a && row.gene_b
+  const strategyKeys = (poolRows || []).map((row) => row.strategy_key).filter(Boolean);
+  const statsMap = new Map();
+
+  if (strategyKeys.length) {
+    const { data: statsRows, error: statsError } = await supabase
+      .from(STRATEGY_STATS_TABLE)
+      .select('*')
+      .in('strategy_key', strategyKeys);
+
+    if (statsError) throw statsError;
+
+    for (const row of statsRows || []) {
+      statsMap.set(row.strategy_key, row);
+    }
+  }
+
+  return (poolRows || []).map((row) => ({
+    ...row,
+    ...(statsMap.get(row.strategy_key) || {})
+  }));
+}
+
+async function getActiveStrategiesFromPool(limitCount = BET_GROUP_COUNT) {
+  const rows = await getPoolWithStats();
+
+  const activeStrategies = rows.filter(
+    (row) =>
+      row.status === 'active' &&
+      String(row.strategy_key || '').trim() &&
+      row.gene_a &&
+      row.gene_b
   );
 
   if (!activeStrategies.length) return [];
 
-  const strategyKeys = activeStrategies.map((row) => row.strategy_key);
-
-  const { data: statsRows, error: statsError } = await supabase
-    .from(STRATEGY_STATS_TABLE)
-    .select('*')
-    .in('strategy_key', strategyKeys);
-
-  if (statsError) throw statsError;
-
-  const statsMap = new Map((statsRows || []).map((row) => [row.strategy_key, row]));
-
   return activeStrategies
     .map((row) => ({
       ...row,
-      ...(statsMap.get(row.strategy_key) || {}),
-      strategy_score: scoreActiveStrategy({
-        ...row,
-        ...(statsMap.get(row.strategy_key) || {})
-      })
+      strategy_score: scoreActiveStrategy(row)
     }))
     .sort((a, b) => {
       if (Boolean(a.protected_rank) !== Boolean(b.protected_rank)) {
@@ -907,50 +947,28 @@ async function createNextTestPrediction() {
 }
 
 async function buildLeaderboard(limitRows = 50) {
-  const supabase = getSupabase();
+  const rows = await getPoolWithStats();
 
-  const { data: poolRows, error: poolError } = await supabase
-    .from(STRATEGY_POOL_TABLE)
-    .select('*')
-    .eq('status', 'active');
-
-  if (poolError) throw poolError;
-
-  const activeRows = poolRows || [];
+  const activeRows = rows.filter((row) => row.status === 'active');
   if (!activeRows.length) return [];
-
-  const strategyKeys = activeRows.map((row) => row.strategy_key);
-
-  const { data: statsRows, error: statsError } = await supabase
-    .from(STRATEGY_STATS_TABLE)
-    .select('*')
-    .in('strategy_key', strategyKeys);
-
-  if (statsError) throw statsError;
-
-  const statsMap = new Map((statsRows || []).map((row) => [row.strategy_key, row]));
 
   return activeRows
     .map((row) => {
-      const stat = statsMap.get(row.strategy_key) || {};
-      const totalRounds = toInt(stat.total_rounds, 0);
-      const totalHits = toInt(stat.total_hits, 0);
-      const avgHit = Number(stat.avg_hit || 0);
-      const totalCost = Number(stat.total_cost || 0);
-      const totalReward = Number(stat.total_reward || 0);
-      const totalProfit = Number(stat.total_profit || 0);
-      const roi = Number(stat.roi || 0);
-      const recent50Roi = Number(stat.recent_50_roi || 0);
-      const hit2 = toInt(stat.hit2, 0);
-      const hit3 = toInt(stat.hit3, 0);
-      const hit4 = toInt(stat.hit4, 0);
-      const hit1 = toInt(stat.hit1, 0);
-      const hit0 = toInt(stat.hit0, 0);
+      const totalRounds = toInt(row.total_rounds, 0);
+      const totalHits = toInt(row.total_hits, 0);
+      const avgHit = Number(row.avg_hit || 0);
+      const totalCost = Number(row.total_cost || 0);
+      const totalReward = Number(row.total_reward || 0);
+      const totalProfit = Number(row.total_profit || 0);
+      const roi = Number(row.roi || 0);
+      const recent50Roi = Number(row.recent_50_roi || 0);
+      const hit2 = toInt(row.hit2, 0);
+      const hit3 = toInt(row.hit3, 0);
+      const hit4 = toInt(row.hit4, 0);
+      const hit1 = toInt(row.hit1, 0);
+      const hit0 = toInt(row.hit0, 0);
 
-      const score = round2(scoreActiveStrategy({
-        ...row,
-        ...stat
-      }));
+      const score = round2(scoreActiveStrategy(row));
 
       return {
         key: row.strategy_key,
@@ -986,6 +1004,244 @@ async function buildLeaderboard(limitRows = 50) {
     .slice(0, limitRows);
 }
 
+function shouldRetireStrategy(row) {
+  if (row.protected_rank) return false;
+
+  const totalRounds = toNum(row.total_rounds, 0);
+  const roi = toNum(row.roi, 0);
+  const recent50Roi = toNum(row.recent_50_roi, 0);
+  const avgHit = toNum(row.avg_hit, 0);
+
+  return (
+    totalRounds >= RETIRE_MIN_ROUNDS &&
+    roi <= RETIRE_ROI_THRESHOLD &&
+    recent50Roi <= RETIRE_RECENT50_ROI_THRESHOLD &&
+    avgHit < RETIRE_AVG_HIT_THRESHOLD
+  );
+}
+
+function shouldKeepStrong(row) {
+  if (row.protected_rank) return true;
+
+  const totalRounds = toNum(row.total_rounds, 0);
+  const roi = toNum(row.roi, 0);
+  const recent50Roi = toNum(row.recent_50_roi, 0);
+  const avgHit = toNum(row.avg_hit, 0);
+
+  return (
+    (totalRounds >= 200 && roi >= 0) ||
+    avgHit >= 1.8 ||
+    recent50Roi >= 10
+  );
+}
+
+function buildCandidateStrategyRows(existingRows, desiredCount = 8) {
+  const existingKeys = new Set(existingRows.map((row) => row.strategy_key).filter(Boolean));
+  const inserted = [];
+
+  for (let i = 0; i < GENE_POOL.length; i += 1) {
+    for (let j = 0; j < GENE_POOL.length; j += 1) {
+      if (i === j) continue;
+
+      const geneA = GENE_POOL[i];
+      const geneB = GENE_POOL[j];
+      const key = makeStrategyKey(geneA, geneB);
+
+      if (existingKeys.has(key)) continue;
+
+      inserted.push({
+        strategy_key: key,
+        strategy_name: `${geneA}_${geneB}`,
+        gene_a: geneA,
+        gene_b: geneB,
+        status: 'active',
+        protected_rank: false,
+        generation: 1,
+        source_type: 'exploration',
+        parameters: {},
+        parent_keys: [],
+        incubation_until_draw: 0,
+        created_draw_no: 0
+      });
+
+      existingKeys.add(key);
+
+      if (inserted.length >= desiredCount) {
+        return inserted;
+      }
+    }
+  }
+
+  const strongRows = existingRows
+    .filter((row) => row.status === 'active' && shouldKeepStrong(row))
+    .sort((a, b) => scoreActiveStrategy(b) - scoreActiveStrategy(a));
+
+  for (let i = 0; i < strongRows.length; i += 1) {
+    for (let j = i + 1; j < strongRows.length; j += 1) {
+      const a = strongRows[i];
+      const b = strongRows[j];
+      const geneA = a.gene_a || 'mix';
+      const geneB = b.gene_b || 'balanced';
+      const key = makeStrategyKey(geneA, geneB, `g${Date.now()}_${i}_${j}`);
+
+      if (existingKeys.has(key)) continue;
+
+      inserted.push({
+        strategy_key: key,
+        strategy_name: `${geneA}_${geneB}`,
+        gene_a: geneA,
+        gene_b: geneB,
+        status: 'active',
+        protected_rank: false,
+        generation: Math.max(toInt(a.generation, 1), toInt(b.generation, 1)) + 1,
+        source_type: 'crossover',
+        parameters: {},
+        parent_keys: [a.strategy_key, b.strategy_key],
+        incubation_until_draw: 0,
+        created_draw_no: 0
+      });
+
+      existingKeys.add(key);
+
+      if (inserted.length >= desiredCount) {
+        return inserted;
+      }
+    }
+  }
+
+  return inserted;
+}
+
+async function maybeRunStrategyEvolution() {
+  const supabase = getSupabase();
+
+  const poolWithStats = await getPoolWithStats();
+  if (!poolWithStats.length) {
+    return {
+      ok: true,
+      retired_count: 0,
+      activated_count: 0,
+      inserted_count: 0,
+      message: 'strategy_pool 尚無資料'
+    };
+  }
+
+  const activeRows = poolWithStats.filter((row) => row.status === 'active');
+  const retireRows = activeRows.filter((row) => shouldRetireStrategy(row));
+
+  let retiredCount = 0;
+  if (retireRows.length) {
+    const retireKeys = retireRows.map((row) => row.strategy_key);
+
+    const { error: retireError } = await supabase
+      .from(STRATEGY_POOL_TABLE)
+      .update({
+        status: 'retired',
+        updated_at: new Date().toISOString()
+      })
+      .in('strategy_key', retireKeys);
+
+    if (retireError) throw retireError;
+    retiredCount = retireKeys.length;
+  }
+
+  const refreshedRows = await getPoolWithStats();
+  let refreshedActive = refreshedRows.filter((row) => row.status === 'active');
+  let activeCount = refreshedActive.length;
+
+  const disabledCandidates = refreshedRows
+    .filter((row) => row.status === 'disabled' && !shouldRetireStrategy(row))
+    .map((row) => ({
+      ...row,
+      strategy_score: scoreActiveStrategy(row)
+    }))
+    .sort((a, b) => {
+      if (Boolean(a.protected_rank) !== Boolean(b.protected_rank)) {
+        return Boolean(b.protected_rank) - Boolean(a.protected_rank);
+      }
+      return Number(b.strategy_score || 0) - Number(a.strategy_score || 0);
+    });
+
+  let activatedCount = 0;
+
+  if (activeCount < ACTIVE_TARGET_MIN && disabledCandidates.length) {
+    const needCount = Math.min(ACTIVE_TARGET_MIN - activeCount, disabledCandidates.length);
+    const activateKeys = disabledCandidates.slice(0, needCount).map((row) => row.strategy_key);
+
+    const { error: activateError } = await supabase
+      .from(STRATEGY_POOL_TABLE)
+      .update({
+        status: 'active',
+        updated_at: new Date().toISOString()
+      })
+      .in('strategy_key', activateKeys);
+
+    if (activateError) throw activateError;
+    activatedCount = activateKeys.length;
+  }
+
+  const secondRefreshRows = await getPoolWithStats();
+  refreshedActive = secondRefreshRows.filter((row) => row.status === 'active');
+  activeCount = refreshedActive.length;
+
+  let insertedCount = 0;
+
+  if (activeCount < ACTIVE_TARGET_MIN) {
+    const needInsert = ACTIVE_TARGET_MIN - activeCount;
+    const candidateRows = buildCandidateStrategyRows(secondRefreshRows, needInsert);
+
+    if (candidateRows.length) {
+      await ensureStrategyPoolStrategies({
+        strategyKeys: candidateRows.map((row) => row.strategy_key),
+        sourceType: 'exploration',
+        status: 'active'
+      });
+
+      insertedCount = candidateRows.length;
+    }
+  }
+
+  const finalRows = await getPoolWithStats();
+  const finalActive = finalRows.filter((row) => row.status === 'active');
+
+  if (finalActive.length > ACTIVE_TARGET_MAX) {
+    const nonProtectedWeak = finalActive
+      .filter((row) => !row.protected_rank)
+      .map((row) => ({
+        ...row,
+        strategy_score: scoreActiveStrategy(row)
+      }))
+      .sort((a, b) => Number(a.strategy_score || 0) - Number(b.strategy_score || 0));
+
+    const overCount = finalActive.length - ACTIVE_TARGET_MAX;
+    const pauseKeys = nonProtectedWeak.slice(0, overCount).map((row) => row.strategy_key);
+
+    if (pauseKeys.length) {
+      const { error: pauseError } = await supabase
+        .from(STRATEGY_POOL_TABLE)
+        .update({
+          status: 'disabled',
+          updated_at: new Date().toISOString()
+        })
+        .in('strategy_key', pauseKeys);
+
+      if (pauseError) throw pauseError;
+    }
+  }
+
+  const afterRows = await getPoolWithStats();
+
+  return {
+    ok: true,
+    retired_count: retiredCount,
+    activated_count: activatedCount,
+    inserted_count: insertedCount,
+    active_count: afterRows.filter((row) => row.status === 'active').length,
+    retired_keys: retireRows.map((row) => row.strategy_key),
+    message: 'strategy evolution done'
+  };
+}
+
 export default async function handler(req, res) {
   const startedAt = nowTs();
 
@@ -997,6 +1253,21 @@ export default async function handler(req, res) {
   }
 
   try {
+    await ensureStrategyPoolStrategies({
+      strategyKeys: [
+        'hot_balanced',
+        'balanced_zone',
+        'hot_chase',
+        'repeat_guard',
+        'mix_zone',
+        'zone_mix',
+        'tail_structure',
+        'structure_balanced'
+      ],
+      sourceType: 'seed',
+      status: 'active'
+    });
+
     const latestDrawNo = await getLatestDrawNo();
     const maturedCandidates = await getMaturedPredictions(MAX_COMPARE_PER_RUN);
 
@@ -1084,9 +1355,9 @@ export default async function handler(req, res) {
       }
     }
 
+    const evolutionResult = await maybeRunStrategyEvolution();
     const activeCreatedPrediction = await getActiveCreatedTestPrediction();
     const leaderboard = await buildLeaderboard(50);
-    const evolutionResult = null;
 
     return res.status(200).json({
       ok: true,
