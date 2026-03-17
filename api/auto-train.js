@@ -29,14 +29,29 @@ const DRAW_NUMBERS_COL = 'numbers';
 
 const ACTIVE_TARGET_MIN = 24;
 const ACTIVE_TARGET_MAX = 36;
-const RETIRE_MIN_ROUNDS = 50;
-const RETIRE_ROI_THRESHOLD = -40;
-const RETIRE_RECENT50_ROI_THRESHOLD = -30;
-const RETIRE_AVG_HIT_THRESHOLD = 1.3;
+
+/**
+ * 微調 1：加速淘汰
+ * - 以前要 50 輪才淘汰，太慢
+ * - 現在 24 輪就能判斷近期爛策略
+ */
+const RETIRE_MIN_ROUNDS = 24;
+const RETIRE_ROI_THRESHOLD = -28;
+const RETIRE_RECENT50_ROI_THRESHOLD = -18;
+const RETIRE_AVG_HIT_THRESHOLD = 1.45;
+const RETIRE_HIT34_RATE_THRESHOLD = 6;
 
 const PROTECTED_TOP_N = 10;
+
+/**
+ * 微調 2：主力 / 探索比例
+ * - 維持 3 主力 + 1 探索
+ * - 但探索策略必須達基本門檻
+ */
 const TRAINING_CORE_GROUP_COUNT = 3;
 const TRAINING_EXPLORATION_GROUP_COUNT = 1;
+const EXPLORATION_MIN_RECENT50_ROI = -5;
+const EXPLORATION_MIN_SCORE = 140;
 
 const GENE_POOL = [
   'hot',
@@ -141,6 +156,15 @@ function rotateList(source, offset = 0) {
 
 function rowOrEmpty(row) {
   return row || {};
+}
+
+function calcHit34Rate(row) {
+  const totalRounds = toNum(row.total_rounds, 0);
+  if (totalRounds <= 0) return 0;
+
+  const hit3 = toNum(row.hit3, 0);
+  const hit4 = toNum(row.hit4, 0);
+  return round2(((hit3 + hit4) / totalRounds) * 100);
 }
 
 async function getLatestDrawNo() {
@@ -736,7 +760,7 @@ function buildGroupFromStrategy(strategy, recent20, variantIndex = 0, reasonPref
       ? `${reasonPrefix}｜${buildGroupReason(strategy, genes)}`
       : buildGroupReason(strategy, genes),
     meta: {
-      model: 'v5.2',
+      model: 'v5.4',
       source: strategy.source_type || 'strategy_pool',
       strategy_key: strategy.strategy_key || `group_${variantIndex + 1}`,
       strategy_name: strategy.strategy_name || strategy.strategy_key || `第${variantIndex + 1}組`,
@@ -747,6 +771,9 @@ function buildGroupFromStrategy(strategy, recent20, variantIndex = 0, reasonPref
       avg_hit: Number(strategy.avg_hit || 0),
       roi: Number(strategy.roi || 0),
       recent_50_roi: Number(strategy.recent_50_roi || 0),
+      recent_50_hit_rate: Number(strategy.recent_50_hit_rate || 0),
+      hit3: toInt(strategy.hit3, 0),
+      hit4: toInt(strategy.hit4, 0),
       strategy_score: round2(strategy.strategy_score || scoreActiveStrategy(strategy))
     }
   };
@@ -757,21 +784,53 @@ function makeStrategyKey(geneA, geneB, suffix = '') {
   return suffix ? `${base}_${suffix}` : base;
 }
 
+/**
+ * 微調 3：AI 評分公式
+ * 核心方向：
+ * - 大幅強化 hit3 / hit4
+ * - 大幅提高近期 ROI / 近期命中率
+ * - 降低歷史總 ROI 的支配性，避免舊策略霸榜
+ */
 function scoreActiveStrategy(row) {
-  const protectedBonus = row.protected_rank ? 9999 : 0;
+  const protectedBonus = row.protected_rank ? 12000 : 0;
+
   const avgHit = Number(row.avg_hit || 0);
   const roi = Number(row.roi || 0);
   const recent50Roi = Number(row.recent_50_roi || 0);
+  const recent50HitRate = Number(row.recent_50_hit_rate || 0);
+
+  const hit0 = Number(row.hit0 || 0);
+  const hit1 = Number(row.hit1 || 0);
   const hit2 = Number(row.hit2 || 0);
   const hit3 = Number(row.hit3 || 0);
   const hit4 = Number(row.hit4 || 0);
   const totalRounds = Number(row.total_rounds || 0);
 
-  const explosionScore = hit2 * 3 + hit3 * 8 + hit4 * 20;
-  const stabilityScore = avgHit * 60 + recent50Roi * 45 + roi * 10;
-  const matureBonus = totalRounds >= 30 ? 25 : totalRounds >= 15 ? 10 : 0;
+  const hit34Rate = calcHit34Rate(row);
 
-  return protectedBonus + explosionScore + stabilityScore + matureBonus;
+  const explosionScore =
+    hit2 * 2 +
+    hit3 * 14 +
+    hit4 * 42 +
+    hit34Rate * 8;
+
+  const recentScore =
+    recent50Roi * 70 +
+    recent50HitRate * 1.6 +
+    avgHit * 95;
+
+  const baseScore =
+    roi * 6 +
+    Math.min(totalRounds, 120) * 0.8;
+
+  const matureBonus =
+    totalRounds >= 60 ? 45 : totalRounds >= 30 ? 20 : totalRounds >= 15 ? 8 : 0;
+
+  const penalty =
+    hit0 * 1.2 +
+    hit1 * 0.6;
+
+  return protectedBonus + explosionScore + recentScore + baseScore + matureBonus - penalty;
 }
 
 async function getPoolWithStats() {
@@ -892,6 +951,7 @@ async function buildStrategyGroupsFromPool(recent20) {
   const selected = [];
   const usedKeys = new Set();
 
+  // 先塞主力
   for (const row of protectedStrategies.slice(0, TRAINING_CORE_GROUP_COUNT)) {
     if (usedKeys.has(row.strategy_key)) continue;
     usedKeys.add(row.strategy_key);
@@ -908,11 +968,19 @@ async function buildStrategyGroupsFromPool(recent20) {
     }
   }
 
-  const explorationCandidates = nonProtectedStrategies.filter(
-    (row) =>
-      !usedKeys.has(row.strategy_key) &&
-      String(row.source_type || '') === 'exploration'
-  );
+  /**
+   * 微調 4：探索組不再硬塞
+   * 只有達基本門檻才讓它進正式訓練下注
+   */
+  const explorationCandidates = nonProtectedStrategies
+    .filter(
+      (row) =>
+        !usedKeys.has(row.strategy_key) &&
+        String(row.source_type || '') === 'exploration' &&
+        toNum(row.recent_50_roi, -999) >= EXPLORATION_MIN_RECENT50_ROI &&
+        toNum(row.strategy_score, scoreActiveStrategy(row)) >= EXPLORATION_MIN_SCORE
+    )
+    .sort((a, b) => Number(b.strategy_score || 0) - Number(a.strategy_score || 0));
 
   for (const row of explorationCandidates.slice(0, TRAINING_EXPLORATION_GROUP_COUNT)) {
     if (usedKeys.has(row.strategy_key)) continue;
@@ -921,6 +989,7 @@ async function buildStrategyGroupsFromPool(recent20) {
     if (selected.length >= BET_GROUP_COUNT) break;
   }
 
+  // 若探索組太弱，直接用補位策略頂上
   if (selected.length < BET_GROUP_COUNT) {
     for (const row of nonProtectedStrategies) {
       if (usedKeys.has(row.strategy_key)) continue;
@@ -1038,6 +1107,7 @@ async function buildLeaderboard(limitRows = 50) {
       const totalProfit = Number(row.total_profit || 0);
       const roi = Number(row.roi || 0);
       const recent50Roi = Number(row.recent_50_roi || 0);
+      const recent50HitRate = Number(row.recent_50_hit_rate || 0);
       const hit2 = toInt(row.hit2, 0);
       const hit3 = toInt(row.hit3, 0);
       const hit4 = toInt(row.hit4, 0);
@@ -1063,17 +1133,27 @@ async function buildLeaderboard(limitRows = 50) {
         total_profit: round2(totalProfit),
         roi: round2(roi),
         recent_50_roi: round2(recent50Roi),
+        recent_50_hit_rate: round2(recent50HitRate),
         hit0,
         hit1,
         hit2,
         hit3,
         hit4,
+        hit34_rate: calcHit34Rate(row),
         score
       };
     })
     .slice(0, limitRows);
 }
 
+/**
+ * 微調 5：淘汰更偏近期
+ * 條件：
+ * - 已跑到一定輪數
+ * - 近期 ROI 很差
+ * - 平均命中偏低
+ * - hit3/hit4 比例太低
+ */
 function shouldRetireStrategy(row) {
   if (row.protected_rank) return false;
 
@@ -1081,12 +1161,14 @@ function shouldRetireStrategy(row) {
   const roi = toNum(row.roi, 0);
   const recent50Roi = toNum(row.recent_50_roi, 0);
   const avgHit = toNum(row.avg_hit, 0);
+  const hit34Rate = calcHit34Rate(row);
 
   return (
     totalRounds >= RETIRE_MIN_ROUNDS &&
-    roi <= RETIRE_ROI_THRESHOLD &&
     recent50Roi <= RETIRE_RECENT50_ROI_THRESHOLD &&
-    avgHit < RETIRE_AVG_HIT_THRESHOLD
+    roi <= RETIRE_ROI_THRESHOLD &&
+    avgHit < RETIRE_AVG_HIT_THRESHOLD &&
+    hit34Rate < RETIRE_HIT34_RATE_THRESHOLD
   );
 }
 
@@ -1097,11 +1179,13 @@ function shouldKeepStrong(row) {
   const roi = toNum(row.roi, 0);
   const recent50Roi = toNum(row.recent_50_roi, 0);
   const avgHit = toNum(row.avg_hit, 0);
+  const hit34Rate = calcHit34Rate(row);
 
   return (
-    (totalRounds >= 200 && roi >= 0) ||
+    (totalRounds >= 80 && roi >= 0) ||
+    recent50Roi >= 8 ||
     avgHit >= 1.8 ||
-    recent50Roi >= 10
+    hit34Rate >= 12
   );
 }
 
@@ -1354,7 +1438,7 @@ async function maybeRunStrategyEvolution() {
       protectedUpdateBefore.protected_changed_count +
       protectedUpdateAfter.protected_changed_count,
     protected_top_keys: protectedUpdateAfter.protected_top_keys,
-    message: 'strategy convergence v2 done'
+    message: 'strategy convergence v3 fast-tuned done'
   };
 }
 
@@ -1419,6 +1503,7 @@ export default async function handler(req, res) {
                 label: g.label,
                 nums: g.nums,
                 total_hit_count: g.total_hit_count,
+                best_single_hit: g.best_single_hit,
                 total_reward: g.total_reward,
                 total_cost: g.total_cost,
                 total_profit: g.total_profit,
@@ -1514,4 +1599,3 @@ export default async function handler(req, res) {
     });
   }
 }
-
