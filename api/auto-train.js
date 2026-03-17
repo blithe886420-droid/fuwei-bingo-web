@@ -10,7 +10,13 @@ import {
 const CURRENT_MODE = 'test';
 const ACCEPT_MODES = ['test'];
 
-const TARGET_PERIODS = 2;
+/**
+ * 即時學習 Lite：
+ * 原本 = 2（等兩期）
+ * 現在 = 1（每一期就學）
+ */
+const TARGET_PERIODS = 1;
+
 const BET_GROUP_COUNT = 4;
 const COST_PER_GROUP_PER_PERIOD = 25;
 
@@ -32,8 +38,6 @@ const ACTIVE_TARGET_MAX = 36;
 
 /**
  * 微調 1：加速淘汰
- * - 以前要 50 輪才淘汰，太慢
- * - 現在 24 輪就能判斷近期爛策略
  */
 const RETIRE_MIN_ROUNDS = 24;
 const RETIRE_ROI_THRESHOLD = -28;
@@ -45,8 +49,6 @@ const PROTECTED_TOP_N = 10;
 
 /**
  * 微調 2：主力 / 探索比例
- * - 維持 3 主力 + 1 探索
- * - 但探索策略必須達基本門檻
  */
 const TRAINING_CORE_GROUP_COUNT = 3;
 const TRAINING_EXPLORATION_GROUP_COUNT = 1;
@@ -167,15 +169,6 @@ function calcHit34Rate(row) {
   return round2(((hit3 + hit4) / totalRounds) * 100);
 }
 
-/**
- * 不干擾版市場訊號
- * 先只記：
- * - 和值
- * - 跨度
- * - 和值尾數
- * - 奇偶 / 大小 / 分區
- * 先不拿來影響 scoring 與策略選擇
- */
 function buildMarketSignalFromNumbers(numbers = []) {
   const nums = uniqueAsc(numbers);
   if (!nums.length) {
@@ -955,13 +948,6 @@ function makeStrategyKey(geneA, geneB, suffix = '') {
   return suffix ? `${base}_${suffix}` : base;
 }
 
-/**
- * 微調 3：AI 評分公式
- * 核心方向：
- * - 大幅強化 hit3 / hit4
- * - 大幅提高近期 ROI / 近期命中率
- * - 降低歷史總 ROI 的支配性，避免舊策略霸榜
- */
 function scoreActiveStrategy(row) {
   const protectedBonus = row.protected_rank ? 12000 : 0;
 
@@ -1264,7 +1250,7 @@ async function createNextTestPrediction() {
     groups,
     market_signal: latestMarketSignal,
     market_snapshot: recentMarketSnapshot,
-    message: `已建立新 AI 自動訓練局，來源第 ${latestDrawNo} 期`
+    message: `已建立新 AI 即時訓練局，來源第 ${latestDrawNo} 期`
   };
 }
 
@@ -1607,7 +1593,7 @@ async function maybeRunStrategyEvolution() {
       protectedUpdateBefore.protected_changed_count +
       protectedUpdateAfter.protected_changed_count,
     protected_top_keys: protectedUpdateAfter.protected_top_keys,
-    message: 'strategy convergence v3 fast-tuned done'
+    message: 'strategy convergence instant-lite done'
   };
 }
 
@@ -1762,7 +1748,7 @@ export default async function handler(req, res) {
         : null,
       leaderboard,
       evolution_result: evolutionResult,
-      message: `auto-train 完成：到期比對 ${comparedCount} 筆，新建訓練 ${createdCount} 筆`
+      message: `auto-train 即時學習完成：到期比對 ${comparedCount} 筆，新建訓練 ${createdCount} 筆`
     });
   } catch (error) {
     console.error('auto-train error:', error);
