@@ -141,7 +141,7 @@ export default async function handler(req, res) {
       });
       console.log('recordStrategyCompareResult result:', strategyStatsResult);
     } catch (err) {
-      console.error('recordStrategyCompareResult error:', err.message);
+      console.error('recordStrategyCompareResult error:', err?.message || err);
     }
 
     return res.status(200).json({
@@ -155,7 +155,7 @@ export default async function handler(req, res) {
 
     return res.status(500).json({
       ok: false,
-      error: error.message || 'prediction compare failed'
+      error: error?.message || 'prediction compare failed'
     });
   }
 }
