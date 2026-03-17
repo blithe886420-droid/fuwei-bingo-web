@@ -6,10 +6,6 @@ import {
   buildComparePayload,
   parseDrawNumbers
 } from '../lib/buildComparePayload.js';
-import {
-  buildMarketSignalFromDrawRow,
-  buildRecentMarketSignalSnapshot
-} from '../lib/marketSignalEngine.js';
 
 const CURRENT_MODE = 'test';
 const ACCEPT_MODES = ['test'];
@@ -171,6 +167,145 @@ function calcHit34Rate(row) {
   return round2(((hit3 + hit4) / totalRounds) * 100);
 }
 
+/**
+ * 不干擾版市場訊號
+ * 先只記：
+ * - 和值
+ * - 跨度
+ * - 和值尾數
+ * - 奇偶 / 大小 / 分區
+ * 先不拿來影響 scoring 與策略選擇
+ */
+function buildMarketSignalFromNumbers(numbers = []) {
+  const nums = uniqueAsc(numbers);
+  if (!nums.length) {
+    return {
+      sum: 0,
+      span: 0,
+      sum_tail: 0,
+      odd_count: 0,
+      even_count: 0,
+      big_count: 0,
+      small_count: 0,
+      zone_1_count: 0,
+      zone_2_count: 0,
+      zone_3_count: 0,
+      zone_4_count: 0
+    };
+  }
+
+  const sum = nums.reduce((acc, n) => acc + n, 0);
+  const span = nums[nums.length - 1] - nums[0];
+  const sumTail = sum % 10;
+
+  let oddCount = 0;
+  let evenCount = 0;
+  let bigCount = 0;
+  let smallCount = 0;
+  let zone1 = 0;
+  let zone2 = 0;
+  let zone3 = 0;
+  let zone4 = 0;
+
+  for (const n of nums) {
+    if (n % 2 === 0) evenCount += 1;
+    else oddCount += 1;
+
+    if (n >= 41) bigCount += 1;
+    else smallCount += 1;
+
+    if (n >= 1 && n <= 20) zone1 += 1;
+    else if (n <= 40) zone2 += 1;
+    else if (n <= 60) zone3 += 1;
+    else zone4 += 1;
+  }
+
+  return {
+    sum,
+    span,
+    sum_tail: sumTail,
+    odd_count: oddCount,
+    even_count: evenCount,
+    big_count: bigCount,
+    small_count: smallCount,
+    zone_1_count: zone1,
+    zone_2_count: zone2,
+    zone_3_count: zone3,
+    zone_4_count: zone4
+  };
+}
+
+function buildMarketSignalSummary(signal = {}) {
+  const sum = toInt(signal.sum, 0);
+  const span = toInt(signal.span, 0);
+  const sumTail = toInt(signal.sum_tail, 0);
+
+  const oddCount = toInt(signal.odd_count, 0);
+  const evenCount = toInt(signal.even_count, 0);
+  const bigCount = toInt(signal.big_count, 0);
+  const smallCount = toInt(signal.small_count, 0);
+
+  const zoneCounts = [
+    toInt(signal.zone_1_count, 0),
+    toInt(signal.zone_2_count, 0),
+    toInt(signal.zone_3_count, 0),
+    toInt(signal.zone_4_count, 0)
+  ];
+
+  const hotZoneIndex = zoneCounts.indexOf(Math.max(...zoneCounts)) + 1;
+
+  return {
+    sum,
+    span,
+    sum_tail: sumTail,
+    odd_even_bias:
+      oddCount > evenCount ? 'odd' : oddCount < evenCount ? 'even' : 'balanced',
+    big_small_bias:
+      bigCount > smallCount ? 'big' : bigCount < smallCount ? 'small' : 'balanced',
+    hot_zone: hotZoneIndex,
+    zone_counts: zoneCounts,
+    compactness:
+      span <= 55 ? 'tight' : span >= 72 ? 'wide' : 'normal',
+    sum_band:
+      sum <= 700 ? 'low' : sum >= 860 ? 'high' : 'mid'
+  };
+}
+
+function buildMarketSignalFromDrawRow(drawRow = {}, drawNumbersCol = 'numbers') {
+  const raw = drawRow?.[drawNumbersCol];
+  const numbers = parseDrawNumbers(raw);
+  const signal = buildMarketSignalFromNumbers(numbers);
+  const summary = buildMarketSignalSummary(signal);
+
+  return {
+    ...signal,
+    summary
+  };
+}
+
+function buildRecentMarketSignalSnapshot(rows = [], drawNumbersCol = 'numbers') {
+  const safeRows = Array.isArray(rows) ? rows : [];
+  const latest = safeRows[0] || null;
+  const prev = safeRows[1] || null;
+  const third = safeRows[2] || null;
+
+  const latestSignal = latest ? buildMarketSignalFromDrawRow(latest, drawNumbersCol) : null;
+  const prevSignal = prev ? buildMarketSignalFromDrawRow(prev, drawNumbersCol) : null;
+  const thirdSignal = third ? buildMarketSignalFromDrawRow(third, drawNumbersCol) : null;
+
+  return {
+    latest: latestSignal,
+    prev: prevSignal,
+    third: thirdSignal,
+    trend: {
+      sum_delta_1: latestSignal && prevSignal ? latestSignal.sum - prevSignal.sum : 0,
+      span_delta_1: latestSignal && prevSignal ? latestSignal.span - prevSignal.span : 0,
+      tail_changed:
+        latestSignal && prevSignal ? latestSignal.sum_tail !== prevSignal.sum_tail : false
+    }
+  };
+}
+
 async function getLatestDrawNo() {
   const supabase = getSupabase();
 
@@ -328,7 +463,8 @@ async function comparePrediction(prediction) {
       compare_history_json: nextHistory,
       verdict: built.verdict,
       hit_count: built.hitCount,
-      best_single_hit: built.bestSingleHit
+      best_single_hit: built.bestSingleHit,
+      market_snapshot_json: compareMarketSnapshot
     })
     .eq('id', prediction.id);
 
