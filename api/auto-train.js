@@ -6,6 +6,10 @@ import {
   buildComparePayload,
   parseDrawNumbers
 } from '../lib/buildComparePayload.js';
+import {
+  buildMarketSignalFromDrawRow,
+  buildRecentMarketSignalSnapshot
+} from '../lib/marketSignalEngine.js';
 
 const CURRENT_MODE = 'test';
 const ACCEPT_MODES = ['test'];
@@ -284,6 +288,30 @@ async function comparePrediction(prediction) {
     costPerGroupPerPeriod: COST_PER_GROUP_PER_PERIOD
   });
 
+  const compareMarketSignals = drawRows.map((row) => ({
+    draw_no: toInt(row?.[DRAW_NO_COL], 0),
+    draw_time: row?.[DRAW_TIME_COL] || null,
+    ...buildMarketSignalFromDrawRow(row, DRAW_NUMBERS_COL)
+  }));
+
+  const compareMarketSnapshot = buildRecentMarketSignalSnapshot(drawRows, DRAW_NUMBERS_COL);
+
+  const existingHistory = Array.isArray(prediction.compare_history_json)
+    ? prediction.compare_history_json
+    : [];
+
+  const nextHistory = [
+    ...existingHistory,
+    {
+      compared_at: new Date().toISOString(),
+      compare_draw_no: built.compareDrawNo,
+      best_single_hit: built.bestSingleHit,
+      total_hit_count: built.hitCount,
+      market_signals: compareMarketSignals,
+      market_snapshot: compareMarketSnapshot
+    }
+  ];
+
   const { error } = await supabase
     .from(PREDICTIONS_TABLE)
     .update({
@@ -292,8 +320,12 @@ async function comparePrediction(prediction) {
       compared_at: new Date().toISOString(),
       compared_draw_count: built.comparedDrawCount,
       compare_result: built.compareResult,
-      compare_result_json: built.compareResultJson,
-      compare_history_json: [],
+      compare_result_json: {
+        ...built.compareResultJson,
+        market_snapshot: compareMarketSnapshot,
+        market_signals: compareMarketSignals
+      },
+      compare_history_json: nextHistory,
       verdict: built.verdict,
       hit_count: built.hitCount,
       best_single_hit: built.bestSingleHit
@@ -322,7 +354,8 @@ async function comparePrediction(prediction) {
     strategyStatsResult,
     hitCount: built.hitCount,
     bestSingleHit: built.bestSingleHit,
-    compareDrawNo: built.compareDrawNo
+    compareDrawNo: built.compareDrawNo,
+    marketSnapshot: compareMarketSnapshot
   };
 }
 
@@ -951,7 +984,6 @@ async function buildStrategyGroupsFromPool(recent20) {
   const selected = [];
   const usedKeys = new Set();
 
-  // 先塞主力
   for (const row of protectedStrategies.slice(0, TRAINING_CORE_GROUP_COUNT)) {
     if (usedKeys.has(row.strategy_key)) continue;
     usedKeys.add(row.strategy_key);
@@ -968,10 +1000,6 @@ async function buildStrategyGroupsFromPool(recent20) {
     }
   }
 
-  /**
-   * 微調 4：探索組不再硬塞
-   * 只有達基本門檻才讓它進正式訓練下注
-   */
   const explorationCandidates = nonProtectedStrategies
     .filter(
       (row) =>
@@ -989,7 +1017,6 @@ async function buildStrategyGroupsFromPool(recent20) {
     if (selected.length >= BET_GROUP_COUNT) break;
   }
 
-  // 若探索組太弱，直接用補位策略頂上
   if (selected.length < BET_GROUP_COUNT) {
     for (const row of nonProtectedStrategies) {
       if (usedKeys.has(row.strategy_key)) continue;
@@ -1063,6 +1090,13 @@ async function createNextTestPrediction() {
   }
 
   const groups = await buildStrategyGroupsFromPool(recent20);
+
+  const latestMarketSignal = recent20[0]
+    ? buildMarketSignalFromDrawRow(recent20[0], DRAW_NUMBERS_COL)
+    : null;
+
+  const recentMarketSnapshot = buildRecentMarketSignalSnapshot(recent20, DRAW_NUMBERS_COL);
+
   const id = Date.now();
 
   const payload = {
@@ -1072,6 +1106,9 @@ async function createNextTestPrediction() {
     source_draw_no: String(latestDrawNo),
     target_periods: TARGET_PERIODS,
     groups_json: groups,
+    market_signal: latestMarketSignal,
+    market_signal_json: latestMarketSignal,
+    market_snapshot_json: recentMarketSnapshot,
     created_at: new Date().toISOString()
   };
 
@@ -1087,6 +1124,8 @@ async function createNextTestPrediction() {
     ok: true,
     created: data,
     groups,
+    market_signal: latestMarketSignal,
+    market_snapshot: recentMarketSnapshot,
     message: `已建立新 AI 自動訓練局，來源第 ${latestDrawNo} 期`
   };
 }
@@ -1146,14 +1185,6 @@ async function buildLeaderboard(limitRows = 50) {
     .slice(0, limitRows);
 }
 
-/**
- * 微調 5：淘汰更偏近期
- * 條件：
- * - 已跑到一定輪數
- * - 近期 ROI 很差
- * - 平均命中偏低
- * - hit3/hit4 比例太低
- */
 function shouldRetireStrategy(row) {
   if (row.protected_rank) return false;
 
@@ -1496,6 +1527,7 @@ export default async function handler(req, res) {
           profit: result.compareResult?.profit || 0,
           total_hit_count: result.compareResult?.total_hit_count || 0,
           best_single_hit: result.bestSingleHit,
+          market_snapshot: result.marketSnapshot || null,
           strategy_stats_result: result.strategyStatsResult,
           strategies: Array.isArray(result.compareResult?.groups)
             ? result.compareResult.groups.map((g) => ({
@@ -1537,6 +1569,8 @@ export default async function handler(req, res) {
           source_draw_no: created.created.source_draw_no,
           target_periods: created.created.target_periods,
           total_cost: BET_GROUP_COUNT * TARGET_PERIODS * COST_PER_GROUP_PER_PERIOD,
+          market_signal: created.market_signal || null,
+          market_snapshot: created.market_snapshot || null,
           strategies: created.groups.map((g) => ({
             key: g.key,
             label: g.label,
@@ -1583,7 +1617,9 @@ export default async function handler(req, res) {
             target_periods: activeCreatedPrediction.target_periods,
             created_at: activeCreatedPrediction.created_at,
             mode: activeCreatedPrediction.mode,
-            status: activeCreatedPrediction.status
+            status: activeCreatedPrediction.status,
+            market_signal: activeCreatedPrediction.market_signal || activeCreatedPrediction.market_signal_json || null,
+            market_snapshot: activeCreatedPrediction.market_snapshot_json || null
           }
         : null,
       leaderboard,
