@@ -475,7 +475,9 @@ async function comparePrediction(prediction) {
   try {
     strategyStatsResult = await recordStrategyCompareResult({
       drawNo: built.compareDrawNo,
-      compareResult: built.resultForApp
+      compareResult: built.resultForApp,
+      marketSnapshot: compareMarketSnapshot,
+      marketSignal: prediction?.market_signal || prediction?.market_signal_json || null
     });
   } catch (err) {
     console.error('recordStrategyCompareResult error:', err?.message || err);
