@@ -1,3 +1,5 @@
+import { createClient } from '@supabase/supabase-js';
+
 function pad2(value) {
   return String(value).padStart(2, "0");
 }
@@ -86,19 +88,6 @@ function takeCandidates(sorted, count = 20) {
   return sorted.slice(0, count).map(x => x.num);
 }
 
-function limitUsagePick(candidates, usageMap, result, limitPerNum = 2) {
-  for (const num of candidates) {
-    const used = usageMap[num] || 0;
-    if (used >= limitPerNum) continue;
-    if (result.includes(num)) continue;
-
-    result.push(num);
-    usageMap[num] = used + 1;
-    return true;
-  }
-  return false;
-}
-
 function fillGroupWithUsage(candidates, usageMap, base = [], need = 4, limitPerNum = 2) {
   const result = [...base];
 
@@ -138,10 +127,8 @@ function diversifyGroups(groups) {
     const candidates = uniq(g.candidates || []);
     let result = [];
 
-    // 每組先盡量取自己最強的候選
     result = fillGroupWithUsage(candidates, usageMap, [], 4, 2);
 
-    // 若不足4顆，再放寬到最多出現3組
     if (result.length < 4) {
       for (const num of candidates) {
         const used = usageMap[num] || 0;
@@ -154,7 +141,6 @@ function diversifyGroups(groups) {
       }
     }
 
-    // 還不足就全域補號
     if (result.length < 4) {
       result = fillFallbackAny(usageMap, result, 4, 3);
     }
@@ -167,6 +153,30 @@ function diversifyGroups(groups) {
 
   return diversified;
 }
+
+/* ================= AI：選強策略 ================= */
+
+function selectTopStrategies(statsRows, limit = 20) {
+  if (!Array.isArray(statsRows)) return [];
+
+  return statsRows
+    .map((s) => {
+      const rounds = Number(s.total_rounds || 0);
+      const profit = Number(s.total_profit || 0);
+      const roi = Number(s.roi || 0);
+
+      const score =
+        roi * 0.6 +
+        profit * 0.3 +
+        Math.log1p(rounds) * 10;
+
+      return { ...s, score };
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+}
+
+/* ================= 原策略 ================= */
 
 function buildHotChase(todayRows, recent20Rows, recent80Rows) {
   const todayScore = countFreq(todayRows, 5);
@@ -289,6 +299,8 @@ function buildPatternStructure(todayRows, recent20Rows, recent80Rows) {
   };
 }
 
+/* ================= 主流程 ================= */
+
 export default async function handler(req, res) {
   try {
     const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -303,6 +315,8 @@ export default async function handler(req, res) {
         error: "missing supabase env"
       });
     }
+
+    const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
     const nRaw = Number(req.query?.n || 80);
     const n = Number.isInteger(nRaw) ? Math.max(20, Math.min(nRaw, 300)) : 80;
@@ -368,12 +382,32 @@ export default async function handler(req, res) {
     const sectionStats = buildSectionStats(recent20Rows);
     const tailStats = buildTailStats(recent20Rows);
 
-    const rawGroups = [
+    let rawGroups = [
       buildHotChase(todayRows, recent20Rows, recent80Rows),
       buildRebound(todayRows, recent20Rows, recent80Rows),
       buildZoneBalanced(todayRows, recent20Rows, recent80Rows),
       buildPatternStructure(todayRows, recent20Rows, recent80Rows)
     ];
+
+    /* 🔥 AI進化（覆蓋策略key來源） */
+    try {
+      const { data: stats } = await supabase
+        .from('strategy_stats')
+        .select('*');
+
+      const topStrategies = selectTopStrategies(stats, 4);
+
+      if (topStrategies.length === 4) {
+        rawGroups = rawGroups.map((g, idx) => {
+          const s = topStrategies[idx];
+          return {
+            ...g,
+            key: s.strategy_key || g.key,
+            reason: `[AI進化] ${g.reason}`
+          };
+        });
+      }
+    } catch (e) {}
 
     const diversified = diversifyGroups(rawGroups);
 
@@ -387,7 +421,7 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       ok: true,
-      mode: "bingo_strategy_generate_v1_1_diversified",
+      mode: "bingo_strategy_generate_v2_ai",
       target: {
         stars: 4,
         groups: 4,
@@ -401,6 +435,7 @@ export default async function handler(req, res) {
       tailStats,
       groups
     });
+
   } catch (err) {
     return res.status(500).json({
       ok: false,
