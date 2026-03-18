@@ -89,6 +89,65 @@ function inferGenes(strategyKey = '') {
   };
 }
 
+function buildMarketSignalFromNumbers(numbers = []) {
+  const nums = uniqueAsc(numbers);
+
+  if (!nums.length) {
+    return {
+      sum: 0,
+      span: 0,
+      sum_tail: 0,
+      odd_count: 0,
+      even_count: 0,
+      big_count: 0,
+      small_count: 0,
+      zone_1_count: 0,
+      zone_2_count: 0,
+      zone_3_count: 0,
+      zone_4_count: 0
+    };
+  }
+
+  const sum = nums.reduce((acc, n) => acc + n, 0);
+  const span = nums[nums.length - 1] - nums[0];
+
+  let oddCount = 0;
+  let evenCount = 0;
+  let bigCount = 0;
+  let smallCount = 0;
+  let zone1 = 0;
+  let zone2 = 0;
+  let zone3 = 0;
+  let zone4 = 0;
+
+  for (const n of nums) {
+    if (n % 2 === 0) evenCount += 1;
+    else oddCount += 1;
+
+    if (n >= 41) bigCount += 1;
+    else smallCount += 1;
+
+    if (n >= 1 && n <= 20) zone1 += 1;
+    else if (n <= 40) zone2 += 1;
+    else if (n <= 60) zone3 += 1;
+    else zone4 += 1;
+  }
+
+  return {
+    sum,
+    span,
+    sum_tail: sum % 10,
+    odd_count: oddCount,
+    even_count: evenCount,
+    big_count: bigCount,
+    small_count: smallCount,
+    zone_1_count: zone1,
+    zone_2_count: zone2,
+    zone_3_count: zone3,
+    zone_4_count: zone4
+  };
+}
+
 function buildRecentAnalysis(rows = []) {
   const drawRows = Array.isArray(rows) ? rows : [];
   const parsedRows = drawRows.map((row) => ({
@@ -385,8 +444,8 @@ function mutateGroupToUnique(baseNums, analysis, strategy, usedSignatures = new 
 
   const seed = stableHash(`${strategy.strategy_key}_${strategy.variantIndex || 0}_mutate`);
   const rotatedPool = rotateList(fallbackPool, seed % Math.max(1, fallbackPool.length));
-
   const originalSignature = getGroupSignature(base);
+
   if (!usedSignatures.has(originalSignature)) return base;
 
   for (let i = 0; i < rotatedPool.length; i += 1) {
@@ -402,9 +461,7 @@ function mutateGroupToUnique(baseNums, analysis, strategy, usedSignatures = new 
       if (mutated.length !== 4) continue;
 
       const signature = getGroupSignature(mutated);
-      if (!usedSignatures.has(signature)) {
-        return mutated;
-      }
+      if (!usedSignatures.has(signature)) return mutated;
     }
   }
 
@@ -539,6 +596,40 @@ function pickStrategies(rows, count = 4) {
   return shuffled.slice(0, Math.min(count, shuffled.length));
 }
 
+function buildCompareMarketSnapshot(compareRows = []) {
+  const normalized = (Array.isArray(compareRows) ? compareRows : []).map((row) => {
+    const numbers = parseDrawNumbers(row?.numbers);
+    return {
+      draw_no: toNum(row?.draw_no, 0),
+      draw_time: row?.draw_time || null,
+      numbers,
+      signal: buildMarketSignalFromNumbers(numbers)
+    };
+  });
+
+  const latest = normalized[0] || null;
+  const prev = normalized[1] || null;
+
+  return {
+    latest: latest
+      ? {
+          draw_no: latest.draw_no,
+          draw_time: latest.draw_time,
+          numbers: latest.numbers,
+          ...latest.signal
+        }
+      : null,
+    prev: prev
+      ? {
+          draw_no: prev.draw_no,
+          draw_time: prev.draw_time,
+          numbers: prev.numbers,
+          ...prev.signal
+        }
+      : null
+  };
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'GET' && req.method !== 'POST') {
     return res.status(405).json({
@@ -580,12 +671,18 @@ export default async function handler(req, res) {
       });
     }
 
+    const latestMarketSignal = buildMarketSignalFromNumbers(
+      parseDrawNumbers(recentRows[0]?.numbers)
+    );
+
     const insertPayload = {
       mode: CURRENT_MODE,
       status: 'created',
       source_draw_no: String(latestDrawNo),
       target_periods: DRAW_COMPARE_LIMIT,
       groups_json: groups,
+      market_signal: latestMarketSignal,
+      market_signal_json: latestMarketSignal,
       created_at: new Date().toISOString()
     };
 
@@ -601,6 +698,7 @@ export default async function handler(req, res) {
     }
 
     const compareRows = recentRows.slice(0, DRAW_COMPARE_LIMIT);
+    const marketSnapshot = buildCompareMarketSnapshot(compareRows);
 
     const payload = buildComparePayload({
       prediction,
@@ -613,11 +711,27 @@ export default async function handler(req, res) {
     });
 
     const updatePayload = {
+      compare_result: payload.compareResult ?? null,
       compare_result_json: payload.compareResultJson ?? payload.compareResult ?? null,
+      compare_status: 'done',
       status: 'compared',
       verdict: payload.verdict || null,
       compared_at: new Date().toISOString(),
-      compared_draw_count: payload.comparedDrawCount || 0
+      compared_draw_count: payload.comparedDrawCount || 0,
+      hit_count: payload.hitCount || 0,
+      best_single_hit: payload.bestSingleHit || 0,
+      market_snapshot_json: marketSnapshot,
+      compare_history_json: [
+        {
+          compared_at: new Date().toISOString(),
+          compare_draw_no: payload.compareDrawNo || 0,
+          compared_draw_count: payload.comparedDrawCount || 0,
+          verdict: payload.verdict || null,
+          hit_count: payload.hitCount || 0,
+          best_single_hit: payload.bestSingleHit || 0,
+          market_snapshot: marketSnapshot
+        }
+      ]
     };
 
     const { error: updateError } = await supabase
@@ -637,7 +751,9 @@ export default async function handler(req, res) {
       prediction_id: prediction.id,
       picked_count: groups.length,
       compare_draw_count: payload.comparedDrawCount || 0,
-      best_single_hit: payload.bestSingleHit || 0
+      hit_count: payload.hitCount || 0,
+      best_single_hit: payload.bestSingleHit || 0,
+      verdict: payload.verdict || null
     });
   } catch (error) {
     return res.status(500).json({
