@@ -5,6 +5,7 @@ import {
   parseDrawNumbers
 } from '../lib/buildComparePayload.js';
 import { ensureStrategyPoolStrategies } from '../lib/ensureStrategyPoolStrategies.js';
+import { evolveStrategies } from '../lib/strategyEvolutionEngine.js';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -742,18 +743,18 @@ export default async function handler(req, res) {
     if (updateError) throw updateError;
 
     try {
-  if (payload?.compareResult?.groups?.length) {
-    console.log('🔥 writing strategy stats...', payload.compareResult.groups.length);
+      if (payload?.compareResult?.groups?.length) {
+        console.log('🔥 writing strategy stats...', payload.compareResult.groups.length);
+        await recordStrategyCompareResult(payload.compareResult);
+        console.log('✅ strategy stats written');
+      } else {
+        console.log('⚠️ no groups to record');
+      }
+    } catch (err) {
+      console.error('❌ strategy stats failed:', err);
+    }
 
-    await recordStrategyCompareResult(payload.compareResult);
-
-    console.log('✅ strategy stats written');
-  } else {
-    console.log('⚠️ no groups to record');
-  }
-} catch (err) {
-  console.error('❌ strategy stats failed:', err);
-}
+    await evolveStrategies();
 
     return res.status(200).json({
       ok: true,
