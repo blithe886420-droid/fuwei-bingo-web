@@ -95,37 +95,70 @@ async function updatePredictionCompared(predictionId, built) {
   if (error) throw error;
 }
 
-function findGroupHitCount(group = {}) {
-  return toInt(
-    group.hit_count ??
-      group.hitCount ??
-      group.total_hit_count ??
-      group.totalHits ??
-      group.hits,
-    0
+function rewardByHitCount(hitCount) {
+  const hit = toInt(hitCount, 0);
+  if (hit >= 4) return 1000;
+  if (hit === 3) return 75;
+  return 0;
+}
+
+function getGroupStrategyKey(group = {}) {
+  return (
+    group?.strategy_key ||
+    group?.strategyKey ||
+    group?.meta?.strategy_key ||
+    group?.meta?.strategyKey ||
+    group?.key ||
+    null
   );
 }
 
-function findGroupReward(group = {}, hitCount = 0) {
-  const candidates = [
-    group.reward,
-    group.total_reward,
-    group.totalReward,
-    group.prize,
-    group.win_amount,
-    group.winAmount
+function getGroupStrategyLabel(group = {}) {
+  return (
+    group?.strategy_label ||
+    group?.strategyLabel ||
+    group?.label ||
+    group?.name ||
+    null
+  );
+}
+
+function getGroupHitCount(group = {}) {
+  const direct = [
+    group?.hit_count,
+    group?.hitCount,
+    group?.total_hit_count,
+    group?.totalHits,
+    group?.hits
   ];
 
-  for (const value of candidates) {
+  for (const value of direct) {
     const n = Number(value);
     if (Number.isFinite(n)) return n;
   }
 
-  if (hitCount >= 4) return 1000;
-  if (hitCount === 3) return 75;
-  if (hitCount === 2) return 0;
-  if (hitCount === 1) return 0;
+  const hitNumbers =
+    group?.hit_numbers ||
+    group?.hitNumbers ||
+    group?.matched_numbers ||
+    group?.matchedNumbers ||
+    [];
+
+  if (Array.isArray(hitNumbers)) {
+    return hitNumbers.length;
+  }
+
   return 0;
+}
+
+function getPeriodDrawNo(period = {}) {
+  return toInt(period?.draw_no ?? period?.drawNo, 0);
+}
+
+function getPeriodGroups(period = {}) {
+  if (Array.isArray(period?.groups)) return period.groups;
+  if (Array.isArray(period?.groupResults)) return period.groupResults;
+  return [];
 }
 
 function buildStatsRowsFromCompareResult(compareResult) {
@@ -134,30 +167,58 @@ function buildStatsRowsFromCompareResult(compareResult) {
   const rows = [];
 
   for (const period of compareResult) {
-    const drawNo = toInt(period?.draw_no ?? period?.drawNo, 0);
-    const groups = Array.isArray(period?.groups) ? period.groups : [];
+    const drawNo = getPeriodDrawNo(period);
+    const groups = getPeriodGroups(period);
 
     for (const group of groups) {
-      const strategyKey =
-        group?.strategy_key ||
-        group?.strategyKey ||
-        group?.meta?.strategy_key ||
-        group?.key ||
-        null;
-
+      const strategyKey = getGroupStrategyKey(group);
       if (!strategyKey) continue;
 
-      const strategyLabel =
-        group?.strategy_label ||
-        group?.strategyLabel ||
-        group?.label ||
-        group?.name ||
-        null;
+      const strategyLabel = getGroupStrategyLabel(group);
+      const hitCount = getGroupHitCount(group);
 
-      const hitCount = findGroupHitCount(group);
+      const rewardCandidates = [
+        group?.reward,
+        group?.total_reward,
+        group?.totalReward,
+        group?.prize,
+        group?.win_amount,
+        group?.winAmount
+      ];
+
+      let reward = null;
+      for (const value of rewardCandidates) {
+        const n = Number(value);
+        if (Number.isFinite(n)) {
+          reward = n;
+          break;
+        }
+      }
+
+      if (reward === null) {
+        reward = rewardByHitCount(hitCount);
+      }
+
       const cost = COST_PER_GROUP_PER_PERIOD;
-      const reward = findGroupReward(group, hitCount);
-      const profit = reward - cost;
+      const profitCandidate = [
+        group?.profit,
+        group?.total_profit,
+        group?.net_profit,
+        group?.netProfit
+      ];
+
+      let profit = null;
+      for (const value of profitCandidate) {
+        const n = Number(value);
+        if (Number.isFinite(n)) {
+          profit = n;
+          break;
+        }
+      }
+
+      if (profit === null) {
+        profit = reward - cost;
+      }
 
       rows.push({
         draw_no: drawNo,
