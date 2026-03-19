@@ -2,37 +2,65 @@ import { createClient } from '@supabase/supabase-js';
 
 const BET_GROUP_COUNT = 4;
 const TARGET_PERIODS = 4;
-const COST_PER_GROUP_PER_PERIOD = 25;
 const DEFAULT_MODE = 'v4_manual_4group_4period';
 
 const DRAWS_TABLE = 'bingo_draws';
 const PREDICTIONS_TABLE = 'bingo_predictions';
 
-function uniqueAsc(nums) {
-  return [...new Set(nums)].sort((a, b) => a - b);
+function uniqueAsc(arr) {
+  return [...new Set(arr)].sort((a, b) => a - b);
 }
 
-function randomNums(count = 4) {
+function randomGroup() {
   const nums = [];
-  while (nums.length < count) {
+  while (nums.length < 4) {
     const n = Math.floor(Math.random() * 80) + 1;
     if (!nums.includes(n)) nums.push(n);
   }
   return uniqueAsc(nums);
 }
 
-function ensure4Groups(groups = []) {
-  const result = Array.isArray(groups) ? groups : [];
+function normalizeGroups(input) {
+  if (!Array.isArray(input)) return [];
+
+  return input
+    .map((g, i) => {
+      const nums = Array.isArray(g?.nums) ? g.nums : [];
+      if (nums.length !== 4) return null;
+
+      return {
+        key: g.key || `group_${i + 1}`,
+        label: g.label || `第${i + 1}組`,
+        nums: uniqueAsc(nums)
+      };
+    })
+    .filter(Boolean);
+}
+
+function ensureFourGroups(groups) {
+  const result = [...groups];
 
   while (result.length < BET_GROUP_COUNT) {
     result.push({
       key: `auto_${result.length + 1}`,
       label: `自動補組 ${result.length + 1}`,
-      nums: randomNums()
+      nums: randomGroup()
     });
   }
 
   return result.slice(0, BET_GROUP_COUNT);
+}
+
+async function getLatestDrawNo(supabase) {
+  const { data, error } = await supabase
+    .from(DRAWS_TABLE)
+    .select('draw_no')
+    .order('draw_no', { ascending: false })
+    .limit(1)
+    .single();
+
+  if (error) throw error;
+  return data?.draw_no || 0;
 }
 
 export default async function handler(req, res) {
@@ -46,7 +74,7 @@ export default async function handler(req, res) {
     if (!SUPABASE_URL || !SUPABASE_KEY) {
       return res.status(500).json({
         ok: false,
-        error: 'Missing supabase env'
+        error: 'Missing Supabase env'
       });
     }
 
@@ -67,26 +95,23 @@ export default async function handler(req, res) {
 
     const targetPeriods = Number(body.targetPeriods || TARGET_PERIODS);
 
-    // ⭐ 關鍵：直接容錯 groups
-    let groups = body.groups || body.generatedGroups || [];
-    groups = ensure4Groups(groups);
+    // ⭐ 關鍵：處理 groups（就算前端沒給也會生）
+    let groups =
+      body.groups ||
+      body.generatedGroups ||
+      body.strategies ||
+      [];
 
-    // 取得最新期數
-    const { data: latest } = await supabase
-      .from(DRAWS_TABLE)
-      .select('draw_no')
-      .order('draw_no', { ascending: false })
-      .limit(1)
-      .single();
+    groups = normalizeGroups(groups);
+    groups = ensureFourGroups(groups);
 
-    if (!latest) {
+    const latestDrawNo = await getLatestDrawNo(supabase);
+    if (!latestDrawNo) {
       return res.status(500).json({
         ok: false,
-        error: 'no draw found'
+        error: 'latest draw not found'
       });
     }
-
-    const source_draw_no = latest.draw_no;
 
     const id = Date.now();
 
@@ -94,15 +119,17 @@ export default async function handler(req, res) {
       id,
       mode,
       status: 'created',
-      source_draw_no,
+      source_draw_no: latestDrawNo,
       target_periods: targetPeriods,
       groups_json: groups,
       created_at: new Date().toISOString()
     };
 
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from(PREDICTIONS_TABLE)
-      .insert(payload);
+      .insert(payload)
+      .select('*')
+      .single();
 
     if (error) {
       return res.status(500).json({
@@ -111,10 +138,10 @@ export default async function handler(req, res) {
       });
     }
 
-    return res.json({
+    return res.status(200).json({
       ok: true,
-      groups,
-      id
+      id,
+      groups
     });
   } catch (err) {
     return res.status(500).json({
