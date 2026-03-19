@@ -2,7 +2,6 @@ import { createClient } from '@supabase/supabase-js';
 
 const BET_GROUP_COUNT = 4;
 const TARGET_PERIODS = 4;
-const DEFAULT_MODE = 'v4_manual_4group_4period';
 
 const DRAWS_TABLE = 'bingo_draws';
 const PREDICTIONS_TABLE = 'bingo_predictions';
@@ -20,35 +19,16 @@ function randomGroup() {
   return uniqueAsc(nums);
 }
 
-function normalizeGroups(input) {
-  if (!Array.isArray(input)) return [];
-
-  return input
-    .map((g, i) => {
-      const nums = Array.isArray(g?.nums) ? g.nums : [];
-      if (nums.length !== 4) return null;
-
-      return {
-        key: g.key || `group_${i + 1}`,
-        label: g.label || `第${i + 1}組`,
-        nums: uniqueAsc(nums)
-      };
-    })
-    .filter(Boolean);
-}
-
-function ensureFourGroups(groups) {
-  const result = [...groups];
-
-  while (result.length < BET_GROUP_COUNT) {
-    result.push({
-      key: `auto_${result.length + 1}`,
-      label: `自動補組 ${result.length + 1}`,
+function generateGroups() {
+  const groups = [];
+  for (let i = 0; i < BET_GROUP_COUNT; i++) {
+    groups.push({
+      key: `auto_${i + 1}`,
+      label: `系統產生 ${i + 1}`,
       nums: randomGroup()
     });
   }
-
-  return result.slice(0, BET_GROUP_COUNT);
+  return groups;
 }
 
 async function getLatestDrawNo(supabase) {
@@ -60,7 +40,9 @@ async function getLatestDrawNo(supabase) {
     .single();
 
   if (error) throw error;
-  return data?.draw_no || 0;
+  if (!data) throw new Error('no draw found');
+
+  return Number(data.draw_no);
 }
 
 export default async function handler(req, res) {
@@ -74,7 +56,7 @@ export default async function handler(req, res) {
     if (!SUPABASE_URL || !SUPABASE_KEY) {
       return res.status(500).json({
         ok: false,
-        error: 'Missing Supabase env'
+        error: 'Missing supabase env'
       });
     }
 
@@ -86,32 +68,20 @@ export default async function handler(req, res) {
     }
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+
     const body = req.body || {};
 
     const mode =
       body.mode === 'formal_synced_from_server_prediction'
         ? 'formal'
-        : body.mode || DEFAULT_MODE;
+        : body.mode || 'default';
 
     const targetPeriods = Number(body.targetPeriods || TARGET_PERIODS);
 
-    // ⭐ 關鍵：處理 groups（就算前端沒給也會生）
-    let groups =
-      body.groups ||
-      body.generatedGroups ||
-      body.strategies ||
-      [];
-
-    groups = normalizeGroups(groups);
-    groups = ensureFourGroups(groups);
+    // ⭐ 完全不信任前端 → 全部自己產生
+    const groups = generateGroups();
 
     const latestDrawNo = await getLatestDrawNo(supabase);
-    if (!latestDrawNo) {
-      return res.status(500).json({
-        ok: false,
-        error: 'latest draw not found'
-      });
-    }
 
     const id = Date.now();
 
@@ -125,11 +95,9 @@ export default async function handler(req, res) {
       created_at: new Date().toISOString()
     };
 
-    const { data, error } = await supabase
+    const { error } = await supabase
       .from(PREDICTIONS_TABLE)
-      .insert(payload)
-      .select('*')
-      .single();
+      .insert(payload);
 
     if (error) {
       return res.status(500).json({
