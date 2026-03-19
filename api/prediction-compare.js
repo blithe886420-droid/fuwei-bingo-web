@@ -50,8 +50,8 @@ async function getPredictionById(predictionId) {
 }
 
 async function getDrawRowsForPrediction(prediction) {
-  const sourceDrawNo = toInt(prediction.source_draw_no);
-  const targetPeriods = toInt(prediction.target_periods || 1);
+  const sourceDrawNo = toInt(prediction?.source_draw_no);
+  const targetPeriods = toInt(prediction?.target_periods || 1, 1);
 
   const start = sourceDrawNo + 1;
   const end = sourceDrawNo + targetPeriods;
@@ -65,28 +65,64 @@ async function getDrawRowsForPrediction(prediction) {
 
   if (error) throw error;
 
-  return (data || []).filter((row) => parseDrawNumbers(row[DRAW_NUMBERS_COL]).length > 0);
+  return (data || []).filter((row) => {
+    const nums = parseDrawNumbers(row?.[DRAW_NUMBERS_COL]);
+    return nums.length > 0;
+  });
+}
+
+async function updatePredictionCompared(predictionId, built) {
+  const payload = {
+    status: 'compared',
+    compare_status: 'done',
+    compared_at: new Date().toISOString(),
+    compare_result: built?.compareResult || null,
+    verdict: built?.verdict || null,
+    hit_count: toInt(built?.hitCount, 0)
+  };
+
+  const { error } = await supabase
+    .from(PREDICTIONS_TABLE)
+    .update(payload)
+    .eq('id', predictionId);
+
+  if (error) throw error;
 }
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
-    return res.status(405).json({ ok: false });
+    return res.status(405).json({
+      ok: false,
+      error: 'Method not allowed'
+    });
   }
 
   try {
     const predictionId = req.body?.predictionId;
+
     if (!predictionId) {
-      return res.status(400).json({ ok: false });
+      return res.status(400).json({
+        ok: false,
+        error: 'predictionId is required'
+      });
     }
 
     const prediction = await getPredictionById(predictionId);
+
     if (!prediction) {
-      return res.status(404).json({ ok: false });
+      return res.status(404).json({
+        ok: false,
+        error: 'prediction not found'
+      });
     }
 
     const groups = parsePredictionGroups(prediction, 4);
+
     if (!groups.length) {
-      return res.status(400).json({ ok: false });
+      return res.status(400).json({
+        ok: false,
+        error: 'prediction groups not found'
+      });
     }
 
     const drawRows = await getDrawRowsForPrediction(prediction);
@@ -94,7 +130,8 @@ export default async function handler(req, res) {
     if (drawRows.length === 0) {
       return res.status(200).json({
         ok: false,
-        waiting: true
+        waiting: true,
+        error: 'draw rows not ready yet'
       });
     }
 
@@ -107,40 +144,51 @@ export default async function handler(req, res) {
       drawNumbersCol: DRAW_NUMBERS_COL
     });
 
-    await supabase
-      .from(PREDICTIONS_TABLE)
-      .update({
-        status: 'compared',
-        compare_status: 'done',
-        compared_at: new Date().toISOString(),
-        compare_result: built.compareResult,
-        verdict: built.verdict,
-        hit_count: built.hitCount
-      })
-      .eq('id', predictionId);
+    if (!built || !built.compareResult) {
+      return res.status(500).json({
+        ok: false,
+        error: 'buildComparePayload failed'
+      });
+    }
 
-    // ✅ 記錄統計
-    await recordStrategyCompareResult(built.compareResult);
+    await updatePredictionCompared(predictionId, built);
 
-    // ✅ 關鍵：啟動策略進化
+    let statsRecorded = false;
+    let statsError = null;
+
+    try {
+      await recordStrategyCompareResult(built.compareResult);
+      statsRecorded = true;
+    } catch (e) {
+      statsRecorded = false;
+      statsError = e?.message || 'recordStrategyCompareResult failed';
+      console.error('recordStrategyCompareResult error:', e);
+    }
+
     let evolutionResult = null;
+    let evolutionError = null;
+
     try {
       evolutionResult = await evolveStrategies();
     } catch (e) {
+      evolutionError = e?.message || 'evolveStrategies failed';
       console.error('evolveStrategies error:', e);
     }
 
     return res.status(200).json({
       ok: true,
-      result: built.resultForApp,
-      evolution: evolutionResult
+      result: built.resultForApp || null,
+      compareResult: built.compareResult || null,
+      statsRecorded,
+      statsError,
+      evolution: evolutionResult,
+      evolutionError
     });
-
   } catch (error) {
-    console.error(error);
+    console.error('prediction-compare error:', error);
     return res.status(500).json({
       ok: false,
-      error: error.message
+      error: error?.message || 'prediction compare failed'
     });
   }
 }
