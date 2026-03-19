@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { recordStrategyCompareResult } from '../lib/strategyStatsRecorder.js';
+import { evolveStrategies } from '../lib/strategyEvolutionEngine.js';
 import {
   parsePredictionGroups,
   buildComparePayload,
@@ -37,105 +38,6 @@ function toInt(value, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function uniqueAsc(nums) {
-  return [...new Set((Array.isArray(nums) ? nums : []).map(Number).filter(Number.isFinite))].sort(
-    (a, b) => a - b
-  );
-}
-
-function buildMarketSignalFromNumbers(numbers = []) {
-  const nums = uniqueAsc(numbers);
-
-  if (!nums.length) {
-    return {
-      sum: 0,
-      span: 0,
-      sum_tail: 0,
-      odd_count: 0,
-      even_count: 0,
-      big_count: 0,
-      small_count: 0,
-      zone_1_count: 0,
-      zone_2_count: 0,
-      zone_3_count: 0,
-      zone_4_count: 0
-    };
-  }
-
-  const sum = nums.reduce((acc, n) => acc + n, 0);
-  const span = nums[nums.length - 1] - nums[0];
-
-  let oddCount = 0;
-  let evenCount = 0;
-  let bigCount = 0;
-  let smallCount = 0;
-  let zone1 = 0;
-  let zone2 = 0;
-  let zone3 = 0;
-  let zone4 = 0;
-
-  for (const n of nums) {
-    if (n % 2 === 0) evenCount += 1;
-    else oddCount += 1;
-
-    if (n >= 41) bigCount += 1;
-    else smallCount += 1;
-
-    if (n >= 1 && n <= 20) zone1 += 1;
-    else if (n <= 40) zone2 += 1;
-    else if (n <= 60) zone3 += 1;
-    else zone4 += 1;
-  }
-
-  return {
-    sum,
-    span,
-    sum_tail: sum % 10,
-    odd_count: oddCount,
-    even_count: evenCount,
-    big_count: bigCount,
-    small_count: smallCount,
-    zone_1_count: zone1,
-    zone_2_count: zone2,
-    zone_3_count: zone3,
-    zone_4_count: zone4
-  };
-}
-
-function buildCompareMarketSnapshot(drawRows = []) {
-  const normalized = (Array.isArray(drawRows) ? drawRows : []).map((row) => {
-    const numbers = parseDrawNumbers(row?.[DRAW_NUMBERS_COL]);
-    return {
-      draw_no: toInt(row?.[DRAW_NO_COL], 0),
-      draw_time: row?.[DRAW_TIME_COL] || null,
-      numbers,
-      signal: buildMarketSignalFromNumbers(numbers)
-    };
-  });
-
-  const latest = normalized[0] || null;
-  const prev = normalized[1] || null;
-
-  return {
-    latest: latest
-      ? {
-          draw_no: latest.draw_no,
-          draw_time: latest.draw_time,
-          numbers: latest.numbers,
-          ...latest.signal
-        }
-      : null,
-    prev: prev
-      ? {
-          draw_no: prev.draw_no,
-          draw_time: prev.draw_time,
-          numbers: prev.numbers,
-          ...prev.signal
-        }
-      : null
-  };
-}
-
 async function getPredictionById(predictionId) {
   const { data, error } = await supabase
     .from(PREDICTIONS_TABLE)
@@ -149,7 +51,7 @@ async function getPredictionById(predictionId) {
 
 async function getDrawRowsForPrediction(prediction) {
   const sourceDrawNo = toInt(prediction.source_draw_no);
-  const targetPeriods = toInt(prediction.target_periods || 2);
+  const targetPeriods = toInt(prediction.target_periods || 1);
 
   const start = sourceDrawNo + 1;
   const end = sourceDrawNo + targetPeriods;
@@ -168,46 +70,31 @@ async function getDrawRowsForPrediction(prediction) {
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
-    return res.status(405).json({
-      ok: false,
-      error: 'Method not allowed'
-    });
+    return res.status(405).json({ ok: false });
   }
 
   try {
     const predictionId = req.body?.predictionId;
     if (!predictionId) {
-      return res.status(400).json({
-        ok: false,
-        error: 'predictionId is required'
-      });
+      return res.status(400).json({ ok: false });
     }
 
     const prediction = await getPredictionById(predictionId);
     if (!prediction) {
-      return res.status(404).json({
-        ok: false,
-        error: 'Prediction not found'
-      });
+      return res.status(404).json({ ok: false });
     }
 
     const groups = parsePredictionGroups(prediction, 4);
     if (!groups.length) {
-      return res.status(400).json({
-        ok: false,
-        error: 'groups_json 解析失敗'
-      });
+      return res.status(400).json({ ok: false });
     }
 
     const drawRows = await getDrawRowsForPrediction(prediction);
-    const targetPeriods = toInt(prediction.target_periods || 2);
 
-    if (drawRows.length < targetPeriods) {
-      const sourceDrawNo = toInt(prediction.source_draw_no);
+    if (drawRows.length === 0) {
       return res.status(200).json({
         ok: false,
-        waiting: true,
-        error: `尚未收齊第 ${sourceDrawNo + 1} 期到第 ${sourceDrawNo + targetPeriods} 期開獎資料`
+        waiting: true
       });
     }
 
@@ -220,58 +107,40 @@ export default async function handler(req, res) {
       drawNumbersCol: DRAW_NUMBERS_COL
     });
 
-    const marketSnapshot = buildCompareMarketSnapshot(drawRows);
-
-    const { error } = await supabase
+    await supabase
       .from(PREDICTIONS_TABLE)
       .update({
         status: 'compared',
         compare_status: 'done',
         compared_at: new Date().toISOString(),
-        compared_draw_count: built.comparedDrawCount,
         compare_result: built.compareResult,
-        compare_result_json: built.compareResultJson,
-        compare_history_json: [
-          {
-            compared_at: new Date().toISOString(),
-            compare_draw_no: built.compareDrawNo || 0,
-            compared_draw_count: built.comparedDrawCount || 0,
-            verdict: built.verdict || null,
-            hit_count: built.hitCount || 0,
-            best_single_hit: built.bestSingleHit || 0,
-            market_snapshot: marketSnapshot
-          }
-        ],
         verdict: built.verdict,
-        hit_count: built.hitCount,
-        best_single_hit: built.bestSingleHit,
-        market_snapshot_json: marketSnapshot
+        hit_count: built.hitCount
       })
       .eq('id', predictionId);
 
-    if (error) throw error;
+    // ✅ 記錄統計
+    await recordStrategyCompareResult(built.compareResult);
 
-    let strategyStatsResult = null;
-
+    // ✅ 關鍵：啟動策略進化
+    let evolutionResult = null;
     try {
-      strategyStatsResult = await recordStrategyCompareResult(built.compareResult);
-      console.log('recordStrategyCompareResult result:', strategyStatsResult);
-    } catch (err) {
-      console.error('recordStrategyCompareResult error:', err?.message || err);
+      evolutionResult = await evolveStrategies();
+    } catch (e) {
+      console.error('evolveStrategies error:', e);
     }
 
     return res.status(200).json({
       ok: true,
       result: built.resultForApp,
-      compare_result: built.compareResult,
-      strategyStatsResult
+      evolution: evolutionResult
     });
-  } catch (error) {
-    console.error('prediction-compare error:', error);
 
+  } catch (error) {
+    console.error(error);
     return res.status(500).json({
       ok: false,
-      error: error?.message || 'prediction compare failed'
+      error: error.message
     });
   }
 }
