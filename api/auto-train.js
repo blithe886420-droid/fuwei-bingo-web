@@ -1,11 +1,4 @@
 import { createClient } from '@supabase/supabase-js';
-import { recordStrategyCompareResult } from '../lib/strategyStatsRecorder.js';
-import {
-  buildComparePayload,
-  parseDrawNumbers
-} from '../lib/buildComparePayload.js';
-import { ensureStrategyPoolStrategies } from '../lib/ensureStrategyPoolStrategies.js';
-import { evolveStrategies } from '../lib/strategyEvolutionEngine.js';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -62,6 +55,21 @@ function rotateList(source, offset = 0) {
   return [...source.slice(safeOffset), ...source.slice(0, safeOffset)];
 }
 
+function parseDrawNumbers(value) {
+  if (Array.isArray(value)) {
+    return value.map(Number).filter(Number.isFinite);
+  }
+
+  if (typeof value === 'string') {
+    return value
+      .split(/[,\s]+/)
+      .map((s) => Number(String(s).trim()))
+      .filter(Number.isFinite);
+  }
+
+  return [];
+}
+
 function buildRecentAnalysis(rows = []) {
   const parsedRows = (Array.isArray(rows) ? rows : []).map((row) => ({
     draw_no: toNum(row?.draw_no, 0),
@@ -87,8 +95,7 @@ function buildRecentAnalysis(rows = []) {
   return {
     hottest,
     coldest,
-    latestDraw,
-    numbers1to80: Array.from({ length: 80 }, (_, i) => i + 1)
+    latestDraw
   };
 }
 
@@ -119,6 +126,15 @@ function buildGroupsFromStrategies(strategies = [], recentRows = []) {
       }
     };
   });
+}
+
+function getFallbackStrategies() {
+  return [
+    { strategy_key: 'hot_balanced', strategy_name: 'Hot Balanced' },
+    { strategy_key: 'balanced_zone', strategy_name: 'Balanced Zone' },
+    { strategy_key: 'hot_chase', strategy_name: 'Hot Chase' },
+    { strategy_key: 'repeat_guard', strategy_name: 'Repeat Guard' }
+  ];
 }
 
 async function getLatestDraw() {
@@ -157,18 +173,31 @@ async function getRecentDrawRows(limitCount = RECENT_ANALYSIS_LIMIT) {
   return Array.isArray(data) ? data : [];
 }
 
-async function getActiveStrategies() {
-  await ensureStrategyPoolStrategies({
-    strategyKeys: [
-      'hot_balanced',
-      'balanced_zone',
-      'hot_chase',
-      'repeat_guard'
-    ],
-    sourceType: 'seed',
-    status: 'active'
-  });
+async function tryEnsureStrategyPoolStrategies() {
+  try {
+    const mod = await import('../lib/ensureStrategyPoolStrategies.js');
+    if (typeof mod.ensureStrategyPoolStrategies === 'function') {
+      await mod.ensureStrategyPoolStrategies({
+        strategyKeys: [
+          'hot_balanced',
+          'balanced_zone',
+          'hot_chase',
+          'repeat_guard'
+        ],
+        sourceType: 'seed',
+        status: 'active'
+      });
+    }
+    return { ok: true, error: null };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error?.message || 'ensureStrategyPoolStrategies failed'
+    };
+  }
+}
 
+async function getActiveStrategies() {
   const { data, error } = await supabase
     .from(STRATEGY_POOL_TABLE)
     .select('*')
@@ -178,6 +207,7 @@ async function getActiveStrategies() {
   if (error) throw error;
 
   const rows = Array.isArray(data) ? data : [];
+  if (!rows.length) return getFallbackStrategies();
   return rows.slice(0, PICK_COUNT);
 }
 
@@ -218,6 +248,46 @@ async function updateComparedPrediction(predictionId, payload) {
   if (error) throw error;
 }
 
+async function tryBuildComparePayload(input) {
+  const mod = await import('../lib/buildComparePayload.js');
+  if (typeof mod.buildComparePayload !== 'function') {
+    throw new Error('buildComparePayload not found');
+  }
+  return mod.buildComparePayload(input);
+}
+
+async function tryRecordStrategyCompareResult(compareResult) {
+  try {
+    const mod = await import('../lib/strategyStatsRecorder.js');
+    if (typeof mod.recordStrategyCompareResult === 'function') {
+      await mod.recordStrategyCompareResult(compareResult);
+      return { ok: true, error: null };
+    }
+    return { ok: false, error: 'recordStrategyCompareResult not found' };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error?.message || 'recordStrategyCompareResult failed'
+    };
+  }
+}
+
+async function tryEvolveStrategies() {
+  try {
+    const mod = await import('../lib/strategyEvolutionEngine.js');
+    if (typeof mod.evolveStrategies === 'function') {
+      await mod.evolveStrategies();
+      return { ok: true, error: null };
+    }
+    return { ok: false, error: 'evolveStrategies not found' };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error?.message || 'evolveStrategies failed'
+    };
+  }
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({
@@ -227,12 +297,15 @@ export default async function handler(req, res) {
   }
 
   try {
-    const latestDraw = await getLatestDraw();
+    const ensureResult = await tryEnsureStrategyPoolStrategies();
 
+    const latestDraw = await getLatestDraw();
     if (!latestDraw) {
       return res.status(200).json({
         ok: true,
-        message: 'no draw'
+        message: 'no draw',
+        ensureOk: ensureResult.ok,
+        ensureError: ensureResult.error
       });
     }
 
@@ -242,34 +315,29 @@ export default async function handler(req, res) {
       return res.status(200).json({
         ok: true,
         message: 'already processed',
-        draw_no: toNum(latestDraw.draw_no, 0)
+        draw_no: toNum(latestDraw.draw_no, 0),
+        ensureOk: ensureResult.ok,
+        ensureError: ensureResult.error
       });
     }
 
     const strategies = await getActiveStrategies();
-
-    if (!strategies.length) {
-      return res.status(200).json({
-        ok: false,
-        error: 'no active strategies'
-      });
-    }
-
     const recentRows = await getRecentDrawRows();
     const groups = buildGroupsFromStrategies(strategies, recentRows);
 
     if (!groups.length || groups.some((g) => !Array.isArray(g.nums) || g.nums.length !== 4)) {
       return res.status(200).json({
         ok: false,
-        error: 'failed to build groups'
+        error: 'failed to build groups',
+        ensureOk: ensureResult.ok,
+        ensureError: ensureResult.error
       });
     }
 
     const prediction = await insertPrediction(latestDraw.draw_no, groups);
-
     const compareRows = recentRows.slice(0, DRAW_COMPARE_LIMIT);
 
-    const payload = buildComparePayload({
+    const payload = await tryBuildComparePayload({
       prediction,
       groups,
       drawRows: compareRows,
@@ -281,38 +349,23 @@ export default async function handler(req, res) {
 
     await updateComparedPrediction(prediction.id, payload);
 
-    let statsRecorded = false;
-    let statsError = null;
-
-    try {
-      if (payload?.compareResult?.groups?.length) {
-        await recordStrategyCompareResult(payload.compareResult);
-        statsRecorded = true;
-      }
-    } catch (error) {
-      statsError = error?.message || 'recordStrategyCompareResult failed';
-      console.error('auto-train stats error:', error);
+    let statsResult = { ok: false, error: null };
+    if (payload?.compareResult?.groups?.length) {
+      statsResult = await tryRecordStrategyCompareResult(payload.compareResult);
     }
 
-    let evolutionOk = false;
-    let evolutionError = null;
-
-    try {
-      await evolveStrategies();
-      evolutionOk = true;
-    } catch (error) {
-      evolutionError = error?.message || 'evolveStrategies failed';
-      console.error('auto-train evolve error:', error);
-    }
+    const evolutionResult = await tryEvolveStrategies();
 
     return res.status(200).json({
       ok: true,
       prediction_id: prediction.id,
       draw_no: toNum(latestDraw.draw_no, 0),
-      statsRecorded,
-      statsError,
-      evolutionOk,
-      evolutionError
+      ensureOk: ensureResult.ok,
+      ensureError: ensureResult.error,
+      statsRecorded: statsResult.ok,
+      statsError: statsResult.error,
+      evolutionOk: evolutionResult.ok,
+      evolutionError: evolutionResult.error
     });
   } catch (error) {
     console.error('auto-train error:', error);
