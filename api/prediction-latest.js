@@ -1,10 +1,15 @@
 import { createClient } from '@supabase/supabase-js';
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_URL =
+  process.env.SUPABASE_URL ||
+  process.env.VITE_SUPABASE_URL ||
+  process.env.NEXT_PUBLIC_SUPABASE_URL;
+
 const SUPABASE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
   process.env.SUPABASE_SECRET_KEY ||
-  process.env.SUPABASE_KEY;
+  process.env.SUPABASE_KEY ||
+  process.env.SUPABASE_ANON_KEY;
 
 const PREDICTIONS_TABLE = 'bingo_predictions';
 
@@ -12,7 +17,9 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
   throw new Error('Missing SUPABASE_URL or SUPABASE key');
 }
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+  auth: { persistSession: false }
+});
 
 function toInt(value, fallback = 0) {
   const n = Number(value);
@@ -24,7 +31,7 @@ function toNum(value, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function uniqueAsc(nums) {
+function uniqueAsc(nums = []) {
   return [...new Set((Array.isArray(nums) ? nums : []).map((n) => Number(n)).filter(Number.isFinite))].sort(
     (a, b) => a - b
   );
@@ -103,21 +110,19 @@ function normalizePredictionRow(row) {
     mode,
     status: row.status || 'created',
     created_at: row.created_at || null,
-
     source_draw_no: sourceDrawNo,
     target_periods: targetPeriods,
     sourceDrawNo,
     targetPeriods,
     targetDrawNo: sourceDrawNo ? sourceDrawNo + targetPeriods : 0,
-
     groups_json: groups,
     groups,
     prediction_groups: groups,
-
     compare_result: row.compare_result || null,
-    compare_result_json: row.compare_result_json || null,
     compare_status: row.compare_status || null,
-    compared_at: row.compared_at || null
+    compared_at: row.compared_at || null,
+    verdict: row.verdict || null,
+    hit_count: toInt(row.hit_count, 0)
   };
 }
 
@@ -136,140 +141,60 @@ function normalizeLeaderboardRow(row) {
     (recent50Roi * 0.45) +
     (roi * 0.2) +
     (avgHit * 18) +
-    (hitRate * 0.12) +
+    (hitRate * 12) +
     (Math.min(totalRounds, 500) * 0.02) +
     (hit4 * 8) +
     (hit3 * 3);
 
   return {
     key: row.strategy_key || '',
-    label: row.strategy_name || row.strategy_key || '',
+    label: row.strategy_label || row.strategy_name || row.strategy_key || '',
     strategy_key: row.strategy_key || '',
     total_rounds: totalRounds,
     total_hits: toNum(row.total_hits, 0),
-    hit0: toNum(row.hit0, 0),
-    hit1: toNum(row.hit1, 0),
-    hit2: toNum(row.hit2, 0),
-    hit3,
-    hit4,
     avg_hit: Number.isFinite(avgHit) ? Number(avgHit.toFixed(6)) : 0,
     hit_rate: Number.isFinite(hitRate) ? Number(hitRate.toFixed(6)) : 0,
     total_profit: Number.isFinite(Number(row.total_profit))
       ? Number(Number(row.total_profit).toFixed(6))
       : 0,
     roi: Number.isFinite(roi) ? Number(roi.toFixed(6)) : 0,
-    recent_50_hit_rate: Number.isFinite(Number(row.recent_50_hit_rate))
-      ? Number(Number(row.recent_50_hit_rate).toFixed(6))
-      : 0,
     recent_50_roi: Number.isFinite(recent50Roi)
       ? Number(recent50Roi.toFixed(6))
       : 0,
-    last_result_draw_no: toNum(row.last_result_draw_no, 0),
     total_cost: Number.isFinite(Number(row.total_cost))
       ? Number(Number(row.total_cost).toFixed(6))
       : 0,
     total_reward: Number.isFinite(Number(row.total_reward))
       ? Number(Number(row.total_reward).toFixed(6))
       : 0,
-    last_updated: row.last_updated || null,
+    updated_at: row.updated_at || row.last_updated || null,
     score: Number.isFinite(score) ? Number(score.toFixed(4)) : 0
   };
 }
 
-async function getLatestPredictionByMatchers({ modeMatchers = [], preferredStatuses = ['created'] }) {
-  let matchedRows = [];
+async function getLatestPrediction(mode) {
+  const { data, error } = await supabase
+    .from(PREDICTIONS_TABLE)
+    .select('*')
+    .eq('mode', mode)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
-  for (const matcher of modeMatchers) {
-    let query = supabase
-      .from(PREDICTIONS_TABLE)
-      .select('*')
-      .order('created_at', { ascending: false })
-      .limit(20);
-
-    if (matcher.type === 'eq') {
-      query = query.eq('mode', matcher.value);
-    } else if (matcher.type === 'like') {
-      query = query.like('mode', matcher.value);
-    }
-
-    const { data, error } = await query;
-    if (error) throw error;
-
-    if (Array.isArray(data) && data.length) {
-      matchedRows.push(...data);
-    }
-  }
-
-  if (!matchedRows.length) return null;
-
-  const dedupedMap = new Map();
-  for (const row of matchedRows) {
-    if (!row?.id) continue;
-    if (!dedupedMap.has(row.id)) {
-      dedupedMap.set(row.id, row);
-    }
-  }
-
-  const dedupedRows = [...dedupedMap.values()].sort((a, b) => {
-    const aCreated = new Date(a.created_at || 0).getTime();
-    const bCreated = new Date(b.created_at || 0).getTime();
-    return bCreated - aCreated;
-  });
-
-  for (const status of preferredStatuses) {
-    const found = dedupedRows.find((row) => String(row.status || '') === status);
-    if (found) return normalizePredictionRow(found);
-  }
-
-  return normalizePredictionRow(dedupedRows[0]);
-}
-
-async function getLatestTrainingPrediction() {
-  return getLatestPredictionByMatchers({
-    modeMatchers: [
-      { type: 'eq', value: 'test' },
-      { type: 'eq', value: 'ai_train' },
-      { type: 'like', value: '%test%' },
-      { type: 'like', value: '%ai_train%' }
-    ],
-    preferredStatuses: ['created', 'compared', 'replaced']
-  });
-}
-
-async function getLatestFormalPrediction() {
-  return getLatestPredictionByMatchers({
-    modeMatchers: [
-      { type: 'eq', value: 'formal' },
-      { type: 'like', value: '%formal%' }
-    ],
-    preferredStatuses: ['created', 'compared', 'replaced']
-  });
+  if (error) throw error;
+  return normalizePredictionRow(data || null);
 }
 
 async function getLeaderboard(limit = 50) {
-  let source = 'strategy_stats_latest_first';
-  let rows = [];
-
-  const { data: latestRows, error: latestError } = await supabase
-    .from('strategy_stats_latest_first')
+  const { data, error } = await supabase
+    .from('strategy_stats')
     .select('*')
+    .order('updated_at', { ascending: false })
     .limit(limit);
 
-  if (!latestError && Array.isArray(latestRows) && latestRows.length > 0) {
-    rows = latestRows;
-  } else {
-    source = 'strategy_stats';
+  if (error) throw error;
 
-    const { data: statsRows, error: statsError } = await supabase
-      .from('strategy_stats')
-      .select('*')
-      .limit(limit);
-
-    if (statsError) throw statsError;
-    rows = Array.isArray(statsRows) ? statsRows : [];
-  }
-
-  const leaderboard = rows
+  return (Array.isArray(data) ? data : [])
     .map(normalizeLeaderboardRow)
     .filter(Boolean)
     .sort((a, b) => {
@@ -279,11 +204,6 @@ async function getLeaderboard(limit = 50) {
       return b.total_rounds - a.total_rounds;
     })
     .slice(0, limit);
-
-  return {
-    source,
-    leaderboard
-  };
 }
 
 export default async function handler(req, res) {
@@ -295,9 +215,9 @@ export default async function handler(req, res) {
   }
 
   try {
-    const [trainingPrediction, formalPrediction, rankingResult] = await Promise.all([
-      getLatestTrainingPrediction(),
-      getLatestFormalPrediction(),
+    const [trainingPrediction, formalPrediction, leaderboard] = await Promise.all([
+      getLatestPrediction('test'),
+      getLatestPrediction('formal'),
       getLeaderboard(50)
     ]);
 
@@ -305,7 +225,6 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       ok: true,
-
       training: {
         row: trainingPrediction,
         rows: trainingPrediction ? [trainingPrediction] : []
@@ -314,27 +233,21 @@ export default async function handler(req, res) {
         row: formalPrediction,
         rows: formalPrediction ? [formalPrediction] : []
       },
-
       ai_train: {
         row: trainingPrediction,
         rows: trainingPrediction ? [trainingPrediction] : []
       },
-
       training_row: trainingPrediction,
       formal_row: formalPrediction,
-
       row: trainingPrediction || formalPrediction || null,
       rows,
-
-      leaderboard: rankingResult.leaderboard,
-      leaderboard_source: rankingResult.source
+      leaderboard,
+      leaderboard_source: 'strategy_stats'
     });
   } catch (error) {
-    console.error('prediction-latest error:', error);
-
     return res.status(500).json({
       ok: false,
-      error: error.message || 'prediction-latest failed'
+      error: error?.message || 'prediction-latest failed'
     });
   }
 }
