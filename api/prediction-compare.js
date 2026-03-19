@@ -28,18 +28,12 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
 
 const DRAWS_TABLE = 'bingo_draws';
 const PREDICTIONS_TABLE = 'bingo_predictions';
-const COST_PER_GROUP_PER_PERIOD = 25;
 
 const DRAW_NO_COL = 'draw_no';
 const DRAW_TIME_COL = 'draw_time';
 const DRAW_NUMBERS_COL = 'numbers';
 
 function toInt(value, fallback = 0) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
-}
-
-function toNum(value, fallback = 0) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
 }
@@ -56,7 +50,7 @@ async function getPredictionById(predictionId) {
 }
 
 async function getDrawRowsForPrediction(prediction) {
-  const sourceDrawNo = toInt(prediction?.source_draw_no);
+  const sourceDrawNo = toInt(prediction?.source_draw_no, 0);
   const targetPeriods = toInt(prediction?.target_periods || 1, 1);
 
   const start = sourceDrawNo + 1;
@@ -71,10 +65,7 @@ async function getDrawRowsForPrediction(prediction) {
 
   if (error) throw error;
 
-  return (data || []).filter((row) => {
-    const nums = parseDrawNumbers(row?.[DRAW_NUMBERS_COL]);
-    return nums.length > 0;
-  });
+  return (data || []).filter((row) => parseDrawNumbers(row?.[DRAW_NUMBERS_COL]).length > 0);
 }
 
 async function updatePredictionCompared(predictionId, built) {
@@ -93,146 +84,6 @@ async function updatePredictionCompared(predictionId, built) {
     .eq('id', predictionId);
 
   if (error) throw error;
-}
-
-function rewardByHitCount(hitCount) {
-  const hit = toInt(hitCount, 0);
-  if (hit >= 4) return 1000;
-  if (hit === 3) return 75;
-  return 0;
-}
-
-function getGroupStrategyKey(group = {}) {
-  return (
-    group?.strategy_key ||
-    group?.strategyKey ||
-    group?.meta?.strategy_key ||
-    group?.meta?.strategyKey ||
-    group?.key ||
-    null
-  );
-}
-
-function getGroupStrategyLabel(group = {}) {
-  return (
-    group?.strategy_label ||
-    group?.strategyLabel ||
-    group?.label ||
-    group?.name ||
-    null
-  );
-}
-
-function getGroupHitCount(group = {}) {
-  const direct = [
-    group?.hit_count,
-    group?.hitCount,
-    group?.total_hit_count,
-    group?.totalHits,
-    group?.hits
-  ];
-
-  for (const value of direct) {
-    const n = Number(value);
-    if (Number.isFinite(n)) return n;
-  }
-
-  const hitNumbers =
-    group?.hit_numbers ||
-    group?.hitNumbers ||
-    group?.matched_numbers ||
-    group?.matchedNumbers ||
-    [];
-
-  if (Array.isArray(hitNumbers)) {
-    return hitNumbers.length;
-  }
-
-  return 0;
-}
-
-function getPeriodDrawNo(period = {}) {
-  return toInt(period?.draw_no ?? period?.drawNo, 0);
-}
-
-function getPeriodGroups(period = {}) {
-  if (Array.isArray(period?.groups)) return period.groups;
-  if (Array.isArray(period?.groupResults)) return period.groupResults;
-  return [];
-}
-
-function buildStatsRowsFromCompareResult(compareResult) {
-  if (!Array.isArray(compareResult)) return [];
-
-  const rows = [];
-
-  for (const period of compareResult) {
-    const drawNo = getPeriodDrawNo(period);
-    const groups = getPeriodGroups(period);
-
-    for (const group of groups) {
-      const strategyKey = getGroupStrategyKey(group);
-      if (!strategyKey) continue;
-
-      const strategyLabel = getGroupStrategyLabel(group);
-      const hitCount = getGroupHitCount(group);
-
-      const rewardCandidates = [
-        group?.reward,
-        group?.total_reward,
-        group?.totalReward,
-        group?.prize,
-        group?.win_amount,
-        group?.winAmount
-      ];
-
-      let reward = null;
-      for (const value of rewardCandidates) {
-        const n = Number(value);
-        if (Number.isFinite(n)) {
-          reward = n;
-          break;
-        }
-      }
-
-      if (reward === null) {
-        reward = rewardByHitCount(hitCount);
-      }
-
-      const cost = COST_PER_GROUP_PER_PERIOD;
-      const profitCandidate = [
-        group?.profit,
-        group?.total_profit,
-        group?.net_profit,
-        group?.netProfit
-      ];
-
-      let profit = null;
-      for (const value of profitCandidate) {
-        const n = Number(value);
-        if (Number.isFinite(n)) {
-          profit = n;
-          break;
-        }
-      }
-
-      if (profit === null) {
-        profit = reward - cost;
-      }
-
-      rows.push({
-        draw_no: drawNo,
-        strategy_key: String(strategyKey),
-        strategy_label: strategyLabel ? String(strategyLabel) : null,
-        hit_count: hitCount,
-        cost,
-        reward,
-        profit
-      });
-    }
-  }
-
-  return rows;
 }
 
 export default async function handler(req, res) {
@@ -287,7 +138,8 @@ export default async function handler(req, res) {
       drawRows,
       drawNoCol: DRAW_NO_COL,
       drawTimeCol: DRAW_TIME_COL,
-      drawNumbersCol: DRAW_NUMBERS_COL
+      drawNumbersCol: DRAW_NUMBERS_COL,
+      costPerGroupPerPeriod: 25
     });
 
     if (!built || !built.compareResult) {
@@ -301,16 +153,13 @@ export default async function handler(req, res) {
 
     let statsRecorded = false;
     let statsError = null;
-    let statsRows = [];
 
     try {
-      statsRows = buildStatsRowsFromCompareResult(built.compareResult);
-      await recordStrategyCompareResult(statsRows);
+      await recordStrategyCompareResult(built.compareResult);
       statsRecorded = true;
-    } catch (e) {
+    } catch (error) {
       statsRecorded = false;
-      statsError = e?.message || 'recordStrategyCompareResult failed';
-      console.error('recordStrategyCompareResult error:', e);
+      statsError = error?.message || 'recordStrategyCompareResult failed';
     }
 
     let evolutionResult = null;
@@ -318,9 +167,8 @@ export default async function handler(req, res) {
 
     try {
       evolutionResult = await evolveStrategies();
-    } catch (e) {
-      evolutionError = e?.message || 'evolveStrategies failed';
-      console.error('evolveStrategies error:', e);
+    } catch (error) {
+      evolutionError = error?.message || 'evolveStrategies failed';
     }
 
     return res.status(200).json({
@@ -329,12 +177,10 @@ export default async function handler(req, res) {
       compareResult: built.compareResult || null,
       statsRecorded,
       statsError,
-      statsRows,
       evolution: evolutionResult,
       evolutionError
     });
   } catch (error) {
-    console.error('prediction-compare error:', error);
     return res.status(500).json({
       ok: false,
       error: error?.message || 'prediction compare failed'
