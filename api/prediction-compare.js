@@ -28,12 +28,18 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
 
 const DRAWS_TABLE = 'bingo_draws';
 const PREDICTIONS_TABLE = 'bingo_predictions';
+const COST_PER_GROUP_PER_PERIOD = 25;
 
 const DRAW_NO_COL = 'draw_no';
 const DRAW_TIME_COL = 'draw_time';
 const DRAW_NUMBERS_COL = 'numbers';
 
 function toInt(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function toNum(value, fallback = 0) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
 }
@@ -87,6 +93,85 @@ async function updatePredictionCompared(predictionId, built) {
     .eq('id', predictionId);
 
   if (error) throw error;
+}
+
+function findGroupHitCount(group = {}) {
+  return toInt(
+    group.hit_count ??
+      group.hitCount ??
+      group.total_hit_count ??
+      group.totalHits ??
+      group.hits,
+    0
+  );
+}
+
+function findGroupReward(group = {}, hitCount = 0) {
+  const candidates = [
+    group.reward,
+    group.total_reward,
+    group.totalReward,
+    group.prize,
+    group.win_amount,
+    group.winAmount
+  ];
+
+  for (const value of candidates) {
+    const n = Number(value);
+    if (Number.isFinite(n)) return n;
+  }
+
+  if (hitCount >= 4) return 1000;
+  if (hitCount === 3) return 75;
+  if (hitCount === 2) return 0;
+  if (hitCount === 1) return 0;
+  return 0;
+}
+
+function buildStatsRowsFromCompareResult(compareResult) {
+  if (!Array.isArray(compareResult)) return [];
+
+  const rows = [];
+
+  for (const period of compareResult) {
+    const drawNo = toInt(period?.draw_no ?? period?.drawNo, 0);
+    const groups = Array.isArray(period?.groups) ? period.groups : [];
+
+    for (const group of groups) {
+      const strategyKey =
+        group?.strategy_key ||
+        group?.strategyKey ||
+        group?.meta?.strategy_key ||
+        group?.key ||
+        null;
+
+      if (!strategyKey) continue;
+
+      const strategyLabel =
+        group?.strategy_label ||
+        group?.strategyLabel ||
+        group?.label ||
+        group?.name ||
+        null;
+
+      const hitCount = findGroupHitCount(group);
+      const cost = COST_PER_GROUP_PER_PERIOD;
+      const reward = findGroupReward(group, hitCount);
+      const profit = reward - cost;
+
+      rows.push({
+        draw_no: drawNo,
+        strategy_key: String(strategyKey),
+        strategy_label: strategyLabel ? String(strategyLabel) : null,
+        hit_count: hitCount,
+        cost,
+        reward,
+        profit
+      });
+    }
+  }
+
+  return rows;
 }
 
 export default async function handler(req, res) {
@@ -155,9 +240,11 @@ export default async function handler(req, res) {
 
     let statsRecorded = false;
     let statsError = null;
+    let statsRows = [];
 
     try {
-      await recordStrategyCompareResult(built.compareResult);
+      statsRows = buildStatsRowsFromCompareResult(built.compareResult);
+      await recordStrategyCompareResult(statsRows);
       statsRecorded = true;
     } catch (e) {
       statsRecorded = false;
@@ -181,6 +268,7 @@ export default async function handler(req, res) {
       compareResult: built.compareResult || null,
       statsRecorded,
       statsError,
+      statsRows,
       evolution: evolutionResult,
       evolutionError
     });
