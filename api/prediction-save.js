@@ -6,28 +6,38 @@ const TARGET_PERIODS = 4;
 const DRAWS_TABLE = 'bingo_draws';
 const PREDICTIONS_TABLE = 'bingo_predictions';
 
-function uniqueAsc(arr) {
+function randomInt(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function uniqueSorted(arr) {
   return [...new Set(arr)].sort((a, b) => a - b);
 }
 
-function randomGroup() {
+function generateOneGroup() {
   const nums = [];
+
   while (nums.length < 4) {
-    const n = Math.floor(Math.random() * 80) + 1;
-    if (!nums.includes(n)) nums.push(n);
+    const n = randomInt(1, 80);
+    if (!nums.includes(n)) {
+      nums.push(n);
+    }
   }
-  return uniqueAsc(nums);
+
+  return uniqueSorted(nums);
 }
 
-function generateGroups() {
+function generateFourGroups() {
   const groups = [];
+
   for (let i = 0; i < BET_GROUP_COUNT; i++) {
     groups.push({
-      key: `auto_${i + 1}`,
-      label: `系統產生 ${i + 1}`,
-      nums: randomGroup()
+      key: `sys_${i + 1}`,
+      label: `系統組 ${i + 1}`,
+      nums: generateOneGroup()
     });
   }
+
   return groups;
 }
 
@@ -40,7 +50,7 @@ async function getLatestDrawNo(supabase) {
     .single();
 
   if (error) throw error;
-  if (!data) throw new Error('no draw found');
+  if (!data) throw new Error('no draw data');
 
   return Number(data.draw_no);
 }
@@ -78,8 +88,8 @@ export default async function handler(req, res) {
 
     const targetPeriods = Number(body.targetPeriods || TARGET_PERIODS);
 
-    // ⭐ 完全不信任前端 → 全部自己產生
-    const groups = generateGroups();
+    // ⭐ 完全獨立產生（不依賴任何前端）
+    const groups = generateFourGroups();
 
     const latestDrawNo = await getLatestDrawNo(supabase);
 
