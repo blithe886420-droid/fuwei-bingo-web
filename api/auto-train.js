@@ -12,7 +12,7 @@ const SUPABASE_KEY =
   process.env.SUPABASE_ANON_KEY;
 
 if (!SUPABASE_URL || !SUPABASE_KEY) {
-  throw new Error('Missing SUPABASE_URL or SUPABASE service role key');
+  throw new Error('Missing SUPABASE env');
 }
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -33,108 +33,69 @@ function toNum(value, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function uniqueAsc(nums) {
-  return [...new Set((Array.isArray(nums) ? nums : []).map(Number).filter(Number.isFinite))].sort(
-    (a, b) => a - b
-  );
-}
-
-function stableHash(text = '') {
-  let h = 0;
-  const s = String(text || '');
-  for (let i = 0; i < s.length; i += 1) {
-    h = (h * 31 + s.charCodeAt(i)) >>> 0;
-  }
-  return h;
-}
-
-function rotateList(source, offset = 0) {
-  if (!Array.isArray(source) || source.length === 0) return [];
-  const len = source.length;
-  const safeOffset = ((offset % len) + len) % len;
-  return [...source.slice(safeOffset), ...source.slice(0, safeOffset)];
-}
-
 function parseDrawNumbers(value) {
-  if (Array.isArray(value)) {
-    return value.map(Number).filter(Number.isFinite);
-  }
+  if (Array.isArray(value)) return value.map(Number).filter(Number.isFinite);
 
   if (typeof value === 'string') {
     return value
       .split(/[,\s]+/)
-      .map((s) => Number(String(s).trim()))
+      .map((s) => Number(s.trim()))
       .filter(Number.isFinite);
   }
 
   return [];
 }
 
-function buildRecentAnalysis(rows = []) {
-  const parsedRows = (Array.isArray(rows) ? rows : []).map((row) => ({
-    draw_no: toNum(row?.draw_no, 0),
-    draw_time: row?.draw_time || null,
-    numbers: parseDrawNumbers(row?.numbers)
-  }));
-
-  const latestDraw = parsedRows[0]?.numbers || [];
-  const allNums = parsedRows.flatMap((row) => row.numbers);
-
-  const freq = new Map();
-  for (let i = 1; i <= 80; i += 1) freq.set(i, 0);
-  for (const n of allNums) freq.set(n, (freq.get(n) || 0) + 1);
-
-  const hottest = [...freq.entries()]
-    .sort((a, b) => b[1] - a[1] || a[0] - b[0])
-    .map(([n]) => n);
-
-  const coldest = [...freq.entries()]
-    .sort((a, b) => a[1] - b[1] || a[0] - b[0])
-    .map(([n]) => n);
-
-  return {
-    hottest,
-    coldest,
-    latestDraw
-  };
+function uniqueAsc(arr) {
+  return [...new Set(arr)].sort((a, b) => a - b);
 }
 
-function buildGroupsFromStrategies(strategies = [], recentRows = []) {
-  const analysis = buildRecentAnalysis(recentRows);
+function stableHash(text = '') {
+  let h = 0;
+  for (let i = 0; i < text.length; i++) {
+    h = (h * 31 + text.charCodeAt(i)) >>> 0;
+  }
+  return h;
+}
 
-  return strategies.map((row, idx) => {
-    const key = row.strategy_key || `strategy_${idx + 1}`;
-    const seed = stableHash(`${key}_${idx}`);
-    const hotPool = rotateList(analysis.hottest, seed % 17);
-    const latestPool = rotateList(analysis.latestDraw, seed % 5);
-    const coldPool = rotateList(analysis.coldest, seed % 11);
+function rotate(arr, offset) {
+  if (!arr.length) return [];
+  const i = offset % arr.length;
+  return [...arr.slice(i), ...arr.slice(0, i)];
+}
+
+function buildGroups(strategies, draws) {
+  const allNums = draws.flatMap((d) => parseDrawNumbers(d.numbers));
+
+  const freq = new Map();
+  for (let i = 1; i <= 80; i++) freq.set(i, 0);
+  for (const n of allNums) freq.set(n, (freq.get(n) || 0) + 1);
+
+  const hot = [...freq.entries()].sort((a, b) => b[1] - a[1]).map(([n]) => n);
+  const cold = [...freq.entries()].sort((a, b) => a[1] - b[1]).map(([n]) => n);
+
+  const latest = parseDrawNumbers(draws[0]?.numbers);
+
+  return strategies.map((s, idx) => {
+    const key = s.strategy_key;
+    const seed = stableHash(key);
 
     const nums = uniqueAsc([
-      ...latestPool.slice(0, 1),
-      ...hotPool.slice(0, 5),
-      ...coldPool.slice(0, 2)
+      ...rotate(latest, seed % 3).slice(0, 1),
+      ...rotate(hot, seed % 7).slice(0, 3),
+      ...rotate(cold, seed % 5).slice(0, 2)
     ]).slice(0, 4);
 
     return {
       key,
-      label: row.strategy_name || key,
+      label: s.strategy_name,
       nums,
-      reason: '',
       meta: {
         strategy_key: key,
-        strategy_name: row.strategy_name || key
+        strategy_name: s.strategy_name
       }
     };
   });
-}
-
-function getFallbackStrategies() {
-  return [
-    { strategy_key: 'hot_balanced', strategy_name: 'Hot Balanced' },
-    { strategy_key: 'balanced_zone', strategy_name: 'Balanced Zone' },
-    { strategy_key: 'hot_chase', strategy_name: 'Hot Chase' },
-    { strategy_key: 'repeat_guard', strategy_name: 'Repeat Guard' }
-  ];
 }
 
 async function getLatestDraw() {
@@ -145,81 +106,99 @@ async function getLatestDraw() {
     .limit(1)
     .maybeSingle();
 
-  return data || null;
+  return data;
 }
 
-async function getLastPredictionDrawNo() {
-  const { data } = await supabase
-    .from(PREDICTIONS_TABLE)
-    .select('source_draw_no')
-    .eq('mode', CURRENT_MODE)
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  return toNum(data?.source_draw_no, 0);
-}
-
-async function getRecentDrawRows(limitCount = RECENT_ANALYSIS_LIMIT) {
+async function getRecentDraws() {
   const { data } = await supabase
     .from(DRAWS_TABLE)
     .select('*')
     .order('draw_no', { ascending: false })
-    .limit(limitCount);
+    .limit(RECENT_ANALYSIS_LIMIT);
 
-  return Array.isArray(data) ? data : [];
+  return data || [];
 }
 
-async function getActiveStrategies() {
+async function getStrategies() {
   const { data } = await supabase
     .from(STRATEGY_POOL_TABLE)
     .select('*')
-    .eq('status', 'active')
-    .order('created_at', { ascending: true });
+    .eq('status', 'active');
 
-  const rows = Array.isArray(data) ? data : [];
-  if (!rows.length) return getFallbackStrategies();
-  return rows.slice(0, PICK_COUNT);
+  return (data || []).slice(0, PICK_COUNT);
+}
+
+async function insertPrediction(drawNo, groups) {
+  const { data } = await supabase
+    .from(PREDICTIONS_TABLE)
+    .insert({
+      id: Date.now(),
+      mode: CURRENT_MODE,
+      status: 'created',
+      source_draw_no: String(drawNo),
+      target_periods: DRAW_COMPARE_LIMIT,
+      groups_json: groups,
+      created_at: new Date().toISOString()
+    })
+    .select()
+    .single();
+
+  return data;
 }
 
 export default async function handler(req, res) {
+  if (req.method !== 'POST' && req.method !== 'GET') {
+    return res.status(405).json({ ok: false });
+  }
+
   try {
-    // 🔥 關鍵：允許 GET / POST 都可進來
-    if (req.method !== 'POST' && req.method !== 'GET') {
-      return res.status(405).json({
-        ok: false,
-        error: 'Method not allowed'
-      });
-    }
+    const latest = await getLatestDraw();
+    if (!latest) return res.json({ ok: true, msg: 'no draw' });
 
-    const latestDraw = await getLatestDraw();
-    if (!latestDraw) {
-      return res.status(200).json({ ok: true, message: 'no draw' });
-    }
+    const recent = await getRecentDraws();
+    const strategies = await getStrategies();
 
-    const lastProcessed = await getLastPredictionDrawNo();
+    const groups = buildGroups(strategies, recent);
 
-    if (toNum(latestDraw.draw_no) === lastProcessed) {
-      return res.status(200).json({
-        ok: true,
-        message: 'already processed',
-        draw_no: toNum(latestDraw.draw_no, 0)
-      });
-    }
+    const prediction = await insertPrediction(latest.draw_no, groups);
 
-    const strategies = await getActiveStrategies();
-    const recentRows = await getRecentDrawRows();
-    const groups = buildGroupsFromStrategies(strategies, recentRows);
+    // 🔥 compare
+    const { buildComparePayload } = await import('../lib/buildComparePayload.js');
 
-    return res.status(200).json({
-      ok: true,
-      draw_no: toNum(latestDraw.draw_no, 0),
-      groups
+    const payload = buildComparePayload({
+      prediction,
+      groups,
+      drawRows: recent.slice(0, DRAW_COMPARE_LIMIT)
     });
-  } catch (error) {
+
+    // 🔥 update prediction
+    await supabase
+      .from(PREDICTIONS_TABLE)
+      .update({
+        compare_result: payload.compareResult,
+        status: 'compared',
+        verdict: payload.verdict,
+        hit_count: payload.hitCount,
+        compared_at: new Date().toISOString()
+      })
+      .eq('id', prediction.id);
+
+    // 🔥 stats
+    const { recordStrategyCompareResult } = await import('../lib/strategyStatsRecorder.js');
+    await recordStrategyCompareResult(payload.compareResult);
+
+    // 🔥 evolve
+    const { evolveStrategies } = await import('../lib/strategyEvolutionEngine.js');
+    await evolveStrategies();
+
+    return res.json({
+      ok: true,
+      prediction_id: prediction.id
+    });
+  } catch (e) {
     return res.status(500).json({
       ok: false,
-      error: error?.message || 'fail'
+      error: e.message
     });
   }
 }
