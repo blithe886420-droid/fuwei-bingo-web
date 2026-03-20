@@ -10,15 +10,7 @@ const SUPABASE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
   process.env.SUPABASE_ANON_KEY;
 
-if (!SUPABASE_URL || !SUPABASE_KEY) {
-  throw new Error('Missing SUPABASE env');
-}
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
-  auth: { persistSession: false }
-});
-
-const COST = 25;
+let supabase = null;
 
 function safeArray(v) {
   if (Array.isArray(v)) return v;
@@ -42,6 +34,22 @@ function toNum(v) {
 
 export default async function handler(req, res) {
   try {
+    // ✅ 改這裡：不要 throw，改成 runtime 判斷
+    if (!SUPABASE_URL || !SUPABASE_KEY) {
+      return res.status(200).json({
+        ok: false,
+        error: 'Missing SUPABASE env'
+      });
+    }
+
+    if (!supabase) {
+      supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+        auth: { persistSession: false }
+      });
+    }
+
+    const COST = 25;
+
     const { data: predictions, error: pError } = await supabase
       .from('bingo_predictions')
       .select('*')
@@ -113,14 +121,11 @@ export default async function handler(req, res) {
 
         try {
           await recordStrategyCompareResult(payload.compareResult);
-        } catch (err) {
-          // 不影響主流程
-        }
+        } catch {}
 
         processed++;
-      } catch (err) {
+      } catch {
         failed++;
-        continue;
       }
     }
 
