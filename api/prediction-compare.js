@@ -8,46 +8,45 @@ const supabase = createClient(
 );
 
 export default async function handler(req, res) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ ok: false });
-  }
-
   try {
-    const { predictionId } = req.body;
-
-    const { data: prediction } = await supabase
+    const { data: list } = await supabase
       .from('bingo_predictions')
       .select('*')
-      .eq('id', predictionId)
-      .single();
+      .eq('status', 'created')
+      .limit(20);
 
-    const { data: draws } = await supabase
-      .from('bingo_draws')
-      .select('*')
-      .gt('draw_no', prediction.source_draw_no)
-      .limit(prediction.target_periods);
+    for (const p of list || []) {
+      const { data: draws } = await supabase
+        .from('bingo_draws')
+        .select('*')
+        .gt('draw_no', p.source_draw_no)
+        .order('draw_no', { ascending: true })
+        .limit(p.target_periods);
 
-    const payload = buildComparePayload({
-      prediction,
-      groups: prediction.groups_json,
-      drawRows: draws,
-      costPerGroupPerPeriod: 25
-    });
+      if (!draws || draws.length < p.target_periods) continue;
 
-    await supabase
-      .from('bingo_predictions')
-      .update({
-        status: 'compared',
-        compare_status: 'done',
-        hit_count: payload.hitCount,
-        compare_result: payload.compareResult,
-        compared_at: new Date().toISOString()
-      })
-      .eq('id', predictionId);
+      const payload = buildComparePayload({
+        groups: p.groups_json,
+        drawRows: draws,
+        costPerGroupPerPeriod: 25
+      });
 
-    await recordStrategyCompareResult(payload.compareResult);
+      await supabase
+        .from('bingo_predictions')
+        .update({
+          status: 'compared',
+          compare_status: 'done',
+          hit_count: payload.hitCount,
+          compare_result: payload.compareResult,
+          verdict: payload.verdict,
+          compared_at: new Date().toISOString()
+        })
+        .eq('id', p.id);
 
-    return res.status(200).json({ ok: true });
+      await recordStrategyCompareResult(payload.compareResult);
+    }
+
+    return res.json({ ok: true });
   } catch (e) {
     return res.status(500).json({ ok: false, error: e.message });
   }
