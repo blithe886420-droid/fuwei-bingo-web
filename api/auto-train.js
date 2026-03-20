@@ -6,11 +6,11 @@ const supabase = createClient(
 );
 
 function genNums(seed) {
-  const base = (seed * 97) % 80;
+  const base = (seed * 131) % 80;
   return [
     (base % 80) + 1,
-    ((base + 11) % 80) + 1,
-    ((base + 23) % 80) + 1,
+    ((base + 9) % 80) + 1,
+    ((base + 21) % 80) + 1,
     ((base + 37) % 80) + 1
   ];
 }
