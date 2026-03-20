@@ -1,127 +1,133 @@
 import { createClient } from '@supabase/supabase-js';
-import { buildComparePayload } from '../lib/buildComparePayload.js';
-import { recordStrategyCompareResult } from '../lib/strategyStatsRecorder.js';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
-  process.env.VITE_SUPABASE_URL ||
   process.env.NEXT_PUBLIC_SUPABASE_URL;
 
 const SUPABASE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
-  process.env.SUPABASE_SECRET_KEY ||
-  process.env.SUPABASE_KEY ||
   process.env.SUPABASE_ANON_KEY;
-
-if (!SUPABASE_URL || !SUPABASE_KEY) {
-  throw new Error('Missing SUPABASE env');
-}
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: { persistSession: false }
 });
 
-const PREDICTIONS_TABLE = 'bingo_predictions';
-const DRAWS_TABLE = 'bingo_draws';
 const COST = 25;
-const MAX_BATCH = 100;
 
-function toNum(value, fallback = 0) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
+function toNum(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
 }
 
-function safeArray(v) {
-  return Array.isArray(v) ? v : [];
+function parseNumbers(str) {
+  if (!str) return [];
+  return String(str)
+    .split(' ')
+    .map(x => Number(x))
+    .filter(n => Number.isFinite(n));
 }
 
-async function getPendingPredictions(limit = MAX_BATCH) {
-  const { data, error } = await supabase
-    .from(PREDICTIONS_TABLE)
+function calcHits(groups, drawNumbersList) {
+  let totalHits = 0;
+
+  for (const g of groups) {
+    for (const draw of drawNumbersList) {
+      const set = new Set(draw);
+      for (const n of g) {
+        if (set.has(n)) totalHits++;
+      }
+    }
+  }
+
+  return totalHits;
+}
+
+async function updateStrategy(strategyKey, hitCount) {
+  const { data } = await supabase
+    .from('strategy_stats')
     .select('*')
-    .eq('status', 'created')
-    .order('created_at', { ascending: true })
-    .limit(limit);
+    .eq('strategy_key', strategyKey)
+    .single();
 
-  if (error) throw error;
-  return safeArray(data);
-}
+  if (!data) return;
 
-async function getFutureDraws(sourceDrawNo, targetPeriods) {
-  const { data, error } = await supabase
-    .from(DRAWS_TABLE)
-    .select('draw_no, draw_time, numbers')
-    .gt('draw_no', sourceDrawNo)
-    .order('draw_no', { ascending: true })
-    .limit(targetPeriods);
+  const totalRounds = toNum(data.total_rounds) + 1;
+  const totalHits = toNum(data.total_hits) + hitCount;
+  const totalCost = totalRounds * COST;
+  const totalReward = totalHits * 10;
+  const totalProfit = totalReward - totalCost;
+  const roi = totalCost === 0 ? 0 : totalProfit / totalCost;
 
-  if (error) throw error;
-  return safeArray(data);
-}
-
-async function updatePredictionCompared(id, payload) {
-  const nowIso = new Date().toISOString();
-
-  const { error } = await supabase
-    .from(PREDICTIONS_TABLE)
+  await supabase
+    .from('strategy_stats')
     .update({
-      status: 'compared',
-      compare_status: 'done',
-      hit_count: toNum(payload.hitCount, 0),
-      compare_result: payload.compareResult,
-      verdict: payload.verdict,
-      compared_at: nowIso
+      total_rounds: totalRounds,
+      total_hits: totalHits,
+      total_cost: totalCost,
+      total_reward: totalReward,
+      total_profit: totalProfit,
+      roi,
+      updated_at: new Date().toISOString()
     })
-    .eq('id', id);
-
-  if (error) throw error;
+    .eq('strategy_key', strategyKey);
 }
 
 export default async function handler(req, res) {
   try {
-    const list = await getPendingPredictions(MAX_BATCH);
+    const { data: predictions } = await supabase
+      .from('bingo_predictions')
+      .select('*')
+      .eq('status', 'created')
+      .order('created_at', { ascending: true })
+      .limit(100);
 
     let processed = 0;
-    let skipped = 0;
 
-    for (const p of list) {
-      const sourceDrawNo = toNum(p?.source_draw_no, 0);
-      const targetPeriods = toNum(p?.target_periods, 0);
+    for (const p of predictions || []) {
+      const sourceDrawNo = toNum(p.source_draw_no);
+      const targetPeriods = toNum(p.target_periods);
 
-      if (!sourceDrawNo || !targetPeriods) {
-        skipped += 1;
-        continue;
-      }
+      if (!sourceDrawNo || !targetPeriods) continue;
 
-      const draws = await getFutureDraws(sourceDrawNo, targetPeriods);
+      const { data: draws } = await supabase
+        .from('bingo_draws')
+        .select('*')
+        .gt('draw_no', sourceDrawNo)
+        .order('draw_no', { ascending: true })
+        .limit(targetPeriods);
 
-      if (draws.length < targetPeriods) {
-        skipped += 1;
-        continue;
-      }
+      if (!draws || draws.length < targetPeriods) continue;
 
-      const payload = buildComparePayload({
-        groups: safeArray(p?.groups_json),
-        drawRows: draws,
-        costPerGroupPerPeriod: COST
-      });
+      const groups = Array.isArray(p.groups_json)
+        ? p.groups_json
+        : [];
 
-      await updatePredictionCompared(p.id, payload);
-      await recordStrategyCompareResult(payload.compareResult);
+      const drawNumbersList = draws.map(d => parseNumbers(d.numbers));
 
-      processed += 1;
+      const hitCount = calcHits(groups, drawNumbersList);
+
+      await supabase
+        .from('bingo_predictions')
+        .update({
+          status: 'compared',
+          compared_at: new Date().toISOString(),
+          hit_count: hitCount
+        })
+        .eq('id', p.id);
+
+      await updateStrategy(p.strategy_key, hitCount);
+
+      processed++;
     }
 
-    return res.status(200).json({
+    res.status(200).json({
       ok: true,
-      processed,
-      skipped,
-      total: list.length
+      processed
     });
-  } catch (error) {
-    return res.status(500).json({
+  } catch (e) {
+    res.status(500).json({
       ok: false,
-      error: error?.message || 'compare failed'
+      error: e.message
     });
   }
 }
