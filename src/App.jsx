@@ -64,14 +64,37 @@ function getRecentRows(data) {
   return [];
 }
 
+function normalizeGroups(rawGroups) {
+  const groups = Array.isArray(rawGroups) ? rawGroups : [];
+
+  return groups
+    .map((group, idx) => {
+      if (!group || typeof group !== 'object') return null;
+
+      const nums = parseNums(group?.nums || group?.numbers || []);
+      if (nums.length !== 4) return null;
+
+      const meta = group?.meta && typeof group.meta === 'object' ? group.meta : {};
+
+      return {
+        key: String(group?.key || meta?.strategy_key || `group_${idx + 1}`),
+        label: String(group?.label || meta?.strategy_name || `第${idx + 1}組`),
+        nums,
+        reason: String(group?.reason || meta?.strategy_name || '--'),
+        meta
+      };
+    })
+    .filter(Boolean);
+}
+
 function getPredictionGroups(row) {
-  const groups =
+  return normalizeGroups(
     row?.groups_json ||
     row?.groups ||
     row?.strategies ||
     row?.prediction_groups ||
-    [];
-  return Array.isArray(groups) ? groups : [];
+    []
+  );
 }
 
 function groupTitle(group, idx) {
@@ -283,17 +306,14 @@ export default function App() {
       setRecent20(recentRows);
 
       const trainingRow =
-        getPredictionLatestRow(
-          predictionRes?.test || predictionRes?.training || predictionRes,
-          'test'
-        ) ||
+        predictionRes?.training_row ||
+        getPredictionLatestRow(predictionRes?.test || predictionRes?.training || predictionRes, 'test') ||
         getPredictionLatestRow(predictionRes?.row ? { row: predictionRes.row } : predictionRes, 'test');
 
       const formalRow =
-        getPredictionLatestRow(
-          predictionRes?.formal || predictionRes,
-          'formal'
-        ) || null;
+        predictionRes?.formal_row ||
+        getPredictionLatestRow(predictionRes?.formal || predictionRes, 'formal') ||
+        null;
 
       setTrainingLatest(trainingRow || null);
       setFormalLatest(formalRow || null);
@@ -402,8 +422,8 @@ export default function App() {
       });
 
       setLoopStatusText('自動訓練中...');
-      const autoTrainResult = await safeFetchJson('/api/auto-train', { method: 'GET' }).catch(async () => {
-        return await safeFetchJson('/api/auto-train', { method: 'POST' });
+      const autoTrainResult = await safeFetchJson('/api/auto-train', { method: 'POST' }).catch(async () => {
+        return await safeFetchJson('/api/auto-train', { method: 'GET' });
       });
 
       setLastAutoTrainResult(autoTrainResult);
@@ -515,8 +535,7 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          mode: 'formal_synced_from_server_prediction',
-          targetPeriods: 4
+          mode: 'formal'
         })
       });
     });
