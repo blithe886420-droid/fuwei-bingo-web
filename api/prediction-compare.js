@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
-import { buildComparePayload } from '../../lib/buildComparePayload.js';
-import { recordStrategyCompareResult } from '../../lib/strategyStatsRecorder.js';
+import { buildComparePayload } from '../lib/buildComparePayload.js';
+import { recordStrategyCompareResult } from '../lib/strategyStatsRecorder.js';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -34,7 +34,6 @@ function toNum(v) {
 
 export default async function handler(req, res) {
   try {
-    // ✅ 改這裡：不要 throw，改成 runtime 判斷
     if (!SUPABASE_URL || !SUPABASE_KEY) {
       return res.status(200).json({
         ok: false,
