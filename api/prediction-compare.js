@@ -1,4 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
+import { buildComparePayload } from '../../lib/buildComparePayload.js';
+import { recordStrategyCompareResult } from '../../lib/strategyStatsRecorder.js';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -8,124 +10,96 @@ const SUPABASE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
   process.env.SUPABASE_ANON_KEY;
 
+if (!SUPABASE_URL || !SUPABASE_KEY) {
+  throw new Error('Missing SUPABASE env');
+}
+
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: { persistSession: false }
 });
 
 const COST = 25;
 
+function safeArray(v) {
+  return Array.isArray(v) ? v : [];
+}
+
 function toNum(v) {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
 }
 
-function parseNumbers(str) {
-  if (!str) return [];
-  return String(str)
-    .split(' ')
-    .map(x => Number(x))
-    .filter(n => Number.isFinite(n));
-}
-
-function calcHits(groups, drawNumbersList) {
-  let totalHits = 0;
-
-  for (const g of groups) {
-    for (const draw of drawNumbersList) {
-      const set = new Set(draw);
-      for (const n of g) {
-        if (set.has(n)) totalHits++;
-      }
-    }
-  }
-
-  return totalHits;
-}
-
-async function updateStrategy(strategyKey, hitCount) {
-  const { data } = await supabase
-    .from('strategy_stats')
-    .select('*')
-    .eq('strategy_key', strategyKey)
-    .single();
-
-  if (!data) return;
-
-  const totalRounds = toNum(data.total_rounds) + 1;
-  const totalHits = toNum(data.total_hits) + hitCount;
-  const totalCost = totalRounds * COST;
-  const totalReward = totalHits * 10;
-  const totalProfit = totalReward - totalCost;
-  const roi = totalCost === 0 ? 0 : totalProfit / totalCost;
-
-  await supabase
-    .from('strategy_stats')
-    .update({
-      total_rounds: totalRounds,
-      total_hits: totalHits,
-      total_cost: totalCost,
-      total_reward: totalReward,
-      total_profit: totalProfit,
-      roi,
-      updated_at: new Date().toISOString()
-    })
-    .eq('strategy_key', strategyKey);
-}
-
 export default async function handler(req, res) {
   try {
-    const { data: predictions } = await supabase
+    const { data: predictions, error: pError } = await supabase
       .from('bingo_predictions')
       .select('*')
       .eq('status', 'created')
       .order('created_at', { ascending: true })
       .limit(100);
 
-    let processed = 0;
+    if (pError) throw pError;
 
-    for (const p of predictions || []) {
+    let processed = 0;
+    let skipped = 0;
+
+    for (const p of safeArray(predictions)) {
       const sourceDrawNo = toNum(p.source_draw_no);
       const targetPeriods = toNum(p.target_periods);
 
-      if (!sourceDrawNo || !targetPeriods) continue;
+      if (!sourceDrawNo || !targetPeriods) {
+        skipped++;
+        continue;
+      }
 
-      const { data: draws } = await supabase
+      const { data: draws, error: dError } = await supabase
         .from('bingo_draws')
         .select('*')
         .gt('draw_no', sourceDrawNo)
         .order('draw_no', { ascending: true })
         .limit(targetPeriods);
 
-      if (!draws || draws.length < targetPeriods) continue;
+      if (dError) throw dError;
 
-      const groups = Array.isArray(p.groups_json)
-        ? p.groups_json
-        : [];
+      if (!draws || draws.length < targetPeriods) {
+        skipped++;
+        continue;
+      }
 
-      const drawNumbersList = draws.map(d => parseNumbers(d.numbers));
+      const groups = safeArray(p.groups_json);
 
-      const hitCount = calcHits(groups, drawNumbersList);
+      const payload = buildComparePayload({
+        groups,
+        drawRows: draws,
+        costPerGroupPerPeriod: COST
+      });
 
-      await supabase
+      const { error: uError } = await supabase
         .from('bingo_predictions')
         .update({
           status: 'compared',
-          compared_at: new Date().toISOString(),
-          hit_count: hitCount
+          compare_status: 'done',
+          hit_count: payload.hitCount,
+          compare_result: payload.compareResult,
+          verdict: payload.verdict,
+          compared_at: new Date().toISOString()
         })
         .eq('id', p.id);
 
-      await updateStrategy(p.strategy_key, hitCount);
+      if (uError) throw uError;
+
+      await recordStrategyCompareResult(payload.compareResult);
 
       processed++;
     }
 
-    res.status(200).json({
+    return res.status(200).json({
       ok: true,
-      processed
+      processed,
+      skipped
     });
   } catch (e) {
-    res.status(500).json({
+    return res.status(500).json({
       ok: false,
       error: e.message
     });
