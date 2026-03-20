@@ -1,189 +1,54 @@
 import { createClient } from '@supabase/supabase-js';
+import { buildComparePayload } from '../lib/buildComparePayload.js';
 import { recordStrategyCompareResult } from '../lib/strategyStatsRecorder.js';
-import { evolveStrategies } from '../lib/strategyEvolutionEngine.js';
-import {
-  parsePredictionGroups,
-  buildComparePayload,
-  parseDrawNumbers
-} from '../lib/buildComparePayload.js';
 
-const SUPABASE_URL =
-  process.env.SUPABASE_URL ||
-  process.env.VITE_SUPABASE_URL ||
-  process.env.NEXT_PUBLIC_SUPABASE_URL;
-
-const SUPABASE_KEY =
-  process.env.SUPABASE_SERVICE_ROLE_KEY ||
-  process.env.SUPABASE_SECRET_KEY ||
-  process.env.SUPABASE_KEY ||
-  process.env.SUPABASE_ANON_KEY;
-
-if (!SUPABASE_URL || !SUPABASE_KEY) {
-  throw new Error('Missing SUPABASE_URL or SUPABASE key');
-}
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
-  auth: { persistSession: false }
-});
-
-const DRAWS_TABLE = 'bingo_draws';
-const PREDICTIONS_TABLE = 'bingo_predictions';
-
-const DRAW_NO_COL = 'draw_no';
-const DRAW_TIME_COL = 'draw_time';
-const DRAW_NUMBERS_COL = 'numbers';
-
-function toInt(value, fallback = 0) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
-}
-
-async function getPredictionById(predictionId) {
-  const { data, error } = await supabase
-    .from(PREDICTIONS_TABLE)
-    .select('*')
-    .eq('id', predictionId)
-    .maybeSingle();
-
-  if (error) throw error;
-  return data || null;
-}
-
-async function getDrawRowsForPrediction(prediction) {
-  const sourceDrawNo = toInt(prediction?.source_draw_no, 0);
-  const targetPeriods = toInt(prediction?.target_periods || 1, 1);
-
-  const start = sourceDrawNo + 1;
-  const end = sourceDrawNo + targetPeriods;
-
-  const { data, error } = await supabase
-    .from(DRAWS_TABLE)
-    .select(`${DRAW_NO_COL}, ${DRAW_TIME_COL}, ${DRAW_NUMBERS_COL}`)
-    .gte(DRAW_NO_COL, start)
-    .lte(DRAW_NO_COL, end)
-    .order(DRAW_NO_COL, { ascending: true });
-
-  if (error) throw error;
-
-  return (data || []).filter((row) => parseDrawNumbers(row?.[DRAW_NUMBERS_COL]).length > 0);
-}
-
-async function updatePredictionCompared(predictionId, built) {
-  const payload = {
-    status: 'compared',
-    compare_status: 'done',
-    compared_at: new Date().toISOString(),
-    compare_result: built?.compareResult || null,
-    verdict: built?.verdict || null,
-    hit_count: toInt(built?.hitCount, 0)
-  };
-
-  const { error } = await supabase
-    .from(PREDICTIONS_TABLE)
-    .update(payload)
-    .eq('id', predictionId);
-
-  if (error) throw error;
-}
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
-    return res.status(405).json({
-      ok: false,
-      error: 'Method not allowed'
-    });
+    return res.status(405).json({ ok: false });
   }
 
   try {
-    const predictionId = req.body?.predictionId;
+    const { predictionId } = req.body;
 
-    if (!predictionId) {
-      return res.status(400).json({
-        ok: false,
-        error: 'predictionId is required'
-      });
-    }
+    const { data: prediction } = await supabase
+      .from('bingo_predictions')
+      .select('*')
+      .eq('id', predictionId)
+      .single();
 
-    const prediction = await getPredictionById(predictionId);
+    const { data: draws } = await supabase
+      .from('bingo_draws')
+      .select('*')
+      .gt('draw_no', prediction.source_draw_no)
+      .limit(prediction.target_periods);
 
-    if (!prediction) {
-      return res.status(404).json({
-        ok: false,
-        error: 'prediction not found'
-      });
-    }
-
-    const groups = parsePredictionGroups(prediction, 4);
-
-    if (!groups.length) {
-      return res.status(400).json({
-        ok: false,
-        error: 'prediction groups not found'
-      });
-    }
-
-    const drawRows = await getDrawRowsForPrediction(prediction);
-
-    if (drawRows.length === 0) {
-      return res.status(200).json({
-        ok: false,
-        waiting: true,
-        error: 'draw rows not ready yet'
-      });
-    }
-
-    const built = buildComparePayload({
+    const payload = buildComparePayload({
       prediction,
-      groups,
-      drawRows,
-      drawNoCol: DRAW_NO_COL,
-      drawTimeCol: DRAW_TIME_COL,
-      drawNumbersCol: DRAW_NUMBERS_COL,
+      groups: prediction.groups_json,
+      drawRows: draws,
       costPerGroupPerPeriod: 25
     });
 
-    if (!built || !built.compareResult) {
-      return res.status(500).json({
-        ok: false,
-        error: 'buildComparePayload failed'
-      });
-    }
+    await supabase
+      .from('bingo_predictions')
+      .update({
+        status: 'compared',
+        compare_status: 'done',
+        hit_count: payload.hitCount,
+        compare_result: payload.compareResult,
+        compared_at: new Date().toISOString()
+      })
+      .eq('id', predictionId);
 
-    await updatePredictionCompared(predictionId, built);
+    await recordStrategyCompareResult(payload.compareResult);
 
-    let statsRecorded = false;
-    let statsError = null;
-
-    try {
-      await recordStrategyCompareResult(built.compareResult);
-      statsRecorded = true;
-    } catch (error) {
-      statsRecorded = false;
-      statsError = error?.message || 'recordStrategyCompareResult failed';
-    }
-
-    let evolutionResult = null;
-    let evolutionError = null;
-
-    try {
-      evolutionResult = await evolveStrategies();
-    } catch (error) {
-      evolutionError = error?.message || 'evolveStrategies failed';
-    }
-
-    return res.status(200).json({
-      ok: true,
-      result: built.resultForApp || null,
-      compareResult: built.compareResult || null,
-      statsRecorded,
-      statsError,
-      evolution: evolutionResult,
-      evolutionError
-    });
-  } catch (error) {
-    return res.status(500).json({
-      ok: false,
-      error: error?.message || 'prediction compare failed'
-    });
+    return res.status(200).json({ ok: true });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e.message });
   }
 }
