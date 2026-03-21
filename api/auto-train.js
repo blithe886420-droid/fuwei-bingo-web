@@ -44,7 +44,14 @@ const DEFAULT_STRATEGY_KEYS = [
   'spread_zone_rotation',
   'mix_gap',
   'chase_skip',
-  'pattern_gap'
+  'pattern_gap',
+  'gap_balanced',
+  'zone_rotation_gap',
+  'zone_cold',
+  'gap_cold',
+  'skip_hot',
+  'mix_balanced_2',
+  'balanced_skip_4'
 ];
 
 const DECISION_CONFIG = {
@@ -52,7 +59,9 @@ const DECISION_CONFIG = {
   hardRejectScore: -400,
   softRejectRoi: -0.5,
   minAvgHitPreferred: 1.2,
-  minRoundsForTrust: 6
+  minRoundsForTrust: 6,
+  strongScoreFloor: 80,
+  usableScoreFloor: 10
 };
 
 let supabase = null;
@@ -360,7 +369,7 @@ function buildStrategyNums(strategyKey, market, seed = 0) {
     selected.push(...numbersByTail(secondTail, allNums).slice(0, 1));
   }
 
-  if (has('zone') || has('split') || has('spread')) {
+  if (has('zone') || has('split') || has('spread') || has('rotation')) {
     const z1 = zoneOrder[0] ?? 0;
     const z2 = zoneOrder[1] ?? 1;
     selected.push(...numbersByZone(z1, allNums).slice(0, 2));
@@ -416,7 +425,7 @@ function buildStrategyNums(strategyKey, market, seed = 0) {
     selected.push(...odd.slice(0, 2));
   }
 
-  if (marketBias.compressedZones && (has('spread') || has('zone'))) {
+  if (marketBias.compressedZones && (has('spread') || has('zone') || has('rotation'))) {
     const safeZone = zoneOrder[2] ?? 2;
     selected.push(...numbersByZone(safeZone, allNums).slice(0, 2));
   }
@@ -436,7 +445,7 @@ function buildStrategyNums(strategyKey, market, seed = 0) {
     }
   }
 
-  if (has('zone') || has('split') || has('spread')) {
+  if (has('zone') || has('split') || has('spread') || has('rotation')) {
     const zones = new Set(nums.map((n) => getZoneIndex(n)));
     if (zones.size < 2) {
       const extraZone = zoneOrder[1] ?? 1;
@@ -475,45 +484,48 @@ function evaluateStrategyDecision(poolRow = {}, statRow = {}) {
   ) {
     decision = 'weak';
   } else if (
+    score >= DECISION_CONFIG.strongScoreFloor ||
     avgHit >= 2 ||
     recent50HitRate >= 0.35 ||
-    recent50Roi > 0 ||
-    score > 300
+    recent50Roi > 0
   ) {
     decision = 'strong';
   } else if (
+    score >= DECISION_CONFIG.usableScoreFloor ||
     avgHit >= DECISION_CONFIG.minAvgHitPreferred ||
-    hitRate >= 0.2 ||
-    score > 0
+    hitRate >= 0.2
   ) {
     decision = 'usable';
   }
 
-  let weight = 6;
+  let weight = 0;
 
-  if (decision === 'strong') weight += 80;
-  if (decision === 'usable') weight += 35;
-  if (decision === 'weak') weight = 2;
-  if (decision === 'reject') weight = 0;
-
-  weight += Math.max(0, score * 0.02);
-  weight += avgHit * 20;
-  weight += hitRate * 30;
-  weight += recent50HitRate * 40;
-  weight += recent50Roi * 20;
-  weight += Math.min(totalRounds, 120) * 0.08;
-  weight += generation * 0.6;
-
-  if (String(poolRow?.protected_rank) === 'true' || poolRow?.protected_rank === true) {
-    weight += 15;
+  if (decision === 'strong') {
+    weight = 1000;
+  } else if (decision === 'usable') {
+    weight = 220;
+  } else if (decision === 'candidate') {
+    weight = totalRounds < DECISION_CONFIG.minRoundsForTrust ? 60 : 12;
+  } else if (decision === 'weak') {
+    weight = 1;
+  } else {
+    weight = 0;
   }
 
-  if (totalRounds < DECISION_CONFIG.minRoundsForTrust) {
-    weight += 10;
+  weight += Math.max(0, score * 0.08);
+  weight += avgHit * 25;
+  weight += hitRate * 35;
+  weight += recent50HitRate * 55;
+  weight += Math.max(0, recent50Roi) * 25;
+  weight += Math.min(totalRounds, 120) * 0.05;
+  weight += generation * 0.4;
+
+  if (String(poolRow?.protected_rank) === 'true' || poolRow?.protected_rank === true) {
+    weight += 20;
   }
 
   if (roi < 0) {
-    weight += roi * 8;
+    weight += roi * 12;
   }
 
   return {
@@ -547,10 +559,20 @@ function weightedPick(rows = [], usedKeys = new Set(), seed = 0) {
   return available[available.length - 1];
 }
 
-function takeByScoreDesc(rows = [], count = 0, usedKeys = new Set()) {
+function byPowerDesc(a, b) {
+  return (
+    toNum(b.weight, 0) - toNum(a.weight, 0) ||
+    toNum(b.score, 0) - toNum(a.score, 0) ||
+    toNum(b.avg_hit, 0) - toNum(a.avg_hit, 0) ||
+    toNum(b.total_rounds, 0) - toNum(a.total_rounds, 0) ||
+    String(a.strategy_key).localeCompare(String(b.strategy_key))
+  );
+}
+
+function pickTopUnique(rows = [], count = 0, usedKeys = new Set()) {
   return rows
-    .filter((row) => !usedKeys.has(row.strategy_key))
-    .sort((a, b) => toNum(b.weight, 0) - toNum(a.weight, 0) || String(a.strategy_key).localeCompare(String(b.strategy_key)))
+    .filter((row) => !usedKeys.has(row.strategy_key) && toNum(row.weight, 0) > 0)
+    .sort(byPowerDesc)
     .slice(0, count);
 }
 
@@ -701,10 +723,10 @@ async function fetchStrategyCandidates(db) {
     };
   });
 
-  const strong = merged.filter((row) => row.decision === 'strong');
-  const usable = merged.filter((row) => row.decision === 'usable');
-  const candidate = merged.filter((row) => row.decision === 'candidate');
-  const weak = merged.filter((row) => row.decision === 'weak');
+  const strong = merged.filter((row) => row.decision === 'strong').sort(byPowerDesc);
+  const usable = merged.filter((row) => row.decision === 'usable').sort(byPowerDesc);
+  const candidate = merged.filter((row) => row.decision === 'candidate').sort(byPowerDesc);
+  const weak = merged.filter((row) => row.decision === 'weak').sort(byPowerDesc);
 
   let finalRows = [...strong, ...usable, ...candidate];
 
@@ -714,34 +736,62 @@ async function fetchStrategyCandidates(db) {
 
   finalRows = finalRows
     .filter((row) => toNum(row.weight, 0) > 0)
-    .sort((a, b) => toNum(b.weight, 0) - toNum(a.weight, 0) || String(a.strategy_key).localeCompare(String(b.strategy_key)));
+    .sort(byPowerDesc);
 
   if (!finalRows.length) {
     throw new Error('No usable strategy candidates after decision filter');
   }
 
-  return finalRows;
+  return {
+    all: finalRows,
+    strong,
+    usable,
+    candidate,
+    weak
+  };
 }
 
-function buildPredictionGroups(candidates = [], market = {}, seed = Date.now()) {
+function buildPredictionGroups(candidatePack = {}, market = {}, seed = Date.now()) {
+  const all = Array.isArray(candidatePack?.all) ? candidatePack.all : [];
+  const strong = Array.isArray(candidatePack?.strong) ? candidatePack.strong : [];
+  const usable = Array.isArray(candidatePack?.usable) ? candidatePack.usable : [];
+  const candidate = Array.isArray(candidatePack?.candidate) ? candidatePack.candidate : [];
+
   const used = new Set();
   const groups = [];
 
-  const strongRows = candidates.filter((row) => row.decision === 'strong');
-  const usableRows = candidates.filter((row) => row.decision === 'usable');
-  const candidateRows = candidates.filter((row) => row.decision === 'candidate');
-
   const guaranteed = [];
-  guaranteed.push(...takeByScoreDesc(strongRows, Math.min(2, strongRows.length), used));
+
+  guaranteed.push(...pickTopUnique(strong, Math.min(3, strong.length), used));
+
+  if (guaranteed.length < 3) {
+    guaranteed.push(
+      ...pickTopUnique(
+        usable,
+        Math.min(3 - guaranteed.length, usable.filter((row) => !used.has(row.strategy_key)).length),
+        used
+      )
+    );
+  }
+
+  if (guaranteed.length < 3) {
+    guaranteed.push(
+      ...pickTopUnique(
+        candidate,
+        Math.min(3 - guaranteed.length, candidate.filter((row) => !used.has(row.strategy_key)).length),
+        used
+      )
+    );
+  }
 
   for (const row of guaranteed) {
+    if (used.has(row.strategy_key)) continue;
     used.add(row.strategy_key);
-    const nums = buildStrategyNums(row.strategy_key, market, seed + groups.length * 101);
 
     groups.push({
       key: row.strategy_key,
       label: row.strategy_name || strategyLabel(row.strategy_key),
-      nums,
+      nums: buildStrategyNums(row.strategy_key, market, seed + groups.length * 101),
       meta: {
         strategy_key: row.strategy_key,
         strategy_name: row.strategy_name || strategyLabel(row.strategy_key),
@@ -756,29 +806,16 @@ function buildPredictionGroups(candidates = [], market = {}, seed = Date.now()) 
     });
   }
 
-  const weightedPools = [
-    [...strongRows, ...usableRows],
-    [...usableRows, ...candidateRows],
-    candidates
-  ];
-
-  let poolIndex = 0;
-  while (groups.length < BET_GROUP_COUNT && poolIndex < weightedPools.length) {
-    const pool = weightedPools[poolIndex];
-    const picked = weightedPick(pool, used, seed + groups.length * 131 + poolIndex * 17);
-
-    if (!picked) {
-      poolIndex += 1;
-      continue;
-    }
+  while (groups.length < BET_GROUP_COUNT) {
+    const picked = weightedPick(all, used, seed + groups.length * 173);
+    if (!picked) break;
 
     used.add(picked.strategy_key);
-    const nums = buildStrategyNums(picked.strategy_key, market, seed + groups.length * 211);
 
     groups.push({
       key: picked.strategy_key,
       label: picked.strategy_name || strategyLabel(picked.strategy_key),
-      nums,
+      nums: buildStrategyNums(picked.strategy_key, market, seed + groups.length * 211),
       meta: {
         strategy_key: picked.strategy_key,
         strategy_name: picked.strategy_name || strategyLabel(picked.strategy_key),
@@ -791,34 +828,6 @@ function buildPredictionGroups(candidates = [], market = {}, seed = Date.now()) 
         decision: picked.decision
       }
     });
-  }
-
-  if (groups.length < BET_GROUP_COUNT) {
-    const backup = candidates
-      .filter((row) => !used.has(row.strategy_key))
-      .sort((a, b) => toNum(b.weight, 0) - toNum(a.weight, 0));
-
-    for (const row of backup) {
-      if (groups.length >= BET_GROUP_COUNT) break;
-      used.add(row.strategy_key);
-
-      groups.push({
-        key: row.strategy_key,
-        label: row.strategy_name || strategyLabel(row.strategy_key),
-        nums: buildStrategyNums(row.strategy_key, market, seed + groups.length * 307),
-        meta: {
-          strategy_key: row.strategy_key,
-          strategy_name: row.strategy_name || strategyLabel(row.strategy_key),
-          score: toNum(row.score, 0),
-          avg_hit: toNum(row.avg_hit, 0),
-          roi: toNum(row.roi, 0),
-          weight: toNum(row.weight, 0),
-          generation: toNum(row.generation, 1),
-          source_type: String(row.source_type || 'seed'),
-          decision: row.decision
-        }
-      });
-    }
   }
 
   return groups.slice(0, BET_GROUP_COUNT);
