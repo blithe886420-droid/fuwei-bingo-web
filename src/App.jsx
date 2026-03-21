@@ -319,6 +319,71 @@ function normalizeAiEvolution(data) {
   };
 }
 
+function getPipelineItem(result, key) {
+  if (!result || typeof result !== 'object') return null;
+  const item = result?.pipeline?.[key] || result?.[key] || null;
+  return item && typeof item === 'object' ? item : null;
+}
+
+function pipelineStatusText(result, key) {
+  const item = getPipelineItem(result, key);
+  if (!item) return '未執行';
+
+  if (item.ok === true) return '成功';
+  if (item.ok === false) {
+    if (item.status === 401) return '401';
+    return '失敗';
+  }
+
+  return '未執行';
+}
+
+function buildLastCycleSummary(result) {
+  if (!result) {
+    if (isNightStopWindow()) return '夜間停訓中';
+    return '--';
+  }
+
+  if (result?.skipped || result?.train?.skipped) {
+    const existingDrawNo =
+      result?.existing?.source_draw_no ||
+      result?.train?.existing?.source_draw_no ||
+      '--';
+
+    return `本期已存在，略過建立（來源期數 ${existingDrawNo}）`;
+  }
+
+  const compared = toNum(
+    result?.compared_count ??
+    result?.compare?.data?.processed ??
+    result?.compare?.processed,
+    0
+  );
+
+  const created = toNum(
+    result?.created_count ??
+    (result?.train?.inserted ? 1 : 0),
+    0
+  );
+
+  const activeCreated =
+    result?.active_created_prediction ||
+    result?.train?.existing ||
+    result?.train?.inserted ||
+    null;
+
+  if (compared > 0 || created > 0) {
+    const sourceText = fmtText(activeCreated?.source_draw_no, '--');
+    return `本輪：比對 ${compared} 筆 / 新建 ${created} 筆 / 來源期數 ${sourceText}`;
+  }
+
+  if (activeCreated?.source_draw_no) {
+    return `目前掛單訓練來源 ${activeCreated.source_draw_no}`;
+  }
+
+  return '本輪無異動';
+}
+
 function Card({ title, subtitle, right, children }) {
   return (
     <div style={styles.card}>
@@ -448,7 +513,12 @@ export default function App() {
     }
 
     if (result?.skipped || result?.train?.skipped) {
-      return '本期已存在（AI 正常運作中）';
+      const existingDrawNo =
+        result?.existing?.source_draw_no ||
+        result?.train?.existing?.source_draw_no ||
+        '--';
+
+      return `本期已存在（正常略過），目前訓練來源期數 ${existingDrawNo}`;
     }
 
     const compared = toNum(
@@ -471,7 +541,7 @@ export default function App() {
       null;
 
     if (compared > 0 || created > 0) {
-      return `本輪完成：比對 ${compared} 筆 / 新建 ${created} 筆，目前訓練來源期數 ${fmtText(activeCreated?.source_draw_no, '--')}`;
+      return `本輪完成（本輪結果）：比對 ${compared} 筆 / 新建 ${created} 筆 / 目前訓練來源期數 ${fmtText(activeCreated?.source_draw_no, '--')}`;
     }
 
     if (activeCreated?.source_draw_no) {
@@ -669,44 +739,7 @@ export default function App() {
   const trainingGroups = getPredictionGroups(trainingLatest);
   const formalGroups = getPredictionGroups(formalLatest);
 
-  const lastCycleSummary = useMemo(() => {
-    if (!lastAutoTrainResult) {
-      if (isNightStopWindow()) return '夜間停訓中';
-      return '--';
-    }
-
-    if (lastAutoTrainResult?.skipped || lastAutoTrainResult?.train?.skipped) {
-      return '本期已存在，略過建立';
-    }
-
-    const compared = toNum(
-      lastAutoTrainResult?.compared_count ??
-      lastAutoTrainResult?.compare?.data?.processed ??
-      lastAutoTrainResult?.compare?.processed,
-      0
-    );
-
-    const created = toNum(
-      lastAutoTrainResult?.created_count ??
-      (lastAutoTrainResult?.train?.inserted ? 1 : 0),
-      0
-    );
-
-    const activeCreated =
-      lastAutoTrainResult?.active_created_prediction ||
-      lastAutoTrainResult?.train?.existing ||
-      lastAutoTrainResult?.train?.inserted;
-
-    if (compared > 0 || created > 0) {
-      return `比對 ${compared} / 新建 ${created}`;
-    }
-
-    if (activeCreated?.source_draw_no) {
-      return `目前掛單訓練來源 ${activeCreated.source_draw_no}`;
-    }
-
-    return '本輪無異動';
-  }, [lastAutoTrainResult]);
+  const lastCycleSummary = useMemo(() => buildLastCycleSummary(lastAutoTrainResult), [lastAutoTrainResult]);
 
   return (
     <div style={styles.page}>
@@ -791,6 +824,12 @@ export default function App() {
                 <div style={{ ...styles.resultText, marginTop: 8, color: '#8a7d66' }}>
                   最近一輪摘要：{lastCycleSummary}
                 </div>
+
+                <div style={styles.pipelineRow}>
+                  <span style={styles.pipelineBadge}>同步：{pipelineStatusText(lastAutoTrainResult, 'sync')}</span>
+                  <span style={styles.pipelineBadge}>補抓：{pipelineStatusText(lastAutoTrainResult, 'catchup')}</span>
+                  <span style={styles.pipelineBadge}>比對：{pipelineStatusText(lastAutoTrainResult, 'compare')}</span>
+                </div>
               </div>
 
               <div style={styles.resultPanel}>
@@ -824,15 +863,15 @@ export default function App() {
 
                 <div style={styles.evolutionMiniGrid}>
                   <div style={styles.evolutionMiniBox}>
-                    <div style={styles.evolutionMiniLabel}>最近1小時 Compare</div>
+                    <div style={styles.evolutionMiniLabel}>本小時 Compare 累計</div>
                     <div style={styles.evolutionMiniValue}>{aiEvolution.comparedLastHour}</div>
                   </div>
                   <div style={styles.evolutionMiniBox}>
-                    <div style={styles.evolutionMiniLabel}>最近1小時 Create</div>
+                    <div style={styles.evolutionMiniLabel}>本小時 Create 累計</div>
                     <div style={styles.evolutionMiniValue}>{aiEvolution.createdLastHour}</div>
                   </div>
                   <div style={styles.evolutionMiniBox}>
-                    <div style={styles.evolutionMiniLabel}>最近1小時 淘汰</div>
+                    <div style={styles.evolutionMiniLabel}>本小時淘汰累計</div>
                     <div style={styles.evolutionMiniValue}>{aiEvolution.retiredLastHour}</div>
                   </div>
                 </div>
@@ -1403,6 +1442,23 @@ const styles = {
   resultText: {
     color: '#63594b',
     lineHeight: 1.6
+  },
+  pipelineRow: {
+    display: 'flex',
+    gap: 8,
+    flexWrap: 'wrap',
+    marginTop: 12
+  },
+  pipelineBadge: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    padding: '6px 10px',
+    borderRadius: 999,
+    background: '#f4ecd3',
+    border: '1px solid #ddd0aa',
+    fontSize: 12,
+    color: '#5c5344',
+    fontWeight: 800
   },
   evolutionHeadline: {
     fontSize: 30,
