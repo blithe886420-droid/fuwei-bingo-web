@@ -26,7 +26,23 @@ const STRATEGY_STATS_TABLE = 'strategy_stats';
 const FORMAL_MODE = 'formal';
 const FORMAL_TARGET_PERIODS = 4;
 const GROUP_COUNT = 4;
-const RECENT_DRAW_LIMIT = 60;
+const RECENT_DRAW_LIMIT = 80;
+
+const PROFIT_MODE_NAME = 'profit_mode_v1';
+
+const HARD_RULES = {
+  scoreMin: 0,
+  avgHitMin: 1.2,
+  roiMin: -0.5,
+  totalRoundsMin: 5
+};
+
+const SOFT_RULES = {
+  scoreMin: -150,
+  avgHitMin: 1.0,
+  roiMin: -0.8,
+  totalRoundsMin: 3
+};
 
 function toNum(value, fallback = 0) {
   const n = Number(value);
@@ -34,9 +50,9 @@ function toNum(value, fallback = 0) {
 }
 
 function uniqueAsc(nums = []) {
-  return [...new Set((Array.isArray(nums) ? nums : []).map(Number).filter(Number.isFinite))].sort(
-    (a, b) => a - b
-  );
+  return [...new Set((Array.isArray(nums) ? nums : []).map(Number).filter(Number.isFinite))]
+    .filter((n) => n >= 1 && n <= 80)
+    .sort((a, b) => a - b);
 }
 
 function uniqueKeepOrder(nums = []) {
@@ -45,6 +61,7 @@ function uniqueKeepOrder(nums = []) {
 
   for (const n of (Array.isArray(nums) ? nums : []).map(Number).filter(Number.isFinite)) {
     if (seen.has(n)) continue;
+    if (n < 1 || n > 80) continue;
     seen.add(n);
     result.push(n);
   }
@@ -71,7 +88,21 @@ function rotateList(source = [], offset = 0) {
 function parseDrawNumbers(value) {
   if (Array.isArray(value)) return value.map(Number).filter(Number.isFinite);
   if (typeof value === 'string') {
-    return value.split(/[,\s]+/).map(Number).filter(Number.isFinite);
+    return value
+      .replace(/[{}[\]]/g, ' ')
+      .split(/[,\s|/]+/)
+      .map(Number)
+      .filter(Number.isFinite);
+  }
+  if (value && typeof value === 'object') {
+    return parseDrawNumbers(
+      value.numbers ||
+      value.draw_numbers ||
+      value.result_numbers ||
+      value.open_numbers ||
+      value.nums ||
+      []
+    );
   }
   return [];
 }
@@ -83,45 +114,16 @@ function getZone(n) {
   return 4;
 }
 
-function normalizeGroup(group, idx = 0) {
-  if (!group || typeof group !== 'object') return null;
-
-  const numsSource = Array.isArray(group.nums)
-    ? group.nums
-    : Array.isArray(group.numbers)
-      ? group.numbers
-      : [];
-
-  const nums = uniqueAsc(numsSource).slice(0, 4);
-  if (nums.length !== 4) return null;
-
-  const meta = group.meta && typeof group.meta === 'object' ? group.meta : {};
-
-  return {
-    key: String(group.key || meta.strategy_key || `group_${idx + 1}`),
-    label: String(group.label || meta.strategy_name || `第${idx + 1}組`),
-    nums,
-    reason: String(group.reason || meta.strategy_name || '正式下注策略'),
-    meta: {
-      ...meta,
-      strategy_key: String(meta.strategy_key || group.key || `group_${idx + 1}`),
-      strategy_name: String(meta.strategy_name || group.label || `第${idx + 1}組`)
-    }
-  };
-}
-
-function normalizeGroups(rawGroups = []) {
-  return (Array.isArray(rawGroups) ? rawGroups : [])
-    .map((group, idx) => normalizeGroup(group, idx))
-    .filter(Boolean)
-    .slice(0, GROUP_COUNT);
-}
-
 function buildRecentAnalysis(rows = []) {
   const parsedRows = (Array.isArray(rows) ? rows : []).map((row) => ({
     draw_no: Number(row?.draw_no || 0),
     draw_time: row?.draw_time || null,
-    numbers: parseDrawNumbers(row?.numbers)
+    numbers: parseDrawNumbers(
+      row?.numbers ??
+      row?.draw_numbers ??
+      row?.result_numbers ??
+      row?.open_numbers
+    )
   }));
 
   const allNums = parsedRows.flatMap((row) => row.numbers);
@@ -130,15 +132,23 @@ function buildRecentAnalysis(rows = []) {
 
   const freq = new Map();
   const zoneFreq = new Map();
+  const tailFreq = new Map();
+  const lastSeenIndex = new Map();
 
   for (let n = 1; n <= 80; n += 1) {
     freq.set(n, 0);
   }
 
-  for (const n of allNums) {
-    freq.set(n, (freq.get(n) || 0) + 1);
-    zoneFreq.set(getZone(n), (zoneFreq.get(getZone(n)) || 0) + 1);
-  }
+  parsedRows.forEach((row, idx) => {
+    for (const n of row.numbers) {
+      freq.set(n, (freq.get(n) || 0) + 1);
+      zoneFreq.set(getZone(n), (zoneFreq.get(getZone(n)) || 0) + 1);
+      tailFreq.set(n % 10, (tailFreq.get(n % 10) || 0) + 1);
+      if (!lastSeenIndex.has(n)) {
+        lastSeenIndex.set(n, idx);
+      }
+    }
+  });
 
   const hottest = [...freq.entries()]
     .sort((a, b) => b[1] - a[1] || a[0] - b[0])
@@ -152,12 +162,24 @@ function buildRecentAnalysis(rows = []) {
     .sort((a, b) => b[1] - a[1] || a[0] - b[0])
     .map(([zone]) => zone);
 
+  const hotTails = [...tailFreq.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0] - b[0])
+    .map(([tail]) => tail);
+
+  const gapNums = Array.from({ length: 80 }, (_, i) => i + 1).sort((a, b) => {
+    const ga = lastSeenIndex.has(a) ? lastSeenIndex.get(a) : 999;
+    const gb = lastSeenIndex.has(b) ? lastSeenIndex.get(b) : 999;
+    return gb - ga || a - b;
+  });
+
   return {
     hottest,
     coldest,
     latestDraw,
     prevDraw,
-    hotZones
+    hotZones,
+    hotTails,
+    gapNums
   };
 }
 
@@ -168,8 +190,10 @@ function inferGeneA(strategyKey = '') {
   if (key.includes('zone')) return 'zone';
   if (key.includes('guard')) return 'guard';
   if (key.includes('chase')) return 'chase';
-  if (key.includes('mix')) return 'hot';
-  if (key.includes('tail')) return 'cold';
+  if (key.includes('mix')) return 'mix';
+  if (key.includes('tail')) return 'tail';
+  if (key.includes('pattern')) return 'pattern';
+  if (key.includes('gap')) return 'gap';
   return 'hot';
 }
 
@@ -181,94 +205,253 @@ function inferGeneB(strategyKey = '') {
   if (key.includes('cold')) return 'cold';
   if (key.includes('mix')) return 'balanced';
   if (key.includes('tail')) return 'balanced';
+  if (key.includes('repeat')) return 'repeat';
+  if (key.includes('pattern')) return 'mix';
+  if (key.includes('gap')) return 'gap';
   return 'balanced';
+}
+
+function numbersByZone(zone, pool = []) {
+  return pool.filter((n) => getZone(n) === zone);
+}
+
+function numbersByTail(tail, pool = []) {
+  return pool.filter((n) => n % 10 === tail);
 }
 
 function geneCandidates(gene, analysis, context = {}) {
   const geneName = String(gene || '').toLowerCase();
-  const hash = stableHash(`${context.strategyKey || ''}_${context.idx || 0}_${geneName}`);
+  const hash = stableHash(`${context.strategyKey || ''}_${context.idx || 0}_${geneName}_${context.sourceDrawNo || 0}`);
+  const hottest = analysis.hottest || [];
+  const coldest = analysis.coldest || [];
+  const latestDraw = analysis.latestDraw || [];
+  const prevDraw = analysis.prevDraw || [];
+  const gapNums = analysis.gapNums || [];
+  const hotZones = analysis.hotZones || [];
+  const hotTails = analysis.hotTails || [];
+  const allNums = Array.from({ length: 80 }, (_, i) => i + 1);
 
   switch (geneName) {
     case 'hot':
-      return rotateList(analysis.hottest || [], hash % 9).slice(0, 24);
+      return rotateList(hottest, hash % 9).slice(0, 20);
 
     case 'cold':
-      return rotateList(analysis.coldest || [], hash % 9).slice(0, 20);
+      return rotateList(coldest, hash % 9).slice(0, 20);
 
     case 'zone': {
-      const hotZone = analysis.hotZones?.[0] || 1;
+      const zoneA = hotZones[0] || 1;
+      const zoneB = hotZones[1] || 2;
       return uniqueKeepOrder([
-        ...rotateList((analysis.hottest || []).filter((n) => getZone(n) === hotZone), hash % 7).slice(0, 12),
-        ...rotateList(analysis.hottest || [], hash % 5).slice(0, 10)
+        ...rotateList(numbersByZone(zoneA, hottest), hash % 5).slice(0, 8),
+        ...rotateList(numbersByZone(zoneB, hottest), hash % 7).slice(0, 8),
+        ...rotateList(hottest, hash % 5).slice(0, 8)
+      ]);
+    }
+
+    case 'tail': {
+      const tailA = hotTails[0] ?? 0;
+      const tailB = hotTails[1] ?? 5;
+      return uniqueKeepOrder([
+        ...rotateList(numbersByTail(tailA, allNums), hash % 4).slice(0, 8),
+        ...rotateList(numbersByTail(tailB, allNums), hash % 5).slice(0, 8),
+        ...rotateList(hottest, hash % 5).slice(0, 6)
       ]);
     }
 
     case 'guard':
       return uniqueKeepOrder([
-        ...rotateList(
-          (analysis.hottest || []).filter((n) => !(analysis.latestDraw || []).includes(n)),
-          hash % 7
-        ).slice(0, 16),
-        ...rotateList(analysis.coldest || [], hash % 5).slice(0, 8)
+        ...rotateList(hottest.filter((n) => !latestDraw.includes(n)), hash % 7).slice(0, 12),
+        ...rotateList(coldest, hash % 5).slice(0, 8)
+      ]);
+
+    case 'chase':
+      return uniqueKeepOrder([
+        ...rotateList(gapNums, hash % 7).slice(0, 10),
+        ...rotateList(hottest, hash % 5).slice(0, 8)
+      ]);
+
+    case 'repeat':
+      return uniqueKeepOrder([
+        ...rotateList(latestDraw, hash % 3).slice(0, 2),
+        ...rotateList(prevDraw, hash % 4).slice(0, 2),
+        ...rotateList(hottest, hash % 5).slice(0, 8)
+      ]);
+
+    case 'pattern':
+      return uniqueKeepOrder([
+        ...rotateList(hottest, hash % 5).slice(0, 6),
+        ...rotateList(gapNums, hash % 7).slice(0, 6),
+        ...rotateList(prevDraw, hash % 4).slice(0, 4)
+      ]);
+
+    case 'gap':
+      return uniqueKeepOrder([
+        ...rotateList(gapNums, hash % 7).slice(0, 12),
+        ...rotateList(coldest, hash % 5).slice(0, 8)
       ]);
 
     case 'balanced':
+    case 'mix':
     default:
       return uniqueKeepOrder([
-        ...rotateList(analysis.latestDraw || [], hash % 3).slice(0, 1),
-        ...rotateList(analysis.hottest || [], hash % 5).slice(0, 8),
-        ...rotateList(analysis.coldest || [], hash % 7).slice(0, 8),
-        ...rotateList(analysis.prevDraw || [], hash % 4).slice(0, 4)
+        ...rotateList(latestDraw, hash % 3).slice(0, 1),
+        ...rotateList(hottest, hash % 5).slice(0, 8),
+        ...rotateList(coldest, hash % 7).slice(0, 8),
+        ...rotateList(prevDraw, hash % 4).slice(0, 4)
       ]);
   }
 }
 
+function finalizeNums(candidates = [], strategyKey = '', analysis = {}, idx = 0, sourceDrawNo = 0) {
+  const hash = stableHash(`${strategyKey}_${idx}_${sourceDrawNo}`);
+  const rotated = rotateList(uniqueKeepOrder(candidates), hash % Math.max(candidates.length || 1, 1));
+  let nums = uniqueAsc(rotated.slice(0, 4));
+
+  if (nums.length === 4) return nums;
+
+  const fallback = uniqueKeepOrder([
+    ...(analysis.hottest || []).slice(0, 16),
+    ...(analysis.gapNums || []).slice(0, 16),
+    ...(analysis.coldest || []).slice(0, 16),
+    ...(analysis.latestDraw || []).slice(0, 8)
+  ]);
+
+  nums = uniqueAsc([...nums, ...fallback].slice(0, 12)).slice(0, 4);
+
+  if (nums.length === 4) return nums;
+
+  return uniqueAsc([...nums, 1, 20, 40, 60, 80]).slice(0, 4);
+}
+
+function normalizeStrategyRow(row = {}) {
+  return {
+    strategy_key: String(row?.strategy_key || '').trim(),
+    strategy_name: String(row?.strategy_name || row?.strategy_key || '').trim(),
+    score: toNum(row?.score, 0),
+    avg_hit: toNum(row?.avg_hit, 0),
+    roi: toNum(row?.roi, 0),
+    total_rounds: toNum(row?.total_rounds, 0),
+    hit_rate: toNum(row?.hit_rate, 0),
+    recent_50_hit_rate: toNum(row?.recent_50_hit_rate, 0),
+    recent_50_roi: toNum(row?.recent_50_roi, 0)
+  };
+}
+
+function isHardQualified(row) {
+  return (
+    row.score > HARD_RULES.scoreMin &&
+    row.avg_hit >= HARD_RULES.avgHitMin &&
+    row.roi > HARD_RULES.roiMin &&
+    row.total_rounds >= HARD_RULES.totalRoundsMin
+  );
+}
+
+function isSoftQualified(row) {
+  return (
+    row.score > SOFT_RULES.scoreMin &&
+    row.avg_hit >= SOFT_RULES.avgHitMin &&
+    row.roi > SOFT_RULES.roiMin &&
+    row.total_rounds >= SOFT_RULES.totalRoundsMin
+  );
+}
+
+function rankStrategyRows(rows = []) {
+  return [...rows].sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    if (b.avg_hit !== a.avg_hit) return b.avg_hit - a.avg_hit;
+    if (b.roi !== a.roi) return b.roi - a.roi;
+    if (b.total_rounds !== a.total_rounds) return b.total_rounds - a.total_rounds;
+    return a.strategy_key.localeCompare(b.strategy_key);
+  });
+}
+
+function buildFormalCandidates(statsRows = []) {
+  const normalized = rankStrategyRows((statsRows || []).map(normalizeStrategyRow).filter((row) => row.strategy_key));
+
+  const hardQualified = normalized.filter(isHardQualified);
+  const softQualified = normalized.filter(isSoftQualified);
+
+  const selected = [];
+  const used = new Set();
+
+  for (const row of hardQualified) {
+    if (selected.length >= 3) break;
+    if (used.has(row.strategy_key)) continue;
+    used.add(row.strategy_key);
+    selected.push({
+      ...row,
+      filter_pass: 'hard'
+    });
+  }
+
+  for (const row of softQualified) {
+    if (selected.length >= GROUP_COUNT) break;
+    if (used.has(row.strategy_key)) continue;
+    used.add(row.strategy_key);
+    selected.push({
+      ...row,
+      filter_pass: 'soft'
+    });
+  }
+
+  for (const row of normalized) {
+    if (selected.length >= GROUP_COUNT) break;
+    if (used.has(row.strategy_key)) continue;
+    used.add(row.strategy_key);
+    selected.push({
+      ...row,
+      filter_pass: 'fallback'
+    });
+  }
+
+  return selected.slice(0, GROUP_COUNT);
+}
+
 function buildGroupsFromStats(statsRows = [], recentRows = [], sourceDrawNo) {
   const analysis = buildRecentAnalysis(recentRows);
+  const selectedStats = buildFormalCandidates(statsRows);
 
-  const rawGroups = (Array.isArray(statsRows) ? statsRows : [])
-    .slice(0, GROUP_COUNT)
-    .map((row, idx) => {
-      const strategyKey = String(row?.strategy_key || `formal_${idx + 1}`);
-      const strategyName = String(row?.strategy_key || `Formal ${idx + 1}`);
-      const geneA = inferGeneA(strategyKey);
-      const geneB = inferGeneB(strategyKey);
+  const groups = selectedStats.map((row, idx) => {
+    const strategyKey = row.strategy_key;
+    const strategyName = row.strategy_name || row.strategy_key;
+    const geneA = inferGeneA(strategyKey);
+    const geneB = inferGeneB(strategyKey);
 
-      const candidates = uniqueKeepOrder([
-        ...geneCandidates(geneA, analysis, { strategyKey, idx, sourceDrawNo }),
-        ...geneCandidates(geneB, analysis, { strategyKey, idx, sourceDrawNo }),
-        ...(analysis.hottest || []),
-        ...(analysis.coldest || [])
-      ]);
+    const candidates = uniqueKeepOrder([
+      ...geneCandidates(geneA, analysis, { strategyKey, idx, sourceDrawNo }),
+      ...geneCandidates(geneB, analysis, { strategyKey, idx, sourceDrawNo }),
+      ...(analysis.hottest || []),
+      ...(analysis.gapNums || []),
+      ...(analysis.coldest || [])
+    ]);
 
-      const rotateSeed = stableHash(`${strategyKey}_${sourceDrawNo}_${idx}`);
-      const nums = uniqueAsc(
-        rotateList(candidates, rotateSeed % Math.max(candidates.length || 1, 1)).slice(0, 4)
-      );
+    const nums = finalizeNums(candidates, strategyKey, analysis, idx, sourceDrawNo);
 
-      return {
-        key: strategyKey,
-        label: strategyName,
-        nums,
-        reason: '正式下注依 strategy_stats 排名建立',
-        meta: {
-          strategy_key: strategyKey,
-          strategy_name: strategyName,
-          roi: toNum(row?.roi, 0),
-          avg_hit: toNum(row?.avg_hit, 0),
-          total_rounds: toNum(row?.total_rounds, 0)
-        }
-      };
-    });
+    return {
+      key: strategyKey,
+      label: strategyName,
+      nums,
+      reason: '正式下注依 profit mode v1 建立',
+      meta: {
+        strategy_key: strategyKey,
+        strategy_name: strategyName,
+        roi: row.roi,
+        avg_hit: row.avg_hit,
+        total_rounds: row.total_rounds,
+        score: row.score,
+        profit_mode: PROFIT_MODE_NAME,
+        filter_pass: row.filter_pass
+      }
+    };
+  });
 
-  const validGroups = rawGroups.filter((group) => Array.isArray(group.nums) && group.nums.length === 4);
-
-  if (validGroups.length === GROUP_COUNT) {
-    return validGroups;
+  if (groups.length === GROUP_COUNT && groups.every((g) => Array.isArray(g.nums) && g.nums.length === 4)) {
+    return groups;
   }
 
   const pool = uniqueKeepOrder([
     ...(analysis.hottest || []).slice(0, 16),
+    ...(analysis.gapNums || []).slice(0, 16),
     ...(analysis.coldest || []).slice(0, 16),
     ...(analysis.latestDraw || []).slice(0, 8)
   ]);
@@ -282,7 +465,9 @@ function buildGroupsFromStats(statsRows = [], recentRows = [], sourceDrawNo) {
     reason: '正式下注 fallback',
     meta: {
       strategy_key: `formal_fallback_${idx + 1}`,
-      strategy_name: `Formal Fallback ${idx + 1}`
+      strategy_name: `Formal Fallback ${idx + 1}`,
+      profit_mode: PROFIT_MODE_NAME,
+      filter_pass: 'fallback'
     }
   }));
 }
@@ -300,120 +485,86 @@ async function getLatestDraw() {
   return data;
 }
 
-async function getRecentDraws(limitCount = RECENT_DRAW_LIMIT) {
+async function getRecentDraws(limit = RECENT_DRAW_LIMIT) {
   const { data, error } = await supabase
     .from(DRAWS_TABLE)
     .select('draw_no, draw_time, numbers')
     .order('draw_no', { ascending: false })
-    .limit(limitCount);
+    .limit(limit);
 
   if (error) throw error;
   return Array.isArray(data) ? data : [];
 }
 
-async function getTopStrategies(limit = GROUP_COUNT) {
+async function getTopStrategyStats(limit = 50) {
   const { data, error } = await supabase
     .from(STRATEGY_STATS_TABLE)
-    .select('strategy_key, total_rounds, roi, avg_hit, score, updated_at')
-    .order('score', { ascending: false })
-    .order('roi', { ascending: false })
-    .order('avg_hit', { ascending: false })
-    .order('total_rounds', { ascending: false })
-    .limit(limit * 3);
+    .select('*')
+    .order('updated_at', { ascending: false })
+    .limit(limit);
 
   if (error) throw error;
 
-  return (Array.isArray(data) ? data : [])
-    .filter((row) => String(row?.strategy_key || '').trim() !== '')
-    .slice(0, limit);
+  const normalized = (Array.isArray(data) ? data : [])
+    .map(normalizeStrategyRow)
+    .filter((row) => row.strategy_key);
+
+  return rankStrategyRows(normalized);
 }
 
-async function getExistingFormalPrediction(drawNo) {
-  const { data, error } = await supabase
+async function saveFormalPrediction(payload) {
+  const sourceDrawNo = String(payload.source_draw_no);
+
+  const { data: existing, error: existingError } = await supabase
     .from(PREDICTIONS_TABLE)
     .select('*')
     .eq('mode', FORMAL_MODE)
-    .eq('source_draw_no', String(drawNo))
-    .order('created_at', { ascending: false })
+    .eq('source_draw_no', sourceDrawNo)
     .limit(1)
     .maybeSingle();
 
-  if (error) throw error;
-  return data || null;
-}
-
-async function markOlderFormalRowsReplaced(keepId) {
-  const { data, error } = await supabase
-    .from(PREDICTIONS_TABLE)
-    .select('id')
-    .eq('mode', FORMAL_MODE)
-    .neq('id', keepId);
-
-  if (error) throw error;
-
-  const ids = (data || []).map((row) => row.id).filter(Boolean);
-  if (!ids.length) return;
-
-  const { error: updateError } = await supabase
-    .from(PREDICTIONS_TABLE)
-    .update({ status: 'replaced' })
-    .in('id', ids);
-
-  if (updateError) throw updateError;
-}
-
-function generatePredictionId() {
-  return Date.now() + Math.floor(Math.random() * 1000);
-}
-
-async function saveFormalPrediction(drawNo, groups) {
-  const nowIso = new Date().toISOString();
-  const existing = await getExistingFormalPrediction(drawNo);
+  if (existingError) throw existingError;
 
   if (existing?.id) {
-    const { data, error } = await supabase
+    const { data: updated, error: updateError } = await supabase
       .from(PREDICTIONS_TABLE)
       .update({
-        mode: FORMAL_MODE,
+        groups_json: payload.groups_json,
+        target_periods: payload.target_periods,
         status: 'created',
-        source_draw_no: String(drawNo),
-        target_periods: FORMAL_TARGET_PERIODS,
-        groups_json: groups,
-        compare_result: null,
         compare_status: null,
-        verdict: null,
         hit_count: null,
         compared_at: null,
-        created_at: nowIso
+        created_at: payload.created_at
       })
       .eq('id', existing.id)
       .select('*')
-      .single();
+      .maybeSingle();
 
-    if (error) throw error;
-    return data;
+    if (updateError) throw updateError;
+
+    return {
+      action: 'updated',
+      row: updated || existing
+    };
   }
 
-  const { data, error } = await supabase
+  const { data: inserted, error: insertError } = await supabase
     .from(PREDICTIONS_TABLE)
-    .insert({
-      id: generatePredictionId(),
-      mode: FORMAL_MODE,
-      status: 'created',
-      source_draw_no: String(drawNo),
-      target_periods: FORMAL_TARGET_PERIODS,
-      groups_json: groups,
-      created_at: nowIso
-    })
+    .insert(payload)
     .select('*')
-    .single();
+    .maybeSingle();
 
-  if (error) throw error;
-  return data;
+  if (insertError) throw insertError;
+
+  return {
+    action: 'inserted',
+    row: inserted || null
+  };
 }
 
 export default async function handler(req, res) {
-  if (req.method !== 'POST') {
+  if (!['GET', 'POST'].includes(req.method)) {
     return res.status(405).json({
       ok: false,
       error: 'Method not allowed'
@@ -421,30 +572,56 @@ export default async function handler(req, res) {
   }
 
   try {
-    const latestDraw = await getLatestDraw();
-    const recentDraws = await getRecentDraws(RECENT_DRAW_LIMIT);
-    const topStrategies = await getTopStrategies(GROUP_COUNT);
-    const groups = normalizeGroups(buildGroupsFromStats(topStrategies, recentDraws, latestDraw.draw_no));
+    const body = req.method === 'POST' && req.body && typeof req.body === 'object' ? req.body : {};
+    const mode = String(body?.mode || FORMAL_MODE).toLowerCase();
 
-    if (groups.length !== GROUP_COUNT) {
-      return res.status(500).json({
+    if (mode !== FORMAL_MODE) {
+      return res.status(400).json({
         ok: false,
-        error: 'failed to build formal groups'
+        error: 'Only formal mode is supported in prediction-save'
       });
     }
 
-    const saved = await saveFormalPrediction(latestDraw.draw_no, groups);
-    await markOlderFormalRowsReplaced(saved.id);
+    const [latestDraw, recentRows, strategyStats] = await Promise.all([
+      getLatestDraw(),
+      getRecentDraws(RECENT_DRAW_LIMIT),
+      getTopStrategyStats(50)
+    ]);
+
+    const sourceDrawNo = Number(latestDraw.draw_no || 0);
+    if (!sourceDrawNo) {
+      throw new Error('source draw not found');
+    }
+
+    const groups = buildGroupsFromStats(strategyStats, recentRows, sourceDrawNo);
+
+    const payload = {
+      id: Date.now(),
+      mode: FORMAL_MODE,
+      status: 'created',
+      source_draw_no: String(sourceDrawNo),
+      target_periods: FORMAL_TARGET_PERIODS,
+      groups_json: groups,
+      created_at: new Date().toISOString()
+    };
+
+    const saved = await saveFormalPrediction(payload);
 
     return res.status(200).json({
       ok: true,
-      row: saved,
-      groups
+      mode: FORMAL_MODE,
+      profit_mode: PROFIT_MODE_NAME,
+      source_draw_no: sourceDrawNo,
+      target_periods: FORMAL_TARGET_PERIODS,
+      latest_draw: latestDraw,
+      selected_strategy_keys: groups.map((g) => g.meta?.strategy_key || g.key),
+      groups,
+      saved
     });
   } catch (error) {
     return res.status(500).json({
       ok: false,
-      error: error?.message || 'prediction save failed'
+      error: error?.message || 'prediction-save failed'
     });
   }
 }
