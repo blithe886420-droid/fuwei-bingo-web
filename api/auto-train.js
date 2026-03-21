@@ -1,6 +1,10 @@
 import { createClient } from '@supabase/supabase-js';
-import { buildComparePayload } from '../lib/buildComparePayload.js';
+import {
+  buildComparePayload,
+  parseDrawNumbers
+} from '../lib/buildComparePayload.js';
 import { recordStrategyCompareResult } from '../lib/strategyStatsRecorder.js';
+import { ensureStrategyPoolStrategies } from '../lib/ensureStrategyPoolStrategies.js';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -9,6 +13,30 @@ const SUPABASE_URL =
 const SUPABASE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
   process.env.SUPABASE_ANON_KEY;
+
+const DEFAULT_TARGET_PERIODS = 2;
+const COMPARE_BATCH_LIMIT = 50;
+const MARKET_ANALYSIS_DRAW_LIMIT = 80;
+const COST_PER_GROUP_PER_PERIOD = 25;
+
+const DEFAULT_STRATEGY_KEYS = [
+  'hot_balanced',
+  'cold_balanced',
+  'warm_gap',
+  'balanced_zone',
+  'mix_zone',
+  'tail_repeat',
+  'zone_gap',
+  'chase_balanced',
+  'jump_mix',
+  'cluster_hot',
+  'split_balance',
+  'pattern_mix',
+  'guard_balanced',
+  'hot_zone',
+  'cold_gap',
+  'repeat_tail'
+];
 
 let supabase = null;
 
@@ -26,17 +54,78 @@ function getSupabase() {
   return supabase;
 }
 
-/* ------------------------ 工具 ------------------------ */
+function toNum(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
 
-function genNums(seed) {
-  const base = (seed * 131) % 80;
+function clamp(n, min, max) {
+  return Math.max(min, Math.min(max, n));
+}
 
-  return [
-    (base % 80) + 1,
-    ((base + 9) % 80) + 1,
-    ((base + 21) % 80) + 1,
-    ((base + 37) % 80) + 1
-  ];
+function uniqueNums(arr = []) {
+  return [...new Set((Array.isArray(arr) ? arr : []).map(Number).filter(Number.isFinite))];
+}
+
+function zoneOf(n) {
+  if (n >= 1 && n <= 20) return 1;
+  if (n >= 21 && n <= 40) return 2;
+  if (n >= 41 && n <= 60) return 3;
+  return 4;
+}
+
+function getTail(n) {
+  return n % 10;
+}
+
+function hashString(input = '') {
+  let h = 2166136261;
+  const str = String(input);
+
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+
+  return h >>> 0;
+}
+
+function createRng(seedInput = '') {
+  let seed = hashString(seedInput) || 123456789;
+
+  return function rng() {
+    seed += 0x6d2b79f5;
+    let t = seed;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function shuffle(arr = [], rng = Math.random) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function normalizeStrategyKey(raw = '') {
+  return String(raw || '').trim().toLowerCase();
+}
+
+function safeJsonArray(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
 }
 
 function isDuplicateDrawModeError(error) {
@@ -52,188 +141,125 @@ function isDuplicateDrawModeError(error) {
   );
 }
 
-/* ------------------------ 核心流程 ------------------------ */
-
-async function runSync(db) {
-  return { ok: true };
+function buildStrategyName(strategyKey = '') {
+  return String(strategyKey || '')
+    .split('_')
+    .filter(Boolean)
+    .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+    .join(' ');
 }
 
-async function runCatchup(db) {
-  return { ok: true };
-}
-
-async function runCompare(db) {
-  const { data: predictions, error: predError } = await db
-    .from('bingo_predictions')
-    .select('*')
-    .eq('status', 'created')
-    .order('created_at', { ascending: true }) // 🔥 先清舊資料
-    .limit(50); // 🔥 提高吞吐量
-
-  if (predError) throw predError;
-
-  if (!predictions || predictions.length === 0) {
-    return { ok: true, processed: 0 };
-  }
-
-  const { data: draws, error: drawError } = await db
+async function fetchRecentDrawRows(db, limit = MARKET_ANALYSIS_DRAW_LIMIT) {
+  const { data, error } = await db
     .from('bingo_draws')
-    .select('*')
+    .select('draw_no, created_at, draw_time, numbers, draw_numbers, result_numbers, open_numbers')
     .order('draw_no', { ascending: false })
-    .limit(50);
+    .limit(limit);
 
-  if (drawError) throw drawError;
+  if (error) throw error;
+  return Array.isArray(data) ? data : [];
+}
 
-  let processed = 0;
+function analyzeMarket(drawRows = []) {
+  const rows = Array.isArray(drawRows) ? drawRows : [];
+  const freq10 = new Map();
+  const freq30 = new Map();
+  const freq60 = new Map();
+  const lastSeenGap = new Map();
+  const tailFreq = new Map();
+  const zoneFreq = new Map();
 
-  for (const p of predictions) {
-    const payload = buildComparePayload({
-      prediction: p,
-      draws
-    });
-
-    if (!payload) continue;
-
-    const { hitCount, compareResult } = payload;
-
-    await db
-      .from('bingo_predictions')
-      .update({
-        status: 'compared',
-        compare_status: 'done',
-        hit_count: hitCount,
-        compared_at: new Date().toISOString()
-      })
-      .eq('id', p.id);
-
-    await recordStrategyCompareResult({
-      prediction: p,
-      result: compareResult
-    });
-
-    processed++;
+  for (let n = 1; n <= 80; n++) {
+    freq10.set(n, 0);
+    freq30.set(n, 0);
+    freq60.set(n, 0);
+    lastSeenGap.set(n, 999);
   }
+
+  for (let t = 0; t <= 9; t++) tailFreq.set(t, 0);
+  for (let z = 1; z <= 4; z++) zoneFreq.set(z, 0);
+
+  const latestRow = rows[0] || null;
+  const latestNums = uniqueNums(
+    parseDrawNumbers(
+      latestRow?.numbers ??
+      latestRow?.draw_numbers ??
+      latestRow?.result_numbers ??
+      latestRow?.open_numbers
+    )
+  );
+
+  rows.forEach((row, rowIdx) => {
+    const nums = uniqueNums(
+      parseDrawNumbers(
+        row?.numbers ??
+        row?.draw_numbers ??
+        row?.result_numbers ??
+        row?.open_numbers
+      )
+    );
+
+    nums.forEach((n) => {
+      if (rowIdx < 10) freq10.set(n, toNum(freq10.get(n), 0) + 1);
+      if (rowIdx < 30) freq30.set(n, toNum(freq30.get(n), 0) + 1);
+      if (rowIdx < 60) freq60.set(n, toNum(freq60.get(n), 0) + 1);
+
+      if (toNum(lastSeenGap.get(n), 999) === 999) {
+        lastSeenGap.set(n, rowIdx);
+      }
+
+      tailFreq.set(getTail(n), toNum(tailFreq.get(getTail(n)), 0) + 1);
+      zoneFreq.set(zoneOf(n), toNum(zoneFreq.get(zoneOf(n)), 0) + 1);
+    });
+  });
+
+  const hotZone = [...zoneFreq.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || 1;
+  const hotTailOrder = [...tailFreq.entries()].sort((a, b) => b[1] - a[1]).map((x) => x[0]);
 
   return {
-    ok: true,
-    processed
+    rows,
+    latestRow,
+    latestNums,
+    freq10,
+    freq30,
+    freq60,
+    lastSeenGap,
+    tailFreq,
+    zoneFreq,
+    hotZone,
+    hotTailOrder
   };
 }
 
-/* ------------------------ 主 handler ------------------------ */
+function getCandidateScore(n, analysis, tokens = []) {
+  const f10 = toNum(analysis.freq10.get(n), 0);
+  const f30 = toNum(analysis.freq30.get(n), 0);
+  const f60 = toNum(analysis.freq60.get(n), 0);
+  const gap = toNum(analysis.lastSeenGap.get(n), 999);
+  const tailScore = toNum(analysis.tailFreq.get(getTail(n)), 0);
+  const zoneScore = toNum(analysis.zoneFreq.get(zoneOf(n)), 0);
+  const inLatest = analysis.latestNums.includes(n) ? 1 : 0;
+  const nearLatest = analysis.latestNums.some((x) => Math.abs(x - n) <= 2) ? 1 : 0;
 
-export default async function handler(req, res) {
-  try {
-    const db = getSupabase();
+  let score = 0;
 
-    // 🔥 先清庫存（最重要）
-    const compareResult = await runCompare(db);
-
-    const pipeline = {
-      compare: compareResult,
-      catchup: await runCatchup(db),
-      sync: await runSync(db)
-    };
-
-    // 最新開獎
-    const { data: latest, error: latestError } = await db
-      .from('bingo_draws')
-      .select('*')
-      .order('draw_no', { ascending: false })
-      .limit(1);
-
-    if (latestError) throw latestError;
-
-    if (!latest || latest.length === 0) {
-      return res.status(200).json({
-        ok: true,
-        pipeline,
-        train: {
-          ok: true,
-          skipped: true,
-          reason: 'No bingo_draws'
-        }
-      });
-    }
-
-    const draw = latest[0];
-    const sourceDrawNo = String(draw.draw_no);
-
-    const { data: existingPrediction } = await db
-      .from('bingo_predictions')
-      .select('*')
-      .eq('mode', 'test')
-      .eq('source_draw_no', sourceDrawNo)
-      .limit(1)
-      .maybeSingle();
-
-    if (existingPrediction) {
-      return res.status(200).json({
-        ok: true,
-        pipeline,
-        train: {
-          ok: true,
-          skipped: true,
-          reason: 'Prediction already exists',
-          existing: existingPrediction
-        }
-      });
-    }
-
-    const now = Date.now();
-
-    const groups = Array.from({ length: 4 }, (_, i) => ({
-      key: `g_${i + 1}`,
-      nums: genNums(now + i),
-      meta: {
-        strategy_key: `g_${i + 1}`
-      }
-    }));
-
-    const payload = {
-      id: now,
-      mode: 'test',
-      status: 'created',
-      source_draw_no: sourceDrawNo,
-      target_periods: 2,
-      groups_json: groups,
-      created_at: new Date().toISOString()
-    };
-
-    const { data: inserted, error: insertError } = await db
-      .from('bingo_predictions')
-      .insert(payload)
-      .select()
-      .single();
-
-    if (insertError) {
-      if (isDuplicateDrawModeError(insertError)) {
-        return res.status(200).json({
-          ok: true,
-          pipeline,
-          train: {
-            ok: true,
-            skipped: true,
-            reason: 'Duplicate prevented'
-          }
-        });
-      }
-
-      throw insertError;
-    }
-
-    return res.status(200).json({
-      ok: true,
-      pipeline,
-      train: {
-        ok: true,
-        inserted
-      }
-    });
-  } catch (e) {
-    return res.status(500).json({
-      ok: false,
-      error: e?.message || 'auto-train failed'
-    });
+  if (tokens.includes('hot')) score += f10 * 9 + f30 * 4 + f60 * 1.5;
+  if (tokens.includes('cold')) score += gap * 3.8 - f10 * 2.2 - f30 * 0.8;
+  if (tokens.includes('warm')) score += f30 * 3 - Math.abs(f10 - 2) * 2 + f60;
+  if (tokens.includes('gap')) score += gap * 4.2;
+  if (tokens.includes('repeat')) score += inLatest * 9 + nearLatest * 2;
+  if (tokens.includes('tail')) score += tailScore * 1.8;
+  if (tokens.includes('zone')) score += zoneScore * 1.5 + (zoneOf(n) === analysis.hotZone ? 2 : 0);
+  if (tokens.includes('mix')) score += f10 * 2 + f30 * 2 + gap * 1.2 + tailScore * 0.6;
+  if (tokens.includes('chase')) score += inLatest * 7 + nearLatest * 5 + f10 * 2.5;
+  if (tokens.includes('jump')) score += gap * 3.5 + (inLatest ? -10 : 0);
+  if (tokens.includes('cluster')) {
+    const latestAvg =
+      analysis.latestNums.length > 0
+        ? analysis.latestNums.reduce((a, b) => a + b, 0) / analysis.latestNums.length
+        : 40;
+    score += Math.max(0, 12 - Math.abs(n - latestAvg)) + nearLatest * 4;
   }
-}
+  if (tokens.includes('pattern')) score += (n % 3 === 0 ? 2.5 : 0) + (n % 5 === 0 ? 1.5 : 0);
+  if (tokens.includes('structure')) score += zoneOf(n) * 0.8 + (n >= 10 && n <= 69 ? 1.2 : 0);
+  if (tokens.includes('split')) score += zoneOf
