@@ -129,6 +129,80 @@ async function safeFetchJson(url, options) {
   return json;
 }
 
+async function safeFetchJsonAllowHttpError(url, options) {
+  const res = await fetch(url, options);
+  const text = await res.text();
+
+  let json = {};
+  try {
+    json = text ? JSON.parse(text) : {};
+  } catch {
+    json = { raw: text };
+  }
+
+  return {
+    httpOk: res.ok,
+    status: res.status,
+    json
+  };
+}
+
+function isDuplicateOrAlreadyExistsMessage(msg) {
+  const text = String(msg || '').toLowerCase();
+
+  return (
+    text.includes('duplicate key') ||
+    text.includes('unique_draw_mode') ||
+    text.includes('already exists') ||
+    text.includes('prediction already exists')
+  );
+}
+
+function normalizeAutoTrainResult(payload, status) {
+  const result = payload && typeof payload === 'object' ? payload : {};
+
+  const train = result?.train && typeof result.train === 'object' ? result.train : null;
+  const topError =
+    result?.error ||
+    result?.message ||
+    train?.error ||
+    '';
+
+  if (train?.skipped) {
+    return {
+      ok: true,
+      skipped: true,
+      reason: train?.reason || 'already_exists',
+      existing: train?.existing || null,
+      pipeline: result?.pipeline || null,
+      raw: result
+    };
+  }
+
+  if (isDuplicateOrAlreadyExistsMessage(topError)) {
+    return {
+      ok: true,
+      skipped: true,
+      reason: 'Prediction already exists for current draw and mode',
+      existing: train?.existing || null,
+      pipeline: result?.pipeline || null,
+      raw: result
+    };
+  }
+
+  if (result?.ok === false && !isDuplicateOrAlreadyExistsMessage(topError)) {
+    return {
+      ok: false,
+      error: topError || `auto-train ${status}`
+    };
+  }
+
+  return {
+    ...result,
+    ok: result?.ok !== false
+  };
+}
+
 function calcSimpleAiStatus(trainingPrediction, leaderboard) {
   const lb = toArray(leaderboard);
   const active = lb.length;
@@ -369,12 +443,32 @@ export default function App() {
 
   const buildLoopStatusText = useCallback((result) => {
     if (!result) {
-      return isNightStopWindow() ? '夜間停訓中（00:00～07:30 不訓練）' : '待命中';
+      if (isNightStopWindow()) return '夜間停訓中（00:00～07:30 不訓練）';
+      return '待命中';
     }
 
-    const compared = toNum(result?.compared_count, 0);
-    const created = toNum(result?.created_count, 0);
-    const activeCreated = result?.active_created_prediction;
+    if (result?.skipped || result?.train?.skipped) {
+      return '本期已存在（AI 正常運作中）';
+    }
+
+    const compared = toNum(
+      result?.compared_count ??
+      result?.compare?.data?.processed ??
+      result?.compare?.processed,
+      0
+    );
+
+    const created = toNum(
+      result?.created_count ??
+      (result?.train?.inserted ? 1 : 0),
+      0
+    );
+
+    const activeCreated =
+      result?.active_created_prediction ||
+      result?.train?.existing ||
+      result?.train?.inserted ||
+      null;
 
     if (compared > 0 || created > 0) {
       return `本輪完成：比對 ${compared} 筆 / 新建 ${created} 筆，目前訓練來源期數 ${fmtText(activeCreated?.source_draw_no, '--')}`;
@@ -422,16 +516,37 @@ export default function App() {
       });
 
       setLoopStatusText('自動訓練中...');
-      const autoTrainResult = await safeFetchJson('/api/auto-train', { method: 'POST' }).catch(async () => {
-        return await safeFetchJson('/api/auto-train', { method: 'GET' });
-      });
+
+      const autoTrainHttp = await safeFetchJsonAllowHttpError('/api/auto-train', { method: 'POST' })
+        .catch(async () => {
+          return await safeFetchJsonAllowHttpError('/api/auto-train', { method: 'GET' });
+        });
+
+      const autoTrainResult = normalizeAutoTrainResult(autoTrainHttp?.json, autoTrainHttp?.status);
+
+      if (!autoTrainResult?.ok) {
+        throw new Error(autoTrainResult?.error || 'AI 循環失敗');
+      }
 
       setLastAutoTrainResult(autoTrainResult);
       setLoopStatusText(buildLoopStatusText(autoTrainResult));
+      setError('');
       await loadAll();
     } catch (err) {
-      setLoopStatusText(`循環失敗：${err.message || '未知錯誤'}`);
-      setError(err.message || 'AI 循環失敗');
+      if (isDuplicateOrAlreadyExistsMessage(err?.message)) {
+        const normalized = {
+          ok: true,
+          skipped: true,
+          reason: 'Prediction already exists for current draw and mode'
+        };
+        setLastAutoTrainResult(normalized);
+        setLoopStatusText('本期已存在（AI 正常運作中）');
+        setError('');
+        await loadAll();
+      } else {
+        setLoopStatusText(`循環失敗：${err.message || '未知錯誤'}`);
+        setError(err.message || 'AI 循環失敗');
+      }
     } finally {
       cycleRunningRef.current = false;
     }
@@ -560,9 +675,27 @@ export default function App() {
       return '--';
     }
 
-    const compared = toNum(lastAutoTrainResult?.compared_count, 0);
-    const created = toNum(lastAutoTrainResult?.created_count, 0);
-    const activeCreated = lastAutoTrainResult?.active_created_prediction;
+    if (lastAutoTrainResult?.skipped || lastAutoTrainResult?.train?.skipped) {
+      return '本期已存在，略過建立';
+    }
+
+    const compared = toNum(
+      lastAutoTrainResult?.compared_count ??
+      lastAutoTrainResult?.compare?.data?.processed ??
+      lastAutoTrainResult?.compare?.processed,
+      0
+    );
+
+    const created = toNum(
+      lastAutoTrainResult?.created_count ??
+      (lastAutoTrainResult?.train?.inserted ? 1 : 0),
+      0
+    );
+
+    const activeCreated =
+      lastAutoTrainResult?.active_created_prediction ||
+      lastAutoTrainResult?.train?.existing ||
+      lastAutoTrainResult?.train?.inserted;
 
     if (compared > 0 || created > 0) {
       return `比對 ${compared} / 新建 ${created}`;
