@@ -49,7 +49,8 @@ function parseNums(input) {
   }
   if (typeof input === 'string') {
     return input
-      .split(/[,\s]+/)
+      .replace(/[{}[\]]/g, ' ')
+      .split(/[,\s|/]+/)
       .map((x) => Number(x.trim()))
       .filter(Number.isFinite);
   }
@@ -109,6 +110,12 @@ function groupTitle(group, idx) {
 
 function groupReason(group) {
   return group?.reason || group?.meta?.strategy_name || group?.meta?.strategy_key || '--';
+}
+
+function fmtMetaNumber(v, digits = 2) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '--';
+  return n.toFixed(digits);
 }
 
 async function safeFetchJson(url, options) {
@@ -409,6 +416,15 @@ function StatBox({ label, value, hint, valueStyle }) {
   );
 }
 
+function MetaChip({ label, value }) {
+  return (
+    <span style={styles.metaChip}>
+      <span style={styles.metaChipLabel}>{label}</span>
+      <span>{value}</span>
+    </span>
+  );
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState(TABS.DASHBOARD);
   const [loading, setLoading] = useState(true);
@@ -462,8 +478,8 @@ export default function App() {
         predictionRes?.auto_train_result?.leaderboard ||
         predictionRes?.test?.leaderboard ||
         [];
-      setLeaderboard(toArray(lb));
 
+      setLeaderboard(toArray(lb));
       setLastAutoTrainResult(predictionRes?.auto_train_result || null);
       setAiEvolution(normalizeAiEvolution(aiPlayerRes));
     } catch (err) {
@@ -986,9 +1002,16 @@ export default function App() {
                 <strong>{fmtText(formalLatest?.target_periods)}</strong>
               </div>
 
-              <div style={styles.infoBanner}>
-                本次正式下注為固定追期模式：按一次正式下注後，4 組號碼固定追 4 期，
-                中途不換號；除非你再次手動重建正式下注。
+              <div style={styles.infoBannerStrong}>
+                <div style={styles.infoBannerTitle}>正式下注＝Profit Mode v1</div>
+                <div>
+                  建立邏輯：優先採用 strategy_stats 中較強的策略。預設偏好
+                  <strong> score &gt; 0</strong>、
+                  <strong> avg_hit ≥ 1.2</strong>、
+                  <strong> roi &gt; -0.5</strong>、
+                  <strong> total_rounds ≥ 5</strong>，
+                  不足時才由次強策略補位。
+                </div>
               </div>
 
               <div style={styles.actionRow}>
@@ -1010,11 +1033,17 @@ export default function App() {
                   formalGroups.map((group, idx) => (
                     <div key={`${group?.key || idx}`} style={styles.groupCard}>
                       <div style={styles.groupHead}>
-                        <div style={styles.groupTitle}>{groupTitle(group, idx)}</div>
-                        <div style={styles.groupMeta}>
-                          {fmtText(group?.meta?.strategy_key || group?.key)}
+                        <div>
+                          <div style={styles.groupTitle}>{groupTitle(group, idx)}</div>
+                          <div style={styles.groupMeta}>
+                            {fmtText(group?.meta?.strategy_key || group?.key)}
+                          </div>
+                        </div>
+                        <div style={styles.modeBadge}>
+                          {fmtText(group?.meta?.profit_mode, 'formal')}
                         </div>
                       </div>
+
                       <div style={styles.ballRow}>
                         {parseNums(group?.nums).map((n) => (
                           <div key={n} style={styles.ballLarge}>
@@ -1022,7 +1051,16 @@ export default function App() {
                           </div>
                         ))}
                       </div>
+
                       <div style={styles.groupReason}>{groupReason(group)}</div>
+
+                      <div style={styles.metaChipRow}>
+                        <MetaChip label="score" value={fmtMetaNumber(group?.meta?.score, 1)} />
+                        <MetaChip label="avg_hit" value={fmtMetaNumber(group?.meta?.avg_hit, 2)} />
+                        <MetaChip label="roi" value={fmtPercent(group?.meta?.roi)} />
+                        <MetaChip label="rounds" value={fmtText(group?.meta?.total_rounds)} />
+                        <MetaChip label="filter" value={fmtText(group?.meta?.filter_pass)} />
+                      </div>
                     </div>
                   ))
                 ) : (
@@ -1499,87 +1537,127 @@ const styles = {
   },
   evolutionMiniLabel: {
     fontSize: 12,
-    color: '#8a7d66',
-    marginBottom: 6
+    color: '#8a7d66'
   },
   evolutionMiniValue: {
-    fontSize: 24,
+    marginTop: 6,
+    fontSize: 30,
     fontWeight: 900,
-    color: '#4b4334'
+    color: '#4c4332'
   },
   summaryLine: {
-    color: '#61584a',
-    marginBottom: 14,
-    lineHeight: 1.8
+    display: 'flex',
+    gap: 8,
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    color: '#6a604f',
+    marginBottom: 12
   },
-  infoBanner: {
-    background: '#fff7dd',
-    border: '1px solid #ebdca3',
-    color: '#6d5f36',
+  infoBannerStrong: {
+    background: '#fff7df',
+    border: '1px solid #e9d59b',
+    borderRadius: 16,
     padding: 14,
-    borderRadius: 14,
-    marginBottom: 16,
-    lineHeight: 1.7
+    color: '#705f34',
+    lineHeight: 1.7,
+    marginTop: 8
+  },
+  infoBannerTitle: {
+    fontWeight: 900,
+    marginBottom: 6,
+    color: '#8a5a00'
   },
   groupGrid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
-    gap: 14
+    gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+    gap: 14,
+    marginTop: 14
   },
   groupCard: {
-    background: '#fffef9',
-    border: '1px solid #e8ddc1',
-    borderRadius: 18,
-    padding: 16
+    background: '#fffdf8',
+    border: '1px solid #e7dcc0',
+    borderRadius: 16,
+    padding: 14
   },
   groupHead: {
     display: 'flex',
     justifyContent: 'space-between',
     gap: 10,
     alignItems: 'flex-start',
-    marginBottom: 12
+    marginBottom: 10
   },
   groupTitle: {
-    fontSize: 16,
     fontWeight: 900,
-    color: '#176b5f'
+    color: '#176b5f',
+    fontSize: 18,
+    lineHeight: 1.3
   },
   groupMeta: {
+    marginTop: 4,
     fontSize: 12,
-    color: '#8e826d',
-    textAlign: 'right'
+    color: '#8f836d'
+  },
+  modeBadge: {
+    padding: '6px 10px',
+    borderRadius: 999,
+    background: '#f0f9f4',
+    border: '1px solid #b6dcc8',
+    color: '#176b5f',
+    fontWeight: 900,
+    fontSize: 12,
+    whiteSpace: 'nowrap'
   },
   ballRow: {
     display: 'flex',
-    gap: 10,
+    gap: 8,
     flexWrap: 'wrap',
-    marginBottom: 10
+    marginBottom: 12
   },
   ballLarge: {
-    width: 52,
-    height: 52,
-    borderRadius: 999,
-    background: 'linear-gradient(135deg, #f3b63f, #e8a51e)',
+    width: 42,
+    height: 42,
+    borderRadius: '50%',
+    background: '#f0b22b',
+    color: '#fffef8',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     fontWeight: 900,
     fontSize: 18,
-    color: '#fffef8',
-    boxShadow: '0 8px 16px rgba(232,165,30,0.20)'
+    boxShadow: '0 10px 20px rgba(240,178,43,0.22)'
   },
   groupReason: {
-    color: '#817562',
+    color: '#7a6d57',
     fontSize: 13,
     lineHeight: 1.6
   },
+  metaChipRow: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 12
+  },
+  metaChip: {
+    display: 'inline-flex',
+    gap: 6,
+    alignItems: 'center',
+    padding: '6px 10px',
+    borderRadius: 999,
+    background: '#f7f1de',
+    border: '1px solid #e3d7b4',
+    fontSize: 12,
+    color: '#5d5343'
+  },
+  metaChipLabel: {
+    fontWeight: 900,
+    color: '#8a5a00'
+  },
   emptyBox: {
-    background: '#fffef9',
+    background: '#fffdf8',
     border: '1px dashed #d8ceb1',
     borderRadius: 16,
-    padding: 24,
-    textAlign: 'center',
-    color: '#8c816c'
+    padding: 20,
+    color: '#8a7d66'
   },
   tableWrap: {
     overflowX: 'auto'
@@ -1591,52 +1669,48 @@ const styles = {
   th: {
     textAlign: 'left',
     padding: '12px 10px',
-    fontSize: 13,
-    color: '#8a7d66',
-    borderBottom: '1px solid #eadfc6',
-    whiteSpace: 'nowrap'
+    borderBottom: '1px solid #e7dcc0',
+    color: '#7a6f5e',
+    fontSize: 13
   },
   td: {
     padding: '12px 10px',
-    borderBottom: '1px solid #efe7d2',
-    verticalAlign: 'top',
-    color: '#4c4332'
+    borderBottom: '1px solid #f0e7d2',
+    color: '#4c4332',
+    fontSize: 14,
+    verticalAlign: 'top'
   },
   marketBalls: {
     display: 'flex',
-    gap: 10,
     flexWrap: 'wrap',
-    marginTop: 18
+    gap: 8,
+    marginTop: 14
   },
   marketBall: {
-    width: 46,
-    height: 46,
-    borderRadius: 999,
-    background: '#fffdf8',
-    border: '1px solid #dfd4b9',
+    minWidth: 42,
+    height: 42,
+    borderRadius: '50%',
+    background: '#f0b22b',
+    color: '#fffef8',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     fontWeight: 900,
-    color: '#5b5345'
+    fontSize: 16
   },
   numsInline: {
     display: 'flex',
-    gap: 6,
-    flexWrap: 'wrap'
+    flexWrap: 'wrap',
+    gap: 6
   },
   numChip: {
     display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    minWidth: 34,
-    height: 30,
-    padding: '0 8px',
+    padding: '4px 8px',
     borderRadius: 999,
-    background: '#fffdf8',
-    border: '1px solid #e2d8bc',
-    fontSize: 13,
-    fontWeight: 800,
-    color: '#5a5244'
+    background: '#f7f1de',
+    border: '1px solid #e3d7b4',
+    color: '#6a604f',
+    fontSize: 12,
+    fontWeight: 800
   }
 };
