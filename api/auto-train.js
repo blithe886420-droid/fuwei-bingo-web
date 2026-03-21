@@ -1,12 +1,32 @@
 import { createClient } from '@supabase/supabase-js';
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-);
+const SUPABASE_URL =
+  process.env.SUPABASE_URL ||
+  process.env.NEXT_PUBLIC_SUPABASE_URL;
+
+const SUPABASE_KEY =
+  process.env.SUPABASE_SERVICE_ROLE_KEY ||
+  process.env.SUPABASE_ANON_KEY;
+
+let supabase = null;
+
+function getSupabase() {
+  if (!SUPABASE_URL || !SUPABASE_KEY) {
+    throw new Error('Missing SUPABASE env');
+  }
+
+  if (!supabase) {
+    supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+      auth: { persistSession: false }
+    });
+  }
+
+  return supabase;
+}
 
 function genNums(seed) {
   const base = (seed * 131) % 80;
+
   return [
     (base % 80) + 1,
     ((base + 9) % 80) + 1,
@@ -15,38 +35,141 @@ function genNums(seed) {
   ];
 }
 
+function getBaseUrl(req) {
+  const proto =
+    req.headers['x-forwarded-proto'] ||
+    req.headers['x-forwarded-protocol'] ||
+    'https';
+
+  const host =
+    req.headers['x-forwarded-host'] ||
+    req.headers.host;
+
+  if (!host) {
+    return null;
+  }
+
+  return `${proto}://${host}`;
+}
+
+async function callInternalApi(baseUrl, path) {
+  if (!baseUrl) {
+    return {
+      ok: false,
+      path,
+      error: 'Missing base URL'
+    };
+  }
+
+  try {
+    const response = await fetch(`${baseUrl}${path}`, {
+      method: 'GET',
+      headers: {
+        'content-type': 'application/json'
+      }
+    });
+
+    let data = null;
+
+    try {
+      data = await response.json();
+    } catch {
+      data = null;
+    }
+
+    return {
+      ok: response.ok,
+      status: response.status,
+      path,
+      data
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      path,
+      error: error?.message || 'Internal fetch failed'
+    };
+  }
+}
+
 export default async function handler(req, res) {
   try {
-    const { data: latest } = await supabase
+    const db = getSupabase();
+    const baseUrl = getBaseUrl(req);
+
+    const pipeline = {
+      catchup: null,
+      sync: null,
+      compare: null
+    };
+
+    pipeline.catchup = await callInternalApi(baseUrl, '/api/catchup');
+    pipeline.sync = await callInternalApi(baseUrl, '/api/sync');
+    pipeline.compare = await callInternalApi(baseUrl, '/api/prediction-compare');
+
+    const { data: latest, error: latestError } = await db
       .from('bingo_draws')
       .select('*')
       .order('draw_no', { ascending: false })
       .limit(1);
 
+    if (latestError) {
+      throw latestError;
+    }
+
     if (!latest || latest.length === 0) {
-      return res.json({ ok: true });
+      return res.status(200).json({
+        ok: true,
+        pipeline,
+        train: {
+          ok: true,
+          skipped: true,
+          reason: 'No bingo_draws'
+        }
+      });
     }
 
     const draw = latest[0];
+    const now = Date.now();
 
     const groups = Array.from({ length: 4 }, (_, i) => ({
       key: `g_${i + 1}`,
-      nums: genNums(Date.now() + i),
+      nums: genNums(now + i),
       meta: { strategy_key: `g_${i + 1}` }
     }));
 
-    await supabase.from('bingo_predictions').insert({
-      id: Date.now(),
+    const payload = {
+      id: now,
       mode: 'test',
       status: 'created',
       source_draw_no: draw.draw_no,
       target_periods: 2,
       groups_json: groups,
       created_at: new Date().toISOString()
-    });
+    };
 
-    return res.json({ ok: true });
+    const { data: inserted, error: insertError } = await db
+      .from('bingo_predictions')
+      .insert(payload)
+      .select('id, source_draw_no, target_periods, status, created_at')
+      .single();
+
+    if (insertError) {
+      throw insertError;
+    }
+
+    return res.status(200).json({
+      ok: true,
+      pipeline,
+      train: {
+        ok: true,
+        inserted
+      }
+    });
   } catch (e) {
-    return res.status(500).json({ ok: false, error: e.message });
+    return res.status(500).json({
+      ok: false,
+      error: e?.message || 'auto-train failed'
+    });
   }
 }
