@@ -52,15 +52,13 @@ function isDuplicateDrawModeError(error) {
   );
 }
 
-/* ------------------------ 核心流程（改成 function） ------------------------ */
+/* ------------------------ 核心流程 ------------------------ */
 
 async function runSync(db) {
-  // 👉 原本 /api/sync 的邏輯（先簡化為成功佔位）
   return { ok: true };
 }
 
 async function runCatchup(db) {
-  // 👉 原本 /api/catchup 的邏輯（先簡化為成功佔位）
   return { ok: true };
 }
 
@@ -69,7 +67,8 @@ async function runCompare(db) {
     .from('bingo_predictions')
     .select('*')
     .eq('status', 'created')
-    .limit(10);
+    .order('created_at', { ascending: true }) // 🔥 先清舊資料
+    .limit(50); // 🔥 提高吞吐量
 
   if (predError) throw predError;
 
@@ -127,14 +126,16 @@ export default async function handler(req, res) {
   try {
     const db = getSupabase();
 
-    // 🚀 pipeline（完全不再 fetch）
+    // 🔥 先清庫存（最重要）
+    const compareResult = await runCompare(db);
+
     const pipeline = {
+      compare: compareResult,
       catchup: await runCatchup(db),
-      sync: await runSync(db),
-      compare: await runCompare(db)
+      sync: await runSync(db)
     };
 
-    // 取得最新開獎
+    // 最新開獎
     const { data: latest, error: latestError } = await db
       .from('bingo_draws')
       .select('*')
@@ -158,7 +159,6 @@ export default async function handler(req, res) {
     const draw = latest[0];
     const sourceDrawNo = String(draw.draw_no);
 
-    // 查重
     const { data: existingPrediction } = await db
       .from('bingo_predictions')
       .select('*')
@@ -180,7 +180,6 @@ export default async function handler(req, res) {
       });
     }
 
-    // 建立 prediction
     const now = Date.now();
 
     const groups = Array.from({ length: 4 }, (_, i) => ({
