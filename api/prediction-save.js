@@ -398,7 +398,13 @@ function buildFormalCandidates(statsRows = []) {
   }
 
   if (normalized.length > 1) {
-    const cultivate = normalized[1];
+    const cultivateCandidates = normalized.filter((row) => (
+      row.strategy_key !== normalized[0]?.strategy_key &&
+      row.recent_50_roi > -0.1
+    ));
+
+    const cultivate = cultivateCandidates[0] || normalized[1];
+
     if (cultivate && !used.has(cultivate.strategy_key)) {
       used.add(cultivate.strategy_key);
       selected.push({
