@@ -371,7 +371,7 @@ function buildFormalCandidates(statsRows = []) {
 
   const strongQualified = normalized.filter((row) => (
     row.recent_50_roi = 0 &&
-    row.avg_hit >= 1.2 &&
+    row.avg_hit >= 1.15 &&
     row.total_rounds >= 15
   ));
 
