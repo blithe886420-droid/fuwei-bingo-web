@@ -28,20 +28,20 @@ const FORMAL_TARGET_PERIODS = 4;
 const GROUP_COUNT = 4;
 const RECENT_DRAW_LIMIT = 80;
 
-const PROFIT_MODE_NAME = 'profit_mode_v1';
+const PROFIT_MODE_NAME = 'profit_mode_v2';
 
 const HARD_RULES = {
-  scoreMin: 0,
-  avgHitMin: 1.2,
-  roiMin: -0.5,
-  totalRoundsMin: 5
+  roiMin: 0,
+  avgHitMin: 1.1,
+  totalRoundsMin: 10,
+  scoreMin: 0
 };
 
 const SOFT_RULES = {
-  scoreMin: -150,
+  roiMin: -0.2,
   avgHitMin: 1.0,
-  roiMin: -0.8,
-  totalRoundsMin: 3
+  totalRoundsMin: 5,
+  scoreMin: -150
 };
 
 function toNum(value, fallback = 0) {
@@ -126,7 +126,6 @@ function buildRecentAnalysis(rows = []) {
     )
   }));
 
-  const allNums = parsedRows.flatMap((row) => row.numbers);
   const latestDraw = parsedRows[0]?.numbers || [];
   const prevDraw = parsedRows[1]?.numbers || [];
 
@@ -339,28 +338,30 @@ function normalizeStrategyRow(row = {}) {
 
 function isHardQualified(row) {
   return (
-    row.score > HARD_RULES.scoreMin &&
-    row.avg_hit >= HARD_RULES.avgHitMin &&
     row.roi > HARD_RULES.roiMin &&
-    row.total_rounds >= HARD_RULES.totalRoundsMin
+    row.avg_hit >= HARD_RULES.avgHitMin &&
+    row.total_rounds >= HARD_RULES.totalRoundsMin &&
+    row.score > HARD_RULES.scoreMin
   );
 }
 
 function isSoftQualified(row) {
   return (
-    row.score > SOFT_RULES.scoreMin &&
-    row.avg_hit >= SOFT_RULES.avgHitMin &&
     row.roi > SOFT_RULES.roiMin &&
-    row.total_rounds >= SOFT_RULES.totalRoundsMin
+    row.avg_hit >= SOFT_RULES.avgHitMin &&
+    row.total_rounds >= SOFT_RULES.totalRoundsMin &&
+    row.score > SOFT_RULES.scoreMin
   );
 }
 
 function rankStrategyRows(rows = []) {
   return [...rows].sort((a, b) => {
-    if (b.score !== a.score) return b.score - a.score;
-    if (b.avg_hit !== a.avg_hit) return b.avg_hit - a.avg_hit;
     if (b.roi !== a.roi) return b.roi - a.roi;
+    if (b.avg_hit !== a.avg_hit) return b.avg_hit - a.avg_hit;
+    if (b.score !== a.score) return b.score - a.score;
     if (b.total_rounds !== a.total_rounds) return b.total_rounds - a.total_rounds;
+    if (b.recent_50_roi !== a.recent_50_roi) return b.recent_50_roi - a.recent_50_roi;
+    if (b.recent_50_hit_rate !== a.recent_50_hit_rate) return b.recent_50_hit_rate - a.recent_50_hit_rate;
     return a.strategy_key.localeCompare(b.strategy_key);
   });
 }
@@ -375,7 +376,7 @@ function buildFormalCandidates(statsRows = []) {
   const used = new Set();
 
   for (const row of hardQualified) {
-    if (selected.length >= 3) break;
+    if (selected.length >= GROUP_COUNT) break;
     if (used.has(row.strategy_key)) continue;
     used.add(row.strategy_key);
     selected.push({
@@ -431,7 +432,7 @@ function buildGroupsFromStats(statsRows = [], recentRows = [], sourceDrawNo) {
       key: strategyKey,
       label: strategyName,
       nums,
-      reason: '正式下注依 profit mode v1 建立',
+      reason: '正式下注依 profit mode v2 建立',
       meta: {
         strategy_key: strategyKey,
         strategy_name: strategyName,
@@ -439,6 +440,8 @@ function buildGroupsFromStats(statsRows = [], recentRows = [], sourceDrawNo) {
         avg_hit: row.avg_hit,
         total_rounds: row.total_rounds,
         score: row.score,
+        recent_50_roi: row.recent_50_roi,
+        recent_50_hit_rate: row.recent_50_hit_rate,
         profit_mode: PROFIT_MODE_NAME,
         filter_pass: row.filter_pass
       }
