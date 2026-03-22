@@ -370,13 +370,13 @@ function buildFormalCandidates(statsRows = []) {
   const normalized = rankStrategyRows((statsRows || []).map(normalizeStrategyRow).filter((row) => row.strategy_key));
 
   const strongQualified = normalized.filter((row) => (
-    row.recent_50_roi > 0 &&
+    row.recent_50_roi = 0 &&
     row.avg_hit >= 1.2 &&
     row.total_rounds >= 15
   ));
 
   const mediumQualified = normalized.filter((row) => (
-    row.recent_50_roi > 0 &&
+    row.recent_50_roi = 0 &&
     row.avg_hit >= 1.1 &&
     row.total_rounds >= 15
   ));
