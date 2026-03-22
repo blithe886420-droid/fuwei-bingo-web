@@ -386,6 +386,28 @@ function buildFormalCandidates(statsRows = []) {
   const selected = [];
   const used = new Set();
 
+  if (normalized.length > 0) {
+    const main = normalized[0];
+    if (main && !used.has(main.strategy_key)) {
+      used.add(main.strategy_key);
+      selected.push({
+        ...main,
+        filter_pass: 'main'
+      });
+    }
+  }
+
+  if (normalized.length > 1) {
+    const cultivate = normalized[1];
+    if (cultivate && !used.has(cultivate.strategy_key)) {
+      used.add(cultivate.strategy_key);
+      selected.push({
+        ...cultivate,
+        filter_pass: 'cultivate'
+      });
+    }
+  }
+
   for (const row of strongQualified) {
     if (selected.length >= GROUP_COUNT) break;
     if (used.has(row.strategy_key)) continue;
@@ -569,12 +591,12 @@ async function saveFormalPrediction(payload) {
     .select('*')
     .maybeSingle();
 
-    if (insertError) throw insertError;
+  if (insertError) throw insertError;
 
-    return {
-      action: 'inserted',
-      row: inserted || null
-    };
+  return {
+    action: 'inserted',
+    row: inserted || null
+  };
 }
 
 export default async function handler(req, res) {
