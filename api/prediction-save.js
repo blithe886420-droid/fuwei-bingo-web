@@ -369,33 +369,44 @@ function rankStrategyRows(rows = []) {
 function buildFormalCandidates(statsRows = []) {
   const normalized = rankStrategyRows((statsRows || []).map(normalizeStrategyRow).filter((row) => row.strategy_key));
 
-  const hardQualified = normalized.filter(isHardQualified);
-  const softQualified = normalized.filter(isSoftQualified);
+  const strongQualified = normalized.filter((row) => (
+    row.recent_50_roi > 0 &&
+    row.avg_hit >= 1.2 &&
+    row.total_rounds >= 30
+  ));
+
+  const mediumQualified = normalized.filter((row) => (
+    row.recent_50_roi > 0 &&
+    row.avg_hit >= 1.1 &&
+    row.total_rounds >= 15
+  ));
+
+  const fallbackQualified = normalized.filter((row) => row.total_rounds >= 10);
 
   const selected = [];
   const used = new Set();
 
-  for (const row of hardQualified) {
+  for (const row of strongQualified) {
     if (selected.length >= GROUP_COUNT) break;
     if (used.has(row.strategy_key)) continue;
     used.add(row.strategy_key);
     selected.push({
       ...row,
-      filter_pass: 'hard'
+      filter_pass: 'strong'
     });
   }
 
-  for (const row of softQualified) {
+  for (const row of mediumQualified) {
     if (selected.length >= GROUP_COUNT) break;
     if (used.has(row.strategy_key)) continue;
     used.add(row.strategy_key);
     selected.push({
       ...row,
-      filter_pass: 'soft'
+      filter_pass: 'medium'
     });
   }
 
-  for (const row of normalized) {
+  for (const row of fallbackQualified) {
     if (selected.length >= GROUP_COUNT) break;
     if (used.has(row.strategy_key)) continue;
     used.add(row.strategy_key);
