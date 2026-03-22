@@ -372,7 +372,7 @@ function buildFormalCandidates(statsRows = []) {
   const strongQualified = normalized.filter((row) => (
     row.recent_50_roi > 0 &&
     row.avg_hit >= 1.2 &&
-    row.total_rounds >= 20
+    row.total_rounds >= 15
   ));
 
   const mediumQualified = normalized.filter((row) => (
@@ -569,12 +569,12 @@ async function saveFormalPrediction(payload) {
     .select('*')
     .maybeSingle();
 
-  if (insertError) throw insertError;
+    if (insertError) throw insertError;
 
-  return {
-    action: 'inserted',
-    row: inserted || null
-  };
+    return {
+      action: 'inserted',
+      row: inserted || null
+    };
 }
 
 export default async function handler(req, res) {
