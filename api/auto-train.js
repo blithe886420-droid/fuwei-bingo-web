@@ -969,4 +969,4 @@ export default async function handler(req, res) {
       error: e?.message || 'auto-train failed'
     });
   }
-}
+}  那你剛剛說的完整覆蓋版重頭到尾呢? 你要完整的阿 不是解釋后叫我自己改耶 凡是程式問題 一旦確認錯誤 直接給我重頭到尾完整板覆蓋版阿
