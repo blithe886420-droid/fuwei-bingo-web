@@ -63,6 +63,7 @@ export default async function handler(req, res) {
     let failed = 0;
 
     const errorDetails = [];
+    const disabledKeysAll = [];
 
     for (const p of safeArray(predictions)) {
       try {
@@ -154,7 +155,11 @@ export default async function handler(req, res) {
         if (uError) throw uError;
 
         try {
-          await recordStrategyCompareResult(compareResult);
+          const statsResult = await recordStrategyCompareResult(compareResult);
+
+          if (Array.isArray(statsResult?.disabled_keys) && statsResult.disabled_keys.length > 0) {
+            disabledKeysAll.push(...statsResult.disabled_keys);
+          }
         } catch (statsError) {
           console.error('recordStrategyCompareResult failed:', {
             prediction_id: p?.id || null,
@@ -196,6 +201,7 @@ export default async function handler(req, res) {
       processed,
       skipped,
       failed,
+      disabled_keys: [...new Set(disabledKeysAll)],
       error_details: errorDetails.slice(0, 20)
     });
   } catch (e) {
