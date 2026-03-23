@@ -28,30 +28,20 @@ const FORMAL_TARGET_PERIODS = 4;
 const GROUP_COUNT = 4;
 const RECENT_DRAW_LIMIT = 80;
 
-const PROFIT_MODE_NAME = 'profit_mode_v2_strong_only';
+const PROFIT_MODE_NAME = 'profit_mode_v2';
 
 const HARD_RULES = {
   roiMin: 0,
-  avgHitMin: 1.15,
-  totalRoundsMin: 12,
-  recent50RoiMin: 0,
-  scoreMin: 0
-};
-
-const STRONG_RULES = {
-  roiMin: 0,
-  avgHitMin: 1.2,
-  totalRoundsMin: 15,
-  recent50RoiMin: 0,
-  scoreMin: 20
-};
-
-const MEDIUM_RULES = {
-  roiMin: 0,
   avgHitMin: 1.1,
-  totalRoundsMin: 12,
-  recent50RoiMin: 0,
+  totalRoundsMin: 10,
   scoreMin: 0
+};
+
+const SOFT_RULES = {
+  roiMin: -0.2,
+  avgHitMin: 1.0,
+  totalRoundsMin: 5,
+  scoreMin: -150
 };
 
 function toNum(value, fallback = 0) {
@@ -97,7 +87,6 @@ function rotateList(source = [], offset = 0) {
 
 function parseDrawNumbers(value) {
   if (Array.isArray(value)) return value.map(Number).filter(Number.isFinite);
-
   if (typeof value === 'string') {
     return value
       .replace(/[{}[\]]/g, ' ')
@@ -105,7 +94,6 @@ function parseDrawNumbers(value) {
       .map(Number)
       .filter(Number.isFinite);
   }
-
   if (value && typeof value === 'object') {
     return parseDrawNumbers(
       value.numbers ||
@@ -116,7 +104,6 @@ function parseDrawNumbers(value) {
       []
     );
   }
-
   return [];
 }
 
@@ -206,7 +193,6 @@ function inferGeneA(strategyKey = '') {
   if (key.includes('tail')) return 'tail';
   if (key.includes('pattern')) return 'pattern';
   if (key.includes('gap')) return 'gap';
-  if (key.includes('repeat')) return 'repeat';
   return 'hot';
 }
 
@@ -221,7 +207,6 @@ function inferGeneB(strategyKey = '') {
   if (key.includes('repeat')) return 'repeat';
   if (key.includes('pattern')) return 'mix';
   if (key.includes('gap')) return 'gap';
-  if (key.includes('hot')) return 'hot';
   return 'balanced';
 }
 
@@ -235,10 +220,7 @@ function numbersByTail(tail, pool = []) {
 
 function geneCandidates(gene, analysis, context = {}) {
   const geneName = String(gene || '').toLowerCase();
-  const hash = stableHash(
-    `${context.strategyKey || ''}_${context.idx || 0}_${geneName}_${context.sourceDrawNo || 0}`
-  );
-
+  const hash = stableHash(`${context.strategyKey || ''}_${context.idx || 0}_${geneName}_${context.sourceDrawNo || 0}`);
   const hottest = analysis.hottest || [];
   const coldest = analysis.coldest || [];
   const latestDraw = analysis.latestDraw || [];
@@ -321,12 +303,9 @@ function geneCandidates(gene, analysis, context = {}) {
 
 function finalizeNums(candidates = [], strategyKey = '', analysis = {}, idx = 0, sourceDrawNo = 0) {
   const hash = stableHash(`${strategyKey}_${idx}_${sourceDrawNo}`);
-  const rotated = rotateList(
-    uniqueKeepOrder(candidates),
-    hash % Math.max(candidates.length || 1, 1)
-  );
-
+  const rotated = rotateList(uniqueKeepOrder(candidates), hash % Math.max(candidates.length || 1, 1));
   let nums = uniqueAsc(rotated.slice(0, 4));
+
   if (nums.length === 4) return nums;
 
   const fallback = uniqueKeepOrder([
@@ -337,83 +316,103 @@ function finalizeNums(candidates = [], strategyKey = '', analysis = {}, idx = 0,
   ]);
 
   nums = uniqueAsc([...nums, ...fallback].slice(0, 12)).slice(0, 4);
+
   if (nums.length === 4) return nums;
 
   return uniqueAsc([...nums, 1, 20, 40, 60, 80]).slice(0, 4);
 }
 
 function normalizeStrategyRow(row = {}) {
-  const totalRounds = toNum(row?.total_rounds, 0);
-  const totalHits = toNum(row?.total_hits, 0);
-
   return {
     strategy_key: String(row?.strategy_key || '').trim(),
     strategy_name: String(row?.strategy_name || row?.strategy_key || '').trim(),
     score: toNum(row?.score, 0),
     avg_hit: toNum(row?.avg_hit, 0),
     roi: toNum(row?.roi, 0),
-    total_rounds: totalRounds,
-    hit_rate: totalRounds > 0 ? totalHits / totalRounds : toNum(row?.hit_rate, 0),
+    total_rounds: toNum(row?.total_rounds, 0),
+    hit_rate: toNum(row?.hit_rate, 0),
     recent_50_hit_rate: toNum(row?.recent_50_hit_rate, 0),
     recent_50_roi: toNum(row?.recent_50_roi, 0)
   };
 }
 
+function isHardQualified(row) {
+  return (
+    row.roi > HARD_RULES.roiMin &&
+    row.avg_hit >= HARD_RULES.avgHitMin &&
+    row.total_rounds >= HARD_RULES.totalRoundsMin &&
+    row.score > HARD_RULES.scoreMin
+  );
+}
+
+function isSoftQualified(row) {
+  return (
+    row.roi > SOFT_RULES.roiMin &&
+    row.avg_hit >= SOFT_RULES.avgHitMin &&
+    row.total_rounds >= SOFT_RULES.totalRoundsMin &&
+    row.score > SOFT_RULES.scoreMin
+  );
+}
+
 function rankStrategyRows(rows = []) {
   return [...rows].sort((a, b) => {
-    if (b.recent_50_roi !== a.recent_50_roi) return b.recent_50_roi - a.recent_50_roi;
     if (b.roi !== a.roi) return b.roi - a.roi;
     if (b.avg_hit !== a.avg_hit) return b.avg_hit - a.avg_hit;
     if (b.score !== a.score) return b.score - a.score;
     if (b.total_rounds !== a.total_rounds) return b.total_rounds - a.total_rounds;
-    if (b.recent_50_hit_rate !== a.recent_50_hit_rate) {
-      return b.recent_50_hit_rate - a.recent_50_hit_rate;
-    }
+    if (b.recent_50_roi !== a.recent_50_roi) return b.recent_50_roi - a.recent_50_roi;
+    if (b.recent_50_hit_rate !== a.recent_50_hit_rate) return b.recent_50_hit_rate - a.recent_50_hit_rate;
     return a.strategy_key.localeCompare(b.strategy_key);
   });
 }
 
-function passesHardRules(row) {
-  return (
-    row.roi >= HARD_RULES.roiMin &&
-    row.avg_hit >= HARD_RULES.avgHitMin &&
-    row.total_rounds >= HARD_RULES.totalRoundsMin &&
-    row.recent_50_roi >= HARD_RULES.recent50RoiMin &&
-    row.score >= HARD_RULES.scoreMin
-  );
-}
-
-function passesStrongRules(row) {
-  return (
-    row.roi >= STRONG_RULES.roiMin &&
-    row.avg_hit >= STRONG_RULES.avgHitMin &&
-    row.total_rounds >= STRONG_RULES.totalRoundsMin &&
-    row.recent_50_roi >= STRONG_RULES.recent50RoiMin &&
-    row.score >= STRONG_RULES.scoreMin
-  );
-}
-
-function passesMediumRules(row) {
-  return (
-    row.roi >= MEDIUM_RULES.roiMin &&
-    row.avg_hit >= MEDIUM_RULES.avgHitMin &&
-    row.total_rounds >= MEDIUM_RULES.totalRoundsMin &&
-    row.recent_50_roi >= MEDIUM_RULES.recent50RoiMin &&
-    row.score >= MEDIUM_RULES.scoreMin
-  );
-}
-
 function buildFormalCandidates(statsRows = []) {
-  const normalized = rankStrategyRows(
-    (statsRows || []).map(normalizeStrategyRow).filter((row) => row.strategy_key)
-  );
+  const normalized = rankStrategyRows((statsRows || []).map(normalizeStrategyRow).filter((row) => row.strategy_key));
 
-  const hardQualified = normalized.filter(passesHardRules);
-  const strongQualified = hardQualified.filter(passesStrongRules);
-  const mediumQualified = hardQualified.filter(passesMediumRules);
+  const strongQualified = normalized.filter((row) => (
+    row.recent_50_roi >= 0 &&
+    row.avg_hit >= 1.15 &&
+    row.total_rounds >= 15
+  ));
+
+  const mediumQualified = normalized.filter((row) => (
+    row.recent_50_roi >= 0 &&
+    row.avg_hit >= 1.1 &&
+    row.total_rounds >= 15
+  ));
+
+  const fallbackQualified = normalized.filter((row) => row.total_rounds >= 10);
 
   const selected = [];
   const used = new Set();
+
+  if (normalized.length > 0) {
+    const main = normalized[0];
+    if (main && !used.has(main.strategy_key)) {
+      used.add(main.strategy_key);
+      selected.push({
+        ...main,
+        filter_pass: 'main'
+      });
+    }
+  }
+
+  if (normalized.length > 1) {
+    const cultivateCandidates = normalized.filter((row) => (
+      row.strategy_key !== normalized[0]?.strategy_key &&
+      row.recent_50_roi > -0.1
+    ));
+
+    const cultivate = cultivateCandidates[0] || normalized[1];
+
+    if (cultivate && !used.has(cultivate.strategy_key)) {
+      used.add(cultivate.strategy_key);
+      selected.push({
+        ...cultivate,
+        filter_pass: 'cultivate'
+      });
+    }
+  }
 
   for (const row of strongQualified) {
     if (selected.length >= GROUP_COUNT) break;
@@ -435,28 +434,22 @@ function buildFormalCandidates(statsRows = []) {
     });
   }
 
-  for (const row of hardQualified) {
+  for (const row of fallbackQualified) {
     if (selected.length >= GROUP_COUNT) break;
     if (used.has(row.strategy_key)) continue;
     used.add(row.strategy_key);
     selected.push({
       ...row,
-      filter_pass: 'hard_fallback'
+      filter_pass: 'fallback'
     });
   }
 
-  return {
-    selected: selected.slice(0, GROUP_COUNT),
-    hardQualifiedCount: hardQualified.length,
-    strongQualifiedCount: strongQualified.length,
-    mediumQualifiedCount: mediumQualified.length
-  };
+  return selected.slice(0, GROUP_COUNT);
 }
 
 function buildGroupsFromStats(statsRows = [], recentRows = [], sourceDrawNo) {
   const analysis = buildRecentAnalysis(recentRows);
-  const candidateResult = buildFormalCandidates(statsRows);
-  const selectedStats = candidateResult.selected;
+  const selectedStats = buildFormalCandidates(statsRows);
 
   const groups = selectedStats.map((row, idx) => {
     const strategyKey = row.strategy_key;
@@ -478,7 +471,7 @@ function buildGroupsFromStats(statsRows = [], recentRows = [], sourceDrawNo) {
       key: strategyKey,
       label: strategyName,
       nums,
-      reason: '正式下注依 strong-only formal 建立',
+      reason: '正式下注依 profit mode v2 建立',
       meta: {
         strategy_key: strategyKey,
         strategy_name: strategyName,
@@ -494,15 +487,31 @@ function buildGroupsFromStats(statsRows = [], recentRows = [], sourceDrawNo) {
     };
   });
 
-  return {
-    groups,
-    summary: {
-      selected_count: groups.length,
-      hard_qualified_count: candidateResult.hardQualifiedCount,
-      strong_qualified_count: candidateResult.strongQualifiedCount,
-      medium_qualified_count: candidateResult.mediumQualifiedCount
+  if (groups.length === GROUP_COUNT && groups.every((g) => Array.isArray(g.nums) && g.nums.length === 4)) {
+    return groups;
+  }
+
+  const pool = uniqueKeepOrder([
+    ...(analysis.hottest || []).slice(0, 16),
+    ...(analysis.gapNums || []).slice(0, 16),
+    ...(analysis.coldest || []).slice(0, 16),
+    ...(analysis.latestDraw || []).slice(0, 8)
+  ]);
+
+  const safePool = pool.length >= 16 ? pool : Array.from({ length: 20 }, (_, i) => i + 1);
+
+  return Array.from({ length: GROUP_COUNT }, (_, idx) => ({
+    key: `formal_fallback_${idx + 1}`,
+    label: `Formal Fallback ${idx + 1}`,
+    nums: uniqueAsc(rotateList(safePool, idx * 4).slice(0, 4)),
+    reason: '正式下注 fallback',
+    meta: {
+      strategy_key: `formal_fallback_${idx + 1}`,
+      strategy_name: `Formal Fallback ${idx + 1}`,
+      profit_mode: PROFIT_MODE_NAME,
+      filter_pass: 'fallback'
     }
-  };
+  }));
 }
 
 async function getLatestDraw() {
@@ -529,7 +538,7 @@ async function getRecentDraws(limit = RECENT_DRAW_LIMIT) {
   return Array.isArray(data) ? data : [];
 }
 
-async function getTopStrategyStats(limit = 200) {
+async function getTopStrategyStats(limit = 50) {
   const { data, error } = await supabase
     .from(STRATEGY_STATS_TABLE)
     .select('*')
@@ -618,7 +627,7 @@ export default async function handler(req, res) {
     const [latestDraw, recentRows, strategyStats] = await Promise.all([
       getLatestDraw(),
       getRecentDraws(RECENT_DRAW_LIMIT),
-      getTopStrategyStats(200)
+      getTopStrategyStats(50)
     ]);
 
     const sourceDrawNo = Number(latestDraw.draw_no || 0);
@@ -626,23 +635,7 @@ export default async function handler(req, res) {
       throw new Error('source draw not found');
     }
 
-    const groupBuildResult = buildGroupsFromStats(strategyStats, recentRows, sourceDrawNo);
-    const groups = groupBuildResult.groups || [];
-    const summary = groupBuildResult.summary || {};
-
-    if (!groups.length) {
-      return res.status(200).json({
-        ok: false,
-        mode: FORMAL_MODE,
-        profit_mode: PROFIT_MODE_NAME,
-        source_draw_no: sourceDrawNo,
-        target_periods: FORMAL_TARGET_PERIODS,
-        latest_draw: latestDraw,
-        groups: [],
-        summary,
-        error: 'No strong enough strategies for formal mode'
-      });
-    }
+    const groups = buildGroupsFromStats(strategyStats, recentRows, sourceDrawNo);
 
     const payload = {
       id: Date.now(),
@@ -665,7 +658,6 @@ export default async function handler(req, res) {
       latest_draw: latestDraw,
       selected_strategy_keys: groups.map((g) => g.meta?.strategy_key || g.key),
       groups,
-      summary,
       saved
     });
   } catch (error) {
