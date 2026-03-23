@@ -43,6 +43,12 @@ function fmtDateTime(v) {
   return d.toLocaleString('zh-TW', { hour12: false });
 }
 
+function fmtMoney(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '--';
+  return `${n} 元`;
+}
+
 function parseNums(input) {
   if (Array.isArray(input)) {
     return input.map(Number).filter(Number.isFinite);
@@ -76,12 +82,34 @@ function normalizeGroups(rawGroups) {
       if (nums.length !== 4) return null;
 
       const meta = group?.meta && typeof group.meta === 'object' ? group.meta : {};
+      const weight = Number.isFinite(Number(group?.weight))
+        ? Number(group.weight)
+        : Number.isFinite(Number(meta?.weight_multiplier))
+          ? Number(meta.weight_multiplier)
+          : Number.isFinite(Number(meta?.bet_multiplier))
+            ? Number(meta.bet_multiplier)
+            : null;
+
+      const betAmount = Number.isFinite(Number(group?.bet_amount))
+        ? Number(group.bet_amount)
+        : Number.isFinite(Number(meta?.bet_amount))
+          ? Number(meta.bet_amount)
+          : null;
+
+      const betWeight = Number.isFinite(Number(group?.bet_weight))
+        ? Number(group.bet_weight)
+        : Number.isFinite(Number(meta?.bet_weight))
+          ? Number(meta.bet_weight)
+          : null;
 
       return {
         key: String(group?.key || meta?.strategy_key || `group_${idx + 1}`),
         label: String(group?.label || meta?.strategy_name || `第${idx + 1}組`),
         nums,
         reason: String(group?.reason || meta?.strategy_name || '--'),
+        weight,
+        bet_amount: betAmount,
+        bet_weight: betWeight,
         meta
       };
     })
@@ -755,6 +783,14 @@ export default function App() {
   const trainingGroups = getPredictionGroups(trainingLatest);
   const formalGroups = getPredictionGroups(formalLatest);
 
+  const formalTotalPerPeriod = useMemo(
+    () => formalGroups.reduce((sum, group) => sum + toNum(group?.bet_amount, 0), 0),
+    [formalGroups]
+  );
+
+  const formalTargetPeriods = toNum(formalLatest?.target_periods, 0);
+  const formalTotalAllPeriods = formalTotalPerPeriod * formalTargetPeriods;
+
   const lastCycleSummary = useMemo(() => buildLastCycleSummary(lastAutoTrainResult), [lastAutoTrainResult]);
 
   return (
@@ -1003,15 +1039,40 @@ export default function App() {
               </div>
 
               <div style={styles.infoBannerStrong}>
-                <div style={styles.infoBannerTitle}>正式下注＝Profit Mode v1</div>
+                <div style={styles.infoBannerTitle}>正式下注＝Profit Mode v2.1 權重下注系統</div>
                 <div>
-                  建立邏輯：優先採用 strategy_stats 中較強的策略。預設偏好
-                  <strong> score &gt; 0</strong>、
-                  <strong> avg_hit ≥ 1.2</strong>、
-                  <strong> roi &gt; -0.5</strong>、
-                  <strong> total_rounds ≥ 5</strong>，
-                  不足時才由次強策略補位。
+                  建立邏輯：先從 strategy_stats 挑出較強策略，再依
+                  <strong> score / ROI / avg_hit / recent_50_roi </strong>
+                  進行資金權重分配。強策略會提高倍率，弱策略維持基本下注，讓 AI
+                  從「只會選號」進化到「會分配資金」。
                 </div>
+              </div>
+
+              <div style={styles.statsGrid4}>
+                <StatBox
+                  label="每期總投入"
+                  value={fmtMoney(formalTotalPerPeriod)}
+                  hint="四組合計"
+                />
+                <StatBox
+                  label="本輪總投入"
+                  value={fmtMoney(formalTotalAllPeriods)}
+                  hint={`每期 × ${formalTargetPeriods || 0} 期`}
+                />
+                <StatBox
+                  label="組數"
+                  value={formalGroups.length || 0}
+                  hint="正式下注組數"
+                />
+                <StatBox
+                  label="最高倍率"
+                  value={
+                    formalGroups.length
+                      ? `${Math.max(...formalGroups.map((g) => toNum(g?.weight, 0)))}x`
+                      : '--'
+                  }
+                  hint="本輪最強策略"
+                />
               </div>
 
               <div style={styles.actionRow}>
@@ -1054,12 +1115,33 @@ export default function App() {
 
                       <div style={styles.groupReason}>{groupReason(group)}</div>
 
+                      <div style={styles.betRow}>
+                        <div style={styles.betBox}>
+                          <div style={styles.betLabel}>權重倍率</div>
+                          <div style={styles.betValue}>
+                            {Number.isFinite(Number(group?.weight)) ? `${Number(group.weight)}x` : '--'}
+                          </div>
+                        </div>
+                        <div style={styles.betBox}>
+                          <div style={styles.betLabel}>單組金額</div>
+                          <div style={styles.betValue}>{fmtMoney(group?.bet_amount)}</div>
+                        </div>
+                      </div>
+
                       <div style={styles.metaChipRow}>
                         <MetaChip label="score" value={fmtMetaNumber(group?.meta?.score, 1)} />
                         <MetaChip label="avg_hit" value={fmtMetaNumber(group?.meta?.avg_hit, 2)} />
                         <MetaChip label="roi" value={fmtPercent(group?.meta?.roi)} />
                         <MetaChip label="rounds" value={fmtText(group?.meta?.total_rounds)} />
                         <MetaChip label="filter" value={fmtText(group?.meta?.filter_pass)} />
+                        <MetaChip
+                          label="bet_weight"
+                          value={
+                            Number.isFinite(Number(group?.bet_weight))
+                              ? Number(group.bet_weight)
+                              : '--'
+                          }
+                        />
                       </div>
                     </div>
                   ))
@@ -1374,7 +1456,8 @@ const styles = {
   statsGrid4: {
     display: 'grid',
     gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-    gap: 12
+    gap: 12,
+    marginTop: 14
   },
   statBox: {
     background: '#fffdf8',
@@ -1630,6 +1713,28 @@ const styles = {
     color: '#7a6d57',
     fontSize: 13,
     lineHeight: 1.6
+  },
+  betRow: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+    gap: 10,
+    marginTop: 12
+  },
+  betBox: {
+    background: '#fff9ea',
+    border: '1px solid #eadfc0',
+    borderRadius: 12,
+    padding: 10
+  },
+  betLabel: {
+    fontSize: 12,
+    color: '#8a7d66',
+    marginBottom: 6
+  },
+  betValue: {
+    fontSize: 22,
+    fontWeight: 900,
+    color: '#6d5f36'
   },
   metaChipRow: {
     display: 'flex',
