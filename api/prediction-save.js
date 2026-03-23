@@ -28,7 +28,8 @@ const FORMAL_TARGET_PERIODS = 4;
 const GROUP_COUNT = 4;
 const RECENT_DRAW_LIMIT = 80;
 
-const PROFIT_MODE_NAME = 'profit_mode_v2';
+const PROFIT_MODE_NAME = 'profit_mode_v2_1_weighted';
+const BASE_BET_AMOUNT = 25;
 
 const HARD_RULES = {
   roiMin: 0,
@@ -345,7 +346,8 @@ function normalizeStrategyRow(row = {}) {
     total_rounds: toNum(row?.total_rounds, 0),
     hit_rate: toNum(row?.hit_rate, 0),
     recent_50_hit_rate: toNum(row?.recent_50_hit_rate, 0),
-    recent_50_roi: toNum(row?.recent_50_roi, 0)
+    recent_50_roi: toNum(row?.recent_50_roi, 0),
+    strategy_weight: toNum(row?.weight, 0)
   };
 }
 
@@ -471,11 +473,80 @@ function buildFormalCandidates(statsRows = []) {
   return selected.slice(0, GROUP_COUNT);
 }
 
+function calcStrategyStrength(row = {}) {
+  const scorePart = Math.max(0, toNum(row.score, 0));
+  const roiPart = Math.max(0, toNum(row.roi, 0)) * 200;
+  const avgHitPart = Math.max(0, toNum(row.avg_hit, 0) - 1) * 800;
+  const recentRoiPart = Math.max(0, toNum(row.recent_50_roi, 0)) * 150;
+  const roundsPart = Math.min(40, Math.max(0, toNum(row.total_rounds, 0))) * 5;
+
+  return scorePart + roiPart + avgHitPart + recentRoiPart + roundsPart;
+}
+
+function buildBetWeightMeta(rows = []) {
+  const normalizedRows = Array.isArray(rows) ? rows : [];
+  const strengths = normalizedRows.map((row) => calcStrategyStrength(row));
+  const totalStrength = strengths.reduce((sum, n) => sum + n, 0);
+
+  if (!normalizedRows.length) return [];
+
+  if (totalStrength <= 0) {
+    return normalizedRows.map((row, idx) => ({
+      ...row,
+      bet_weight: idx === 0 ? 2500 : 2500,
+      weight: 1,
+      bet_amount: BASE_BET_AMOUNT,
+      strength_score: 0,
+      strength_share: 0.25
+    }));
+  }
+
+  const rawBasisPoints = strengths.map((strength) => (strength / totalStrength) * 10000);
+  const floorBasisPoints = rawBasisPoints.map((v) => Math.floor(v));
+  let remain = 10000 - floorBasisPoints.reduce((sum, n) => sum + n, 0);
+
+  const fractionalOrder = rawBasisPoints
+    .map((v, idx) => ({ idx, frac: v - Math.floor(v) }))
+    .sort((a, b) => b.frac - a.frac || a.idx - b.idx);
+
+  for (let i = 0; i < fractionalOrder.length && remain > 0; i += 1, remain -= 1) {
+    floorBasisPoints[fractionalOrder[i].idx] += 1;
+  }
+
+  const maxStrength = Math.max(...strengths, 0);
+
+  return normalizedRows.map((row, idx) => {
+    const strength = strengths[idx];
+    const share = totalStrength > 0 ? strength / totalStrength : 0;
+    let weight = 1;
+
+    if (strength > 0) {
+      if (strength === maxStrength && share >= 0.45) {
+        weight = 3;
+      } else if (share >= 0.25 && row.roi > 0 && row.avg_hit >= 1.3) {
+        weight = 2;
+      } else if (share >= 0.18 && row.score > 0 && row.avg_hit >= 1.15) {
+        weight = 2;
+      }
+    }
+
+    return {
+      ...row,
+      bet_weight: floorBasisPoints[idx],
+      weight,
+      bet_amount: BASE_BET_AMOUNT * weight,
+      strength_score: strength,
+      strength_share: share
+    };
+  });
+}
+
 function buildGroupsFromStats(statsRows = [], recentRows = [], sourceDrawNo) {
   const analysis = buildRecentAnalysis(recentRows);
   const selectedStats = buildFormalCandidates(statsRows);
+  const selectedWithWeights = buildBetWeightMeta(selectedStats);
 
-  const groups = selectedStats.map((row, idx) => {
+  const groups = selectedWithWeights.map((row, idx) => {
     const strategyKey = row.strategy_key;
     const strategyName = row.strategy_name || row.strategy_key;
     const geneA = inferGeneA(strategyKey);
@@ -495,7 +566,10 @@ function buildGroupsFromStats(statsRows = [], recentRows = [], sourceDrawNo) {
       key: strategyKey,
       label: strategyName,
       nums,
-      reason: '正式下注依 profit mode v2 建立',
+      weight: row.weight,
+      bet_amount: row.bet_amount,
+      bet_weight: row.bet_weight,
+      reason: `正式下注依權重模式建立（倍率 x${row.weight} / 單組 ${row.bet_amount} 元）`,
       meta: {
         strategy_key: strategyKey,
         strategy_name: strategyName,
@@ -506,7 +580,13 @@ function buildGroupsFromStats(statsRows = [], recentRows = [], sourceDrawNo) {
         recent_50_roi: row.recent_50_roi,
         recent_50_hit_rate: row.recent_50_hit_rate,
         profit_mode: PROFIT_MODE_NAME,
-        filter_pass: row.filter_pass
+        filter_pass: row.filter_pass,
+        bet_weight: row.bet_weight,
+        bet_amount: row.bet_amount,
+        weight_multiplier: row.weight,
+        strength_score: row.strength_score,
+        strength_share: row.strength_share,
+        strategy_weight: row.strategy_weight
       }
     };
   });
@@ -531,12 +611,20 @@ function buildGroupsFromStats(statsRows = [], recentRows = [], sourceDrawNo) {
     key: `formal_fallback_${idx + 1}`,
     label: `Formal Fallback ${idx + 1}`,
     nums: uniqueAsc(rotateList(safePool, idx * 4).slice(0, 4)),
-    reason: '正式下注 fallback',
+    weight: 1,
+    bet_amount: BASE_BET_AMOUNT,
+    bet_weight: 2500,
+    reason: `正式下注 fallback（倍率 x1 / 單組 ${BASE_BET_AMOUNT} 元）`,
     meta: {
       strategy_key: `formal_fallback_${idx + 1}`,
       strategy_name: `Formal Fallback ${idx + 1}`,
       profit_mode: PROFIT_MODE_NAME,
-      filter_pass: 'fallback'
+      filter_pass: 'fallback',
+      bet_weight: 2500,
+      bet_amount: BASE_BET_AMOUNT,
+      weight_multiplier: 1,
+      strength_score: 0,
+      strength_share: 0.25
     }
   }));
 }
@@ -697,6 +785,10 @@ export default async function handler(req, res) {
       source_draw_no: sourceDrawNo,
       target_periods: FORMAL_TARGET_PERIODS,
       latest_draw: latestDraw,
+      base_bet_amount: BASE_BET_AMOUNT,
+      total_bet_amount_per_period: groups.reduce((sum, group) => sum + toNum(group.bet_amount, 0), 0),
+      total_bet_amount_all_periods:
+        groups.reduce((sum, group) => sum + toNum(group.bet_amount, 0), 0) * FORMAL_TARGET_PERIODS,
       selected_strategy_keys: groups.map((g) => g.meta?.strategy_key || g.key),
       groups,
       saved
