@@ -62,6 +62,8 @@ export default async function handler(req, res) {
     let skipped = 0;
     let failed = 0;
 
+    const errorDetails = [];
+
     for (const p of safeArray(predictions)) {
       try {
         const sourceDrawNo = toNum(p.source_draw_no);
@@ -69,6 +71,11 @@ export default async function handler(req, res) {
 
         if (!sourceDrawNo || !targetPeriods) {
           skipped++;
+          errorDetails.push({
+            id: p?.id || null,
+            source_draw_no: p?.source_draw_no || null,
+            reason: 'invalid source_draw_no or target_periods'
+          });
           continue;
         }
 
@@ -83,6 +90,11 @@ export default async function handler(req, res) {
 
         if (!Array.isArray(draws) || draws.length < targetPeriods) {
           skipped++;
+          errorDetails.push({
+            id: p?.id || null,
+            source_draw_no: p?.source_draw_no || null,
+            reason: 'not enough future draws yet'
+          });
           continue;
         }
 
@@ -90,6 +102,11 @@ export default async function handler(req, res) {
 
         if (groups.length === 0) {
           skipped++;
+          errorDetails.push({
+            id: p?.id || null,
+            source_draw_no: p?.source_draw_no || null,
+            reason: 'groups_json empty'
+          });
           continue;
         }
 
@@ -101,6 +118,24 @@ export default async function handler(req, res) {
 
         if (!payload || !payload.compareResult) {
           failed++;
+          errorDetails.push({
+            id: p?.id || null,
+            source_draw_no: p?.source_draw_no || null,
+            reason: 'buildComparePayload returned empty compareResult'
+          });
+          continue;
+        }
+
+        const compareResult = payload.compareResult;
+        const compareDetail = Array.isArray(compareResult.detail) ? compareResult.detail : [];
+
+        if (compareDetail.length === 0) {
+          failed++;
+          errorDetails.push({
+            id: p?.id || null,
+            source_draw_no: p?.source_draw_no || null,
+            reason: 'compareResult.detail empty'
+          });
           continue;
         }
 
@@ -110,7 +145,7 @@ export default async function handler(req, res) {
             status: 'compared',
             compare_status: 'done',
             hit_count: toNum(payload.hitCount),
-            compare_result: payload.compareResult,
+            compare_result: compareResult,
             verdict: payload.verdict || 'bad',
             compared_at: new Date().toISOString()
           })
@@ -119,12 +154,40 @@ export default async function handler(req, res) {
         if (uError) throw uError;
 
         try {
-          await recordStrategyCompareResult(payload.compareResult);
-        } catch {}
+          await recordStrategyCompareResult(compareResult);
+        } catch (statsError) {
+          console.error('recordStrategyCompareResult failed:', {
+            prediction_id: p?.id || null,
+            source_draw_no: p?.source_draw_no || null,
+            mode: p?.mode || null,
+            error: statsError?.message || String(statsError)
+          });
+
+          errorDetails.push({
+            id: p?.id || null,
+            source_draw_no: p?.source_draw_no || null,
+            reason: `recordStrategyCompareResult failed: ${statsError?.message || String(statsError)}`
+          });
+
+          throw statsError;
+        }
 
         processed++;
-      } catch {
+      } catch (err) {
         failed++;
+
+        console.error('prediction-compare item failed:', {
+          id: p?.id || null,
+          source_draw_no: p?.source_draw_no || null,
+          mode: p?.mode || null,
+          error: err?.message || String(err)
+        });
+
+        errorDetails.push({
+          id: p?.id || null,
+          source_draw_no: p?.source_draw_no || null,
+          reason: err?.message || String(err)
+        });
       }
     }
 
@@ -132,9 +195,12 @@ export default async function handler(req, res) {
       ok: true,
       processed,
       skipped,
-      failed
+      failed,
+      error_details: errorDetails.slice(0, 20)
     });
   } catch (e) {
+    console.error('prediction-compare fatal error:', e);
+
     return res.status(200).json({
       ok: false,
       error: e?.message || 'error'
