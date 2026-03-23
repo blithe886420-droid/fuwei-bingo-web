@@ -893,6 +893,7 @@ export default async function handler(req, res) {
       .select('*')
       .eq('mode', MODE)
       .eq('source_draw_no', sourceDrawNo)
+      .eq('status', 'created')
       .limit(1)
       .maybeSingle();
 
@@ -947,6 +948,7 @@ export default async function handler(req, res) {
           .select('*')
           .eq('mode', MODE)
           .eq('source_draw_no', sourceDrawNo)
+          .eq('status', 'created')
           .limit(1)
           .maybeSingle();
 
