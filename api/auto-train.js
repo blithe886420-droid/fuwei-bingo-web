@@ -13,7 +13,7 @@ const SUPABASE_KEY =
 
 const MODE = 'test';
 const BET_GROUP_COUNT = 4;
-const TARGET_PERIODS = 2;
+const TARGET_PERIODS = 1;
 const COMPARE_BATCH_LIMIT = 50;
 const MARKET_LOOKBACK_LIMIT = 160;
 const COST_PER_GROUP_PER_PERIOD = 25;
@@ -588,6 +588,7 @@ async function runCompare(db) {
   const { data: predictions, error: predError } = await db
     .from('bingo_predictions')
     .select('*')
+    .eq('mode', MODE)
     .eq('status', 'created')
     .order('created_at', { ascending: true })
     .limit(COMPARE_BATCH_LIMIT);
@@ -644,6 +645,8 @@ async function runCompare(db) {
         status: 'compared',
         compare_status: 'done',
         hit_count: toNum(payload.hitCount, 0),
+        compare_result: payload.compareResult,
+        verdict: payload.verdict || 'bad',
         compared_at: comparedAt
       })
       .eq('id', prediction.id);
@@ -837,12 +840,12 @@ export default async function handler(req, res) {
   try {
     const db = getSupabase();
 
-    const compare = await runCompare(db);
+    const compareBeforeCreate = await runCompare(db);
     const catchup = await runCatchup(db);
     const sync = await runSync(db);
 
     const pipeline = {
-      compare,
+      compare_before_create: compareBeforeCreate,
       catchup,
       sync
     };
@@ -859,7 +862,7 @@ export default async function handler(req, res) {
       return res.status(200).json({
         ok: true,
         pipeline,
-        compared_count: toNum(compare?.processed, 0),
+        compared_count: toNum(compareBeforeCreate?.processed, 0),
         created_count: 0,
         train: {
           ok: true,
@@ -876,7 +879,7 @@ export default async function handler(req, res) {
       return res.status(200).json({
         ok: true,
         pipeline,
-        compared_count: toNum(compare?.processed, 0),
+        compared_count: toNum(compareBeforeCreate?.processed, 0),
         created_count: 0,
         train: {
           ok: true,
@@ -899,86 +902,86 @@ export default async function handler(req, res) {
 
     if (existingError) throw existingError;
 
-    if (existingPrediction) {
-      return res.status(200).json({
-        ok: true,
-        pipeline,
-        compared_count: toNum(compare?.processed, 0),
-        created_count: 0,
-        active_created_prediction: existingPrediction,
-        train: {
-          ok: true,
-          skipped: true,
-          reason: 'Prediction already exists',
-          existing: existingPrediction
-        }
-      });
-    }
+    let createdCount = 0;
+    let activeCreatedPrediction = existingPrediction || null;
 
-    const marketRows = await fetchMarketRows(db);
-    const market = buildMarketState(marketRows);
-    const strategyCandidates = await fetchStrategyCandidates(db);
-    const groups = buildPredictionGroups(strategyCandidates, market, Date.now());
+    if (!existingPrediction) {
+      const marketRows = await fetchMarketRows(db);
+      const market = buildMarketState(marketRows);
+      const strategyCandidates = await fetchStrategyCandidates(db);
+      const groups = buildPredictionGroups(strategyCandidates, market, Date.now());
 
-    if (!groups.length) {
-      throw new Error('Failed to build prediction groups from strategy_pool');
-    }
-
-    const now = Date.now();
-    const payload = {
-      id: now,
-      mode: MODE,
-      status: 'created',
-      source_draw_no: sourceDrawNo,
-      target_periods: TARGET_PERIODS,
-      groups_json: groups,
-      created_at: new Date().toISOString()
-    };
-
-    const { data: inserted, error: insertError } = await db
-      .from('bingo_predictions')
-      .insert(payload)
-      .select('*')
-      .single();
-
-    if (insertError) {
-      if (isDuplicateDrawModeError(insertError)) {
-        const { data: existingAfterDup } = await db
-          .from('bingo_predictions')
-          .select('*')
-          .eq('mode', MODE)
-          .eq('source_draw_no', sourceDrawNo)
-          .eq('status', 'created')
-          .limit(1)
-          .maybeSingle();
-
-        return res.status(200).json({
-          ok: true,
-          pipeline,
-          compared_count: toNum(compare?.processed, 0),
-          created_count: 0,
-          active_created_prediction: existingAfterDup || null,
-          train: {
-            ok: true,
-            skipped: true,
-            reason: 'Duplicate prevented',
-            existing: existingAfterDup || null
-          }
-        });
+      if (!groups.length) {
+        throw new Error('Failed to build prediction groups from strategy_pool');
       }
 
-      throw insertError;
+      const now = Date.now();
+      const payload = {
+        id: now,
+        mode: MODE,
+        status: 'created',
+        source_draw_no: sourceDrawNo,
+        target_periods: TARGET_PERIODS,
+        groups_json: groups,
+        created_at: new Date().toISOString()
+      };
+
+      const { data: inserted, error: insertError } = await db
+        .from('bingo_predictions')
+        .insert(payload)
+        .select('*')
+        .single();
+
+      if (insertError) {
+        if (isDuplicateDrawModeError(insertError)) {
+          const { data: existingAfterDup } = await db
+            .from('bingo_predictions')
+            .select('*')
+            .eq('mode', MODE)
+            .eq('source_draw_no', sourceDrawNo)
+            .eq('status', 'created')
+            .limit(1)
+            .maybeSingle();
+
+          activeCreatedPrediction = existingAfterDup || null;
+        } else {
+          throw insertError;
+        }
+      } else {
+        createdCount = 1;
+        activeCreatedPrediction = inserted;
+      }
+    }
+
+    const compareAfterCreate = await runCompare(db);
+
+    pipeline.compare_after_create = compareAfterCreate;
+
+    let finalActiveCreatedPrediction = activeCreatedPrediction;
+
+    if (finalActiveCreatedPrediction?.id) {
+      const { data: refreshedPrediction } = await db
+        .from('bingo_predictions')
+        .select('*')
+        .eq('id', finalActiveCreatedPrediction.id)
+        .maybeSingle();
+
+      finalActiveCreatedPrediction = refreshedPrediction || finalActiveCreatedPrediction;
     }
 
     return res.status(200).json({
       ok: true,
       pipeline,
-      compared_count: toNum(compare?.processed, 0),
-      created_count: 1,
-      active_created_prediction: inserted,
+      compared_count:
+        toNum(compareBeforeCreate?.processed, 0) +
+        toNum(compareAfterCreate?.processed, 0),
+      created_count: createdCount,
+      active_created_prediction: finalActiveCreatedPrediction,
       train: {
         ok: true,
-        inserted
+        skipped: createdCount === 0,
+        reason: createdCount === 0 ? 'Prediction already exists' : undefined,
+        existing: createdCount === 0 ? finalActiveCreatedPrediction : undefined
       }
     });
   } catch (e) {
@@ -987,4 +990,4 @@ export default async function handler(req, res) {
       error: e?.message || 'auto-train failed'
     });
   }
-}  
+}
