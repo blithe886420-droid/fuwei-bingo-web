@@ -367,52 +367,34 @@ function rankStrategyRows(rows = []) {
 }
 
 function buildFormalCandidates(statsRows = []) {
-  const normalized = rankStrategyRows((statsRows || []).map(normalizeStrategyRow).filter((row) => row.strategy_key));
+  const normalized = rankStrategyRows(
+    (statsRows || [])
+      .map(normalizeStrategyRow)
+      .filter((row) => row.strategy_key)
+  );
 
   const strongQualified = normalized.filter((row) => (
-    row.recent_50_roi >= 0 &&
-    row.avg_hit >= 1.15 &&
-    row.total_rounds >= 15
+    row.recent_50_roi > 0 &&
+    row.avg_hit >= 1.2 &&
+    row.total_rounds >= 15 &&
+    row.score > 0
   ));
 
-  const mediumQualified = normalized.filter((row) => (
+  const usableQualified = normalized.filter((row) => (
     row.recent_50_roi >= 0 &&
     row.avg_hit >= 1.1 &&
-    row.total_rounds >= 15
+    row.total_rounds >= 10
   ));
 
-  const fallbackQualified = normalized.filter((row) => row.total_rounds >= 10);
+  const reserveQualified = normalized.filter((row) => (
+    row.recent_50_roi > -0.1 &&
+    row.roi > -0.1 &&
+    row.avg_hit >= 1.0 &&
+    row.total_rounds >= 8
+  ));
 
   const selected = [];
   const used = new Set();
-
-  if (normalized.length > 0) {
-    const main = normalized[0];
-    if (main && !used.has(main.strategy_key)) {
-      used.add(main.strategy_key);
-      selected.push({
-        ...main,
-        filter_pass: 'main'
-      });
-    }
-  }
-
-  if (normalized.length > 1) {
-    const cultivateCandidates = normalized.filter((row) => (
-      row.strategy_key !== normalized[0]?.strategy_key &&
-      row.recent_50_roi > -0.1
-    ));
-
-    const cultivate = cultivateCandidates[0] || normalized[1];
-
-    if (cultivate && !used.has(cultivate.strategy_key)) {
-      used.add(cultivate.strategy_key);
-      selected.push({
-        ...cultivate,
-        filter_pass: 'cultivate'
-      });
-    }
-  }
 
   for (const row of strongQualified) {
     if (selected.length >= GROUP_COUNT) break;
@@ -424,17 +406,27 @@ function buildFormalCandidates(statsRows = []) {
     });
   }
 
-  for (const row of mediumQualified) {
+  for (const row of usableQualified) {
     if (selected.length >= GROUP_COUNT) break;
     if (used.has(row.strategy_key)) continue;
     used.add(row.strategy_key);
     selected.push({
       ...row,
-      filter_pass: 'medium'
+      filter_pass: 'usable'
     });
   }
 
-  for (const row of fallbackQualified) {
+  for (const row of reserveQualified) {
+    if (selected.length >= GROUP_COUNT) break;
+    if (used.has(row.strategy_key)) continue;
+    used.add(row.strategy_key);
+    selected.push({
+      ...row,
+      filter_pass: 'reserve'
+    });
+  }
+
+  for (const row of normalized) {
     if (selected.length >= GROUP_COUNT) break;
     if (used.has(row.strategy_key)) continue;
     used.add(row.strategy_key);
