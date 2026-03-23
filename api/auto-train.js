@@ -870,7 +870,23 @@ export default async function handler(req, res) {
     }
 
     const latestDraw = latestDrawRows[0];
-    const sourceDrawNo = String(latestDraw.draw_no);
+    const sourceDrawNoRaw = Number(latestDraw.draw_no) - TARGET_PERIODS;
+
+    if (sourceDrawNoRaw <= 0) {
+      return res.status(200).json({
+        ok: true,
+        pipeline,
+        compared_count: toNum(compare?.processed, 0),
+        created_count: 0,
+        train: {
+          ok: true,
+          skipped: true,
+          reason: 'draw_no too small'
+        }
+      });
+    }
+
+    const sourceDrawNo = String(sourceDrawNoRaw);
 
     const { data: existingPrediction, error: existingError } = await db
       .from('bingo_predictions')
