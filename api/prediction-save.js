@@ -87,6 +87,7 @@ function rotateList(source = [], offset = 0) {
 
 function parseDrawNumbers(value) {
   if (Array.isArray(value)) return value.map(Number).filter(Number.isFinite);
+
   if (typeof value === 'string') {
     return value
       .replace(/[{}[\]]/g, ' ')
@@ -94,6 +95,7 @@ function parseDrawNumbers(value) {
       .map(Number)
       .filter(Number.isFinite);
   }
+
   if (value && typeof value === 'object') {
     return parseDrawNumbers(
       value.numbers ||
@@ -104,6 +106,7 @@ function parseDrawNumbers(value) {
       []
     );
   }
+
   return [];
 }
 
@@ -143,6 +146,7 @@ function buildRecentAnalysis(rows = []) {
       freq.set(n, (freq.get(n) || 0) + 1);
       zoneFreq.set(getZone(n), (zoneFreq.get(getZone(n)) || 0) + 1);
       tailFreq.set(n % 10, (tailFreq.get(n % 10) || 0) + 1);
+
       if (!lastSeenIndex.has(n)) {
         lastSeenIndex.set(n, idx);
       }
@@ -220,7 +224,10 @@ function numbersByTail(tail, pool = []) {
 
 function geneCandidates(gene, analysis, context = {}) {
   const geneName = String(gene || '').toLowerCase();
-  const hash = stableHash(`${context.strategyKey || ''}_${context.idx || 0}_${geneName}_${context.sourceDrawNo || 0}`);
+  const hash = stableHash(
+    `${context.strategyKey || ''}_${context.idx || 0}_${geneName}_${context.sourceDrawNo || 0}`
+  );
+
   const hottest = analysis.hottest || [];
   const coldest = analysis.coldest || [];
   const latestDraw = analysis.latestDraw || [];
@@ -303,9 +310,12 @@ function geneCandidates(gene, analysis, context = {}) {
 
 function finalizeNums(candidates = [], strategyKey = '', analysis = {}, idx = 0, sourceDrawNo = 0) {
   const hash = stableHash(`${strategyKey}_${idx}_${sourceDrawNo}`);
-  const rotated = rotateList(uniqueKeepOrder(candidates), hash % Math.max(candidates.length || 1, 1));
-  let nums = uniqueAsc(rotated.slice(0, 4));
+  const rotated = rotateList(
+    uniqueKeepOrder(candidates),
+    hash % Math.max(candidates.length || 1, 1)
+  );
 
+  let nums = uniqueAsc(rotated.slice(0, 4));
   if (nums.length === 4) return nums;
 
   const fallback = uniqueKeepOrder([
@@ -316,7 +326,6 @@ function finalizeNums(candidates = [], strategyKey = '', analysis = {}, idx = 0,
   ]);
 
   nums = uniqueAsc([...nums, ...fallback].slice(0, 12)).slice(0, 4);
-
   if (nums.length === 4) return nums;
 
   return uniqueAsc([...nums, 1, 20, 40, 60, 80]).slice(0, 4);
@@ -361,7 +370,9 @@ function rankStrategyRows(rows = []) {
     if (b.score !== a.score) return b.score - a.score;
     if (b.total_rounds !== a.total_rounds) return b.total_rounds - a.total_rounds;
     if (b.recent_50_roi !== a.recent_50_roi) return b.recent_50_roi - a.recent_50_roi;
-    if (b.recent_50_hit_rate !== a.recent_50_hit_rate) return b.recent_50_hit_rate - a.recent_50_hit_rate;
+    if (b.recent_50_hit_rate !== a.recent_50_hit_rate) {
+      return b.recent_50_hit_rate - a.recent_50_hit_rate;
+    }
     return a.strategy_key.localeCompare(b.strategy_key);
   });
 }
@@ -373,67 +384,84 @@ function buildFormalCandidates(statsRows = []) {
       .filter((row) => row.strategy_key)
   );
 
-  const strongQualified = normalized.filter((row) => (
-    row.recent_50_roi > 0 &&
-    row.avg_hit >= 1.2 &&
-    row.total_rounds >= 15 &&
-    row.score > 0
-  ));
+  const hardQualified = normalized.filter(isHardQualified);
 
-  const usableQualified = normalized.filter((row) => (
-    row.recent_50_roi >= 0 &&
-    row.avg_hit >= 1.1 &&
-    row.total_rounds >= 10
-  ));
+  const softQualified = normalized.filter((row) => {
+    if (hardQualified.some((x) => x.strategy_key === row.strategy_key)) return false;
+    return isSoftQualified(row);
+  });
 
-  const reserveQualified = normalized.filter((row) => (
-    row.recent_50_roi > -0.1 &&
-    row.roi > -0.1 &&
-    row.avg_hit >= 1.0 &&
-    row.total_rounds >= 8
-  ));
+  const strongQualified = normalized.filter((row) => {
+    if (hardQualified.some((x) => x.strategy_key === row.strategy_key)) return false;
+    if (softQualified.some((x) => x.strategy_key === row.strategy_key)) return false;
+
+    return (
+      row.recent_50_roi > 0 &&
+      row.avg_hit >= 1.2 &&
+      row.total_rounds >= 15 &&
+      row.score > 0
+    );
+  });
+
+  const usableQualified = normalized.filter((row) => {
+    if (hardQualified.some((x) => x.strategy_key === row.strategy_key)) return false;
+    if (softQualified.some((x) => x.strategy_key === row.strategy_key)) return false;
+    if (strongQualified.some((x) => x.strategy_key === row.strategy_key)) return false;
+
+    return (
+      row.recent_50_roi >= 0 &&
+      row.avg_hit >= 1.1 &&
+      row.total_rounds >= 10
+    );
+  });
+
+  const reserveQualified = normalized.filter((row) => {
+    if (hardQualified.some((x) => x.strategy_key === row.strategy_key)) return false;
+    if (softQualified.some((x) => x.strategy_key === row.strategy_key)) return false;
+    if (strongQualified.some((x) => x.strategy_key === row.strategy_key)) return false;
+    if (usableQualified.some((x) => x.strategy_key === row.strategy_key)) return false;
+
+    return (
+      row.recent_50_roi > -0.1 &&
+      row.roi > -0.1 &&
+      row.avg_hit >= 1.0 &&
+      row.total_rounds >= 8
+    );
+  });
 
   const selected = [];
   const used = new Set();
 
-  for (const row of strongQualified) {
-    if (selected.length >= GROUP_COUNT) break;
-    if (used.has(row.strategy_key)) continue;
-    used.add(row.strategy_key);
-    selected.push({
-      ...row,
-      filter_pass: 'strong'
-    });
+  function pushRows(rows, filterPass) {
+    for (const row of rows) {
+      if (selected.length >= GROUP_COUNT) break;
+      if (used.has(row.strategy_key)) continue;
+
+      used.add(row.strategy_key);
+      selected.push({
+        ...row,
+        filter_pass: filterPass
+      });
+    }
   }
 
-  for (const row of usableQualified) {
-    if (selected.length >= GROUP_COUNT) break;
-    if (used.has(row.strategy_key)) continue;
-    used.add(row.strategy_key);
-    selected.push({
-      ...row,
-      filter_pass: 'usable'
-    });
-  }
+  pushRows(hardQualified, 'hard');
+  pushRows(softQualified, 'soft');
+  pushRows(strongQualified, 'strong');
+  pushRows(usableQualified, 'usable');
+  pushRows(reserveQualified, 'reserve');
 
-  for (const row of reserveQualified) {
-    if (selected.length >= GROUP_COUNT) break;
-    if (used.has(row.strategy_key)) continue;
-    used.add(row.strategy_key);
-    selected.push({
-      ...row,
-      filter_pass: 'reserve'
-    });
-  }
+  if (selected.length < GROUP_COUNT) {
+    for (const row of normalized) {
+      if (selected.length >= GROUP_COUNT) break;
+      if (used.has(row.strategy_key)) continue;
 
-  for (const row of normalized) {
-    if (selected.length >= GROUP_COUNT) break;
-    if (used.has(row.strategy_key)) continue;
-    used.add(row.strategy_key);
-    selected.push({
-      ...row,
-      filter_pass: 'fallback'
-    });
+      used.add(row.strategy_key);
+      selected.push({
+        ...row,
+        filter_pass: 'fallback'
+      });
+    }
   }
 
   return selected.slice(0, GROUP_COUNT);
@@ -479,7 +507,10 @@ function buildGroupsFromStats(statsRows = [], recentRows = [], sourceDrawNo) {
     };
   });
 
-  if (groups.length === GROUP_COUNT && groups.every((g) => Array.isArray(g.nums) && g.nums.length === 4)) {
+  if (
+    groups.length === GROUP_COUNT &&
+    groups.every((g) => Array.isArray(g.nums) && g.nums.length === 4)
+  ) {
     return groups;
   }
 
