@@ -50,6 +50,10 @@ function toNum(value, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
 function uniqueAsc(nums = []) {
   return [...new Set((Array.isArray(nums) ? nums : []).map(Number).filter(Number.isFinite))]
     .filter((n) => n >= 1 && n <= 80)
@@ -474,13 +478,31 @@ function buildFormalCandidates(statsRows = []) {
 }
 
 function calcStrategyStrength(row = {}) {
-  const scorePart = Math.max(0, toNum(row.score, 0));
-  const roiPart = Math.max(0, toNum(row.roi, 0)) * 200;
-  const avgHitPart = Math.max(0, toNum(row.avg_hit, 0) - 1) * 800;
-  const recentRoiPart = Math.max(0, toNum(row.recent_50_roi, 0)) * 150;
-  const roundsPart = Math.min(40, Math.max(0, toNum(row.total_rounds, 0))) * 5;
+  const roi = toNum(row.roi, 0);
+  const avgHit = toNum(row.avg_hit, 0);
+  const recentRoi = toNum(row.recent_50_roi, 0);
+  const recentHitRate = toNum(row.recent_50_hit_rate, 0);
+  const totalRounds = toNum(row.total_rounds, 0);
+  const rawScore = toNum(row.score, 0);
 
-  return scorePart + roiPart + avgHitPart + recentRoiPart + roundsPart;
+  const scoreNormalized = clamp(rawScore, -300, 300);
+
+  const roiPart = Math.max(0, roi) * 900;
+  const avgHitPart = Math.max(0, avgHit - 1) * 1100;
+  const recentRoiPart = Math.max(0, recentRoi) * 700;
+  const recentHitRatePart = Math.max(0, recentHitRate) * 450;
+  const scorePart = Math.max(0, scoreNormalized) * 1.2;
+  const roundsPart = Math.min(30, Math.max(0, totalRounds)) * 8;
+
+  let penalty = 0;
+  if (roi < 0) penalty += Math.abs(roi) * 600;
+  if (recentRoi < 0) penalty += Math.abs(recentRoi) * 500;
+  if (avgHit < 1) penalty += (1 - avgHit) * 500;
+
+  return Math.max(
+    0,
+    roiPart + avgHitPart + recentRoiPart + recentHitRatePart + scorePart + roundsPart - penalty
+  );
 }
 
 function buildBetWeightMeta(rows = []) {
@@ -491,9 +513,9 @@ function buildBetWeightMeta(rows = []) {
   if (!normalizedRows.length) return [];
 
   if (totalStrength <= 0) {
-    return normalizedRows.map((row, idx) => ({
+    return normalizedRows.map((row) => ({
       ...row,
-      bet_weight: idx === 0 ? 2500 : 2500,
+      bet_weight: 2500,
       weight: 1,
       bet_amount: BASE_BET_AMOUNT,
       strength_score: 0,
@@ -518,14 +540,16 @@ function buildBetWeightMeta(rows = []) {
   return normalizedRows.map((row, idx) => {
     const strength = strengths[idx];
     const share = totalStrength > 0 ? strength / totalStrength : 0;
+    const roi = toNum(row.roi, 0);
+    const avgHit = toNum(row.avg_hit, 0);
+    const recentRoi = toNum(row.recent_50_roi, 0);
+
     let weight = 1;
 
-    if (strength > 0) {
-      if (strength === maxStrength && share >= 0.45) {
+    if (strength > 0 && roi > 0 && recentRoi >= 0 && avgHit >= 1.15) {
+      if (strength === maxStrength && share >= 0.42) {
         weight = 3;
-      } else if (share >= 0.25 && row.roi > 0 && row.avg_hit >= 1.3) {
-        weight = 2;
-      } else if (share >= 0.18 && row.score > 0 && row.avg_hit >= 1.15) {
+      } else if (share >= 0.24) {
         weight = 2;
       }
     }
@@ -535,8 +559,8 @@ function buildBetWeightMeta(rows = []) {
       bet_weight: floorBasisPoints[idx],
       weight,
       bet_amount: BASE_BET_AMOUNT * weight,
-      strength_score: strength,
-      strength_share: share
+      strength_score: Math.round(strength * 1000) / 1000,
+      strength_share: Math.round(share * 1000000) / 1000000
     };
   });
 }
