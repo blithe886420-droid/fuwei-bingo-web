@@ -11,6 +11,10 @@ const SUPABASE_KEY =
   process.env.SUPABASE_KEY ||
   process.env.SUPABASE_ANON_KEY;
 
+const PREDICTIONS_TABLE = 'bingo_predictions';
+const DRAWS_TABLE = 'bingo_draws';
+const STRATEGY_STATS_TABLE = 'strategy_stats';
+
 if (!SUPABASE_URL || !SUPABASE_KEY) {
   throw new Error('Missing SUPABASE env');
 }
@@ -18,10 +22,6 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: { persistSession: false }
 });
-
-const DRAWS_TABLE = 'bingo_draws';
-const PREDICTIONS_TABLE = 'bingo_predictions';
-const STRATEGY_STATS_TABLE = 'strategy_stats';
 
 const FORMAL_MODE = 'formal';
 const FORMAL_TARGET_PERIODS = 4;
@@ -72,9 +72,11 @@ function uniqueKeepOrder(nums = []) {
 function stableHash(text = '') {
   let h = 0;
   const s = String(text || '');
+
   for (let i = 0; i < s.length; i += 1) {
     h = (h * 31 + s.charCodeAt(i)) >>> 0;
   }
+
   return h;
 }
 
@@ -86,7 +88,9 @@ function rotateList(source = [], offset = 0) {
 }
 
 function parseDrawNumbers(value) {
-  if (Array.isArray(value)) return value.map(Number).filter(Number.isFinite);
+  if (Array.isArray(value)) {
+    return value.map(Number).filter(Number.isFinite);
+  }
 
   if (typeof value === 'string') {
     return value
@@ -578,7 +582,11 @@ async function getTopStrategyStats(limit = 50) {
 }
 
 async function saveFormalPrediction(payload) {
-  const sourceDrawNo = String(payload.source_draw_no);
+  const sourceDrawNo = Number(payload.source_draw_no);
+
+  if (!Number.isFinite(sourceDrawNo) || sourceDrawNo <= 0) {
+    throw new Error('Invalid source_draw_no');
+  }
 
   const { data: existing, error: existingError } = await supabase
     .from(PREDICTIONS_TABLE)
@@ -595,7 +603,7 @@ async function saveFormalPrediction(payload) {
       .from(PREDICTIONS_TABLE)
       .update({
         groups_json: payload.groups_json,
-        target_periods: payload.target_periods,
+        target_periods: Number(payload.target_periods),
         status: 'created',
         compare_status: null,
         hit_count: null,
@@ -614,9 +622,19 @@ async function saveFormalPrediction(payload) {
     };
   }
 
+  const insertPayload = {
+    id: payload.id,
+    mode: FORMAL_MODE,
+    status: 'created',
+    source_draw_no: sourceDrawNo,
+    target_periods: Number(payload.target_periods),
+    groups_json: payload.groups_json,
+    created_at: payload.created_at
+  };
+
   const { data: inserted, error: insertError } = await supabase
     .from(PREDICTIONS_TABLE)
-    .insert(payload)
+    .insert(insertPayload)
     .select('*')
     .maybeSingle();
 
@@ -664,7 +682,7 @@ export default async function handler(req, res) {
       id: Date.now(),
       mode: FORMAL_MODE,
       status: 'created',
-      source_draw_no: String(sourceDrawNo),
+      source_draw_no: sourceDrawNo,
       target_periods: FORMAL_TARGET_PERIODS,
       groups_json: groups,
       created_at: new Date().toISOString()
