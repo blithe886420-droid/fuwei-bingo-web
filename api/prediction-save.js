@@ -653,6 +653,21 @@ async function getRecentDraws(limit = RECENT_DRAW_LIMIT) {
   return Array.isArray(data) ? data : [];
 }
 
+async function getActiveStrategyKeys() {
+  const { data, error } = await supabase
+    .from('strategy_pool')
+    .select('strategy_key')
+    .eq('status', 'active');
+
+  if (error) throw error;
+
+  return new Set(
+    (Array.isArray(data) ? data : [])
+      .map((row) => String(row?.strategy_key || '').trim())
+      .filter(Boolean)
+  );
+}
+
 async function getTopStrategyStats(limit = 50) {
   const { data, error } = await supabase
     .from(STRATEGY_STATS_TABLE)
@@ -662,9 +677,12 @@ async function getTopStrategyStats(limit = 50) {
 
   if (error) throw error;
 
+  const activeKeys = await getActiveStrategyKeys();
+
   const normalized = (Array.isArray(data) ? data : [])
     .map(normalizeStrategyRow)
-    .filter((row) => row.strategy_key);
+    .filter((row) => row.strategy_key)
+    .filter((row) => activeKeys.size === 0 || activeKeys.has(row.strategy_key));
 
   return rankStrategyRows(normalized);
 }
