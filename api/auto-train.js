@@ -909,87 +909,109 @@ async function fetchStrategyCandidates(db, marketSnapshot = {}) {
   };
 }
 
+function detectMarketType(marketSnapshot = {}) {
+  const s = marketSnapshot?.latest?.summary;
+  if (!s) return 'UNKNOWN';
+
+  const { sum_band, big_small_bias, hot_zone, compactness } = s;
+
+  if (sum_band === 'high' && big_small_bias === 'big' && hot_zone === 4) {
+    return 'HIGH_BIG_ZONE4';
+  }
+
+  if (sum_band === 'low' && big_small_bias === 'small' && hot_zone === 1) {
+    return 'LOW_SMALL_ZONE1';
+  }
+
+  if (compactness === 'wide') {
+    return 'WIDE_SPREAD';
+  }
+
+  if (compactness === 'tight') {
+    return 'TIGHT_CLUSTER';
+  }
+
+  return 'NORMAL';
+}
+
+function filterStrategiesByMarket(strategies = [], marketType = '') {
+  return strategies.map(s => {
+    let boost = 1;
+
+    if (marketType === 'HIGH_BIG_ZONE4') {
+      if (s.strategy_key.includes('hot') || s.strategy_key.includes('chase')) {
+        boost *= 1.3;
+      }
+    }
+
+    if (marketType === 'LOW_SMALL_ZONE1') {
+      if (s.strategy_key.includes('cold') || s.strategy_key.includes('guard')) {
+        boost *= 1.3;
+      }
+    }
+
+    if (marketType === 'WIDE_SPREAD') {
+      if (s.strategy_key.includes('gap') || s.strategy_key.includes('chase')) {
+        boost *= 1.25;
+      }
+    }
+
+    if (marketType === 'TIGHT_CLUSTER') {
+      if (s.strategy_key.includes('pattern') || s.strategy_key.includes('cluster')) {
+        boost *= 1.25;
+      }
+    }
+
+    return {
+      ...s,
+      final_weight: Math.round((s.weight || 0) * boost),
+      market_type: marketType,
+      market_boost: boost
+    };
+  });
+}
+
 function buildPredictionGroups(candidatePack = {}, market = {}, marketSnapshot = {}, seed = Date.now()) {
-  const all = Array.isArray(candidatePack?.all) ? candidatePack.all : [];
-  const strong = Array.isArray(candidatePack?.strong) ? candidatePack.strong : [];
-  const usable = Array.isArray(candidatePack?.usable) ? candidatePack.usable : [];
-  const candidate = Array.isArray(candidatePack?.candidate) ? candidatePack.candidate : [];
+
+  const marketType = detectMarketType(marketSnapshot);
+
+  let strategies = Array.isArray(candidatePack?.all) ? candidatePack.all : [];
+
+  // 🔥 市場篩選
+  strategies = filterStrategiesByMarket(strategies, marketType);
+
+  // 🔥 用 final_weight 排序
+  strategies = strategies
+    .filter(s => (s.final_weight || 0) > 0)
+    .sort((a, b) =>
+      (b.final_weight - a.final_weight) ||
+      (b.avg_hit - a.avg_hit) ||
+      (b.roi - a.roi)
+    );
 
   const used = new Set();
   const groups = [];
 
-  const guaranteed = [];
+  for (let i = 0; i < strategies.length && groups.length < BET_GROUP_COUNT; i++) {
+    const s = strategies[i];
 
-  guaranteed.push(...pickTopUnique(strong, Math.min(3, strong.length), used));
-
-  if (guaranteed.length < 3) {
-    guaranteed.push(
-      ...pickTopUnique(
-        usable,
-        Math.min(3 - guaranteed.length, usable.filter((row) => !used.has(row.strategy_key)).length),
-        used
-      )
-    );
-  }
-
-  if (guaranteed.length < 3) {
-    guaranteed.push(
-      ...pickTopUnique(
-        candidate,
-        Math.min(3 - guaranteed.length, candidate.filter((row) => !used.has(row.strategy_key)).length),
-        used
-      )
-    );
-  }
-
-  for (const row of guaranteed) {
-    if (used.has(row.strategy_key)) continue;
-    used.add(row.strategy_key);
+    if (used.has(s.strategy_key)) continue;
+    used.add(s.strategy_key);
 
     groups.push({
-      key: row.strategy_key,
-      label: row.strategy_name || strategyLabel(row.strategy_key),
-      nums: buildStrategyNums(row.strategy_key, market, seed + groups.length * 101),
+      key: s.strategy_key,
+      label: s.strategy_name || strategyLabel(s.strategy_key),
+      nums: buildStrategyNums(s.strategy_key, market, seed + i * 77),
       meta: {
-        strategy_key: row.strategy_key,
-        strategy_name: row.strategy_name || strategyLabel(row.strategy_key),
-        score: toNum(row.score, 0),
-        avg_hit: toNum(row.avg_hit, 0),
-        roi: toNum(row.roi, 0),
-        weight: toNum(row.weight, 0),
-        generation: toNum(row.generation, 1),
-        source_type: String(row.source_type || 'seed'),
-        decision: row.decision,
-        market_boost: toNum(row.market_boost, 1),
-        market_reason: row.market_reason || 'market_neutral',
-        market_summary: marketSnapshot?.latest?.summary || null
-      }
-    });
-  }
-
-  while (groups.length < BET_GROUP_COUNT) {
-    const picked = weightedPick(all, used, seed + groups.length * 173);
-    if (!picked) break;
-
-    used.add(picked.strategy_key);
-
-    groups.push({
-      key: picked.strategy_key,
-      label: picked.strategy_name || strategyLabel(picked.strategy_key),
-      nums: buildStrategyNums(picked.strategy_key, market, seed + groups.length * 211),
-      meta: {
-        strategy_key: picked.strategy_key,
-        strategy_name: picked.strategy_name || strategyLabel(picked.strategy_key),
-        score: toNum(picked.score, 0),
-        avg_hit: toNum(picked.avg_hit, 0),
-        roi: toNum(picked.roi, 0),
-        weight: toNum(picked.weight, 0),
-        generation: toNum(picked.generation, 1),
-        source_type: String(picked.source_type || 'seed'),
-        decision: picked.decision,
-        market_boost: toNum(picked.market_boost, 1),
-        market_reason: picked.market_reason || 'market_neutral',
-        market_summary: marketSnapshot?.latest?.summary || null
+        strategy_key: s.strategy_key,
+        strategy_name: s.strategy_name,
+        decision: s.decision,
+        weight: s.weight,
+        final_weight: s.final_weight,
+        market_type: marketType,
+        market_boost: s.market_boost,
+        avg_hit: s.avg_hit,
+        roi: s.roi
       }
     });
   }
