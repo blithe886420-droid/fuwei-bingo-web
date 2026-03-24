@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import { buildRecentMarketSignalSnapshot } from '../lib/marketSignalEngine.js';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -355,6 +356,128 @@ function normalizeStrategyRow(row = {}) {
   };
 }
 
+function normalizeMarketSnapshot(snapshot = {}) {
+  return {
+    latest: snapshot?.latest || null,
+    prev: snapshot?.prev || null,
+    third: snapshot?.third || null,
+    trend: snapshot?.trend || {
+      sum_delta_1: 0,
+      span_delta_1: 0,
+      tail_changed: false
+    }
+  };
+}
+
+function getStrategyMarketBoost(strategyKey = '', marketSnapshot = {}) {
+  const key = String(strategyKey || '').toLowerCase();
+  const latestSummary = marketSnapshot?.latest?.summary || null;
+  const trend = marketSnapshot?.trend || {};
+
+  if (!latestSummary) {
+    return {
+      boost: 1,
+      reason: 'market_neutral'
+    };
+  }
+
+  let boost = 1;
+  const reasons = [];
+
+  if (latestSummary.odd_even_bias === 'odd' && key.includes('odd')) {
+    boost += 0.16;
+    reasons.push('odd_bias_match');
+  }
+
+  if (latestSummary.odd_even_bias === 'even' && key.includes('even')) {
+    boost += 0.16;
+    reasons.push('even_bias_match');
+  }
+
+  if (latestSummary.big_small_bias === 'big' && (key.includes('hot') || key.includes('chase'))) {
+    boost += 0.1;
+    reasons.push('big_bias_hot');
+  }
+
+  if (latestSummary.big_small_bias === 'small' && (key.includes('cold') || key.includes('guard'))) {
+    boost += 0.1;
+    reasons.push('small_bias_cold');
+  }
+
+  if (latestSummary.compactness === 'tight' && (key.includes('pattern') || key.includes('cluster'))) {
+    boost += 0.15;
+    reasons.push('tight_pattern');
+  }
+
+  if (latestSummary.compactness === 'wide' && (key.includes('gap') || key.includes('chase'))) {
+    boost += 0.15;
+    reasons.push('wide_gap');
+  }
+
+  if ((latestSummary.hot_zone === 1 || latestSummary.hot_zone === 4) && key.includes('zone')) {
+    boost += 0.09;
+    reasons.push('zone_focus');
+  }
+
+  if (latestSummary.sum_band === 'high' && (key.includes('hot') || key.includes('mix'))) {
+    boost += 0.08;
+    reasons.push('high_sum_hot');
+  }
+
+  if (latestSummary.sum_band === 'low' && (key.includes('cold') || key.includes('gap'))) {
+    boost += 0.08;
+    reasons.push('low_sum_cold');
+  }
+
+  if (trend.tail_changed && key.includes('tail')) {
+    boost += 0.06;
+    reasons.push('tail_changed');
+  }
+
+  if (toNum(trend.span_delta_1, 0) >= 8 && key.includes('gap')) {
+    boost += 0.05;
+    reasons.push('span_expanding');
+  }
+
+  if (toNum(trend.span_delta_1, 0) <= -8 && (key.includes('pattern') || key.includes('cluster'))) {
+    boost += 0.05;
+    reasons.push('span_shrinking');
+  }
+
+  boost = clamp(boost, 0.82, 1.28);
+
+  return {
+    boost,
+    reason: reasons.length ? reasons.join('|') : 'market_neutral'
+  };
+}
+
+function applyMarketDecisionToRows(rows = [], marketSnapshot = {}) {
+  return (Array.isArray(rows) ? rows : []).map((row) => {
+    const base = normalizeStrategyRow(row);
+    const marketFit = getStrategyMarketBoost(base.strategy_key, marketSnapshot);
+
+    const adjustedScore = base.score * marketFit.boost;
+    const adjustedRoi = base.roi * marketFit.boost;
+    const decisionScore =
+      adjustedScore +
+      adjustedRoi * 35 +
+      base.avg_hit * 28 +
+      base.recent_50_roi * 18 +
+      base.recent_50_hit_rate * 12 +
+      Math.min(base.total_rounds, 60) * 0.45;
+
+    return {
+      ...base,
+      market_boost: marketFit.boost,
+      market_reason: marketFit.reason,
+      adjusted_score: adjustedScore,
+      adjusted_roi: adjustedRoi,
+      decision_score: decisionScore
+    };
+  });
+}
+
 function isHardQualified(row) {
   return (
     row.roi > HARD_RULES.roiMin &&
@@ -375,6 +498,12 @@ function isSoftQualified(row) {
 
 function rankStrategyRows(rows = []) {
   return [...rows].sort((a, b) => {
+    if (toNum(b.decision_score, 0) !== toNum(a.decision_score, 0)) {
+      return toNum(b.decision_score, 0) - toNum(a.decision_score, 0);
+    }
+    if (toNum(b.market_boost, 1) !== toNum(a.market_boost, 1)) {
+      return toNum(b.market_boost, 1) - toNum(a.market_boost, 1);
+    }
     if (b.roi !== a.roi) return b.roi - a.roi;
     if (b.avg_hit !== a.avg_hit) return b.avg_hit - a.avg_hit;
     if (b.score !== a.score) return b.score - a.score;
@@ -387,11 +516,14 @@ function rankStrategyRows(rows = []) {
   });
 }
 
-function buildFormalCandidates(statsRows = []) {
+function buildFormalCandidates(statsRows = [], marketSnapshot = {}) {
   const normalized = rankStrategyRows(
-    (statsRows || [])
-      .map(normalizeStrategyRow)
-      .filter((row) => row.strategy_key)
+    applyMarketDecisionToRows(
+      (statsRows || [])
+        .map(normalizeStrategyRow)
+        .filter((row) => row.strategy_key),
+      marketSnapshot
+    )
   );
 
   const hardQualified = normalized.filter(isHardQualified);
@@ -478,12 +610,13 @@ function buildFormalCandidates(statsRows = []) {
 }
 
 function calcStrategyStrength(row = {}) {
-  const roi = toNum(row.roi, 0);
+  const roi = toNum(row.adjusted_roi, row.roi);
   const avgHit = toNum(row.avg_hit, 0);
   const recentRoi = toNum(row.recent_50_roi, 0);
   const recentHitRate = toNum(row.recent_50_hit_rate, 0);
   const totalRounds = toNum(row.total_rounds, 0);
-  const rawScore = toNum(row.score, 0);
+  const rawScore = toNum(row.adjusted_score, row.score);
+  const marketBoost = toNum(row.market_boost, 1);
 
   const scoreNormalized = clamp(rawScore, -300, 300);
 
@@ -493,6 +626,7 @@ function calcStrategyStrength(row = {}) {
   const recentHitRatePart = Math.max(0, recentHitRate) * 450;
   const scorePart = Math.max(0, scoreNormalized) * 1.2;
   const roundsPart = Math.min(30, Math.max(0, totalRounds)) * 8;
+  const marketPart = Math.max(0, marketBoost - 1) * 600;
 
   let penalty = 0;
   if (roi < 0) penalty += Math.abs(roi) * 600;
@@ -501,7 +635,7 @@ function calcStrategyStrength(row = {}) {
 
   return Math.max(
     0,
-    roiPart + avgHitPart + recentRoiPart + recentHitRatePart + scorePart + roundsPart - penalty
+    roiPart + avgHitPart + recentRoiPart + recentHitRatePart + scorePart + roundsPart + marketPart - penalty
   );
 }
 
@@ -540,9 +674,10 @@ function buildBetWeightMeta(rows = []) {
   return normalizedRows.map((row, idx) => {
     const strength = strengths[idx];
     const share = totalStrength > 0 ? strength / totalStrength : 0;
-    const roi = toNum(row.roi, 0);
+    const roi = toNum(row.adjusted_roi, row.roi);
     const avgHit = toNum(row.avg_hit, 0);
     const recentRoi = toNum(row.recent_50_roi, 0);
+    const marketBoost = toNum(row.market_boost, 1);
 
     let weight = 1;
 
@@ -553,6 +688,12 @@ function buildBetWeightMeta(rows = []) {
         weight = 2;
       }
     }
+
+    if (marketBoost >= 1.16 && weight < 3) {
+      weight += 1;
+    }
+
+    weight = clamp(weight, 1, 3);
 
     return {
       ...row,
@@ -567,7 +708,8 @@ function buildBetWeightMeta(rows = []) {
 
 function buildGroupsFromStats(statsRows = [], recentRows = [], sourceDrawNo) {
   const analysis = buildRecentAnalysis(recentRows);
-  const selectedStats = buildFormalCandidates(statsRows);
+  const marketSnapshot = normalizeMarketSnapshot(buildRecentMarketSignalSnapshot(recentRows, 'numbers'));
+  const selectedStats = buildFormalCandidates(statsRows, marketSnapshot);
   const selectedWithWeights = buildBetWeightMeta(selectedStats);
 
   const groups = selectedWithWeights.map((row, idx) => {
@@ -593,14 +735,17 @@ function buildGroupsFromStats(statsRows = [], recentRows = [], sourceDrawNo) {
       weight: row.weight,
       bet_amount: row.bet_amount,
       bet_weight: row.bet_weight,
-      reason: `正式下注依權重模式建立（倍率 x${row.weight} / 單組 ${row.bet_amount} 元）`,
+      reason: `正式下注依權重模式建立（倍率 x${row.weight} / 單組 ${row.bet_amount} 元 / 市場 ${row.market_reason || 'neutral'}）`,
       meta: {
         strategy_key: strategyKey,
         strategy_name: strategyName,
         roi: row.roi,
+        adjusted_roi: row.adjusted_roi,
         avg_hit: row.avg_hit,
         total_rounds: row.total_rounds,
         score: row.score,
+        adjusted_score: row.adjusted_score,
+        decision_score: row.decision_score,
         recent_50_roi: row.recent_50_roi,
         recent_50_hit_rate: row.recent_50_hit_rate,
         profit_mode: PROFIT_MODE_NAME,
@@ -610,7 +755,10 @@ function buildGroupsFromStats(statsRows = [], recentRows = [], sourceDrawNo) {
         weight_multiplier: row.weight,
         strength_score: row.strength_score,
         strength_share: row.strength_share,
-        strategy_weight: row.strategy_weight
+        strategy_weight: row.strategy_weight,
+        market_boost: row.market_boost,
+        market_reason: row.market_reason,
+        market_summary: marketSnapshot?.latest?.summary || null
       }
     };
   });
@@ -648,7 +796,9 @@ function buildGroupsFromStats(statsRows = [], recentRows = [], sourceDrawNo) {
       bet_amount: BASE_BET_AMOUNT,
       weight_multiplier: 1,
       strength_score: 0,
-      strength_share: 0.25
+      strength_share: 0.25,
+      market_boost: 1,
+      market_reason: 'fallback'
     }
   }));
 }
@@ -806,6 +956,7 @@ export default async function handler(req, res) {
       throw new Error('source draw not found');
     }
 
+    const marketSnapshot = normalizeMarketSnapshot(buildRecentMarketSignalSnapshot(recentRows, 'numbers'));
     const groups = buildGroupsFromStats(strategyStats, recentRows, sourceDrawNo);
 
     const payload = {
@@ -827,6 +978,7 @@ export default async function handler(req, res) {
       source_draw_no: sourceDrawNo,
       target_periods: FORMAL_TARGET_PERIODS,
       latest_draw: latestDraw,
+      market_snapshot: marketSnapshot,
       base_bet_amount: BASE_BET_AMOUNT,
       total_bet_amount_per_period: groups.reduce((sum, group) => sum + toNum(group.bet_amount, 0), 0),
       total_bet_amount_all_periods:
