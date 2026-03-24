@@ -1,6 +1,7 @@
-console.log('🔥 NEW VERSION LOADED v3.8 AGGRESSIVE');
 import { createClient } from '@supabase/supabase-js';
 import { buildRecentMarketSignalSnapshot } from '../lib/marketSignalEngine.js';
+
+console.log('🔥 NEW VERSION LOADED v3.8 AGGRESSIVE RATE FIX');
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -32,7 +33,7 @@ const GROUP_COUNT = 4;
 const RECENT_DRAW_LIMIT = 80;
 const RECENT_FORMAL_USAGE_LIMIT = 24;
 
-const PROFIT_MODE_NAME = 'profit_mode_v2_2_aggressive_rotation';
+const PROFIT_MODE_NAME = 'profit_mode_v2_3_aggressive_rotation_ratefix';
 const BASE_BET_AMOUNT = 25;
 
 const DEFAULT_STRATEGY_KEYS = [
@@ -55,7 +56,10 @@ const DEFAULT_STRATEGY_KEYS = [
   'zone_pattern',
   'gap_chase',
   'split_gap',
-  'zone_2'
+  'zone_2',
+  'balanced_split',
+  'structure_hot',
+  'tail_repeat'
 ];
 
 const AGGRESSIVE_CONFIG = {
@@ -81,6 +85,16 @@ function toNum(value, fallback = 0) {
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
+}
+
+function normalizeRate(value) {
+  const raw = toNum(value, 0);
+
+  if (raw <= 0) return 0;
+
+  // 若資料像 64.47、60，視為百分比；若像 0.6447、0.6，視為比例
+  const normalized = raw > 1 ? raw / 100 : raw;
+  return clamp(normalized, 0, 1);
 }
 
 function uniqueAsc(nums = []) {
@@ -182,6 +196,7 @@ function inferGeneA(strategyKey = '') {
   if (key.includes('split')) return 'zone';
   if (key.includes('balance')) return 'balanced';
   if (key.includes('repeat')) return 'repeat';
+  if (key.includes('structure')) return 'pattern';
   return 'hot';
 }
 
@@ -199,6 +214,7 @@ function inferGeneB(strategyKey = '') {
   if (key.includes('cluster')) return 'repeat';
   if (key.includes('split')) return 'mix';
   if (key.includes('balance')) return 'zone';
+  if (key.includes('structure')) return 'hot';
   return 'balanced';
 }
 
@@ -389,6 +405,9 @@ function finalizeNums(candidates = [], strategyKey = '', analysis = {}, idx = 0,
 }
 
 function normalizeStrategyRow(row = {}) {
+  const rawHitRate = toNum(row?.hit_rate, 0);
+  const rawRecent50HitRate = toNum(row?.recent_50_hit_rate, 0);
+
   return {
     strategy_key: normalizeStrategyKey(row?.strategy_key),
     strategy_name: String(row?.strategy_name || row?.strategy_label || row?.strategy_key || '').trim(),
@@ -396,10 +415,12 @@ function normalizeStrategyRow(row = {}) {
     avg_hit: toNum(row?.avg_hit, 0),
     roi: toNum(row?.roi, 0),
     total_rounds: toNum(row?.total_rounds, 0),
-    hit_rate: toNum(row?.hit_rate, 0),
-    recent_50_hit_rate: toNum(row?.recent_50_hit_rate, 0),
+    hit_rate: normalizeRate(rawHitRate),
+    recent_50_hit_rate: normalizeRate(rawRecent50HitRate),
     recent_50_roi: toNum(row?.recent_50_roi, 0),
-    strategy_weight: toNum(row?.weight, 0)
+    strategy_weight: toNum(row?.weight, 0),
+    raw_hit_rate: rawHitRate,
+    raw_recent_50_hit_rate: rawRecent50HitRate
   };
 }
 
@@ -557,8 +578,11 @@ function computeAggressiveDecision(row = {}) {
   const roi = toNum(row.adjusted_roi, row.roi);
   const recentRoi = toNum(row.recent_50_roi, 0);
   const avgHit = toNum(row.avg_hit, 0);
-  const hitRate = toNum(row.hit_rate, 0);
-  const recentHitRate = toNum(row.recent_50_hit_rate, 0);
+
+  // 這裡一定使用標準化後比例值
+  const hitRate = normalizeRate(row.hit_rate);
+  const recentHitRate = normalizeRate(row.recent_50_hit_rate);
+
   const totalRounds = toNum(row.total_rounds, 0);
   const score = toNum(row.adjusted_score, row.score);
   const marketBoost = toNum(row.market_boost, 1);
@@ -573,35 +597,30 @@ function computeAggressiveDecision(row = {}) {
 
   let decisionScore = 0;
 
-  // 正向爆發：近期 roi 最重
   decisionScore += safeSquarePositive(posRoi + 0.25) * 1700;
   decisionScore += safeSquarePositive(posRecentRoi + 0.35) * 2400;
   decisionScore += safeSquarePositive(posAvgHit) * 2800;
+
+  // 修正後：hit_rate / recent_50_hit_rate 已落在 0~1，不會再被 64.47 當成 64
   decisionScore += safeSquarePositive(posHitRate) * 1000;
   decisionScore += safeSquarePositive(posRecentHitRate) * 1350;
 
-  // 原始 score 直接放大
   if (score >= 0) {
     decisionScore += score * 3.2;
   } else {
     decisionScore += score * 5.8;
   }
 
-  // 樣本足夠加分，樣本不足大扣分
   if (totalRounds >= AGGRESSIVE_CONFIG.minRoundsTrust) {
     decisionScore += Math.min(totalRounds, 140) * 8;
   } else {
     decisionScore -= (AGGRESSIVE_CONFIG.minRoundsTrust - totalRounds) * 130;
   }
 
-  // 市場先乘上去
   decisionScore *= marketBoost;
-
-  // 過度重複策略，直接重罰；太久沒出現則稍微補償
   decisionScore *= usagePenalty;
   decisionScore *= staleBonus;
 
-  // 負向條件重罰
   if (roi <= AGGRESSIVE_CONFIG.rejectRoi) {
     decisionScore -= 3200;
   } else if (roi < 0) {
@@ -710,6 +729,7 @@ function buildFormalCandidates(statsRows = [], marketSnapshot = {}, recentFormal
 
   function pushRows(rows, tag, limit = Infinity) {
     let pushed = 0;
+
     for (const row of rows) {
       if (selected.length >= GROUP_COUNT) break;
       if (pushed >= limit) break;
@@ -724,7 +744,6 @@ function buildFormalCandidates(statsRows = [], marketSnapshot = {}, recentFormal
     }
   }
 
-  // 最強只取 1 或 2 支，避免一口氣把前四名全包
   pushRows(elite, 'elite', 2);
   pushRows(strong, 'strong', 2);
   pushRows(usable, 'usable', 2);
@@ -746,8 +765,8 @@ function calcStrategyStrength(row = {}) {
   const roi = toNum(row.adjusted_roi, row.roi);
   const recentRoi = toNum(row.recent_50_roi, 0);
   const avgHit = toNum(row.avg_hit, 0);
-  const hitRate = toNum(row.hit_rate, 0);
-  const recentHitRate = toNum(row.recent_50_hit_rate, 0);
+  const hitRate = normalizeRate(row.hit_rate);
+  const recentHitRate = normalizeRate(row.recent_50_hit_rate);
   const totalRounds = toNum(row.total_rounds, 0);
   const decisionScore = toNum(row.decision_score, 0);
   const marketBoost = toNum(row.market_boost, 1);
@@ -968,7 +987,9 @@ async function getRecentFormalUsage(limit = RECENT_FORMAL_USAGE_LIMIT) {
   const lastSeenIndex = {};
 
   (Array.isArray(data) ? data : []).forEach((row, idx) => {
-    const strategyKey = normalizeStrategyKey(row?.groups_json?.[0]?.key || row?.groups_json?.[0]?.meta?.strategy_key || '');
+    const strategyKey = normalizeStrategyKey(
+      row?.groups_json?.[0]?.key || row?.groups_json?.[0]?.meta?.strategy_key || ''
+    );
     if (!strategyKey) return;
 
     counts[strategyKey] = toNum(counts[strategyKey], 0) + 1;
@@ -1084,6 +1105,7 @@ function buildGroupsFromStats(statsRows = [], recentRows = [], sourceDrawNo = 0,
         adjusted_roi: row.adjusted_roi,
         avg_hit: row.avg_hit,
         hit_rate: row.hit_rate,
+        raw_hit_rate: row.raw_hit_rate,
         total_rounds: row.total_rounds,
         score: row.score,
         adjusted_score: row.adjusted_score,
@@ -1091,6 +1113,7 @@ function buildGroupsFromStats(statsRows = [], recentRows = [], sourceDrawNo = 0,
         decision_score: row.decision_score,
         recent_50_roi: row.recent_50_roi,
         recent_50_hit_rate: row.recent_50_hit_rate,
+        raw_recent_50_hit_rate: row.raw_recent_50_hit_rate,
         profit_mode: PROFIT_MODE_NAME,
         filter_pass: row.filter_pass,
         bet_weight: row.bet_weight,
