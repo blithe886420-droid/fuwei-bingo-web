@@ -1096,14 +1096,15 @@ export default async function handler(req, res) {
 
       const now = Date.now();
       const payload = {
-        id: now,
-        mode: TEST_MODE,
-        status: 'created',
-        source_draw_no: sourceDrawNo,
-        target_periods: TARGET_PERIODS,
-        groups_json: groups,
-        created_at: new Date().toISOString()
-      };
+  id: now,
+  mode: TEST_MODE,
+  status: 'created',
+  source_draw_no: sourceDrawNo,
+  target_periods: TARGET_PERIODS,
+  groups_json: groups,
+  market_snapshot_json: marketSnapshot,  
+  created_at: new Date().toISOString()
+};
 
       const { data: inserted, error: insertError } = await db
         .from('bingo_predictions')
