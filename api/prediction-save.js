@@ -15,6 +15,7 @@ const SUPABASE_KEY =
 const PREDICTIONS_TABLE = 'bingo_predictions';
 const DRAWS_TABLE = 'bingo_draws';
 const STRATEGY_STATS_TABLE = 'strategy_stats';
+const STRATEGY_POOL_TABLE = 'strategy_pool';
 
 if (!SUPABASE_URL || !SUPABASE_KEY) {
   throw new Error('Missing SUPABASE env');
@@ -32,18 +33,34 @@ const RECENT_DRAW_LIMIT = 80;
 const PROFIT_MODE_NAME = 'profit_mode_v2_1_weighted';
 const BASE_BET_AMOUNT = 25;
 
-const HARD_RULES = {
-  roiMin: 0,
-  avgHitMin: 1.1,
-  totalRoundsMin: 10,
-  scoreMin: 0
-};
+const DEFAULT_STRATEGY_KEYS = [
+  'repeat_hot',
+  'zone_repeat',
+  '2_hot',
+  'split_repeat',
+  'tail_repeat',
+  'repeat_mix',
+  'gap_repeat',
+  'cluster_spread',
+  'hot_chase',
+  'zone_balanced',
+  'mix_2',
+  'balance_mix',
+  'pattern_structure',
+  'cold_gap',
+  'gap_hot'
+];
 
-const SOFT_RULES = {
-  roiMin: -0.2,
-  avgHitMin: 1.0,
-  totalRoundsMin: 5,
-  scoreMin: -150
+const AGGRESSIVE_CONFIG = {
+  minRoundsTrust: 8,
+  rejectRoi: -0.8,
+  rejectRecentRoi: -0.7,
+  rejectAvgHit: 1.0,
+  eliteScore: 2200,
+  strongScore: 1200,
+  usableScore: 320,
+  nearTieRatio: 1.12,
+  rotationTieRatio: 1.18
 };
 
 function toNum(value, fallback = 0) {
@@ -127,6 +144,61 @@ function getZone(n) {
   return 4;
 }
 
+function normalizeStrategyKey(raw = '') {
+  return String(raw || '').trim().toLowerCase();
+}
+
+function buildStrategyName(strategyKey = '') {
+  return String(strategyKey || '')
+    .split('_')
+    .filter(Boolean)
+    .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+    .join(' ');
+}
+
+function inferGeneA(strategyKey = '') {
+  const key = String(strategyKey || '').toLowerCase();
+  if (key.includes('hot')) return 'hot';
+  if (key.includes('cold')) return 'cold';
+  if (key.includes('zone')) return 'zone';
+  if (key.includes('guard')) return 'guard';
+  if (key.includes('chase')) return 'chase';
+  if (key.includes('mix')) return 'mix';
+  if (key.includes('tail')) return 'tail';
+  if (key.includes('pattern')) return 'pattern';
+  if (key.includes('gap')) return 'gap';
+  if (key.includes('cluster')) return 'pattern';
+  if (key.includes('split')) return 'zone';
+  if (key.includes('balance')) return 'balanced';
+  if (key.includes('repeat')) return 'repeat';
+  return 'hot';
+}
+
+function inferGeneB(strategyKey = '') {
+  const key = String(strategyKey || '').toLowerCase();
+  if (key.includes('zone')) return 'zone';
+  if (key.includes('guard')) return 'guard';
+  if (key.includes('chase')) return 'chase';
+  if (key.includes('cold')) return 'cold';
+  if (key.includes('mix')) return 'balanced';
+  if (key.includes('tail')) return 'balanced';
+  if (key.includes('repeat')) return 'repeat';
+  if (key.includes('pattern')) return 'mix';
+  if (key.includes('gap')) return 'gap';
+  if (key.includes('cluster')) return 'repeat';
+  if (key.includes('split')) return 'mix';
+  if (key.includes('balance')) return 'zone';
+  return 'balanced';
+}
+
+function numbersByZone(zone, pool = []) {
+  return pool.filter((n) => getZone(n) === zone);
+}
+
+function numbersByTail(tail, pool = []) {
+  return pool.filter((n) => n % 10 === tail);
+}
+
 function buildRecentAnalysis(rows = []) {
   const parsedRows = (Array.isArray(rows) ? rows : []).map((row) => ({
     draw_no: Number(row?.draw_no || 0),
@@ -194,42 +266,6 @@ function buildRecentAnalysis(rows = []) {
     hotTails,
     gapNums
   };
-}
-
-function inferGeneA(strategyKey = '') {
-  const key = String(strategyKey || '').toLowerCase();
-  if (key.includes('hot')) return 'hot';
-  if (key.includes('cold')) return 'cold';
-  if (key.includes('zone')) return 'zone';
-  if (key.includes('guard')) return 'guard';
-  if (key.includes('chase')) return 'chase';
-  if (key.includes('mix')) return 'mix';
-  if (key.includes('tail')) return 'tail';
-  if (key.includes('pattern')) return 'pattern';
-  if (key.includes('gap')) return 'gap';
-  return 'hot';
-}
-
-function inferGeneB(strategyKey = '') {
-  const key = String(strategyKey || '').toLowerCase();
-  if (key.includes('zone')) return 'zone';
-  if (key.includes('guard')) return 'guard';
-  if (key.includes('chase')) return 'chase';
-  if (key.includes('cold')) return 'cold';
-  if (key.includes('mix')) return 'balanced';
-  if (key.includes('tail')) return 'balanced';
-  if (key.includes('repeat')) return 'repeat';
-  if (key.includes('pattern')) return 'mix';
-  if (key.includes('gap')) return 'gap';
-  return 'balanced';
-}
-
-function numbersByZone(zone, pool = []) {
-  return pool.filter((n) => getZone(n) === zone);
-}
-
-function numbersByTail(tail, pool = []) {
-  return pool.filter((n) => n % 10 === tail);
 }
 
 function geneCandidates(gene, analysis, context = {}) {
@@ -343,8 +379,8 @@ function finalizeNums(candidates = [], strategyKey = '', analysis = {}, idx = 0,
 
 function normalizeStrategyRow(row = {}) {
   return {
-    strategy_key: String(row?.strategy_key || '').trim(),
-    strategy_name: String(row?.strategy_name || row?.strategy_key || '').trim(),
+    strategy_key: normalizeStrategyKey(row?.strategy_key),
+    strategy_name: String(row?.strategy_name || row?.strategy_label || row?.strategy_key || '').trim(),
     score: toNum(row?.score, 0),
     avg_hit: toNum(row?.avg_hit, 0),
     roi: toNum(row?.roi, 0),
@@ -369,8 +405,21 @@ function normalizeMarketSnapshot(snapshot = {}) {
   };
 }
 
+function detectMarketType(marketSnapshot = {}) {
+  const summary = marketSnapshot?.latest?.summary;
+  if (!summary) return 'UNKNOWN';
+
+  if (summary.compactness === 'wide') return 'WIDE_SPREAD';
+  if (summary.compactness === 'tight') return 'TIGHT_CLUSTER';
+  if (summary.sum_band === 'high' && summary.big_small_bias === 'big') return 'HIGH_BIG';
+  if (summary.sum_band === 'low' && summary.big_small_bias === 'small') return 'LOW_SMALL';
+  if (summary.odd_even_bias === 'odd') return 'ODD_HEAVY';
+  if (summary.odd_even_bias === 'even') return 'EVEN_HEAVY';
+  return 'NORMAL';
+}
+
 function getStrategyMarketBoost(strategyKey = '', marketSnapshot = {}) {
-  const key = String(strategyKey || '').toLowerCase();
+  const key = normalizeStrategyKey(strategyKey);
   const latestSummary = marketSnapshot?.latest?.summary || null;
   const trend = marketSnapshot?.trend || {};
 
@@ -385,70 +434,162 @@ function getStrategyMarketBoost(strategyKey = '', marketSnapshot = {}) {
   const reasons = [];
 
   if (latestSummary.odd_even_bias === 'odd' && key.includes('odd')) {
-    boost += 0.16;
+    boost += 0.18;
     reasons.push('odd_bias_match');
   }
 
   if (latestSummary.odd_even_bias === 'even' && key.includes('even')) {
-    boost += 0.16;
+    boost += 0.18;
     reasons.push('even_bias_match');
   }
 
   if (latestSummary.big_small_bias === 'big' && (key.includes('hot') || key.includes('chase'))) {
-    boost += 0.1;
+    boost += 0.12;
     reasons.push('big_bias_hot');
   }
 
   if (latestSummary.big_small_bias === 'small' && (key.includes('cold') || key.includes('guard'))) {
-    boost += 0.1;
+    boost += 0.12;
     reasons.push('small_bias_cold');
   }
 
   if (latestSummary.compactness === 'tight' && (key.includes('pattern') || key.includes('cluster'))) {
-    boost += 0.15;
+    boost += 0.18;
     reasons.push('tight_pattern');
   }
 
-  if (latestSummary.compactness === 'wide' && (key.includes('gap') || key.includes('chase'))) {
-    boost += 0.15;
+  if (latestSummary.compactness === 'wide' && (key.includes('gap') || key.includes('chase') || key.includes('split'))) {
+    boost += 0.18;
     reasons.push('wide_gap');
   }
 
   if ((latestSummary.hot_zone === 1 || latestSummary.hot_zone === 4) && key.includes('zone')) {
-    boost += 0.09;
+    boost += 0.1;
     reasons.push('zone_focus');
   }
 
   if (latestSummary.sum_band === 'high' && (key.includes('hot') || key.includes('mix'))) {
-    boost += 0.08;
+    boost += 0.09;
     reasons.push('high_sum_hot');
   }
 
   if (latestSummary.sum_band === 'low' && (key.includes('cold') || key.includes('gap'))) {
-    boost += 0.08;
+    boost += 0.09;
     reasons.push('low_sum_cold');
   }
 
   if (trend.tail_changed && key.includes('tail')) {
-    boost += 0.06;
+    boost += 0.08;
     reasons.push('tail_changed');
   }
 
   if (toNum(trend.span_delta_1, 0) >= 8 && key.includes('gap')) {
-    boost += 0.05;
+    boost += 0.08;
     reasons.push('span_expanding');
   }
 
   if (toNum(trend.span_delta_1, 0) <= -8 && (key.includes('pattern') || key.includes('cluster'))) {
-    boost += 0.05;
+    boost += 0.08;
     reasons.push('span_shrinking');
   }
 
-  boost = clamp(boost, 0.82, 1.28);
+  boost = clamp(boost, 0.75, 1.35);
 
   return {
     boost,
     reason: reasons.length ? reasons.join('|') : 'market_neutral'
+  };
+}
+
+function safeSquarePositive(v) {
+  const n = Math.max(0, toNum(v, 0));
+  return n * n;
+}
+
+function computeAggressiveDecision(row = {}) {
+  const roi = toNum(row.adjusted_roi, row.roi);
+  const recentRoi = toNum(row.recent_50_roi, 0);
+  const avgHit = toNum(row.avg_hit, 0);
+  const hitRate = toNum(row.hit_rate, 0);
+  const recentHitRate = toNum(row.recent_50_hit_rate, 0);
+  const totalRounds = toNum(row.total_rounds, 0);
+  const score = toNum(row.adjusted_score, row.score);
+  const marketBoost = toNum(row.market_boost, 1);
+
+  const posRoi = Math.max(0, roi);
+  const posRecentRoi = Math.max(0, recentRoi);
+  const posAvgHit = Math.max(0, avgHit - 1);
+  const posHitRate = Math.max(0, hitRate);
+  const posRecentHitRate = Math.max(0, recentHitRate);
+
+  let decisionScore = 0;
+
+  // 激進放大：正報酬與近期報酬最重
+  decisionScore += safeSquarePositive(posRoi + 0.35) * 1550;
+  decisionScore += safeSquarePositive(posRecentRoi + 0.35) * 1850;
+
+  // 命中表現
+  decisionScore += safeSquarePositive(posAvgHit) * 2450;
+  decisionScore += safeSquarePositive(posHitRate) * 900;
+  decisionScore += safeSquarePositive(posRecentHitRate) * 1100;
+
+  // 原始 score 與樣本數
+  if (score >= 0) {
+    decisionScore += score * 2.8;
+  } else {
+    decisionScore += score * 4.8;
+  }
+
+  if (totalRounds >= AGGRESSIVE_CONFIG.minRoundsTrust) {
+    decisionScore += Math.min(totalRounds, 120) * 6;
+  } else {
+    decisionScore -= (AGGRESSIVE_CONFIG.minRoundsTrust - totalRounds) * 85;
+  }
+
+  // 市場加權
+  decisionScore += Math.max(0, marketBoost - 1) * 2200;
+  decisionScore *= marketBoost;
+
+  // 強懲罰：負 ROI / 負近期 ROI / 低命中
+  if (roi <= AGGRESSIVE_CONFIG.rejectRoi) {
+    decisionScore -= 2600;
+  } else if (roi < 0) {
+    decisionScore -= Math.abs(roi) * 1500;
+  }
+
+  if (recentRoi <= AGGRESSIVE_CONFIG.rejectRecentRoi) {
+    decisionScore -= 2200;
+  } else if (recentRoi < 0) {
+    decisionScore -= Math.abs(recentRoi) * 1800;
+  }
+
+  if (avgHit < AGGRESSIVE_CONFIG.rejectAvgHit) {
+    decisionScore -= (AGGRESSIVE_CONFIG.rejectAvgHit - avgHit) * 1300;
+  }
+
+  if (totalRounds >= AGGRESSIVE_CONFIG.minRoundsTrust && roi < 0 && recentRoi < 0) {
+    decisionScore *= 0.42;
+  }
+
+  if (totalRounds >= AGGRESSIVE_CONFIG.minRoundsTrust && avgHit < 1.1 && hitRate < 0.15) {
+    decisionScore *= 0.5;
+  }
+
+  let decision = 'reject';
+
+  if (decisionScore >= AGGRESSIVE_CONFIG.eliteScore) {
+    decision = 'elite';
+  } else if (decisionScore >= AGGRESSIVE_CONFIG.strongScore) {
+    decision = 'strong';
+  } else if (decisionScore >= AGGRESSIVE_CONFIG.usableScore) {
+    decision = 'usable';
+  } else if (totalRounds < AGGRESSIVE_CONFIG.minRoundsTrust && avgHit >= 1.2) {
+    decision = 'trial';
+  }
+
+  return {
+    decision,
+    decision_score: Math.round(decisionScore * 1000) / 1000
   };
 }
 
@@ -459,13 +600,13 @@ function applyMarketDecisionToRows(rows = [], marketSnapshot = {}) {
 
     const adjustedScore = base.score * marketFit.boost;
     const adjustedRoi = base.roi * marketFit.boost;
-    const decisionScore =
-      adjustedScore +
-      adjustedRoi * 35 +
-      base.avg_hit * 28 +
-      base.recent_50_roi * 18 +
-      base.recent_50_hit_rate * 12 +
-      Math.min(base.total_rounds, 60) * 0.45;
+
+    const aggressive = computeAggressiveDecision({
+      ...base,
+      adjusted_score: adjustedScore,
+      adjusted_roi: adjustedRoi,
+      market_boost: marketFit.boost
+    });
 
     return {
       ...base,
@@ -473,137 +614,62 @@ function applyMarketDecisionToRows(rows = [], marketSnapshot = {}) {
       market_reason: marketFit.reason,
       adjusted_score: adjustedScore,
       adjusted_roi: adjustedRoi,
-      decision_score: decisionScore
+      decision: aggressive.decision,
+      decision_score: aggressive.decision_score
     };
   });
 }
 
-function isHardQualified(row) {
+function byDecisionDesc(a, b) {
   return (
-    row.roi > HARD_RULES.roiMin &&
-    row.avg_hit >= HARD_RULES.avgHitMin &&
-    row.total_rounds >= HARD_RULES.totalRoundsMin &&
-    row.score > HARD_RULES.scoreMin
+    toNum(b.decision_score, 0) - toNum(a.decision_score, 0) ||
+    toNum(b.adjusted_roi, 0) - toNum(a.adjusted_roi, 0) ||
+    toNum(b.recent_50_roi, 0) - toNum(a.recent_50_roi, 0) ||
+    toNum(b.avg_hit, 0) - toNum(a.avg_hit, 0) ||
+    toNum(b.market_boost, 1) - toNum(a.market_boost, 1) ||
+    toNum(b.total_rounds, 0) - toNum(a.total_rounds, 0) ||
+    String(a.strategy_key).localeCompare(String(b.strategy_key))
   );
-}
-
-function isSoftQualified(row) {
-  return (
-    row.roi > SOFT_RULES.roiMin &&
-    row.avg_hit >= SOFT_RULES.avgHitMin &&
-    row.total_rounds >= SOFT_RULES.totalRoundsMin &&
-    row.score > SOFT_RULES.scoreMin
-  );
-}
-
-function rankStrategyRows(rows = []) {
-  return [...rows].sort((a, b) => {
-    if (toNum(b.decision_score, 0) !== toNum(a.decision_score, 0)) {
-      return toNum(b.decision_score, 0) - toNum(a.decision_score, 0);
-    }
-    if (toNum(b.market_boost, 1) !== toNum(a.market_boost, 1)) {
-      return toNum(b.market_boost, 1) - toNum(a.market_boost, 1);
-    }
-    if (b.roi !== a.roi) return b.roi - a.roi;
-    if (b.avg_hit !== a.avg_hit) return b.avg_hit - a.avg_hit;
-    if (b.score !== a.score) return b.score - a.score;
-    if (b.total_rounds !== a.total_rounds) return b.total_rounds - a.total_rounds;
-    if (b.recent_50_roi !== a.recent_50_roi) return b.recent_50_roi - a.recent_50_roi;
-    if (b.recent_50_hit_rate !== a.recent_50_hit_rate) {
-      return b.recent_50_hit_rate - a.recent_50_hit_rate;
-    }
-    return a.strategy_key.localeCompare(b.strategy_key);
-  });
 }
 
 function buildFormalCandidates(statsRows = [], marketSnapshot = {}) {
-  const normalized = rankStrategyRows(
-    applyMarketDecisionToRows(
-      (statsRows || [])
-        .map(normalizeStrategyRow)
-        .filter((row) => row.strategy_key),
-      marketSnapshot
-    )
-  );
+  const ranked = applyMarketDecisionToRows(
+    (statsRows || []).map(normalizeStrategyRow).filter((row) => row.strategy_key),
+    marketSnapshot
+  ).sort(byDecisionDesc);
 
-  const hardQualified = normalized.filter(isHardQualified);
-
-  const softQualified = normalized.filter((row) => {
-    if (hardQualified.some((x) => x.strategy_key === row.strategy_key)) return false;
-    return isSoftQualified(row);
-  });
-
-  const strongQualified = normalized.filter((row) => {
-    if (hardQualified.some((x) => x.strategy_key === row.strategy_key)) return false;
-    if (softQualified.some((x) => x.strategy_key === row.strategy_key)) return false;
-
-    return (
-      row.recent_50_roi > 0 &&
-      row.avg_hit >= 1.2 &&
-      row.total_rounds >= 15 &&
-      row.score > 0
-    );
-  });
-
-  const usableQualified = normalized.filter((row) => {
-    if (hardQualified.some((x) => x.strategy_key === row.strategy_key)) return false;
-    if (softQualified.some((x) => x.strategy_key === row.strategy_key)) return false;
-    if (strongQualified.some((x) => x.strategy_key === row.strategy_key)) return false;
-
-    return (
-      row.recent_50_roi >= 0 &&
-      row.avg_hit >= 1.1 &&
-      row.total_rounds >= 10
-    );
-  });
-
-  const reserveQualified = normalized.filter((row) => {
-    if (hardQualified.some((x) => x.strategy_key === row.strategy_key)) return false;
-    if (softQualified.some((x) => x.strategy_key === row.strategy_key)) return false;
-    if (strongQualified.some((x) => x.strategy_key === row.strategy_key)) return false;
-    if (usableQualified.some((x) => x.strategy_key === row.strategy_key)) return false;
-
-    return (
-      row.recent_50_roi > -0.1 &&
-      row.roi > -0.1 &&
-      row.avg_hit >= 1.0 &&
-      row.total_rounds >= 8
-    );
-  });
+  const elite = ranked.filter((row) => row.decision === 'elite');
+  const strong = ranked.filter((row) => row.decision === 'strong');
+  const usable = ranked.filter((row) => row.decision === 'usable');
+  const trial = ranked.filter((row) => row.decision === 'trial');
 
   const selected = [];
   const used = new Set();
 
-  function pushRows(rows, filterPass) {
+  function pushRows(rows, tag) {
     for (const row of rows) {
       if (selected.length >= GROUP_COUNT) break;
       if (used.has(row.strategy_key)) continue;
-
       used.add(row.strategy_key);
       selected.push({
         ...row,
-        filter_pass: filterPass
+        filter_pass: tag
       });
     }
   }
 
-  pushRows(hardQualified, 'hard');
-  pushRows(softQualified, 'soft');
-  pushRows(strongQualified, 'strong');
-  pushRows(usableQualified, 'usable');
-  pushRows(reserveQualified, 'reserve');
+  pushRows(elite, 'elite');
+  pushRows(strong, 'strong');
+  pushRows(usable, 'usable');
+  pushRows(trial, 'trial');
 
   if (selected.length < GROUP_COUNT) {
-    for (const row of normalized) {
-      if (selected.length >= GROUP_COUNT) break;
-      if (used.has(row.strategy_key)) continue;
+    const fallback = ranked.filter((row) => row.decision !== 'reject');
+    pushRows(fallback, 'fallback_non_reject');
+  }
 
-      used.add(row.strategy_key);
-      selected.push({
-        ...row,
-        filter_pass: 'fallback'
-      });
-    }
+  if (selected.length < GROUP_COUNT) {
+    pushRows(ranked, 'forced_fallback');
   }
 
   return selected.slice(0, GROUP_COUNT);
@@ -611,40 +677,39 @@ function buildFormalCandidates(statsRows = [], marketSnapshot = {}) {
 
 function calcStrategyStrength(row = {}) {
   const roi = toNum(row.adjusted_roi, row.roi);
-  const avgHit = toNum(row.avg_hit, 0);
   const recentRoi = toNum(row.recent_50_roi, 0);
+  const avgHit = toNum(row.avg_hit, 0);
+  const hitRate = toNum(row.hit_rate, 0);
   const recentHitRate = toNum(row.recent_50_hit_rate, 0);
   const totalRounds = toNum(row.total_rounds, 0);
-  const rawScore = toNum(row.adjusted_score, row.score);
+  const decisionScore = toNum(row.decision_score, 0);
   const marketBoost = toNum(row.market_boost, 1);
 
-  const scoreNormalized = clamp(rawScore, -300, 300);
+  let strength = 0;
 
-  const roiPart = Math.max(0, roi) * 900;
-  const avgHitPart = Math.max(0, avgHit - 1) * 1100;
-  const recentRoiPart = Math.max(0, recentRoi) * 700;
-  const recentHitRatePart = Math.max(0, recentHitRate) * 450;
-  const scorePart = Math.max(0, scoreNormalized) * 1.2;
-  const roundsPart = Math.min(30, Math.max(0, totalRounds)) * 8;
-  const marketPart = Math.max(0, marketBoost - 1) * 600;
+  strength += Math.max(0, decisionScore);
+  strength += safeSquarePositive(Math.max(0, roi) + 0.2) * 1800;
+  strength += safeSquarePositive(Math.max(0, recentRoi) + 0.2) * 2200;
+  strength += safeSquarePositive(Math.max(0, avgHit - 1)) * 2400;
+  strength += safeSquarePositive(Math.max(0, hitRate)) * 1200;
+  strength += safeSquarePositive(Math.max(0, recentHitRate)) * 1300;
+  strength += Math.min(totalRounds, 100) * 8;
+  strength += Math.max(0, marketBoost - 1) * 2600;
 
-  let penalty = 0;
-  if (roi < 0) penalty += Math.abs(roi) * 600;
-  if (recentRoi < 0) penalty += Math.abs(recentRoi) * 500;
-  if (avgHit < 1) penalty += (1 - avgHit) * 500;
+  if (roi < 0) strength -= Math.abs(roi) * 1800;
+  if (recentRoi < 0) strength -= Math.abs(recentRoi) * 2200;
+  if (avgHit < 1) strength -= (1 - avgHit) * 1600;
 
-  return Math.max(
-    0,
-    roiPart + avgHitPart + recentRoiPart + recentHitRatePart + scorePart + roundsPart + marketPart - penalty
-  );
+  return Math.max(0, strength);
 }
 
 function buildBetWeightMeta(rows = []) {
   const normalizedRows = Array.isArray(rows) ? rows : [];
+  if (!normalizedRows.length) return [];
+
   const strengths = normalizedRows.map((row) => calcStrategyStrength(row));
   const totalStrength = strengths.reduce((sum, n) => sum + n, 0);
-
-  if (!normalizedRows.length) return [];
+  const maxStrength = Math.max(...strengths, 0);
 
   if (totalStrength <= 0) {
     return normalizedRows.map((row) => ({
@@ -669,31 +734,31 @@ function buildBetWeightMeta(rows = []) {
     floorBasisPoints[fractionalOrder[i].idx] += 1;
   }
 
-  const maxStrength = Math.max(...strengths, 0);
-
   return normalizedRows.map((row, idx) => {
     const strength = strengths[idx];
     const share = totalStrength > 0 ? strength / totalStrength : 0;
+    const decisionScore = toNum(row.decision_score, 0);
     const roi = toNum(row.adjusted_roi, row.roi);
-    const avgHit = toNum(row.avg_hit, 0);
     const recentRoi = toNum(row.recent_50_roi, 0);
-    const marketBoost = toNum(row.market_boost, 1);
 
     let weight = 1;
 
-    if (strength > 0 && roi > 0 && recentRoi >= 0 && avgHit >= 1.15) {
-      if (strength === maxStrength && share >= 0.42) {
-        weight = 3;
-      } else if (share >= 0.24) {
-        weight = 2;
-      }
+    if (
+      strength === maxStrength &&
+      share >= 0.42 &&
+      decisionScore >= AGGRESSIVE_CONFIG.eliteScore
+    ) {
+      weight = 3;
+    } else if (
+      share >= 0.22 &&
+      decisionScore >= AGGRESSIVE_CONFIG.strongScore
+    ) {
+      weight = 2;
     }
 
-    if (marketBoost >= 1.16 && weight < 3) {
-      weight += 1;
+    if (roi < 0 || recentRoi < 0) {
+      weight = Math.min(weight, 1);
     }
-
-    weight = clamp(weight, 1, 3);
 
     return {
       ...row,
@@ -706,15 +771,128 @@ function buildBetWeightMeta(rows = []) {
   });
 }
 
-function buildGroupsFromStats(statsRows = [], recentRows = [], sourceDrawNo) {
+function arrangeSelectedOrder(rows = [], sourceDrawNo = 0, marketSnapshot = {}) {
+  const list = [...rows];
+  if (list.length <= 1) return list;
+
+  const marketType = detectMarketType(marketSnapshot);
+  const summary = marketSnapshot?.latest?.summary || {};
+  const hash = stableHash(
+    `${sourceDrawNo}_${marketType}_${summary.odd_even_bias || ''}_${summary.compactness || ''}`
+  );
+
+  const first = toNum(list[0]?.decision_score, 0);
+  const second = toNum(list[1]?.decision_score, 0);
+  const third = toNum(list[2]?.decision_score, 0);
+
+  if (second > 0 && first / second <= AGGRESSIVE_CONFIG.nearTieRatio) {
+    if (hash % 2 === 1) {
+      [list[0], list[1]] = [list[1], list[0]];
+    }
+  }
+
+  if (third > 0 && first / third <= AGGRESSIVE_CONFIG.rotationTieRatio && list.length >= 3) {
+    const offset = hash % 3;
+    return rotateList(list.slice(0, 3), offset).concat(list.slice(3));
+  }
+
+  return list;
+}
+
+async function ensureDefaultStrategyPoolActive(strategyKeys = []) {
+  const finalKeys = [...new Set((Array.isArray(strategyKeys) ? strategyKeys : [])
+    .map(normalizeStrategyKey)
+    .filter(Boolean))];
+
+  if (!finalKeys.length) {
+    return {
+      ok: true,
+      checked_count: 0,
+      inserted_count: 0,
+      updated_count: 0
+    };
+  }
+
+  const { data: existingRows, error: existingError } = await supabase
+    .from(STRATEGY_POOL_TABLE)
+    .select('*')
+    .in('strategy_key', finalKeys);
+
+  if (existingError) throw existingError;
+
+  const existingMap = new Map((existingRows || []).map((row) => [normalizeStrategyKey(row?.strategy_key), row]));
+  const nowIso = new Date().toISOString();
+
+  const rowsToInsert = [];
+  const keysToForceActive = [];
+
+  for (const strategyKey of finalKeys) {
+    const existing = existingMap.get(strategyKey);
+
+    if (!existing) {
+      rowsToInsert.push({
+        strategy_key: strategyKey,
+        strategy_name: buildStrategyName(strategyKey),
+        gene_a: inferGeneA(strategyKey),
+        gene_b: inferGeneB(strategyKey),
+        parameters: {},
+        generation: 1,
+        source_type: 'seed',
+        parent_keys: [],
+        status: 'active',
+        protected_rank: false,
+        incubation_until_draw: 0,
+        created_draw_no: 0,
+        created_at: nowIso,
+        updated_at: nowIso
+      });
+      continue;
+    }
+
+    if (String(existing.status || '').toLowerCase() !== 'active') {
+      keysToForceActive.push(strategyKey);
+    }
+  }
+
+  if (rowsToInsert.length) {
+    const { error: insertError } = await supabase
+      .from(STRATEGY_POOL_TABLE)
+      .insert(rowsToInsert);
+
+    if (insertError) throw insertError;
+  }
+
+  for (const strategyKey of keysToForceActive) {
+    const { error: updateError } = await supabase
+      .from(STRATEGY_POOL_TABLE)
+      .update({
+        status: 'active',
+        updated_at: nowIso
+      })
+      .eq('strategy_key', strategyKey);
+
+    if (updateError) throw updateError;
+  }
+
+  return {
+    ok: true,
+    checked_count: finalKeys.length,
+    inserted_count: rowsToInsert.length,
+    updated_count: keysToForceActive.length
+  };
+}
+
+function buildGroupsFromStats(statsRows = [], recentRows = [], sourceDrawNo = 0) {
   const analysis = buildRecentAnalysis(recentRows);
   const marketSnapshot = normalizeMarketSnapshot(buildRecentMarketSignalSnapshot(recentRows, 'numbers'));
+
   const selectedStats = buildFormalCandidates(statsRows, marketSnapshot);
-  const selectedWithWeights = buildBetWeightMeta(selectedStats);
+  const orderedSelectedStats = arrangeSelectedOrder(selectedStats, sourceDrawNo, marketSnapshot);
+  const selectedWithWeights = buildBetWeightMeta(orderedSelectedStats);
 
   const groups = selectedWithWeights.map((row, idx) => {
     const strategyKey = row.strategy_key;
-    const strategyName = row.strategy_name || row.strategy_key;
+    const strategyName = row.strategy_name || buildStrategyName(strategyKey);
     const geneA = inferGeneA(strategyKey);
     const geneB = inferGeneB(strategyKey);
 
@@ -735,16 +913,18 @@ function buildGroupsFromStats(statsRows = [], recentRows = [], sourceDrawNo) {
       weight: row.weight,
       bet_amount: row.bet_amount,
       bet_weight: row.bet_weight,
-      reason: `正式下注依權重模式建立（倍率 x${row.weight} / 單組 ${row.bet_amount} 元 / 市場 ${row.market_reason || 'neutral'}）`,
+      reason: `正式下注依激進決策模式建立（倍率 x${row.weight} / 單組 ${row.bet_amount} 元 / 市場 ${row.market_reason || 'neutral'}）`,
       meta: {
         strategy_key: strategyKey,
         strategy_name: strategyName,
         roi: row.roi,
         adjusted_roi: row.adjusted_roi,
         avg_hit: row.avg_hit,
+        hit_rate: row.hit_rate,
         total_rounds: row.total_rounds,
         score: row.score,
         adjusted_score: row.adjusted_score,
+        decision: row.decision,
         decision_score: row.decision_score,
         recent_50_roi: row.recent_50_roi,
         recent_50_hit_rate: row.recent_50_hit_rate,
@@ -752,13 +932,16 @@ function buildGroupsFromStats(statsRows = [], recentRows = [], sourceDrawNo) {
         filter_pass: row.filter_pass,
         bet_weight: row.bet_weight,
         bet_amount: row.bet_amount,
+        weight: row.bet_weight,
         weight_multiplier: row.weight,
         strength_score: row.strength_score,
         strength_share: row.strength_share,
         strategy_weight: row.strategy_weight,
         market_boost: row.market_boost,
         market_reason: row.market_reason,
-        market_summary: marketSnapshot?.latest?.summary || null
+        market_type: detectMarketType(marketSnapshot),
+        market_summary: marketSnapshot?.latest?.summary || null,
+        selection_rank: idx + 1
       }
     };
   });
@@ -767,7 +950,10 @@ function buildGroupsFromStats(statsRows = [], recentRows = [], sourceDrawNo) {
     groups.length === GROUP_COUNT &&
     groups.every((g) => Array.isArray(g.nums) && g.nums.length === 4)
   ) {
-    return groups;
+    return {
+      groups,
+      marketSnapshot
+    };
   }
 
   const pool = uniqueKeepOrder([
@@ -779,28 +965,34 @@ function buildGroupsFromStats(statsRows = [], recentRows = [], sourceDrawNo) {
 
   const safePool = pool.length >= 16 ? pool : Array.from({ length: 20 }, (_, i) => i + 1);
 
-  return Array.from({ length: GROUP_COUNT }, (_, idx) => ({
-    key: `formal_fallback_${idx + 1}`,
-    label: `Formal Fallback ${idx + 1}`,
-    nums: uniqueAsc(rotateList(safePool, idx * 4).slice(0, 4)),
-    weight: 1,
-    bet_amount: BASE_BET_AMOUNT,
-    bet_weight: 2500,
-    reason: `正式下注 fallback（倍率 x1 / 單組 ${BASE_BET_AMOUNT} 元）`,
-    meta: {
-      strategy_key: `formal_fallback_${idx + 1}`,
-      strategy_name: `Formal Fallback ${idx + 1}`,
-      profit_mode: PROFIT_MODE_NAME,
-      filter_pass: 'fallback',
-      bet_weight: 2500,
+  return {
+    groups: Array.from({ length: GROUP_COUNT }, (_, idx) => ({
+      key: `formal_fallback_${idx + 1}`,
+      label: `Formal Fallback ${idx + 1}`,
+      nums: uniqueAsc(rotateList(safePool, idx * 4).slice(0, 4)),
+      weight: 1,
       bet_amount: BASE_BET_AMOUNT,
-      weight_multiplier: 1,
-      strength_score: 0,
-      strength_share: 0.25,
-      market_boost: 1,
-      market_reason: 'fallback'
-    }
-  }));
+      bet_weight: 2500,
+      reason: `正式下注 fallback（倍率 x1 / 單組 ${BASE_BET_AMOUNT} 元）`,
+      meta: {
+        strategy_key: `formal_fallback_${idx + 1}`,
+        strategy_name: `Formal Fallback ${idx + 1}`,
+        profit_mode: PROFIT_MODE_NAME,
+        filter_pass: 'fallback',
+        bet_weight: 2500,
+        bet_amount: BASE_BET_AMOUNT,
+        weight: 2500,
+        weight_multiplier: 1,
+        strength_score: 0,
+        strength_share: 0.25,
+        market_boost: 1,
+        market_reason: 'fallback',
+        market_type: detectMarketType(marketSnapshot),
+        selection_rank: idx + 1
+      }
+    })),
+    marketSnapshot
+  };
 }
 
 async function getLatestDraw() {
@@ -829,7 +1021,7 @@ async function getRecentDraws(limit = RECENT_DRAW_LIMIT) {
 
 async function getActiveStrategyKeys() {
   const { data, error } = await supabase
-    .from('strategy_pool')
+    .from(STRATEGY_POOL_TABLE)
     .select('strategy_key')
     .eq('status', 'active');
 
@@ -837,12 +1029,16 @@ async function getActiveStrategyKeys() {
 
   return new Set(
     (Array.isArray(data) ? data : [])
-      .map((row) => String(row?.strategy_key || '').trim())
+      .map((row) => normalizeStrategyKey(row?.strategy_key))
       .filter(Boolean)
   );
 }
 
-async function getTopStrategyStats(limit = 50) {
+async function getTopStrategyStats(limit = 200) {
+  await ensureDefaultStrategyPoolActive(DEFAULT_STRATEGY_KEYS);
+
+  const activeKeys = await getActiveStrategyKeys();
+
   const { data, error } = await supabase
     .from(STRATEGY_STATS_TABLE)
     .select('*')
@@ -851,14 +1047,29 @@ async function getTopStrategyStats(limit = 50) {
 
   if (error) throw error;
 
-  const activeKeys = await getActiveStrategyKeys();
-
   const normalized = (Array.isArray(data) ? data : [])
     .map(normalizeStrategyRow)
     .filter((row) => row.strategy_key)
     .filter((row) => activeKeys.size === 0 || activeKeys.has(row.strategy_key));
 
-  return rankStrategyRows(normalized);
+  return normalized.sort((a, b) => {
+    const scoreGap =
+      computeAggressiveDecision({
+        ...a,
+        adjusted_score: a.score,
+        adjusted_roi: a.roi,
+        market_boost: 1
+      }).decision_score -
+      computeAggressiveDecision({
+        ...b,
+        adjusted_score: b.score,
+        adjusted_roi: b.roi,
+        market_boost: 1
+      }).decision_score;
+
+    if (scoreGap !== 0) return -scoreGap;
+    return String(a.strategy_key).localeCompare(String(b.strategy_key));
+  });
 }
 
 async function saveFormalPrediction(payload) {
@@ -883,6 +1094,7 @@ async function saveFormalPrediction(payload) {
       .from(PREDICTIONS_TABLE)
       .update({
         groups_json: payload.groups_json,
+        market_snapshot_json: payload.market_snapshot_json,
         target_periods: Number(payload.target_periods),
         status: 'created',
         compare_status: null,
@@ -909,6 +1121,7 @@ async function saveFormalPrediction(payload) {
     source_draw_no: sourceDrawNo,
     target_periods: Number(payload.target_periods),
     groups_json: payload.groups_json,
+    market_snapshot_json: payload.market_snapshot_json,
     created_at: payload.created_at
   };
 
@@ -948,7 +1161,7 @@ export default async function handler(req, res) {
     const [latestDraw, recentRows, strategyStats] = await Promise.all([
       getLatestDraw(),
       getRecentDraws(RECENT_DRAW_LIMIT),
-      getTopStrategyStats(50)
+      getTopStrategyStats(200)
     ]);
 
     const sourceDrawNo = Number(latestDraw.draw_no || 0);
@@ -956,8 +1169,9 @@ export default async function handler(req, res) {
       throw new Error('source draw not found');
     }
 
-    const marketSnapshot = normalizeMarketSnapshot(buildRecentMarketSignalSnapshot(recentRows, 'numbers'));
-    const groups = buildGroupsFromStats(strategyStats, recentRows, sourceDrawNo);
+    const built = buildGroupsFromStats(strategyStats, recentRows, sourceDrawNo);
+    const groups = built.groups;
+    const marketSnapshot = built.marketSnapshot || normalizeMarketSnapshot(buildRecentMarketSignalSnapshot(recentRows, 'numbers'));
 
     const payload = {
       id: Date.now(),
@@ -966,6 +1180,7 @@ export default async function handler(req, res) {
       source_draw_no: sourceDrawNo,
       target_periods: FORMAL_TARGET_PERIODS,
       groups_json: groups,
+      market_snapshot_json: marketSnapshot,
       created_at: new Date().toISOString()
     };
 
@@ -979,6 +1194,7 @@ export default async function handler(req, res) {
       target_periods: FORMAL_TARGET_PERIODS,
       latest_draw: latestDraw,
       market_snapshot: marketSnapshot,
+      market_type: detectMarketType(marketSnapshot),
       base_bet_amount: BASE_BET_AMOUNT,
       total_bet_amount_per_period: groups.reduce((sum, group) => sum + toNum(group.bet_amount, 0), 0),
       total_bet_amount_all_periods:
