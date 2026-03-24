@@ -1,3 +1,4 @@
+console.log('🔥 NEW VERSION LOADED v3.8 AGGRESSIVE');
 import { createClient } from '@supabase/supabase-js';
 import { buildRecentMarketSignalSnapshot } from '../lib/marketSignalEngine.js';
 
