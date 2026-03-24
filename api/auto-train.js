@@ -2,6 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import { buildComparePayload } from '../lib/buildComparePayload.js';
 import { recordStrategyCompareResult } from '../lib/strategyStatsRecorder.js';
 import { ensureStrategyPoolStrategies } from '../lib/ensureStrategyPoolStrategies.js';
+import { buildRecentMarketSignalSnapshot } from '../lib/marketSignalEngine.js';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -86,6 +87,10 @@ function getSupabase() {
 function toNum(value, fallback = 0) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
 }
 
 function uniqueSorted(nums = []) {
@@ -313,6 +318,102 @@ function buildMarketState(drawRows = []) {
   };
 }
 
+function normalizeMarketSnapshot(snapshot = {}) {
+  return {
+    latest: snapshot?.latest || null,
+    prev: snapshot?.prev || null,
+    third: snapshot?.third || null,
+    trend: snapshot?.trend || {
+      sum_delta_1: 0,
+      span_delta_1: 0,
+      tail_changed: false
+    }
+  };
+}
+
+function getStrategyMarketBoost(strategyKey = '', marketSnapshot = {}) {
+  const key = String(strategyKey || '').toLowerCase();
+  const latestSummary = marketSnapshot?.latest?.summary || null;
+  const trend = marketSnapshot?.trend || {};
+
+  if (!latestSummary) {
+    return {
+      boost: 1,
+      reason: 'market_neutral'
+    };
+  }
+
+  let boost = 1;
+  const reasons = [];
+
+  if (latestSummary.odd_even_bias === 'odd' && key.includes('odd')) {
+    boost += 0.16;
+    reasons.push('odd_bias_match');
+  }
+
+  if (latestSummary.odd_even_bias === 'even' && key.includes('even')) {
+    boost += 0.16;
+    reasons.push('even_bias_match');
+  }
+
+  if (latestSummary.big_small_bias === 'big' && (key.includes('hot') || key.includes('chase'))) {
+    boost += 0.1;
+    reasons.push('big_bias_hot');
+  }
+
+  if (latestSummary.big_small_bias === 'small' && (key.includes('cold') || key.includes('guard'))) {
+    boost += 0.1;
+    reasons.push('small_bias_cold');
+  }
+
+  if (latestSummary.compactness === 'tight' && (key.includes('pattern') || key.includes('cluster'))) {
+    boost += 0.15;
+    reasons.push('tight_pattern');
+  }
+
+  if (latestSummary.compactness === 'wide' && (key.includes('gap') || key.includes('chase'))) {
+    boost += 0.15;
+    reasons.push('wide_gap');
+  }
+
+  if ((latestSummary.hot_zone === 1 || latestSummary.hot_zone === 4) && key.includes('zone')) {
+    boost += 0.09;
+    reasons.push('zone_focus');
+  }
+
+  if (latestSummary.sum_band === 'high' && (key.includes('hot') || key.includes('mix'))) {
+    boost += 0.08;
+    reasons.push('high_sum_hot');
+  }
+
+  if (latestSummary.sum_band === 'low' && (key.includes('cold') || key.includes('gap'))) {
+    boost += 0.08;
+    reasons.push('low_sum_cold');
+  }
+
+  if (trend.tail_changed && key.includes('tail')) {
+    boost += 0.06;
+    reasons.push('tail_changed');
+  }
+
+  if (toNum(trend.span_delta_1, 0) >= 8 && key.includes('gap')) {
+    boost += 0.05;
+    reasons.push('span_expanding');
+  }
+
+  if (toNum(trend.span_delta_1, 0) <= -8 && (key.includes('pattern') || key.includes('cluster'))) {
+    boost += 0.05;
+    reasons.push('span_shrinking');
+  }
+
+  boost = clamp(boost, 0.82, 1.28);
+
+  return {
+    boost,
+    reason: reasons.length ? reasons.join('|') : 'market_neutral'
+  };
+}
+
 function numbersByTail(tail, allNums = []) {
   return allNums.filter((n) => n % 10 === tail);
 }
@@ -463,7 +564,7 @@ function buildStrategyNums(strategyKey, market, seed = 0) {
   return uniqueSorted(nums).slice(0, 4);
 }
 
-function evaluateStrategyDecision(poolRow = {}, statRow = {}) {
+function evaluateStrategyDecision(poolRow = {}, statRow = {}, marketSnapshot = {}) {
   const totalRounds = toNum(statRow?.total_rounds, 0);
   const avgHit = toNum(statRow?.avg_hit, 0);
   const roi = toNum(statRow?.roi, 0);
@@ -472,6 +573,7 @@ function evaluateStrategyDecision(poolRow = {}, statRow = {}) {
   const recent50HitRate = toNum(statRow?.recent_50_hit_rate, 0);
   const recent50Roi = toNum(statRow?.recent_50_roi, 0);
   const generation = Math.max(1, toNum(poolRow?.generation, 1));
+  const marketFit = getStrategyMarketBoost(poolRow?.strategy_key, marketSnapshot);
 
   let decision = 'candidate';
 
@@ -531,9 +633,11 @@ function evaluateStrategyDecision(poolRow = {}, statRow = {}) {
     weight += roi * 12;
   }
 
+  weight = Math.round(Math.max(0, weight * marketFit.boost));
+
   return {
     decision,
-    weight: Math.max(0, Math.round(weight)),
+    weight,
     totalRounds,
     avgHit,
     roi,
@@ -541,7 +645,15 @@ function evaluateStrategyDecision(poolRow = {}, statRow = {}) {
     hitRate,
     recent50HitRate,
     recent50Roi,
-    generation
+    generation,
+    marketBoost: marketFit.boost,
+    marketReason: marketFit.reason,
+    decisionScore:
+      score * marketFit.boost +
+      avgHit * 26 +
+      recent50Roi * 22 +
+      recent50HitRate * 30 +
+      totalRounds * 0.12
   };
 }
 
@@ -564,7 +676,9 @@ function weightedPick(rows = [], usedKeys = new Set(), seed = 0) {
 
 function byPowerDesc(a, b) {
   return (
+    toNum(b.decision_score, 0) - toNum(a.decision_score, 0) ||
     toNum(b.weight, 0) - toNum(a.weight, 0) ||
+    toNum(b.market_boost, 1) - toNum(a.market_boost, 1) ||
     toNum(b.score, 0) - toNum(a.score, 0) ||
     toNum(b.avg_hit, 0) - toNum(a.avg_hit, 0) ||
     toNum(b.total_rounds, 0) - toNum(a.total_rounds, 0) ||
@@ -713,7 +827,7 @@ async function fetchMarketRows(db) {
   return Array.isArray(data) ? data : [];
 }
 
-async function fetchStrategyCandidates(db) {
+async function fetchStrategyCandidates(db, marketSnapshot = {}) {
   await ensureStrategyPoolStrategies({
     strategyKeys: DEFAULT_STRATEGY_KEYS,
     sourceType: 'seed',
@@ -747,7 +861,7 @@ async function fetchStrategyCandidates(db) {
 
   const merged = (poolRows || []).map((row) => {
     const stat = statsMap.get(row.strategy_key) || {};
-    const evaluation = evaluateStrategyDecision(row, stat);
+    const evaluation = evaluateStrategyDecision(row, stat, marketSnapshot);
 
     return {
       ...row,
@@ -760,7 +874,10 @@ async function fetchStrategyCandidates(db) {
       total_rounds: evaluation.totalRounds,
       hit_rate: evaluation.hitRate,
       recent_50_hit_rate: evaluation.recent50HitRate,
-      recent_50_roi: evaluation.recent50Roi
+      recent_50_roi: evaluation.recent50Roi,
+      market_boost: evaluation.marketBoost,
+      market_reason: evaluation.marketReason,
+      decision_score: evaluation.decisionScore
     };
   });
 
@@ -792,7 +909,7 @@ async function fetchStrategyCandidates(db) {
   };
 }
 
-function buildPredictionGroups(candidatePack = {}, market = {}, seed = Date.now()) {
+function buildPredictionGroups(candidatePack = {}, market = {}, marketSnapshot = {}, seed = Date.now()) {
   const all = Array.isArray(candidatePack?.all) ? candidatePack.all : [];
   const strong = Array.isArray(candidatePack?.strong) ? candidatePack.strong : [];
   const usable = Array.isArray(candidatePack?.usable) ? candidatePack.usable : [];
@@ -842,7 +959,10 @@ function buildPredictionGroups(candidatePack = {}, market = {}, seed = Date.now(
         weight: toNum(row.weight, 0),
         generation: toNum(row.generation, 1),
         source_type: String(row.source_type || 'seed'),
-        decision: row.decision
+        decision: row.decision,
+        market_boost: toNum(row.market_boost, 1),
+        market_reason: row.market_reason || 'market_neutral',
+        market_summary: marketSnapshot?.latest?.summary || null
       }
     });
   }
@@ -866,7 +986,10 @@ function buildPredictionGroups(candidatePack = {}, market = {}, seed = Date.now(
         weight: toNum(picked.weight, 0),
         generation: toNum(picked.generation, 1),
         source_type: String(picked.source_type || 'seed'),
-        decision: picked.decision
+        decision: picked.decision,
+        market_boost: toNum(picked.market_boost, 1),
+        market_reason: picked.market_reason || 'market_neutral',
+        market_summary: marketSnapshot?.latest?.summary || null
       }
     });
   }
@@ -958,12 +1081,14 @@ export default async function handler(req, res) {
 
     let createdCount = 0;
     let activeCreatedPrediction = existingPrediction || null;
+    let marketSnapshot = null;
 
     if (!existingPrediction) {
       const marketRows = await fetchMarketRows(db);
       const market = buildMarketState(marketRows);
-      const strategyCandidates = await fetchStrategyCandidates(db);
-      const groups = buildPredictionGroups(strategyCandidates, market, Date.now());
+      marketSnapshot = normalizeMarketSnapshot(buildRecentMarketSignalSnapshot(marketRows, 'numbers'));
+      const strategyCandidates = await fetchStrategyCandidates(db, marketSnapshot);
+      const groups = buildPredictionGroups(strategyCandidates, market, marketSnapshot, Date.now());
 
       if (!groups.length) {
         throw new Error('Failed to build prediction groups from strategy_pool');
@@ -1032,6 +1157,7 @@ export default async function handler(req, res) {
       ok: true,
       compare_modes: [...COMPARE_MODES],
       pipeline,
+      market_snapshot: marketSnapshot,
       compared_count: comparedBefore + comparedAfter,
       compared_by_mode: {
         test: toNum(beforeByMode?.test, 0) + toNum(afterByMode?.test, 0),
