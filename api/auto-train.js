@@ -22,6 +22,8 @@ const COMPARE_BATCH_LIMIT = 50;
 const MARKET_LOOKBACK_LIMIT = 160;
 const COST_PER_GROUP_PER_PERIOD = 25;
 
+let supabase = null;
+
 const DEFAULT_STRATEGY_KEYS = [
   'hot_balanced',
   'balanced_zone',
@@ -67,8 +69,6 @@ const DECISION_CONFIG = {
   strongScoreFloor: 80,
   usableScoreFloor: 10
 };
-
-let supabase = null;
 
 function getSupabase() {
   if (!SUPABASE_URL || !SUPABASE_KEY) {
@@ -564,13 +564,21 @@ function buildStrategyNums(strategyKey, market, seed = 0) {
   return uniqueSorted(nums).slice(0, 4);
 }
 
+function normalizeHitRate(raw) {
+  const value = toNum(raw, 0);
+  if (value <= 0) return 0;
+  if (value <= 1) return value;
+  if (value <= 100) return value / 100;
+  return 1;
+}
+
 function evaluateStrategyDecision(poolRow = {}, statRow = {}, marketSnapshot = {}) {
   const totalRounds = toNum(statRow?.total_rounds, 0);
   const avgHit = toNum(statRow?.avg_hit, 0);
   const roi = toNum(statRow?.roi, 0);
   const score = toNum(statRow?.score, 0);
-  const hitRate = toNum(statRow?.hit_rate, 0);
-  const recent50HitRate = toNum(statRow?.recent_50_hit_rate, 0);
+  const hitRate = normalizeHitRate(statRow?.hit_rate);
+  const recent50HitRate = normalizeHitRate(statRow?.recent_50_hit_rate);
   const recent50Roi = toNum(statRow?.recent_50_roi, 0);
   const generation = Math.max(1, toNum(poolRow?.generation, 1));
   const marketFit = getStrategyMarketBoost(poolRow?.strategy_key, marketSnapshot);
@@ -693,7 +701,6 @@ async function runCompare(db) {
       ok: true,
       processed: 0,
       waiting: 0,
-      retired_count: 0,
       processed_by_mode: {
         test: 0,
         formal: 0
@@ -703,13 +710,13 @@ async function runCompare(db) {
         formal: 0
       },
       total_candidates: 0,
-      compare_modes: [...COMPARE_MODES]
+      compare_modes: [...COMPARE_MODES],
+      disabled_keys: []
     };
   }
 
   let processed = 0;
   let waiting = 0;
-  let retiredCount = 0;
 
   const processedByMode = {
     test: 0,
@@ -721,11 +728,19 @@ async function runCompare(db) {
     formal: 0
   };
 
+  const disabledKeysAll = [];
+
   for (const prediction of predictions) {
-    const mode = String(prediction?.mode || '').toLowerCase() === FORMAL_MODE ? FORMAL_MODE : TEST_MODE;
+    const mode =
+      String(prediction?.mode || '').toLowerCase() === FORMAL_MODE
+        ? FORMAL_MODE
+        : TEST_MODE;
 
     const sourceDrawNo = toNum(prediction?.source_draw_no, 0);
-    const targetPeriods = Math.max(1, toNum(prediction?.target_periods, mode === FORMAL_MODE ? 4 : TARGET_PERIODS));
+    const targetPeriods = Math.max(
+      1,
+      toNum(prediction?.target_periods, mode === FORMAL_MODE ? 4 : TARGET_PERIODS)
+    );
     const groups = Array.isArray(prediction?.groups_json) ? prediction.groups_json : [];
 
     if (!sourceDrawNo || groups.length === 0) {
@@ -778,7 +793,10 @@ async function runCompare(db) {
     if (updateError) throw updateError;
 
     const statsResult = await recordStrategyCompareResult(payload.compareResult);
-    retiredCount += Array.isArray(statsResult?.disabled_keys) ? statsResult.disabled_keys.length : 0;
+
+    if (Array.isArray(statsResult?.disabled_keys) && statsResult.disabled_keys.length) {
+      disabledKeysAll.push(...statsResult.disabled_keys);
+    }
 
     processed += 1;
     processedByMode[mode] += 1;
@@ -788,11 +806,11 @@ async function runCompare(db) {
     ok: true,
     processed,
     waiting,
-    retired_count: retiredCount,
     processed_by_mode: processedByMode,
     waiting_by_mode: waitingByMode,
     total_candidates: predictions.length,
-    compare_modes: [...COMPARE_MODES]
+    compare_modes: [...COMPARE_MODES],
+    disabled_keys: [...new Set(disabledKeysAll)]
   };
 }
 
@@ -808,10 +826,8 @@ async function fetchMarketRows(db) {
 }
 
 async function fetchStrategyCandidates(db, marketSnapshot = {}) {
-  await ensureStrategyPoolStrategies({
-    strategyKeys: DEFAULT_STRATEGY_KEYS,
-    sourceType: 'seed'
-  });
+  // ✅ 只補不存在的新策略，絕不復活 disabled / retired
+  await ensureStrategyPoolStrategies();
 
   const { data: poolRows, error: poolError } = await db
     .from('strategy_pool')
@@ -836,10 +852,12 @@ async function fetchStrategyCandidates(db, marketSnapshot = {}) {
 
   if (statsError) throw statsError;
 
-  const statsMap = new Map((statsRows || []).map((row) => [row.strategy_key, row]));
+  const statsMap = new Map(
+    (statsRows || []).map((row) => [String(row?.strategy_key || '').trim().toLowerCase(), row])
+  );
 
   const merged = (poolRows || []).map((row) => {
-    const stat = statsMap.get(row.strategy_key) || {};
+    const stat = statsMap.get(String(row?.strategy_key || '').trim().toLowerCase()) || {};
     const evaluation = evaluateStrategyDecision(row, stat, marketSnapshot);
 
     return {
@@ -918,25 +936,25 @@ function filterStrategiesByMarket(strategies = [], marketType = '') {
     let boost = 1;
 
     if (marketType === 'HIGH_BIG_ZONE4') {
-      if (s.strategy_key.includes('hot') || s.strategy_key.includes('chase')) {
+      if (String(s.strategy_key || '').includes('hot') || String(s.strategy_key || '').includes('chase')) {
         boost *= 1.3;
       }
     }
 
     if (marketType === 'LOW_SMALL_ZONE1') {
-      if (s.strategy_key.includes('cold') || s.strategy_key.includes('guard')) {
+      if (String(s.strategy_key || '').includes('cold') || String(s.strategy_key || '').includes('guard')) {
         boost *= 1.3;
       }
     }
 
     if (marketType === 'WIDE_SPREAD') {
-      if (s.strategy_key.includes('gap') || s.strategy_key.includes('chase')) {
+      if (String(s.strategy_key || '').includes('gap') || String(s.strategy_key || '').includes('chase')) {
         boost *= 1.25;
       }
     }
 
     if (marketType === 'TIGHT_CLUSTER') {
-      if (s.strategy_key.includes('pattern') || s.strategy_key.includes('cluster')) {
+      if (String(s.strategy_key || '').includes('pattern') || String(s.strategy_key || '').includes('cluster')) {
         boost *= 1.25;
       }
     }
@@ -971,6 +989,7 @@ function buildPredictionGroups(candidatePack = {}, market = {}, marketSnapshot =
   for (let i = 0; i < strategies.length && groups.length < BET_GROUP_COUNT; i += 1) {
     const s = strategies[i];
     if (used.has(s.strategy_key)) continue;
+
     used.add(s.strategy_key);
 
     groups.push({
@@ -1030,7 +1049,6 @@ export default async function handler(req, res) {
           test: 0,
           formal: 0
         },
-        retired_count: toNum(compareBeforeCreate?.retired_count, 0),
         train: {
           ok: true,
           skipped: true,
@@ -1056,7 +1074,6 @@ export default async function handler(req, res) {
           test: 0,
           formal: 0
         },
-        retired_count: toNum(compareBeforeCreate?.retired_count, 0),
         train: {
           ok: true,
           skipped: true,
@@ -1085,9 +1102,17 @@ export default async function handler(req, res) {
     if (!existingPrediction) {
       const marketRows = await fetchMarketRows(db);
       const market = buildMarketState(marketRows);
-      marketSnapshot = normalizeMarketSnapshot(buildRecentMarketSignalSnapshot(marketRows, 'numbers'));
+      marketSnapshot = normalizeMarketSnapshot(
+        buildRecentMarketSignalSnapshot(marketRows, 'numbers')
+      );
+
       const strategyCandidates = await fetchStrategyCandidates(db, marketSnapshot);
-      const groups = buildPredictionGroups(strategyCandidates, market, marketSnapshot, Date.now());
+      const groups = buildPredictionGroups(
+        strategyCandidates,
+        market,
+        marketSnapshot,
+        Date.now()
+      );
 
       if (!groups.length) {
         throw new Error('Failed to build prediction groups from strategy_pool');
@@ -1153,8 +1178,10 @@ export default async function handler(req, res) {
     const beforeByMode = compareBeforeCreate?.processed_by_mode || { test: 0, formal: 0 };
     const afterByMode = compareAfterCreate?.processed_by_mode || { test: 0, formal: 0 };
 
-    const retiredBefore = toNum(compareBeforeCreate?.retired_count, 0);
-    const retiredAfter = toNum(compareAfterCreate?.retired_count, 0);
+    const disabledKeys = [
+      ...(Array.isArray(compareBeforeCreate?.disabled_keys) ? compareBeforeCreate.disabled_keys : []),
+      ...(Array.isArray(compareAfterCreate?.disabled_keys) ? compareAfterCreate.disabled_keys : [])
+    ];
 
     return res.status(200).json({
       ok: true,
@@ -1171,7 +1198,7 @@ export default async function handler(req, res) {
         test: createdCount,
         formal: 0
       },
-      retired_count: retiredBefore + retiredAfter,
+      disabled_keys: [...new Set(disabledKeys)],
       active_created_prediction: finalActiveCreatedPrediction,
       train: {
         ok: true,
