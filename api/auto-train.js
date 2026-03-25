@@ -22,6 +22,10 @@ const COMPARE_BATCH_LIMIT = 50;
 const MARKET_LOOKBACK_LIMIT = 160;
 const COST_PER_GROUP_PER_PERIOD = 25;
 
+// 真進化版：允許持續建立新 test prediction，但防止 created 爆量
+const MAX_CREATED_PREDICTIONS = 20;
+const ALLOW_CREATE_WHEN_EXISTING = true;
+
 const DEFAULT_STRATEGY_KEYS = [
   'hot_balanced',
   'balanced_zone',
@@ -66,18 +70,6 @@ const DECISION_CONFIG = {
   minRoundsForTrust: 6,
   strongScoreFloor: 80,
   usableScoreFloor: 10
-};
-
-// 🔥 強制淘汰引擎設定
-const RETIRE_CONFIG = {
-  minRoundsBasic: 2,
-  minAvgHitBasic: 1.2,
-  hardRecent50Roi: -0.5,
-  minRoundsRecent50: 3,
-  hardRoi: -0.85,
-  hardScore: -400,
-  activeSoftCap: 60,
-  activeTargetAfterTrim: 50
 };
 
 let supabase = null;
@@ -697,6 +689,16 @@ async function runCatchup() {
   return { ok: true };
 }
 
+async function countCreatedPredictions(db) {
+  const { count, error } = await db
+    .from('bingo_predictions')
+    .select('id', { count: 'exact', head: true })
+    .eq('status', 'created');
+
+  if (error) throw error;
+  return toNum(count, 0);
+}
+
 async function runCompare(db) {
   const { data: predictions, error: predError } = await db
     .from('bingo_predictions')
@@ -838,7 +840,6 @@ async function fetchMarketRows(db) {
 }
 
 async function fetchStrategyCandidates(db, marketSnapshot = {}) {
-  // ✅ 只補不存在的新策略，絕不復活 disabled / retired
   await ensureStrategyPoolStrategies();
 
   const { data: poolRows, error: poolError } = await db
@@ -1096,76 +1097,88 @@ export default async function handler(req, res) {
 
     const sourceDrawNo = String(sourceDrawNoRaw);
 
-    const { data: existingPrediction, error: existingError } = await db
-      .from('bingo_predictions')
-      .select('*')
-      .eq('mode', TEST_MODE)
-      .eq('source_draw_no', sourceDrawNo)
-      .eq('status', 'created')
-      .limit(1)
-      .maybeSingle();
-
-    if (existingError) throw existingError;
-
     let createdCount = 0;
-    let activeCreatedPrediction = existingPrediction || null;
+    let activeCreatedPrediction = null;
     let marketSnapshot = null;
 
-    if (!existingPrediction) {
-      const marketRows = await fetchMarketRows(db);
-      const market = buildMarketState(marketRows);
-      marketSnapshot = normalizeMarketSnapshot(
-        buildRecentMarketSignalSnapshot(marketRows, 'numbers')
-      );
+    const createdNowCount = await countCreatedPredictions(db);
 
-      const strategyCandidates = await fetchStrategyCandidates(db, marketSnapshot);
-      const groups = buildPredictionGroups(
-        strategyCandidates,
-        market,
-        marketSnapshot,
-        Date.now()
-      );
+    const shouldCreatePrediction =
+      createdNowCount < MAX_CREATED_PREDICTIONS;
 
-      if (!groups.length) {
-        throw new Error('Failed to build prediction groups from strategy_pool');
-      }
-
-      const now = Date.now();
-      const payload = {
-        id: now,
-        mode: TEST_MODE,
-        status: 'created',
-        source_draw_no: sourceDrawNo,
-        target_periods: TARGET_PERIODS,
-        groups_json: groups,
-        market_snapshot_json: marketSnapshot,
-        created_at: new Date().toISOString()
-      };
-
-      const { data: inserted, error: insertError } = await db
+    if (shouldCreatePrediction) {
+      const { data: existingPrediction, error: existingError } = await db
         .from('bingo_predictions')
-        .insert(payload)
         .select('*')
-        .single();
+        .eq('mode', TEST_MODE)
+        .eq('source_draw_no', sourceDrawNo)
+        .eq('status', 'created')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
-      if (insertError) {
-        if (isDuplicateDrawModeError(insertError)) {
-          const { data: existingAfterDup } = await db
-            .from('bingo_predictions')
-            .select('*')
-            .eq('mode', TEST_MODE)
-            .eq('source_draw_no', sourceDrawNo)
-            .eq('status', 'created')
-            .limit(1)
-            .maybeSingle();
+      if (existingError) throw existingError;
 
-          activeCreatedPrediction = existingAfterDup || null;
-        } else {
-          throw insertError;
+      const allowCreateNow =
+        ALLOW_CREATE_WHEN_EXISTING || !existingPrediction;
+
+      if (allowCreateNow) {
+        const marketRows = await fetchMarketRows(db);
+        const market = buildMarketState(marketRows);
+        marketSnapshot = normalizeMarketSnapshot(
+          buildRecentMarketSignalSnapshot(marketRows, 'numbers')
+        );
+
+        const strategyCandidates = await fetchStrategyCandidates(db, marketSnapshot);
+        const groups = buildPredictionGroups(
+          strategyCandidates,
+          market,
+          marketSnapshot,
+          Date.now()
+        );
+
+        if (!groups.length) {
+          throw new Error('Failed to build prediction groups from strategy_pool');
         }
-      } else {
-        createdCount = 1;
-        activeCreatedPrediction = inserted;
+
+        const now = Date.now();
+        const payload = {
+          id: now,
+          mode: TEST_MODE,
+          status: 'created',
+          source_draw_no: sourceDrawNo,
+          target_periods: TARGET_PERIODS,
+          groups_json: groups,
+          market_snapshot_json: marketSnapshot,
+          created_at: new Date().toISOString()
+        };
+
+        const { data: inserted, error: insertError } = await db
+          .from('bingo_predictions')
+          .insert(payload)
+          .select('*')
+          .single();
+
+        if (insertError) {
+          if (isDuplicateDrawModeError(insertError)) {
+            const { data: existingAfterDup } = await db
+              .from('bingo_predictions')
+              .select('*')
+              .eq('mode', TEST_MODE)
+              .eq('source_draw_no', sourceDrawNo)
+              .eq('status', 'created')
+              .order('created_at', { ascending: false })
+              .limit(1)
+              .maybeSingle();
+
+            activeCreatedPrediction = existingAfterDup || null;
+          } else {
+            throw insertError;
+          }
+        } else {
+          createdCount = 1;
+          activeCreatedPrediction = inserted;
+        }
       }
     }
 
@@ -1195,6 +1208,8 @@ export default async function handler(req, res) {
       ...(Array.isArray(compareAfterCreate?.disabled_keys) ? compareAfterCreate.disabled_keys : [])
     ];
 
+    const createdRemaining = await countCreatedPredictions(db);
+
     return res.status(200).json({
       ok: true,
       compare_modes: [...COMPARE_MODES],
@@ -1210,12 +1225,18 @@ export default async function handler(req, res) {
         test: createdCount,
         formal: 0
       },
+      created_current_open_count: createdRemaining,
       disabled_keys: [...new Set(disabledKeys)],
       active_created_prediction: finalActiveCreatedPrediction,
       train: {
         ok: true,
         skipped: createdCount === 0,
-        reason: createdCount === 0 ? 'Prediction already exists' : undefined,
+        reason:
+          createdCount === 0
+            ? (createdNowCount >= MAX_CREATED_PREDICTIONS
+                ? 'created pool reached limit'
+                : 'Prediction already exists')
+            : undefined,
         existing: createdCount === 0 ? finalActiveCreatedPrediction : undefined
       }
     });
