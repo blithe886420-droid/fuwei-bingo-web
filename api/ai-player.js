@@ -136,7 +136,13 @@ function calculateTrainingStrength({
   else if (topStrategyRoi >= -40) qualityScore += 3;
   else if (topStrategyRoi >= -60) qualityScore += 1;
 
-  const total = compareScore + createScore + retireScore + convergeScore + qualityScore;
+  const total =
+    compareScore +
+    createScore +
+    retireScore +
+    convergeScore +
+    qualityScore;
+
   return Math.max(0, Math.min(100, Math.round(total)));
 }
 
@@ -209,7 +215,6 @@ export default async function handler(req, res) {
         .select('id', { count: 'exact', head: true })
         .gte('created_at', sinceIso),
 
-      // ✅ 這裡修正：淘汰狀態改抓 disabled，不再抓 retired
       supabase
         .from(STRATEGY_POOL_TABLE)
         .select('strategy_key', { count: 'exact', head: true })
@@ -242,7 +247,10 @@ export default async function handler(req, res) {
       }))
       .sort((a, b) => {
         if (Boolean(a.protected_rank) !== Boolean(b.protected_rank)) {
-          return Number(Boolean(b.protected_rank)) - Number(Boolean(a.protected_rank));
+          return (
+            Number(Boolean(b.protected_rank)) -
+            Number(Boolean(a.protected_rank))
+          );
         }
         return toNum(b.strategy_score, 0) - toNum(a.strategy_score, 0);
       });
@@ -251,7 +259,10 @@ export default async function handler(req, res) {
 
     const comparedLastHour = Number(comparedRes.count || 0);
     const createdLastHour = Number(createdRes.count || 0);
-    const retiredLastHour = Number(disabledRes.count || 0);
+
+    // 內部語意修正：這裡實際抓的是 disabled，不是 retired
+    const disabledLastHour = Number(disabledRes.count || 0);
+
     const activeCount = activeRows.length;
 
     const topStrategyKey = top?.strategy_key || '-';
@@ -263,7 +274,7 @@ export default async function handler(req, res) {
     const status = decideEvolutionStatus({
       comparedLastHour,
       createdLastHour,
-      retiredLastHour,
+      retiredLastHour: disabledLastHour,
       activeCount,
       topStrategyAvgHit,
       topStrategyRecent50Roi
@@ -272,7 +283,7 @@ export default async function handler(req, res) {
     const trainingStrength = calculateTrainingStrength({
       comparedLastHour,
       createdLastHour,
-      retiredLastHour,
+      retiredLastHour: disabledLastHour,
       activeCount,
       topStrategyAvgHit,
       topStrategyRoi,
@@ -284,7 +295,13 @@ export default async function handler(req, res) {
       sinceText: '最近 1 小時',
       comparedLastHour,
       createdLastHour,
-      retiredLastHour,
+
+      // 保留舊欄位名稱，避免前端或其他地方還在吃 retiredLastHour 時直接壞掉
+      retiredLastHour: disabledLastHour,
+
+      // 新增正確語意欄位，讓後續前端可以逐步改成 disabledLastHour
+      disabledLastHour,
+
       activeCount,
       disabledCount: disabledRows.length,
       retiredCount: retiredRows.length,
