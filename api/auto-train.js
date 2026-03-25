@@ -22,8 +22,6 @@ const COMPARE_BATCH_LIMIT = 50;
 const MARKET_LOOKBACK_LIMIT = 160;
 const COST_PER_GROUP_PER_PERIOD = 25;
 
-let supabase = null;
-
 const DEFAULT_STRATEGY_KEYS = [
   'hot_balanced',
   'balanced_zone',
@@ -69,6 +67,20 @@ const DECISION_CONFIG = {
   strongScoreFloor: 80,
   usableScoreFloor: 10
 };
+
+// 🔥 強制淘汰引擎設定
+const RETIRE_CONFIG = {
+  minRoundsBasic: 2,
+  minAvgHitBasic: 1.2,
+  hardRecent50Roi: -0.5,
+  minRoundsRecent50: 3,
+  hardRoi: -0.85,
+  hardScore: -400,
+  activeSoftCap: 60,
+  activeTargetAfterTrim: 50
+};
+
+let supabase = null;
 
 function getSupabase() {
   if (!SUPABASE_URL || !SUPABASE_KEY) {
