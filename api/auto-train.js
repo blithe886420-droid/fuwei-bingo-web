@@ -657,23 +657,6 @@ function evaluateStrategyDecision(poolRow = {}, statRow = {}, marketSnapshot = {
   };
 }
 
-function weightedPick(rows = [], usedKeys = new Set(), seed = 0) {
-  const available = rows.filter((row) => !usedKeys.has(row.strategy_key) && toNum(row.weight, 0) > 0);
-  if (!available.length) return null;
-
-  const totalWeight = available.reduce((acc, row) => acc + toNum(row.weight, 0), 0);
-  if (totalWeight <= 0) return available[Math.abs(seed) % available.length];
-
-  let cursor = Math.abs(seed) % totalWeight;
-
-  for (const row of available) {
-    cursor -= toNum(row.weight, 0);
-    if (cursor < 0) return row;
-  }
-
-  return available[available.length - 1];
-}
-
 function byPowerDesc(a, b) {
   return (
     toNum(b.decision_score, 0) - toNum(a.decision_score, 0) ||
@@ -684,13 +667,6 @@ function byPowerDesc(a, b) {
     toNum(b.total_rounds, 0) - toNum(a.total_rounds, 0) ||
     String(a.strategy_key).localeCompare(String(b.strategy_key))
   );
-}
-
-function pickTopUnique(rows = [], count = 0, usedKeys = new Set()) {
-  return rows
-    .filter((row) => !usedKeys.has(row.strategy_key) && toNum(row.weight, 0) > 0)
-    .sort(byPowerDesc)
-    .slice(0, count);
 }
 
 async function runSync() {
@@ -717,14 +693,9 @@ async function runCompare(db) {
       ok: true,
       processed: 0,
       waiting: 0,
-      processed_by_mode: {
-        test: 0,
-        formal: 0
-      },
-      waiting_by_mode: {
-        test: 0,
-        formal: 0
-      },
+      retired_count: 0,
+      processed_by_mode: { test: 0, formal: 0 },
+      waiting_by_mode: { test: 0, formal: 0 },
       total_candidates: 0,
       compare_modes: [...COMPARE_MODES]
     };
@@ -732,16 +703,11 @@ async function runCompare(db) {
 
   let processed = 0;
   let waiting = 0;
+  let retiredCount = 0;
 
-  const processedByMode = {
-    test: 0,
-    formal: 0
-  };
-
-  const waitingByMode = {
-    test: 0,
-    formal: 0
-  };
+  const processedByMode = { test: 0, formal: 0 };
+  const waitingByMode = { test: 0, formal: 0 };
+  const retiredKeys = [];
 
   for (const prediction of predictions) {
     const mode = String(prediction?.mode || '').toLowerCase() === FORMAL_MODE ? FORMAL_MODE : TEST_MODE;
@@ -799,7 +765,11 @@ async function runCompare(db) {
 
     if (updateError) throw updateError;
 
-    await recordStrategyCompareResult(payload.compareResult);
+    const statsResult = await recordStrategyCompareResult(payload.compareResult);
+    retiredCount += toNum(statsResult?.disabled_count, 0);
+    if (Array.isArray(statsResult?.disabled_keys)) {
+      retiredKeys.push(...statsResult.disabled_keys);
+    }
 
     processed += 1;
     processedByMode[mode] += 1;
@@ -809,6 +779,8 @@ async function runCompare(db) {
     ok: true,
     processed,
     waiting,
+    retired_count: retiredCount,
+    retired_keys: [...new Set(retiredKeys)],
     processed_by_mode: processedByMode,
     waiting_by_mode: waitingByMode,
     total_candidates: predictions.length,
@@ -830,8 +802,7 @@ async function fetchMarketRows(db) {
 async function fetchStrategyCandidates(db, marketSnapshot = {}) {
   await ensureStrategyPoolStrategies({
     strategyKeys: DEFAULT_STRATEGY_KEYS,
-    sourceType: 'seed',
-    status: 'active'
+    sourceType: 'seed'
   });
 
   const { data: poolRows, error: poolError } = await db
@@ -935,7 +906,7 @@ function detectMarketType(marketSnapshot = {}) {
 }
 
 function filterStrategiesByMarket(strategies = [], marketType = '') {
-  return strategies.map(s => {
+  return strategies.map((s) => {
     let boost = 1;
 
     if (marketType === 'HIGH_BIG_ZONE4') {
@@ -972,17 +943,14 @@ function filterStrategiesByMarket(strategies = [], marketType = '') {
 }
 
 function buildPredictionGroups(candidatePack = {}, market = {}, marketSnapshot = {}, seed = Date.now()) {
-
   const marketType = detectMarketType(marketSnapshot);
 
   let strategies = Array.isArray(candidatePack?.all) ? candidatePack.all : [];
 
-  // 🔥 市場篩選
   strategies = filterStrategiesByMarket(strategies, marketType);
 
-  // 🔥 用 final_weight 排序
   strategies = strategies
-    .filter(s => (s.final_weight || 0) > 0)
+    .filter((s) => (s.final_weight || 0) > 0)
     .sort((a, b) =>
       (b.final_weight - a.final_weight) ||
       (b.avg_hit - a.avg_hit) ||
@@ -992,7 +960,7 @@ function buildPredictionGroups(candidatePack = {}, market = {}, marketSnapshot =
   const used = new Set();
   const groups = [];
 
-  for (let i = 0; i < strategies.length && groups.length < BET_GROUP_COUNT; i++) {
+  for (let i = 0; i < strategies.length && groups.length < BET_GROUP_COUNT; i += 1) {
     const s = strategies[i];
 
     if (used.has(s.strategy_key)) continue;
@@ -1046,15 +1014,10 @@ export default async function handler(req, res) {
         ok: true,
         pipeline,
         compared_count: toNum(compareBeforeCreate?.processed, 0),
-        compared_by_mode: compareBeforeCreate?.processed_by_mode || {
-          test: 0,
-          formal: 0
-        },
+        retired_count: toNum(compareBeforeCreate?.retired_count, 0),
+        compared_by_mode: compareBeforeCreate?.processed_by_mode || { test: 0, formal: 0 },
         created_count: 0,
-        created_by_mode: {
-          test: 0,
-          formal: 0
-        },
+        created_by_mode: { test: 0, formal: 0 },
         train: {
           ok: true,
           skipped: true,
@@ -1071,15 +1034,10 @@ export default async function handler(req, res) {
         ok: true,
         pipeline,
         compared_count: toNum(compareBeforeCreate?.processed, 0),
-        compared_by_mode: compareBeforeCreate?.processed_by_mode || {
-          test: 0,
-          formal: 0
-        },
+        retired_count: toNum(compareBeforeCreate?.retired_count, 0),
+        compared_by_mode: compareBeforeCreate?.processed_by_mode || { test: 0, formal: 0 },
         created_count: 0,
-        created_by_mode: {
-          test: 0,
-          formal: 0
-        },
+        created_by_mode: { test: 0, formal: 0 },
         train: {
           ok: true,
           skipped: true,
@@ -1118,15 +1076,15 @@ export default async function handler(req, res) {
 
       const now = Date.now();
       const payload = {
-  id: now,
-  mode: TEST_MODE,
-  status: 'created',
-  source_draw_no: sourceDrawNo,
-  target_periods: TARGET_PERIODS,
-  groups_json: groups,
-  market_snapshot_json: marketSnapshot,  
-  created_at: new Date().toISOString()
-};
+        id: now,
+        mode: TEST_MODE,
+        status: 'created',
+        source_draw_no: sourceDrawNo,
+        target_periods: TARGET_PERIODS,
+        groups_json: groups,
+        market_snapshot_json: marketSnapshot,
+        created_at: new Date().toISOString()
+      };
 
       const { data: inserted, error: insertError } = await db
         .from('bingo_predictions')
@@ -1173,6 +1131,9 @@ export default async function handler(req, res) {
     const comparedBefore = toNum(compareBeforeCreate?.processed, 0);
     const comparedAfter = toNum(compareAfterCreate?.processed, 0);
 
+    const retiredBefore = toNum(compareBeforeCreate?.retired_count, 0);
+    const retiredAfter = toNum(compareAfterCreate?.retired_count, 0);
+
     const beforeByMode = compareBeforeCreate?.processed_by_mode || { test: 0, formal: 0 };
     const afterByMode = compareAfterCreate?.processed_by_mode || { test: 0, formal: 0 };
 
@@ -1182,6 +1143,7 @@ export default async function handler(req, res) {
       pipeline,
       market_snapshot: marketSnapshot,
       compared_count: comparedBefore + comparedAfter,
+      retired_count: retiredBefore + retiredAfter,
       compared_by_mode: {
         test: toNum(beforeByMode?.test, 0) + toNum(afterByMode?.test, 0),
         formal: toNum(beforeByMode?.formal, 0) + toNum(afterByMode?.formal, 0)
