@@ -58,6 +58,12 @@ function fmtMoney(v) {
   return `${n} 元`;
 }
 
+function formatBallNumber(n) {
+  const num = Number(n);
+  if (!Number.isFinite(num)) return '--';
+  return String(num).padStart(2, '0');
+}
+
 function parseNums(input) {
   if (Array.isArray(input)) {
     return input.map(Number).filter(Number.isFinite);
@@ -179,22 +185,98 @@ function fmtMetaNumber(v, digits = 2) {
   return n.toFixed(digits);
 }
 
-async function safeFetchJson(url, options) {
-  const res = await fetch(url, options);
-  const text = await res.text();
+function calcHotNumbers(recentRows, lookback = 10) {
+  const rows = toArray(recentRows).slice(0, lookback);
+  const countMap = new Map();
 
-  let json = {};
-  try {
-    json = text ? JSON.parse(text) : {};
-  } catch {
-    json = { raw: text };
-  }
+  rows.forEach((row) => {
+    const nums = parseNums(row?.numbers || row?.nums);
+    nums.forEach((n) => {
+      countMap.set(n, toNum(countMap.get(n), 0) + 1);
+    });
+  });
 
-  if (!res.ok) {
-    throw new Error(json?.error || json?.message || `${url} ${res.status}`);
-  }
+  return [...countMap.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0] - b[0])
+    .slice(0, 10)
+    .map(([num, count]) => ({
+      num,
+      count
+    }));
+}
 
-  return json;
+/**
+ * 連莊定義：
+ * - 從最新一期開始往前看（最多 5 期）
+ * - 某號碼本期有開 = 1
+ * - 上一期也有開 = 2
+ * - 再上一期也有開 = 3
+ * - 一旦中間斷掉就停止
+ * - 只顯示 streak >= 2 的號碼
+ */
+function calcCurrentStreakNumbers(recentRows, maxLookback = 5) {
+  const rows = toArray(recentRows).slice(0, maxLookback);
+  if (!rows.length) return [];
+
+  const latestNums = parseNums(rows[0]?.numbers || rows[0]?.nums);
+  const result = [];
+
+  latestNums.forEach((num) => {
+    let streak = 1;
+
+    for (let i = 1; i < rows.length; i += 1) {
+      const nums = parseNums(rows[i]?.numbers || rows[i]?.nums);
+      if (nums.includes(num)) {
+        streak += 1;
+      } else {
+        break;
+      }
+    }
+
+    if (streak >= 2) {
+      result.push({ num, streak });
+    }
+  });
+
+  return result.sort((a, b) => b.streak - a.streak || a.num - b.num);
+}
+
+function calcZoneCounts(nums = []) {
+  const source = parseNums(nums);
+  const zones = [
+    { label: '1-20', count: 0 },
+    { label: '21-40', count: 0 },
+    { label: '41-60', count: 0 },
+    { label: '61-80', count: 0 }
+  ];
+
+  source.forEach((n) => {
+    if (n >= 1 && n <= 20) zones[0].count += 1;
+    else if (n >= 21 && n <= 40) zones[1].count += 1;
+    else if (n >= 41 && n <= 60) zones[2].count += 1;
+    else if (n >= 61 && n <= 80) zones[3].count += 1;
+  });
+
+  return zones;
+}
+
+function safeFetchJson(url, options) {
+  return fetch(url, options).then(async (res) => {
+    const text = await res.text();
+
+    let json = {};
+    try {
+      json = text ? JSON.parse(text) : {};
+    } catch {
+      json = { raw: text };
+    }
+
+    if (!res.ok) {
+      throw new Error(json?.error || json?.message || `${url} ${res.status}`);
+    }
+
+    return json;
+  });
 }
 
 async function safeFetchJsonAllowHttpError(url, options) {
@@ -486,6 +568,28 @@ function MetaChip({ label, value }) {
   );
 }
 
+function MarketBall({ n, highlight = false }) {
+  return (
+    <div
+      style={{
+        ...styles.marketBall,
+        ...(highlight ? styles.marketBallHighlight : {})
+      }}
+    >
+      {formatBallNumber(n)}
+    </div>
+  );
+}
+
+function StreakBall({ n, streak }) {
+  return (
+    <div style={styles.streakBallWrap}>
+      <div style={styles.streakBall}>{formatBallNumber(n)}</div>
+      <div style={styles.streakBadge}>{streak}</div>
+    </div>
+  );
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState(TABS.DASHBOARD);
   const [loading, setLoading] = useState(true);
@@ -500,6 +604,7 @@ export default function App() {
   const [autoTrainEnabled, setAutoTrainEnabled] = useState(false);
   const [lastAutoTrainResult, setLastAutoTrainResult] = useState(null);
   const [aiEvolution, setAiEvolution] = useState(normalizeAiEvolution({}));
+  const [marketNowText, setMarketNowText] = useState(fmtDateTime(new Date()));
 
   const mountedRef = useRef(false);
   const schedulerRef = useRef(null);
@@ -772,6 +877,14 @@ export default function App() {
     };
   }, [loadAll, clearAllTimers]);
 
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setMarketNowText(fmtDateTime(new Date()));
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, []);
+
   const handleToggleAutoTrain = async () => {
     await runAction('toggleAutoTrain', async () => {
       const nextEnabled = !autoTrainEnabled;
@@ -816,10 +929,14 @@ export default function App() {
   const latestDraw = recent20[0] || null;
   const latestDrawNo = latestDraw?.draw_no || latestDraw?.drawNo || '--';
   const latestDrawTime = latestDraw?.draw_time || latestDraw?.drawTime || '--';
-  const latestNumbers = parseNums(latestDraw?.numbers || latestDraw?.nums || []);
+  const latestNumbers = parseNums(latestDraw?.numbers || latestDraw?.nums);
 
   const trainingGroups = getPredictionGroups(trainingLatest);
   const formalGroups = getPredictionGroups(formalLatest);
+
+  const hotNumbers = useMemo(() => calcHotNumbers(recent20, 10), [recent20]);
+  const streakNumbers = useMemo(() => calcCurrentStreakNumbers(recent20, 5), [recent20]);
+  const zoneCounts = useMemo(() => calcZoneCounts(latestNumbers), [latestNumbers]);
 
   // 🔒 正式下注前端固定統計，不吃後端倍率金額
   const formalTotalPerPeriod = useMemo(() => {
@@ -1280,14 +1397,21 @@ export default function App() {
         {!loading && activeTab === TABS.MARKET && (
           <div style={styles.sectionStack}>
             <Card
-              title="最新開獎"
-              subtitle="市場資料和 AI 頁分開後，資訊會清爽很多。"
+              title="市場即時資訊"
+              subtitle="把你真正會看的市場資訊集中在同一頁。"
+              right={<div style={styles.marketInfoTag}>最近五期連莊 / 最近十期熱號</div>}
             >
               <div style={styles.statsGrid4}>
                 <StatBox
                   label="最新期數"
                   value={fmtText(latestDrawNo)}
-                  hint={fmtDateTime(latestDrawTime)}
+                  hint="即時最新一期"
+                  valueStyle={{ color: '#d97706' }}
+                />
+                <StatBox
+                  label="目前時間"
+                  value={marketNowText}
+                  hint="前端即時顯示"
                 />
                 <StatBox
                   label="開出號碼數"
@@ -1295,27 +1419,107 @@ export default function App() {
                   hint="BINGO 1~80"
                 />
                 <StatBox
-                  label="奇數數量"
-                  value={latestNumbers.filter((n) => n % 2 === 1).length}
-                />
-                <StatBox
-                  label="偶數數量"
-                  value={latestNumbers.filter((n) => n % 2 === 0).length}
+                  label="五期內連莊數"
+                  value={streakNumbers.length}
+                  hint="只算目前連開 2 期以上"
+                  valueStyle={{ color: '#c2410c' }}
                 />
               </div>
+            </Card>
 
-              <div style={styles.marketBalls}>
-                {latestNumbers.map((n) => (
-                  <div key={n} style={styles.marketBall}>
-                    {String(n).padStart(2, '0')}
+            <Card
+              title="本期球號"
+              subtitle="最新一期的 20 顆球。"
+            >
+              <div style={styles.marketHeroBox}>
+                <div style={styles.marketDrawNoLine}>
+                  最新期數：
+                  <span style={styles.marketDrawNoValue}>{fmtText(latestDrawNo)}</span>
+                  <span style={styles.marketDrawTimeText}>　{fmtDateTime(latestDrawTime)}</span>
+                </div>
+
+                <div style={styles.marketBallsHero}>
+                  {latestNumbers.length ? (
+                    latestNumbers.map((n) => (
+                      <MarketBall key={n} n={n} />
+                    ))
+                  ) : (
+                    <div style={styles.emptyBox}>目前沒有本期球號資料。</div>
+                  )}
+                </div>
+
+                <div style={styles.marketSubGrid}>
+                  <div style={styles.marketMiniPanel}>
+                    <div style={styles.marketMiniTitle}>奇偶分布</div>
+                    <div style={styles.marketMiniText}>
+                      奇數 {latestNumbers.filter((n) => n % 2 === 1).length} ／ 偶數 {latestNumbers.filter((n) => n % 2 === 0).length}
+                    </div>
                   </div>
-                ))}
+
+                  <div style={styles.marketMiniPanel}>
+                    <div style={styles.marketMiniTitle}>大小分布</div>
+                    <div style={styles.marketMiniText}>
+                      小（1-40） {latestNumbers.filter((n) => n <= 40).length} ／ 大（41-80） {latestNumbers.filter((n) => n >= 41).length}
+                    </div>
+                  </div>
+                </div>
+
+                <div style={styles.zoneGrid}>
+                  {zoneCounts.map((zone) => (
+                    <div key={zone.label} style={styles.zoneBox}>
+                      <div style={styles.zoneLabel}>{zone.label}</div>
+                      <div style={styles.zoneValue}>{zone.count}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </Card>
+
+            <Card
+              title="熱門球號"
+              subtitle="統計最近 10 期，顯示出現次數最高的前 10 顆。"
+            >
+              <div style={styles.marketRowBlock}>
+                {hotNumbers.length ? (
+                  hotNumbers.map((item) => (
+                    <div key={item.num} style={styles.hotBallCard}>
+                      <div style={styles.hotBall}>{formatBallNumber(item.num)}</div>
+                      <div style={styles.hotBallCount}>× {item.count}</div>
+                    </div>
+                  ))
+                ) : (
+                  <div style={styles.emptyBox}>目前沒有熱門球號資料。</div>
+                )}
+              </div>
+            </Card>
+
+            <Card
+              title="熱門連莊"
+              subtitle="從最新一期開始往前看 5 期，只顯示目前連開 2 期以上的號碼。"
+            >
+              <div style={styles.marketRuleBox}>
+                規則：本期有開 = 1；上期也有開 = 2；再上期也有開 = 3。
+                一旦中間斷掉就停止，只顯示目前連莊中的號碼。
+              </div>
+
+              <div style={styles.marketRowBlock}>
+                {streakNumbers.length ? (
+                  streakNumbers.map((item) => (
+                    <StreakBall
+                      key={item.num}
+                      n={item.num}
+                      streak={item.streak}
+                    />
+                  ))
+                ) : (
+                  <div style={styles.emptyBox}>最近五期內，目前沒有連開 2 期以上的號碼。</div>
+                )}
               </div>
             </Card>
 
             <Card
               title="最近 20 期"
-              subtitle="市場資料頁只放資料，不再把下注和策略摻在一起。"
+              subtitle="保留原始資料表，方便你回頭對照。"
             >
               <div style={styles.tableWrap}>
                 <table style={styles.table}>
@@ -1486,6 +1690,15 @@ const styles = {
     fontSize: 13,
     color: '#5c5344',
     fontWeight: 800
+  },
+  marketInfoTag: {
+    padding: '8px 12px',
+    borderRadius: 999,
+    background: '#fff3cd',
+    border: '1px solid #ecd59a',
+    fontSize: 13,
+    color: '#8a5a00',
+    fontWeight: 900
   },
   statsGrid4: {
     display: 'grid',
@@ -1816,7 +2029,8 @@ const styles = {
     padding: '12px 10px',
     borderBottom: '1px solid #e7dcc0',
     color: '#7a6f5e',
-    fontSize: 13
+    fontSize: 13,
+    whiteSpace: 'nowrap'
   },
   td: {
     padding: '12px 10px',
@@ -1825,6 +2039,35 @@ const styles = {
     fontSize: 14,
     verticalAlign: 'top'
   },
+  marketHeroBox: {
+    background: '#fffdf8',
+    border: '1px solid #e7dcc0',
+    borderRadius: 18,
+    padding: 16
+  },
+  marketDrawNoLine: {
+    fontSize: 16,
+    fontWeight: 800,
+    color: '#705f34',
+    marginBottom: 12
+  },
+  marketDrawNoValue: {
+    fontSize: 24,
+    fontWeight: 900,
+    color: '#d97706',
+    marginLeft: 6
+  },
+  marketDrawTimeText: {
+    fontSize: 13,
+    fontWeight: 600,
+    color: '#8a7d66'
+  },
+  marketBallsHero: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginTop: 8
+  },
   marketBalls: {
     display: 'flex',
     flexWrap: 'wrap',
@@ -1832,8 +2075,8 @@ const styles = {
     marginTop: 14
   },
   marketBall: {
-    minWidth: 42,
-    height: 42,
+    minWidth: 46,
+    height: 46,
     borderRadius: '50%',
     background: '#f0b22b',
     color: '#fffef8',
@@ -1841,7 +2084,138 @@ const styles = {
     alignItems: 'center',
     justifyContent: 'center',
     fontWeight: 900,
-    fontSize: 16
+    fontSize: 17,
+    boxShadow: '0 10px 18px rgba(240,178,43,0.24)'
+  },
+  marketBallHighlight: {
+    background: '#d97706'
+  },
+  marketSubGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+    gap: 12,
+    marginTop: 16
+  },
+  marketMiniPanel: {
+    background: '#fff9ea',
+    border: '1px solid #eadfc0',
+    borderRadius: 14,
+    padding: 12
+  },
+  marketMiniTitle: {
+    fontSize: 13,
+    fontWeight: 900,
+    color: '#8a5a00',
+    marginBottom: 6
+  },
+  marketMiniText: {
+    fontSize: 14,
+    color: '#645946',
+    lineHeight: 1.5
+  },
+  zoneGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(100px, 1fr))',
+    gap: 10,
+    marginTop: 14
+  },
+  zoneBox: {
+    background: '#fffdf8',
+    border: '1px solid #e7dcc0',
+    borderRadius: 14,
+    padding: 12,
+    textAlign: 'center'
+  },
+  zoneLabel: {
+    fontSize: 12,
+    color: '#8a7d66',
+    marginBottom: 6
+  },
+  zoneValue: {
+    fontSize: 24,
+    fontWeight: 900,
+    color: '#176b5f'
+  },
+  marketRowBlock: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 12,
+    alignItems: 'flex-start'
+  },
+  hotBallCard: {
+    width: 90,
+    background: '#fffdf8',
+    border: '1px solid #e7dcc0',
+    borderRadius: 16,
+    padding: '12px 10px',
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: 8
+  },
+  hotBall: {
+    width: 48,
+    height: 48,
+    borderRadius: '50%',
+    background: '#f0b22b',
+    color: '#fffef8',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontWeight: 900,
+    fontSize: 18
+  },
+  hotBallCount: {
+    fontSize: 14,
+    fontWeight: 900,
+    color: '#8a5a00'
+  },
+  marketRuleBox: {
+    background: '#fff7df',
+    border: '1px solid #e9d59b',
+    borderRadius: 14,
+    padding: 12,
+    color: '#705f34',
+    lineHeight: 1.7,
+    marginBottom: 14,
+    fontSize: 13
+  },
+  streakBallWrap: {
+    position: 'relative',
+    width: 64,
+    height: 64,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  streakBall: {
+    width: 50,
+    height: 50,
+    borderRadius: '50%',
+    background: '#d97706',
+    color: '#fffef8',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontWeight: 900,
+    fontSize: 18,
+    boxShadow: '0 10px 20px rgba(217,119,6,0.25)'
+  },
+  streakBadge: {
+    position: 'absolute',
+    right: 2,
+    top: 2,
+    minWidth: 24,
+    height: 24,
+    borderRadius: 999,
+    background: '#176b5f',
+    color: '#fffef8',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: 12,
+    fontWeight: 900,
+    border: '2px solid #fff8e8'
   },
   numsInline: {
     display: 'flex',
