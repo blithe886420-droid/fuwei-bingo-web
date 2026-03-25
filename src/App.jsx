@@ -16,6 +16,15 @@ const LOOP_INTERVAL_MS = 180000;
 const NIGHT_STOP_START_MINUTES = 0;
 const NIGHT_STOP_END_MINUTES = 7 * 60 + 30;
 
+// 🔒 正式下注固定設定
+const FORMAL_FIXED_GROUP_COUNT = 4;
+const FORMAL_FIXED_TARGET_PERIODS = 4;
+const FORMAL_FIXED_BET_PER_GROUP = 25;
+const FORMAL_FIXED_TOTAL_PER_PERIOD =
+  FORMAL_FIXED_GROUP_COUNT * FORMAL_FIXED_BET_PER_GROUP;
+const FORMAL_FIXED_TOTAL_ALL_PERIODS =
+  FORMAL_FIXED_TOTAL_PER_PERIOD * FORMAL_FIXED_TARGET_PERIODS;
+
 function toArray(v) {
   return Array.isArray(v) ? v : [];
 }
@@ -82,25 +91,40 @@ function normalizeGroups(rawGroups) {
       if (nums.length !== 4) return null;
 
       const meta = group?.meta && typeof group.meta === 'object' ? group.meta : {};
-      const weight = Number.isFinite(Number(group?.weight))
-        ? Number(group.weight)
-        : Number.isFinite(Number(meta?.weight_multiplier))
-          ? Number(meta.weight_multiplier)
-          : Number.isFinite(Number(meta?.bet_multiplier))
-            ? Number(meta.bet_multiplier)
+
+      // 🔒 正式下注前端固定顯示，不再使用倍率配重語意
+      const isFormalGroup =
+        String(meta?.profit_mode || '').toLowerCase().includes('profit_mode') ||
+        String(group?.reason || '').includes('正式下注') ||
+        String(group?.key || '').startsWith('formal_') ||
+        String(meta?.strategy_key || '').startsWith('formal_') ||
+        String(meta?.selection_rank || '').length > 0;
+
+      const weight = isFormalGroup
+        ? 1
+        : Number.isFinite(Number(group?.weight))
+          ? Number(group.weight)
+          : Number.isFinite(Number(meta?.weight_multiplier))
+            ? Number(meta.weight_multiplier)
+            : Number.isFinite(Number(meta?.bet_multiplier))
+              ? Number(meta.bet_multiplier)
+              : null;
+
+      const betAmount = isFormalGroup
+        ? FORMAL_FIXED_BET_PER_GROUP
+        : Number.isFinite(Number(group?.bet_amount))
+          ? Number(group.bet_amount)
+          : Number.isFinite(Number(meta?.bet_amount))
+            ? Number(meta.bet_amount)
             : null;
 
-      const betAmount = Number.isFinite(Number(group?.bet_amount))
-        ? Number(group.bet_amount)
-        : Number.isFinite(Number(meta?.bet_amount))
-          ? Number(meta.bet_amount)
-          : null;
-
-      const betWeight = Number.isFinite(Number(group?.bet_weight))
-        ? Number(group.bet_weight)
-        : Number.isFinite(Number(meta?.bet_weight))
-          ? Number(meta.bet_weight)
-          : null;
+      const betWeight = isFormalGroup
+        ? 2500
+        : Number.isFinite(Number(group?.bet_weight))
+          ? Number(group.bet_weight)
+          : Number.isFinite(Number(meta?.bet_weight))
+            ? Number(meta.bet_weight)
+            : null;
 
       return {
         key: String(group?.key || meta?.strategy_key || `group_${idx + 1}`),
@@ -119,10 +143,10 @@ function normalizeGroups(rawGroups) {
 function getPredictionGroups(row) {
   return normalizeGroups(
     row?.groups_json ||
-    row?.groups ||
-    row?.strategies ||
-    row?.prediction_groups ||
-    []
+      row?.groups ||
+      row?.strategies ||
+      row?.prediction_groups ||
+      []
   );
 }
 
@@ -136,7 +160,16 @@ function groupTitle(group, idx) {
   );
 }
 
-function groupReason(group) {
+function groupReason(group, latestMode = '') {
+  const mode = String(latestMode || '').toLowerCase();
+
+  if (mode === 'formal') {
+    return (
+      group?.reason ||
+      '固定四組四期正式下注（每組 25 元，不使用倍率配重）'
+    );
+  }
+
   return group?.reason || group?.meta?.strategy_name || group?.meta?.strategy_key || '--';
 }
 
@@ -390,14 +423,14 @@ function buildLastCycleSummary(result) {
 
   const compared = toNum(
     result?.compared_count ??
-    result?.compare?.data?.processed ??
-    result?.compare?.processed,
+      result?.compare?.data?.processed ??
+      result?.compare?.processed,
     0
   );
 
   const created = toNum(
     result?.created_count ??
-    (result?.train?.inserted ? 1 : 0),
+      (result?.train?.inserted ? 1 : 0),
     0
   );
 
@@ -519,20 +552,23 @@ export default function App() {
     }
   }, []);
 
-  const runAction = useCallback(async (key, fn) => {
-    setBusyKey(key);
-    setError('');
-    try {
-      await fn();
-      await loadAll();
-    } catch (err) {
-      setError(err.message || '執行失敗');
-    } finally {
-      if (mountedRef.current) {
-        setBusyKey('');
+  const runAction = useCallback(
+    async (key, fn) => {
+      setBusyKey(key);
+      setError('');
+      try {
+        await fn();
+        await loadAll();
+      } catch (err) {
+        setError(err.message || '執行失敗');
+      } finally {
+        if (mountedRef.current) {
+          setBusyKey('');
+        }
       }
-    }
-  }, [loadAll]);
+    },
+    [loadAll]
+  );
 
   const handleSync = useCallback(async () => {
     await runAction('sync', async () => {
@@ -567,14 +603,14 @@ export default function App() {
 
     const compared = toNum(
       result?.compared_count ??
-      result?.compare?.data?.processed ??
-      result?.compare?.processed,
+        result?.compare?.data?.processed ??
+        result?.compare?.processed,
       0
     );
 
     const created = toNum(
       result?.created_count ??
-      (result?.train?.inserted ? 1 : 0),
+        (result?.train?.inserted ? 1 : 0),
       0
     );
 
@@ -631,10 +667,9 @@ export default function App() {
 
       setLoopStatusText('自動訓練中...');
 
-      const autoTrainHttp = await safeFetchJsonAllowHttpError('/api/auto-train', { method: 'POST' })
-        .catch(async () => {
-          return await safeFetchJsonAllowHttpError('/api/auto-train', { method: 'GET' });
-        });
+      const autoTrainHttp = await safeFetchJsonAllowHttpError('/api/auto-train', { method: 'POST' }).catch(async () => {
+        return await safeFetchJsonAllowHttpError('/api/auto-train', { method: 'GET' });
+      });
 
       const autoTrainResult = normalizeAutoTrainResult(autoTrainHttp?.json, autoTrainHttp?.status);
 
@@ -693,18 +728,10 @@ export default function App() {
     }, msUntilNightWindowEnd());
   }, [runAiCycle]);
 
-  const startLoopScheduler = useCallback((delay = 0) => {
-    clearAllTimers();
+  const startLoopScheduler = useCallback(
+    (delay = 0) => {
+      clearAllTimers();
 
-    if (!sessionStartedRef.current) return;
-
-    if (isNightStopWindow()) {
-      setLoopStatusText('夜間停訓中（00:00～07:30 不訓練）');
-      scheduleNightResume();
-      return;
-    }
-
-    schedulerRef.current = setTimeout(async function loopRunner() {
       if (!sessionStartedRef.current) return;
 
       if (isNightStopWindow()) {
@@ -713,12 +740,23 @@ export default function App() {
         return;
       }
 
-      await runAiCycle();
+      schedulerRef.current = setTimeout(async function loopRunner() {
+        if (!sessionStartedRef.current) return;
 
-      if (!sessionStartedRef.current) return;
-      schedulerRef.current = setTimeout(loopRunner, LOOP_INTERVAL_MS);
-    }, delay);
-  }, [clearAllTimers, runAiCycle, scheduleNightResume]);
+        if (isNightStopWindow()) {
+          setLoopStatusText('夜間停訓中（00:00～07:30 不訓練）');
+          scheduleNightResume();
+          return;
+        }
+
+        await runAiCycle();
+
+        if (!sessionStartedRef.current) return;
+        schedulerRef.current = setTimeout(loopRunner, LOOP_INTERVAL_MS);
+      }, delay);
+    },
+    [clearAllTimers, runAiCycle, scheduleNightResume]
+  );
 
   useEffect(() => {
     mountedRef.current = true;
@@ -783,15 +821,26 @@ export default function App() {
   const trainingGroups = getPredictionGroups(trainingLatest);
   const formalGroups = getPredictionGroups(formalLatest);
 
-  const formalTotalPerPeriod = useMemo(
-    () => formalGroups.reduce((sum, group) => sum + toNum(group?.bet_amount, 0), 0),
-    [formalGroups]
+  // 🔒 正式下注前端固定統計，不吃後端倍率金額
+  const formalTotalPerPeriod = useMemo(() => {
+    if (!formalGroups.length) return 0;
+    return FORMAL_FIXED_TOTAL_PER_PERIOD;
+  }, [formalGroups]);
+
+  const formalTargetPeriods = useMemo(() => {
+    if (!formalGroups.length) return toNum(formalLatest?.target_periods, 0);
+    return FORMAL_FIXED_TARGET_PERIODS;
+  }, [formalGroups, formalLatest]);
+
+  const formalTotalAllPeriods = useMemo(() => {
+    if (!formalGroups.length) return 0;
+    return FORMAL_FIXED_TOTAL_ALL_PERIODS;
+  }, [formalGroups]);
+
+  const lastCycleSummary = useMemo(
+    () => buildLastCycleSummary(lastAutoTrainResult),
+    [lastAutoTrainResult]
   );
-
-  const formalTargetPeriods = toNum(formalLatest?.target_periods, 0);
-  const formalTotalAllPeriods = formalTotalPerPeriod * formalTargetPeriods;
-
-  const lastCycleSummary = useMemo(() => buildLastCycleSummary(lastAutoTrainResult), [lastAutoTrainResult]);
 
   return (
     <div style={styles.page}>
@@ -1035,16 +1084,17 @@ export default function App() {
                 <span style={{ marginLeft: 16 }}>來源期數：</span>
                 <strong>{fmtText(formalLatest?.source_draw_no)}</strong>
                 <span style={{ marginLeft: 16 }}>目標期數：</span>
-                <strong>{fmtText(formalLatest?.target_periods)}</strong>
+                <strong>{formalGroups.length ? FORMAL_FIXED_TARGET_PERIODS : fmtText(formalLatest?.target_periods)}</strong>
               </div>
 
               <div style={styles.infoBannerStrong}>
-                <div style={styles.infoBannerTitle}>正式下注＝Profit Mode v2.1 權重下注系統</div>
+                <div style={styles.infoBannerTitle}>正式下注＝固定四組四期模式</div>
                 <div>
-                  建立邏輯：先從 strategy_stats 挑出較強策略，再依
-                  <strong> score / ROI / avg_hit / recent_50_roi </strong>
-                  進行資金權重分配。強策略會提高倍率，弱策略維持基本下注，讓 AI
-                  從「只會選號」進化到「會分配資金」。
+                  建立邏輯：先從 strategy_stats 挑出較強策略，再建立
+                  <strong> 固定四組、固定四期、每組 25 元 </strong>
+                  的正式下注。正式下注現在只負責
+                  <strong> 選策略與產號 </strong>
+                  ，不再使用倍率加碼或權重放大，避免總投入偏離固定成本框架。
                 </div>
               </div>
 
@@ -1052,12 +1102,12 @@ export default function App() {
                 <StatBox
                   label="每期總投入"
                   value={fmtMoney(formalTotalPerPeriod)}
-                  hint="四組合計"
+                  hint="固定四組合計 100 元"
                 />
                 <StatBox
                   label="本輪總投入"
                   value={fmtMoney(formalTotalAllPeriods)}
-                  hint={`每期 × ${formalTargetPeriods || 0} 期`}
+                  hint={`固定 ${FORMAL_FIXED_TARGET_PERIODS} 期，共 400 元`}
                 />
                 <StatBox
                   label="組數"
@@ -1065,13 +1115,9 @@ export default function App() {
                   hint="正式下注組數"
                 />
                 <StatBox
-                  label="最高倍率"
-                  value={
-                    formalGroups.length
-                      ? `${Math.max(...formalGroups.map((g) => toNum(g?.weight, 0)))}x`
-                      : '--'
-                  }
-                  hint="本輪最強策略"
+                  label="每組固定"
+                  value={fmtMoney(formalGroups.length ? FORMAL_FIXED_BET_PER_GROUP : '--')}
+                  hint="不使用倍率配重"
                 />
               </div>
 
@@ -1113,18 +1159,14 @@ export default function App() {
                         ))}
                       </div>
 
-                      <div style={styles.groupReason}>{groupReason(group)}</div>
+                      <div style={styles.groupReason}>
+                        {groupReason(group, 'formal')}
+                      </div>
 
-                      <div style={styles.betRow}>
-                        <div style={styles.betBox}>
-                          <div style={styles.betLabel}>權重倍率</div>
-                          <div style={styles.betValue}>
-                            {Number.isFinite(Number(group?.weight)) ? `${Number(group.weight)}x` : '--'}
-                          </div>
-                        </div>
+                      <div style={styles.betRowSingle}>
                         <div style={styles.betBox}>
                           <div style={styles.betLabel}>單組金額</div>
-                          <div style={styles.betValue}>{fmtMoney(group?.bet_amount)}</div>
+                          <div style={styles.betValue}>{fmtMoney(FORMAL_FIXED_BET_PER_GROUP)}</div>
                         </div>
                       </div>
 
@@ -1134,14 +1176,6 @@ export default function App() {
                         <MetaChip label="roi" value={fmtPercent(group?.meta?.roi)} />
                         <MetaChip label="rounds" value={fmtText(group?.meta?.total_rounds)} />
                         <MetaChip label="filter" value={fmtText(group?.meta?.filter_pass)} />
-                        <MetaChip
-                          label="bet_weight"
-                          value={
-                            Number.isFinite(Number(group?.bet_weight))
-                              ? Number(group.bet_weight)
-                              : '--'
-                          }
-                        />
                       </div>
                     </div>
                   ))
@@ -1182,7 +1216,7 @@ export default function App() {
                           </div>
                         ))}
                       </div>
-                      <div style={styles.groupReason}>{groupReason(group)}</div>
+                      <div style={styles.groupReason}>{groupReason(group, 'test')}</div>
                     </div>
                   ))
                 ) : (
@@ -1717,6 +1751,12 @@ const styles = {
   betRow: {
     display: 'grid',
     gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+    gap: 10,
+    marginTop: 12
+  },
+  betRowSingle: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(1, minmax(0, 1fr))',
     gap: 10,
     marginTop: 12
   },
