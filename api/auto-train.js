@@ -72,6 +72,39 @@ const DECISION_CONFIG = {
   usableScoreFloor: 10
 };
 
+const STRATEGY_STATS_TABLE = 'strategy_stats';
+const STRATEGY_POOL_TABLE = 'strategy_pool';
+const PROTECTED_STATUS = new Set(['protected']);
+const TERMINAL_STATUS = new Set(['disabled', 'retired']);
+
+/**
+ * 主動淘汰規則（與 strategyStatsRecorder 的快速淘汰精神一致）
+ * 目的：即使本輪 compare 沒觸發，也能在 auto-train 週期內主動清理弱策略
+ */
+const DISABLE_RULES = {
+  minRoundsA: 5,
+  roiFloorA: -0.5,
+
+  minRoundsB: 4,
+  recent50RoiFloorB: -0.2,
+  avgHitFloorB: 1.0,
+
+  minRoundsC: 6,
+  recent50RoiFloorC: -0.35,
+  hitRateFloorC: 0.12,
+
+  minRoundsD: 8,
+  roiFloorD: -0.3,
+  avgHitFloorD: 1.1,
+
+  minRoundsE: 3,
+  roiFloorE: -0.5,
+
+  minRoundsF: 3,
+  avgHitFloorF: 0.8,
+  recent50RoiFloorF: -0.4
+};
+
 let supabase = null;
 
 function getSupabase() {
@@ -681,6 +714,138 @@ function byPowerDesc(a, b) {
   );
 }
 
+function shouldDisableStrategy(row = {}) {
+  const roi = toNum(row?.roi);
+  const avgHit = toNum(row?.avg_hit);
+  const recent50Roi = toNum(row?.recent_50_roi);
+  const recent50HitRate = toNum(row?.recent_50_hit_rate);
+  const totalRounds = toNum(row?.total_rounds);
+
+  if (
+    totalRounds >= DISABLE_RULES.minRoundsA &&
+    roi < DISABLE_RULES.roiFloorA
+  ) {
+    return {
+      shouldDisable: true,
+      reason: `roi_below_${DISABLE_RULES.roiFloorA}_after_${DISABLE_RULES.minRoundsA}`
+    };
+  }
+
+  if (
+    totalRounds >= DISABLE_RULES.minRoundsB &&
+    recent50Roi < DISABLE_RULES.recent50RoiFloorB &&
+    avgHit < DISABLE_RULES.avgHitFloorB
+  ) {
+    return {
+      shouldDisable: true,
+      reason: `recent50_roi_below_${DISABLE_RULES.recent50RoiFloorB}_and_avg_hit_below_${DISABLE_RULES.avgHitFloorB}`
+    };
+  }
+
+  if (
+    totalRounds >= DISABLE_RULES.minRoundsC &&
+    recent50Roi < DISABLE_RULES.recent50RoiFloorC &&
+    recent50HitRate < DISABLE_RULES.hitRateFloorC
+  ) {
+    return {
+      shouldDisable: true,
+      reason: `recent50_roi_below_${DISABLE_RULES.recent50RoiFloorC}_and_hit_rate_below_${DISABLE_RULES.hitRateFloorC}`
+    };
+  }
+
+  if (
+    totalRounds >= DISABLE_RULES.minRoundsD &&
+    roi < DISABLE_RULES.roiFloorD &&
+    avgHit < DISABLE_RULES.avgHitFloorD
+  ) {
+    return {
+      shouldDisable: true,
+      reason: `roi_below_${DISABLE_RULES.roiFloorD}_and_avg_hit_below_${DISABLE_RULES.avgHitFloorD}`
+    };
+  }
+
+  if (
+    totalRounds >= DISABLE_RULES.minRoundsE &&
+    roi < DISABLE_RULES.roiFloorE
+  ) {
+    return {
+      shouldDisable: true,
+      reason: `early_fail_roi_below_${DISABLE_RULES.roiFloorE}_after_${DISABLE_RULES.minRoundsE}`
+    };
+  }
+
+  if (
+    totalRounds >= DISABLE_RULES.minRoundsF &&
+    avgHit < DISABLE_RULES.avgHitFloorF &&
+    recent50Roi < DISABLE_RULES.recent50RoiFloorF
+  ) {
+    return {
+      shouldDisable: true,
+      reason: `early_fail_avg_hit_below_${DISABLE_RULES.avgHitFloorF}_and_recent50_roi_below_${DISABLE_RULES.recent50RoiFloorF}`
+    };
+  }
+
+  return {
+    shouldDisable: false,
+    reason: ''
+  };
+}
+
+async function getPoolStatusMap(supabaseClient, strategyKeys = []) {
+  const safeKeys = [...new Set((Array.isArray(strategyKeys) ? strategyKeys : []).filter(Boolean))];
+  if (!safeKeys.length) return new Map();
+
+  const { data, error } = await supabaseClient
+    .from(STRATEGY_POOL_TABLE)
+    .select('strategy_key, status, protected_rank')
+    .in('strategy_key', safeKeys);
+
+  if (error) {
+    throw new Error(`strategy_pool select failed: ${error.message || error}`);
+  }
+
+  return new Map(
+    (data || []).map((row) => [
+      String(row?.strategy_key || '').trim(),
+      {
+        status: String(row?.status || '').trim().toLowerCase(),
+        protected_rank: Boolean(row?.protected_rank)
+      }
+    ])
+  );
+}
+
+async function disableStrategies(supabaseClient, strategyKeys = [], reasonMap = {}) {
+  const finalKeys = [...new Set((Array.isArray(strategyKeys) ? strategyKeys : []).filter(Boolean))];
+  if (!finalKeys.length) {
+    return {
+      updated: 0,
+      disabled_keys: [],
+      disabled_reason_map: {}
+    };
+  }
+
+  const nowIso = new Date().toISOString();
+
+  const { error } = await supabaseClient
+    .from(STRATEGY_POOL_TABLE)
+    .update({
+      status: 'disabled',
+      updated_at: nowIso
+    })
+    .in('strategy_key', finalKeys);
+
+  if (error) {
+    throw new Error(`strategy_pool disable update failed: ${error.message || error}`);
+  }
+
+  return {
+    updated: finalKeys.length,
+    disabled_keys: finalKeys,
+    disabled_reason_map: reasonMap
+  };
+}
+
 async function runSync() {
   return { ok: true };
 }
@@ -1026,6 +1191,83 @@ function buildPredictionGroups(candidatePack = {}, market = {}, marketSnapshot =
   return groups.slice(0, BET_GROUP_COUNT);
 }
 
+async function runStrategyReaper(db) {
+  const { data: statsRows, error: statsError } = await db
+    .from(STRATEGY_STATS_TABLE)
+    .select('*');
+
+  if (statsError) {
+    throw new Error(`strategy_stats scan failed: ${statsError.message || statsError}`);
+  }
+
+  const rows = Array.isArray(statsRows) ? statsRows : [];
+  if (!rows.length) {
+    return {
+      ok: true,
+      scanned: 0,
+      disabled_count: 0,
+      disabled_keys: [],
+      disabled_reason_map: {}
+    };
+  }
+
+  const keys = rows
+    .map((row) => String(row?.strategy_key || '').trim())
+    .filter(Boolean);
+
+  const poolStatusMap = await getPoolStatusMap(db, keys);
+
+  const disabledKeys = [];
+  const disabledReasonMap = {};
+
+  for (const row of rows) {
+    const key = String(row?.strategy_key || '').trim();
+    if (!key) continue;
+
+    const poolInfo = poolStatusMap.get(key) || {
+      status: '',
+      protected_rank: false
+    };
+
+    const currentStatus = String(poolInfo.status || '').trim().toLowerCase();
+
+    if (poolInfo.protected_rank || PROTECTED_STATUS.has(currentStatus)) {
+      continue;
+    }
+
+    if (TERMINAL_STATUS.has(currentStatus)) {
+      continue;
+    }
+
+    const disableCheck = shouldDisableStrategy(row);
+
+    if (disableCheck.shouldDisable) {
+      disabledKeys.push(key);
+      disabledReasonMap[key] = disableCheck.reason;
+    }
+  }
+
+  const finalDisabledKeys = [...new Set(disabledKeys)];
+
+  let disableResult = {
+    updated: 0,
+    disabled_keys: [],
+    disabled_reason_map: {}
+  };
+
+  if (finalDisabledKeys.length > 0) {
+    disableResult = await disableStrategies(db, finalDisabledKeys, disabledReasonMap);
+  }
+
+  return {
+    ok: true,
+    scanned: rows.length,
+    disabled_count: toNum(disableResult.updated, 0),
+    disabled_keys: disableResult.disabled_keys || [],
+    disabled_reason_map: disableResult.disabled_reason_map || {}
+  };
+}
+
 export default async function handler(req, res) {
   try {
     const db = getSupabase();
@@ -1049,9 +1291,16 @@ export default async function handler(req, res) {
     if (latestError) throw latestError;
 
     if (!latestDrawRows || !latestDrawRows.length) {
+      const reaperResult = await runStrategyReaper(db);
+
       return res.status(200).json({
         ok: true,
-        pipeline,
+        compare_modes: [...COMPARE_MODES],
+        pipeline: {
+          ...pipeline,
+          reaper: reaperResult
+        },
+        market_snapshot: null,
         compared_count: toNum(compareBeforeCreate?.processed, 0),
         compared_by_mode: compareBeforeCreate?.processed_by_mode || {
           test: 0,
@@ -1062,6 +1311,9 @@ export default async function handler(req, res) {
           test: 0,
           formal: 0
         },
+        created_current_open_count: await countCreatedPredictions(db),
+        disabled_keys: reaperResult.disabled_keys || [],
+        active_created_prediction: null,
         train: {
           ok: true,
           skipped: true,
@@ -1074,9 +1326,16 @@ export default async function handler(req, res) {
     const sourceDrawNoRaw = Number(latestDraw.draw_no) - TARGET_PERIODS;
 
     if (sourceDrawNoRaw <= 0) {
+      const reaperResult = await runStrategyReaper(db);
+
       return res.status(200).json({
         ok: true,
-        pipeline,
+        compare_modes: [...COMPARE_MODES],
+        pipeline: {
+          ...pipeline,
+          reaper: reaperResult
+        },
+        market_snapshot: null,
         compared_count: toNum(compareBeforeCreate?.processed, 0),
         compared_by_mode: compareBeforeCreate?.processed_by_mode || {
           test: 0,
@@ -1087,6 +1346,9 @@ export default async function handler(req, res) {
           test: 0,
           formal: 0
         },
+        created_current_open_count: await countCreatedPredictions(db),
+        disabled_keys: reaperResult.disabled_keys || [],
+        active_created_prediction: null,
         train: {
           ok: true,
           skipped: true,
@@ -1185,6 +1447,9 @@ export default async function handler(req, res) {
     const compareAfterCreate = await runCompare(db);
     pipeline.compare_after_create = compareAfterCreate;
 
+    const reaperResult = await runStrategyReaper(db);
+    pipeline.reaper = reaperResult;
+
     let finalActiveCreatedPrediction = activeCreatedPrediction;
 
     if (finalActiveCreatedPrediction?.id) {
@@ -1205,7 +1470,8 @@ export default async function handler(req, res) {
 
     const disabledKeys = [
       ...(Array.isArray(compareBeforeCreate?.disabled_keys) ? compareBeforeCreate.disabled_keys : []),
-      ...(Array.isArray(compareAfterCreate?.disabled_keys) ? compareAfterCreate.disabled_keys : [])
+      ...(Array.isArray(compareAfterCreate?.disabled_keys) ? compareAfterCreate.disabled_keys : []),
+      ...(Array.isArray(reaperResult?.disabled_keys) ? reaperResult.disabled_keys : [])
     ];
 
     const createdRemaining = await countCreatedPredictions(db);
@@ -1228,6 +1494,7 @@ export default async function handler(req, res) {
       created_current_open_count: createdRemaining,
       disabled_keys: [...new Set(disabledKeys)],
       active_created_prediction: finalActiveCreatedPrediction,
+      reaper: reaperResult,
       train: {
         ok: true,
         skipped: createdCount === 0,
