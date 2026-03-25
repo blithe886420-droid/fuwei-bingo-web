@@ -118,6 +118,17 @@ const MAX_ACTIVE_STRATEGY = 80;
 const MAX_SPAWN_PER_RUN = 12;
 
 /**
+ * C1 縮池控制
+ * 目標：
+ * - active > 80 時，不只是一般淘汰，而是啟動「縮池模式」
+ * - active 太胖時，加大單輪淘汰數量，但仍保留最低存活保護
+ * - 先砍弱、再砍候補、最後才碰邊緣 usable
+ */
+const SOFT_SHRINK_TRIGGER = MAX_ACTIVE_STRATEGY + 1;
+const HARD_SHRINK_TRIGGER = 120;
+const EXTREME_SHRINK_TRIGGER = 160;
+
+/**
  * 補位用基因字典
  */
 const KNOWN_GENES = [
@@ -759,6 +770,30 @@ function byPowerDesc(a, b) {
   );
 }
 
+function byWeaknessDesc(a, b) {
+  return (
+    toNum(a.decision_rank, 99) - toNum(b.decision_rank, 99) ||
+    toNum(a.decision_score, 0) - toNum(b.decision_score, 0) ||
+    toNum(a.weight, 0) - toNum(b.weight, 0) ||
+    toNum(a.roi, 0) - toNum(b.roi, 0) ||
+    toNum(a.recent_50_roi, 0) - toNum(b.recent_50_roi, 0) ||
+    toNum(a.avg_hit, 0) - toNum(b.avg_hit, 0) ||
+    toNum(a.total_rounds, 0) - toNum(b.total_rounds, 0) ||
+    String(a.strategy_key).localeCompare(String(b.strategy_key))
+  );
+}
+
+function getDecisionRank(decision = '') {
+  const d = String(decision || '').toLowerCase();
+
+  if (d === 'reject') return 0;
+  if (d === 'weak') return 1;
+  if (d === 'candidate') return 2;
+  if (d === 'usable') return 3;
+  if (d === 'strong') return 4;
+  return 5;
+}
+
 function buildAdaptiveDisableRules(activeCount = 999) {
   if (activeCount <= 34) {
     return {
@@ -781,6 +816,54 @@ function buildAdaptiveDisableRules(activeCount = 999) {
       roiFloorD: -0.42,
       roiFloorE: -0.65,
       recent50RoiFloorF: -0.52
+    };
+  }
+
+  if (activeCount >= EXTREME_SHRINK_TRIGGER) {
+    return {
+      ...DISABLE_RULES,
+      roiFloorA: -0.28,
+      recent50RoiFloorB: -0.08,
+      recent50RoiFloorC: -0.18,
+      roiFloorD: -0.2,
+      roiFloorE: -0.3,
+      recent50RoiFloorF: -0.22,
+      avgHitFloorB: 1.08,
+      avgHitFloorD: 1.18,
+      avgHitFloorF: 0.95,
+      hitRateFloorC: 0.18
+    };
+  }
+
+  if (activeCount >= HARD_SHRINK_TRIGGER) {
+    return {
+      ...DISABLE_RULES,
+      roiFloorA: -0.35,
+      recent50RoiFloorB: -0.12,
+      recent50RoiFloorC: -0.24,
+      roiFloorD: -0.24,
+      roiFloorE: -0.38,
+      recent50RoiFloorF: -0.28,
+      avgHitFloorB: 1.04,
+      avgHitFloorD: 1.14,
+      avgHitFloorF: 0.9,
+      hitRateFloorC: 0.15
+    };
+  }
+
+  if (activeCount >= SOFT_SHRINK_TRIGGER) {
+    return {
+      ...DISABLE_RULES,
+      roiFloorA: -0.42,
+      recent50RoiFloorB: -0.16,
+      recent50RoiFloorC: -0.28,
+      roiFloorD: -0.26,
+      roiFloorE: -0.44,
+      recent50RoiFloorF: -0.34,
+      avgHitFloorB: 1.02,
+      avgHitFloorD: 1.12,
+      avgHitFloorF: 0.86,
+      hitRateFloorC: 0.13
     };
   }
 
@@ -991,6 +1074,121 @@ async function countActiveStrategies(db) {
 
   if (error) throw error;
   return toNum(count, 0);
+}
+
+function getShrinkPlan(activeCount = 0) {
+  if (activeCount <= MAX_ACTIVE_STRATEGY) {
+    return {
+      shrinkMode: 'off',
+      overTarget: Math.max(0, activeCount - TARGET_ACTIVE_STRATEGY),
+      overMax: 0,
+      extraDisableTarget: 0,
+      maxDisablePerRun: 8
+    };
+  }
+
+  const overTarget = Math.max(0, activeCount - TARGET_ACTIVE_STRATEGY);
+  const overMax = Math.max(0, activeCount - MAX_ACTIVE_STRATEGY);
+
+  if (activeCount >= EXTREME_SHRINK_TRIGGER) {
+    return {
+      shrinkMode: 'extreme',
+      overTarget,
+      overMax,
+      extraDisableTarget: Math.min(overTarget, 30),
+      maxDisablePerRun: 30
+    };
+  }
+
+  if (activeCount >= HARD_SHRINK_TRIGGER) {
+    return {
+      shrinkMode: 'hard',
+      overTarget,
+      overMax,
+      extraDisableTarget: Math.min(overTarget, 22),
+      maxDisablePerRun: 22
+    };
+  }
+
+  if (activeCount >= 100) {
+    return {
+      shrinkMode: 'medium',
+      overTarget,
+      overMax,
+      extraDisableTarget: Math.min(overTarget, 16),
+      maxDisablePerRun: 16
+    };
+  }
+
+  return {
+    shrinkMode: 'soft',
+    overTarget,
+    overMax,
+    extraDisableTarget: Math.min(overTarget, 10),
+    maxDisablePerRun: 10
+  };
+}
+
+function buildCombatReadiness({
+  activeStrategyCount = 0,
+  comparedCount = 0,
+  reaperResult = {},
+  spawnerResult = {},
+  createdRemaining = 0
+} = {}) {
+  const readyFlags = {
+    compare_running: comparedCount > 0,
+    pool_below_max: activeStrategyCount <= MAX_ACTIVE_STRATEGY,
+    pool_close_to_target: activeStrategyCount <= TARGET_ACTIVE_STRATEGY + 10,
+    reaper_alive: Boolean(reaperResult?.ok),
+    spawner_alive: Boolean(spawnerResult?.ok),
+    created_pool_not_overloaded: createdRemaining < MAX_CREATED_PREDICTIONS
+  };
+
+  let phase = 'not_ready';
+  let readyForFormal = false;
+  let advice = '繼續縮池，先不要把正式下注當成穩定回本模式。';
+
+  if (
+    readyFlags.compare_running &&
+    readyFlags.pool_below_max &&
+    readyFlags.reaper_alive &&
+    readyFlags.spawner_alive &&
+    readyFlags.created_pool_not_overloaded
+  ) {
+    phase = 'watch';
+    advice = '可小額觀察實戰，但仍以測試與監控為主。';
+  }
+
+  if (
+    readyFlags.compare_running &&
+    readyFlags.pool_close_to_target &&
+    readyFlags.reaper_alive &&
+    readyFlags.spawner_alive &&
+    readyFlags.created_pool_not_overloaded
+  ) {
+    phase = 'near_ready';
+    advice = '已接近正式下注門檻，可用固定四組四期做小額觀察。';
+  }
+
+  if (
+    readyFlags.compare_running &&
+    activeStrategyCount <= TARGET_ACTIVE_STRATEGY &&
+    readyFlags.reaper_alive &&
+    readyFlags.spawner_alive &&
+    readyFlags.created_pool_not_overloaded
+  ) {
+    phase = 'ready';
+    readyForFormal = true;
+    advice = '已進入可正式上場區，但仍應控資金與追蹤 ROI。';
+  }
+
+  return {
+    ready_for_formal: readyForFormal,
+    phase,
+    flags: readyFlags,
+    advice
+  };
 }
 
 async function runSync() {
@@ -1338,7 +1536,39 @@ function buildPredictionGroups(candidatePack = {}, market = {}, marketSnapshot =
   return groups.slice(0, BET_GROUP_COUNT);
 }
 
-async function runStrategyReaper(db) {
+function mergePoolWithStats(poolRows = [], statsRows = [], marketSnapshot = {}) {
+  const statsMap = new Map(
+    (Array.isArray(statsRows) ? statsRows : []).map((row) => [
+      normalizeStrategyKey(row?.strategy_key),
+      row
+    ])
+  );
+
+  return (Array.isArray(poolRows) ? poolRows : []).map((row) => {
+    const stat = statsMap.get(normalizeStrategyKey(row?.strategy_key)) || {};
+    const evaluation = evaluateStrategyDecision(row, stat, marketSnapshot);
+
+    return {
+      ...row,
+      stats: stat,
+      decision: evaluation.decision,
+      decision_rank: getDecisionRank(evaluation.decision),
+      weight: evaluation.weight,
+      avg_hit: evaluation.avgHit,
+      roi: evaluation.roi,
+      score: evaluation.score,
+      total_rounds: evaluation.totalRounds,
+      hit_rate: evaluation.hitRate,
+      recent_50_hit_rate: evaluation.recent50HitRate,
+      recent_50_roi: evaluation.recent50Roi,
+      market_boost: evaluation.marketBoost,
+      market_reason: evaluation.marketReason,
+      decision_score: evaluation.decisionScore
+    };
+  });
+}
+
+async function runStrategyReaper(db, marketSnapshot = {}) {
   const { data: statsRows, error: statsError } = await db
     .from(STRATEGY_STATS_TABLE)
     .select('*');
@@ -1348,46 +1578,71 @@ async function runStrategyReaper(db) {
   }
 
   const poolRows = await getPoolRows(db);
-  const activeCount = poolRows.filter((row) => String(row?.status || '').toLowerCase() === 'active').length;
+  const activeRows = poolRows.filter(
+    (row) => String(row?.status || '').toLowerCase() === 'active'
+  );
+  const activeCount = activeRows.length;
+  const shrinkPlan = getShrinkPlan(activeCount);
 
-  const rows = Array.isArray(statsRows) ? statsRows : [];
-  if (!rows.length) {
+  if (!activeRows.length) {
     return {
       ok: true,
       scanned: 0,
-      active_count: activeCount,
+      active_count: 0,
       min_active_strategy: MIN_ACTIVE_STRATEGY,
       disabled_count: 0,
       disabled_keys: [],
       disabled_reason_map: {},
-      skipped: false
+      skipped: true,
+      reason: 'no_active_rows',
+      shrink: {
+        mode: shrinkPlan.shrinkMode,
+        extra_disable_target: shrinkPlan.extraDisableTarget,
+        max_disable_per_run: shrinkPlan.maxDisablePerRun
+      }
     };
   }
 
   if (activeCount <= MIN_ACTIVE_STRATEGY) {
     return {
       ok: true,
-      scanned: rows.length,
+      scanned: activeRows.length,
       active_count: activeCount,
       min_active_strategy: MIN_ACTIVE_STRATEGY,
       disabled_count: 0,
       disabled_keys: [],
       disabled_reason_map: {},
       skipped: true,
-      reason: 'protect_min_active_strategy'
+      reason: 'protect_min_active_strategy',
+      shrink: {
+        mode: shrinkPlan.shrinkMode,
+        extra_disable_target: shrinkPlan.extraDisableTarget,
+        max_disable_per_run: shrinkPlan.maxDisablePerRun
+      }
     };
   }
 
-  const keys = rows
-    .map((row) => String(row?.strategy_key || '').trim())
+  const activeKeys = activeRows
+    .map((row) => normalizeStrategyKey(row?.strategy_key))
     .filter(Boolean);
 
-  const poolStatusMap = await getPoolStatusMap(db, keys);
+  const activeStatsRows = (Array.isArray(statsRows) ? statsRows : []).filter((row) =>
+    activeKeys.includes(normalizeStrategyKey(row?.strategy_key))
+  );
 
-  const disabledKeys = [];
-  const disabledReasonMap = {};
+  const mergedActiveRows = mergePoolWithStats(activeRows, activeStatsRows, marketSnapshot);
 
-  for (const row of rows) {
+  const poolStatusMap = await getPoolStatusMap(
+    db,
+    mergedActiveRows.map((row) => String(row?.strategy_key || '').trim()).filter(Boolean)
+  );
+
+  const forcedDisableKeys = [];
+  const forcedReasonMap = {};
+
+  const shrinkCandidates = [];
+
+  for (const row of mergedActiveRows) {
     const key = String(row?.strategy_key || '').trim();
     if (!key) continue;
 
@@ -1407,14 +1662,66 @@ async function runStrategyReaper(db) {
     }
 
     const disableCheck = shouldDisableStrategy(row, activeCount);
-
     if (disableCheck.shouldDisable) {
-      disabledKeys.push(key);
-      disabledReasonMap[key] = disableCheck.reason;
+      forcedDisableKeys.push(key);
+      forcedReasonMap[key] = disableCheck.reason;
     }
+
+    shrinkCandidates.push({
+      ...row,
+      protected_rank: Boolean(poolInfo.protected_rank)
+    });
   }
 
-  const finalDisabledKeys = [...new Set(disabledKeys)];
+  const extraShrinkPool = shrinkCandidates
+    .filter((row) => !forcedDisableKeys.includes(String(row?.strategy_key || '').trim()))
+    .filter((row) => !Boolean(row?.protected_rank))
+    .filter((row) => {
+      const decision = String(row?.decision || '').toLowerCase();
+
+      if (shrinkPlan.shrinkMode === 'extreme') {
+        return decision !== 'strong';
+      }
+
+      if (shrinkPlan.shrinkMode === 'hard') {
+        return decision === 'reject' || decision === 'weak' || decision === 'candidate' || row.roi < 0;
+      }
+
+      if (shrinkPlan.shrinkMode === 'medium') {
+        return decision === 'reject' || decision === 'weak' || decision === 'candidate';
+      }
+
+      if (shrinkPlan.shrinkMode === 'soft') {
+        return decision === 'reject' || decision === 'weak';
+      }
+
+      return false;
+    })
+    .sort(byWeaknessDesc);
+
+  const extraShrinkKeys = [];
+  const extraReasonMap = {};
+
+  for (const row of extraShrinkPool) {
+    if (extraShrinkKeys.length >= shrinkPlan.extraDisableTarget) break;
+    const key = String(row?.strategy_key || '').trim();
+    if (!key) continue;
+
+    extraShrinkKeys.push(key);
+    extraReasonMap[key] = `c1_shrink_${shrinkPlan.shrinkMode}_pool_${activeCount}`;
+  }
+
+  const allPlannedKeys = [...new Set([...forcedDisableKeys, ...extraShrinkKeys])];
+
+  const maxDisableAllowedByMinPool = Math.max(0, activeCount - MIN_ACTIVE_STRATEGY);
+  const maxDisableAllowed = Math.min(maxDisableAllowedByMinPool, shrinkPlan.maxDisablePerRun);
+
+  const finalDisableKeys = allPlannedKeys.slice(0, maxDisableAllowed);
+
+  const finalReasonMap = {};
+  for (const key of finalDisableKeys) {
+    finalReasonMap[key] = forcedReasonMap[key] || extraReasonMap[key] || 'c1_shrink_disable';
+  }
 
   let disableResult = {
     updated: 0,
@@ -1422,33 +1729,28 @@ async function runStrategyReaper(db) {
     disabled_reason_map: {}
   };
 
-  if (finalDisabledKeys.length > 0) {
-    /**
-     * 再做一次最後保護：
-     * 若這次要砍掉的數量會讓 active 低於 MIN_ACTIVE_STRATEGY，就只砍到保護線為止。
-     */
-    const maxDisableAllowed = Math.max(0, activeCount - MIN_ACTIVE_STRATEGY);
-    const safeDisableKeys = finalDisabledKeys.slice(0, maxDisableAllowed);
-
-    const safeReasonMap = {};
-    for (const key of safeDisableKeys) {
-      safeReasonMap[key] = disabledReasonMap[key];
-    }
-
-    if (safeDisableKeys.length > 0) {
-      disableResult = await disableStrategies(db, safeDisableKeys, safeReasonMap);
-    }
+  if (finalDisableKeys.length > 0) {
+    disableResult = await disableStrategies(db, finalDisableKeys, finalReasonMap);
   }
 
   return {
     ok: true,
-    scanned: rows.length,
+    scanned: mergedActiveRows.length,
     active_count: activeCount,
     min_active_strategy: MIN_ACTIVE_STRATEGY,
     disabled_count: toNum(disableResult.updated, 0),
     disabled_keys: disableResult.disabled_keys || [],
     disabled_reason_map: disableResult.disabled_reason_map || {},
-    skipped: false
+    skipped: false,
+    shrink: {
+      mode: shrinkPlan.shrinkMode,
+      over_target: shrinkPlan.overTarget,
+      over_max: shrinkPlan.overMax,
+      extra_disable_target: shrinkPlan.extraDisableTarget,
+      max_disable_per_run: shrinkPlan.maxDisablePerRun,
+      forced_disable_count: forcedDisableKeys.length,
+      extra_shrink_candidate_count: extraShrinkPool.length
+    }
   };
 }
 
@@ -1509,40 +1811,21 @@ async function runStrategySpawner(db, latestDrawNo = 0, marketSnapshot = {}) {
     statsRows = Array.isArray(data) ? data : [];
   }
 
-  const statsMap = new Map(
-    statsRows.map((row) => [normalizeStrategyKey(row?.strategy_key), row])
-  );
-
-  const rankedActiveRows = activeRows
-    .map((row) => {
-      const stat = statsMap.get(normalizeStrategyKey(row?.strategy_key)) || {};
-      const evaluation = evaluateStrategyDecision(row, stat, marketSnapshot);
-
-      return {
-        ...row,
-        eval: evaluation
-      };
-    })
-    .sort((a, b) => byPowerDesc(
-      {
-        strategy_key: a.strategy_key,
-        decision_score: a.eval.decisionScore,
-        weight: a.eval.weight,
-        market_boost: a.eval.marketBoost,
-        score: a.eval.score,
-        avg_hit: a.eval.avgHit,
-        total_rounds: a.eval.totalRounds
-      },
-      {
-        strategy_key: b.strategy_key,
-        decision_score: b.eval.decisionScore,
-        weight: b.eval.weight,
-        market_boost: b.eval.marketBoost,
-        score: b.eval.score,
-        avg_hit: b.eval.avgHit,
-        total_rounds: b.eval.totalRounds
+  const rankedActiveRows = mergePoolWithStats(activeRows, statsRows, marketSnapshot)
+    .sort(byPowerDesc)
+    .map((row) => ({
+      ...row,
+      eval: {
+        decision: row.decision,
+        decisionScore: row.decision_score,
+        weight: row.weight,
+        avgHit: row.avg_hit,
+        roi: row.roi,
+        score: row.score,
+        totalRounds: row.total_rounds,
+        marketBoost: row.market_boost
       }
-    ));
+    }));
 
   const strongParents = rankedActiveRows.slice(0, Math.max(6, Math.min(16, rankedActiveRows.length)));
   const needCount = Math.min(
@@ -1686,8 +1969,17 @@ export default async function handler(req, res) {
     if (latestError) throw latestError;
 
     if (!latestDrawRows || !latestDrawRows.length) {
-      const reaperResult = await runStrategyReaper(db);
+      const reaperResult = await runStrategyReaper(db, {});
       const spawnerResult = await runStrategySpawner(db, 0, {});
+      const createdRemainingNoDraw = await countCreatedPredictions(db);
+      const activeStrategyCountNoDraw = await countActiveStrategies(db);
+      const combatReadinessNoDraw = buildCombatReadiness({
+        activeStrategyCount: activeStrategyCountNoDraw,
+        comparedCount: toNum(compareBeforeCreate?.processed, 0),
+        reaperResult,
+        spawnerResult,
+        createdRemaining: createdRemainingNoDraw
+      });
 
       return res.status(200).json({
         ok: true,
@@ -1708,14 +2000,20 @@ export default async function handler(req, res) {
           test: 0,
           formal: 0
         },
-        created_current_open_count: await countCreatedPredictions(db),
+        created_current_open_count: createdRemainingNoDraw,
+        active_strategy_count: activeStrategyCountNoDraw,
         disabled_keys: reaperResult.disabled_keys || [],
         spawned_keys: spawnerResult.spawned_keys || [],
         active_created_prediction: null,
+        combat_readiness: combatReadinessNoDraw,
         pool_control: {
           min_active_strategy: MIN_ACTIVE_STRATEGY,
           target_active_strategy: TARGET_ACTIVE_STRATEGY,
-          max_active_strategy: MAX_ACTIVE_STRATEGY
+          max_active_strategy: MAX_ACTIVE_STRATEGY,
+          max_spawn_per_run: MAX_SPAWN_PER_RUN,
+          soft_shrink_trigger: SOFT_SHRINK_TRIGGER,
+          hard_shrink_trigger: HARD_SHRINK_TRIGGER,
+          extreme_shrink_trigger: EXTREME_SHRINK_TRIGGER
         },
         train: {
           ok: true,
@@ -1730,8 +2028,17 @@ export default async function handler(req, res) {
     const sourceDrawNoRaw = latestDrawNo - TARGET_PERIODS;
 
     if (sourceDrawNoRaw <= 0) {
-      const reaperResult = await runStrategyReaper(db);
+      const reaperResult = await runStrategyReaper(db, {});
       const spawnerResult = await runStrategySpawner(db, latestDrawNo, {});
+      const createdRemainingSmallDraw = await countCreatedPredictions(db);
+      const activeStrategyCountSmallDraw = await countActiveStrategies(db);
+      const combatReadinessSmallDraw = buildCombatReadiness({
+        activeStrategyCount: activeStrategyCountSmallDraw,
+        comparedCount: toNum(compareBeforeCreate?.processed, 0),
+        reaperResult,
+        spawnerResult,
+        createdRemaining: createdRemainingSmallDraw
+      });
 
       return res.status(200).json({
         ok: true,
@@ -1752,14 +2059,20 @@ export default async function handler(req, res) {
           test: 0,
           formal: 0
         },
-        created_current_open_count: await countCreatedPredictions(db),
+        created_current_open_count: createdRemainingSmallDraw,
+        active_strategy_count: activeStrategyCountSmallDraw,
         disabled_keys: reaperResult.disabled_keys || [],
         spawned_keys: spawnerResult.spawned_keys || [],
         active_created_prediction: null,
+        combat_readiness: combatReadinessSmallDraw,
         pool_control: {
           min_active_strategy: MIN_ACTIVE_STRATEGY,
           target_active_strategy: TARGET_ACTIVE_STRATEGY,
-          max_active_strategy: MAX_ACTIVE_STRATEGY
+          max_active_strategy: MAX_ACTIVE_STRATEGY,
+          max_spawn_per_run: MAX_SPAWN_PER_RUN,
+          soft_shrink_trigger: SOFT_SHRINK_TRIGGER,
+          hard_shrink_trigger: HARD_SHRINK_TRIGGER,
+          extreme_shrink_trigger: EXTREME_SHRINK_TRIGGER
         },
         train: {
           ok: true,
@@ -1859,12 +2172,12 @@ export default async function handler(req, res) {
     const compareAfterCreate = await runCompare(db);
     pipeline.compare_after_create = compareAfterCreate;
 
-    const reaperResult = await runStrategyReaper(db);
-    pipeline.reaper = reaperResult;
-
     const effectiveMarketSnapshot = marketSnapshot || normalizeMarketSnapshot(
       buildRecentMarketSignalSnapshot(await fetchMarketRows(db), 'numbers')
     );
+
+    const reaperResult = await runStrategyReaper(db, effectiveMarketSnapshot);
+    pipeline.reaper = reaperResult;
 
     const spawnerResult = await runStrategySpawner(db, latestDrawNo, effectiveMarketSnapshot);
     pipeline.spawner = spawnerResult;
@@ -1896,6 +2209,14 @@ export default async function handler(req, res) {
     const createdRemaining = await countCreatedPredictions(db);
     const activeStrategyCount = await countActiveStrategies(db);
 
+    const combatReadiness = buildCombatReadiness({
+      activeStrategyCount,
+      comparedCount: comparedBefore + comparedAfter,
+      reaperResult,
+      spawnerResult,
+      createdRemaining
+    });
+
     return res.status(200).json({
       ok: true,
       compare_modes: [...COMPARE_MODES],
@@ -1918,11 +2239,15 @@ export default async function handler(req, res) {
       active_created_prediction: finalActiveCreatedPrediction,
       reaper: reaperResult,
       spawner: spawnerResult,
+      combat_readiness: combatReadiness,
       pool_control: {
         min_active_strategy: MIN_ACTIVE_STRATEGY,
         target_active_strategy: TARGET_ACTIVE_STRATEGY,
         max_active_strategy: MAX_ACTIVE_STRATEGY,
-        max_spawn_per_run: MAX_SPAWN_PER_RUN
+        max_spawn_per_run: MAX_SPAWN_PER_RUN,
+        soft_shrink_trigger: SOFT_SHRINK_TRIGGER,
+        hard_shrink_trigger: HARD_SHRINK_TRIGGER,
+        extreme_shrink_trigger: EXTREME_SHRINK_TRIGGER
       },
       train: {
         ok: true,
