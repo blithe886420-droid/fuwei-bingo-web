@@ -694,8 +694,14 @@ async function runCompare(db) {
       processed: 0,
       waiting: 0,
       retired_count: 0,
-      processed_by_mode: { test: 0, formal: 0 },
-      waiting_by_mode: { test: 0, formal: 0 },
+      processed_by_mode: {
+        test: 0,
+        formal: 0
+      },
+      waiting_by_mode: {
+        test: 0,
+        formal: 0
+      },
       total_candidates: 0,
       compare_modes: [...COMPARE_MODES]
     };
@@ -705,9 +711,15 @@ async function runCompare(db) {
   let waiting = 0;
   let retiredCount = 0;
 
-  const processedByMode = { test: 0, formal: 0 };
-  const waitingByMode = { test: 0, formal: 0 };
-  const retiredKeys = [];
+  const processedByMode = {
+    test: 0,
+    formal: 0
+  };
+
+  const waitingByMode = {
+    test: 0,
+    formal: 0
+  };
 
   for (const prediction of predictions) {
     const mode = String(prediction?.mode || '').toLowerCase() === FORMAL_MODE ? FORMAL_MODE : TEST_MODE;
@@ -766,10 +778,7 @@ async function runCompare(db) {
     if (updateError) throw updateError;
 
     const statsResult = await recordStrategyCompareResult(payload.compareResult);
-    retiredCount += toNum(statsResult?.disabled_count, 0);
-    if (Array.isArray(statsResult?.disabled_keys)) {
-      retiredKeys.push(...statsResult.disabled_keys);
-    }
+    retiredCount += Array.isArray(statsResult?.disabled_keys) ? statsResult.disabled_keys.length : 0;
 
     processed += 1;
     processedByMode[mode] += 1;
@@ -780,7 +789,6 @@ async function runCompare(db) {
     processed,
     waiting,
     retired_count: retiredCount,
-    retired_keys: [...new Set(retiredKeys)],
     processed_by_mode: processedByMode,
     waiting_by_mode: waitingByMode,
     total_candidates: predictions.length,
@@ -962,7 +970,6 @@ function buildPredictionGroups(candidatePack = {}, market = {}, marketSnapshot =
 
   for (let i = 0; i < strategies.length && groups.length < BET_GROUP_COUNT; i += 1) {
     const s = strategies[i];
-
     if (used.has(s.strategy_key)) continue;
     used.add(s.strategy_key);
 
@@ -1014,10 +1021,16 @@ export default async function handler(req, res) {
         ok: true,
         pipeline,
         compared_count: toNum(compareBeforeCreate?.processed, 0),
-        retired_count: toNum(compareBeforeCreate?.retired_count, 0),
-        compared_by_mode: compareBeforeCreate?.processed_by_mode || { test: 0, formal: 0 },
+        compared_by_mode: compareBeforeCreate?.processed_by_mode || {
+          test: 0,
+          formal: 0
+        },
         created_count: 0,
-        created_by_mode: { test: 0, formal: 0 },
+        created_by_mode: {
+          test: 0,
+          formal: 0
+        },
+        retired_count: toNum(compareBeforeCreate?.retired_count, 0),
         train: {
           ok: true,
           skipped: true,
@@ -1034,10 +1047,16 @@ export default async function handler(req, res) {
         ok: true,
         pipeline,
         compared_count: toNum(compareBeforeCreate?.processed, 0),
-        retired_count: toNum(compareBeforeCreate?.retired_count, 0),
-        compared_by_mode: compareBeforeCreate?.processed_by_mode || { test: 0, formal: 0 },
+        compared_by_mode: compareBeforeCreate?.processed_by_mode || {
+          test: 0,
+          formal: 0
+        },
         created_count: 0,
-        created_by_mode: { test: 0, formal: 0 },
+        created_by_mode: {
+          test: 0,
+          formal: 0
+        },
+        retired_count: toNum(compareBeforeCreate?.retired_count, 0),
         train: {
           ok: true,
           skipped: true,
@@ -1131,11 +1150,11 @@ export default async function handler(req, res) {
     const comparedBefore = toNum(compareBeforeCreate?.processed, 0);
     const comparedAfter = toNum(compareAfterCreate?.processed, 0);
 
-    const retiredBefore = toNum(compareBeforeCreate?.retired_count, 0);
-    const retiredAfter = toNum(compareAfterCreate?.retired_count, 0);
-
     const beforeByMode = compareBeforeCreate?.processed_by_mode || { test: 0, formal: 0 };
     const afterByMode = compareAfterCreate?.processed_by_mode || { test: 0, formal: 0 };
+
+    const retiredBefore = toNum(compareBeforeCreate?.retired_count, 0);
+    const retiredAfter = toNum(compareAfterCreate?.retired_count, 0);
 
     return res.status(200).json({
       ok: true,
@@ -1143,7 +1162,6 @@ export default async function handler(req, res) {
       pipeline,
       market_snapshot: marketSnapshot,
       compared_count: comparedBefore + comparedAfter,
-      retired_count: retiredBefore + retiredAfter,
       compared_by_mode: {
         test: toNum(beforeByMode?.test, 0) + toNum(afterByMode?.test, 0),
         formal: toNum(beforeByMode?.formal, 0) + toNum(afterByMode?.formal, 0)
@@ -1153,6 +1171,7 @@ export default async function handler(req, res) {
         test: createdCount,
         formal: 0
       },
+      retired_count: retiredBefore + retiredAfter,
       active_created_prediction: finalActiveCreatedPrediction,
       train: {
         ok: true,
