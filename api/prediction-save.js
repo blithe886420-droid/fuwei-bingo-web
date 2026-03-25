@@ -1,5 +1,3 @@
-console.log('🔥 FORMAL FIXED VERSION LOADED v4.0 FIXED FORMAL');
-
 import { createClient } from '@supabase/supabase-js';
 import { buildRecentMarketSignalSnapshot } from '../lib/marketSignalEngine.js';
 
@@ -33,7 +31,7 @@ const GROUP_COUNT = 4;
 const RECENT_DRAW_LIMIT = 80;
 const RECENT_FORMAL_USAGE_LIMIT = 24;
 
-const PROFIT_MODE_NAME = 'profit_mode_v4_fixed_formal';
+const PROFIT_MODE_NAME = 'profit_mode_v2_4_fixed_formal_active_only';
 const BASE_BET_AMOUNT = 25;
 const FIXED_BET_WEIGHT = 2500;
 
@@ -59,6 +57,8 @@ const DEFAULT_STRATEGY_KEYS = [
   'split_gap',
   'zone_2'
 ];
+
+const TERMINAL_STATUSES = new Set(['disabled', 'retired']);
 
 const AGGRESSIVE_CONFIG = {
   minRoundsTrust: 8,
@@ -139,11 +139,11 @@ function parseDrawNumbers(value) {
   if (value && typeof value === 'object') {
     return parseDrawNumbers(
       value.numbers ||
-      value.draw_numbers ||
-      value.result_numbers ||
-      value.open_numbers ||
-      value.nums ||
-      []
+        value.draw_numbers ||
+        value.result_numbers ||
+        value.open_numbers ||
+        value.nums ||
+        []
     );
   }
 
@@ -218,9 +218,9 @@ function buildRecentAnalysis(rows = []) {
     draw_time: row?.draw_time || null,
     numbers: parseDrawNumbers(
       row?.numbers ??
-      row?.draw_numbers ??
-      row?.result_numbers ??
-      row?.open_numbers
+        row?.draw_numbers ??
+        row?.result_numbers ??
+        row?.open_numbers
     )
   }));
 
@@ -405,7 +405,9 @@ function normalizeStrategyRow(row = {}) {
 
   return {
     strategy_key: normalizeStrategyKey(row?.strategy_key),
-    strategy_name: String(row?.strategy_name || row?.strategy_label || row?.strategy_key || '').trim(),
+    strategy_name: String(
+      row?.strategy_name || row?.strategy_label || row?.strategy_key || ''
+    ).trim(),
     score: toNum(row?.score, 0),
     avg_hit: toNum(row?.avg_hit, 0),
     roi: toNum(row?.roi, 0),
@@ -542,7 +544,12 @@ function buildUsagePenaltyInfo(strategyKey = '', usageInfo = {}) {
   const staleIndex = toNum(usageInfo?.lastSeenIndex?.[normalizedKey], 99);
   const staleBonus =
     staleIndex >= AGGRESSIVE_CONFIG.staleBonusGap
-      ? 1 + Math.min(0.75, (staleIndex - AGGRESSIVE_CONFIG.staleBonusGap) * AGGRESSIVE_CONFIG.staleBonusScale * 0.1)
+      ? 1 + Math.min(
+          0.75,
+          (staleIndex - AGGRESSIVE_CONFIG.staleBonusGap) *
+            AGGRESSIVE_CONFIG.staleBonusScale *
+            0.1
+        )
       : 1;
 
   let penaltyMultiplier = 1;
@@ -573,8 +580,10 @@ function computeAggressiveDecision(row = {}) {
   const roi = toNum(row.adjusted_roi, row.roi);
   const recentRoi = toNum(row.recent_50_roi, 0);
   const avgHit = toNum(row.avg_hit, 0);
+
   const hitRate = normalizeRate(row.hit_rate, 0);
   const recentHitRate = normalizeRate(row.recent_50_hit_rate, 0);
+
   const totalRounds = toNum(row.total_rounds, 0);
   const score = toNum(row.adjusted_score, row.score);
   const marketBoost = toNum(row.market_boost, 1);
@@ -643,7 +652,11 @@ function computeAggressiveDecision(row = {}) {
     decision = 'strong';
   } else if (decisionScore >= AGGRESSIVE_CONFIG.usableScore) {
     decision = 'usable';
-  } else if (totalRounds < AGGRESSIVE_CONFIG.minRoundsTrust && avgHit >= 1.18 && recentRoi >= 0) {
+  } else if (
+    totalRounds < AGGRESSIVE_CONFIG.minRoundsTrust &&
+    avgHit >= 1.18 &&
+    recentRoi >= 0
+  ) {
     decision = 'trial';
   }
 
@@ -704,7 +717,9 @@ function byDecisionDesc(a, b) {
 
 function buildFormalCandidates(statsRows = [], marketSnapshot = {}, recentFormalUsage = {}) {
   const ranked = applyMarketDecisionToRows(
-    (statsRows || []).map(normalizeStrategyRow).filter((row) => row.strategy_key),
+    (statsRows || [])
+      .map(normalizeStrategyRow)
+      .filter((row) => row.strategy_key),
     marketSnapshot,
     recentFormalUsage
   ).sort(byDecisionDesc);
@@ -778,36 +793,48 @@ function arrangeSelectedOrder(rows = [], sourceDrawNo = 0, marketSnapshot = {}) 
   return list;
 }
 
-async function ensureDefaultStrategyPoolActive(strategyKeys = []) {
-  const finalKeys = [...new Set((Array.isArray(strategyKeys) ? strategyKeys : [])
-    .map(normalizeStrategyKey)
-    .filter(Boolean))];
+/**
+ * 只補預設策略，不復活 disabled / retired
+ */
+async function ensureDefaultStrategyPoolSeeded(strategyKeys = []) {
+  const finalKeys = [
+    ...new Set(
+      (Array.isArray(strategyKeys) ? strategyKeys : [])
+        .map(normalizeStrategyKey)
+        .filter(Boolean)
+    )
+  ];
 
   if (!finalKeys.length) {
     return {
       ok: true,
       checked_count: 0,
       inserted_count: 0,
-      updated_count: 0
+      skipped_existing_count: 0
     };
   }
 
   const { data: existingRows, error: existingError } = await supabase
     .from(STRATEGY_POOL_TABLE)
-    .select('*')
+    .select('strategy_key, status')
     .in('strategy_key', finalKeys);
 
   if (existingError) throw existingError;
 
-  const existingMap = new Map((existingRows || []).map((row) => [normalizeStrategyKey(row?.strategy_key), row]));
-  const nowIso = new Date().toISOString();
+  const existingMap = new Map(
+    (existingRows || []).map((row) => [
+      normalizeStrategyKey(row?.strategy_key),
+      String(row?.status || '').trim().toLowerCase()
+    ])
+  );
 
+  const nowIso = new Date().toISOString();
   const rowsToInsert = [];
 
   for (const strategyKey of finalKeys) {
-    const existing = existingMap.get(strategyKey);
+    const existingStatus = existingMap.get(strategyKey);
 
-    if (!existing) {
+    if (!existingStatus) {
       rowsToInsert.push({
         strategy_key: strategyKey,
         strategy_name: buildStrategyName(strategyKey),
@@ -824,6 +851,12 @@ async function ensureDefaultStrategyPoolActive(strategyKeys = []) {
         created_at: nowIso,
         updated_at: nowIso
       });
+      continue;
+    }
+
+    // ✅ 已存在就略過，尤其 disabled / retired 絕不復活
+    if (TERMINAL_STATUSES.has(existingStatus)) {
+      continue;
     }
   }
 
@@ -839,7 +872,7 @@ async function ensureDefaultStrategyPoolActive(strategyKeys = []) {
     ok: true,
     checked_count: finalKeys.length,
     inserted_count: rowsToInsert.length,
-    updated_count: 0
+    skipped_existing_count: finalKeys.length - rowsToInsert.length
   };
 }
 
@@ -857,9 +890,8 @@ async function getRecentFormalUsage(limit = RECENT_FORMAL_USAGE_LIMIT) {
   const lastSeenIndex = {};
 
   (Array.isArray(data) ? data : []).forEach((row, idx) => {
-    const firstGroup = Array.isArray(row?.groups_json) ? row.groups_json[0] : null;
     const strategyKey = normalizeStrategyKey(
-      firstGroup?.key || firstGroup?.meta?.strategy_key || ''
+      row?.groups_json?.[0]?.key || row?.groups_json?.[0]?.meta?.strategy_key || ''
     );
     if (!strategyKey) return;
 
@@ -917,7 +949,7 @@ async function getActiveStrategyKeys() {
 }
 
 async function getTopStrategyStats(limit = 300) {
-  await ensureDefaultStrategyPoolActive(DEFAULT_STRATEGY_KEYS);
+  await ensureDefaultStrategyPoolSeeded(DEFAULT_STRATEGY_KEYS);
 
   const activeKeys = await getActiveStrategyKeys();
 
@@ -937,26 +969,16 @@ async function getTopStrategyStats(limit = 300) {
   return normalized;
 }
 
-function applyFixedFormalMeta(row = {}) {
-  return {
-    ...row,
-    bet_weight: FIXED_BET_WEIGHT,
-    weight: 1,
-    bet_amount: BASE_BET_AMOUNT,
-    strength_score: toNum(row.decision_score, 0),
-    strength_share: 0.25
-  };
-}
-
 function buildGroupsFromStats(statsRows = [], recentRows = [], sourceDrawNo = 0, recentFormalUsage = {}) {
   const analysis = buildRecentAnalysis(recentRows);
-  const marketSnapshot = normalizeMarketSnapshot(buildRecentMarketSignalSnapshot(recentRows, 'numbers'));
+  const marketSnapshot = normalizeMarketSnapshot(
+    buildRecentMarketSignalSnapshot(recentRows, 'numbers')
+  );
 
   const selectedStats = buildFormalCandidates(statsRows, marketSnapshot, recentFormalUsage);
   const orderedSelectedStats = arrangeSelectedOrder(selectedStats, sourceDrawNo, marketSnapshot);
-  const selectedFixedRows = orderedSelectedStats.map(applyFixedFormalMeta);
 
-  const groups = selectedFixedRows.map((row, idx) => {
+  const groups = orderedSelectedStats.map((row, idx) => {
     const strategyKey = row.strategy_key;
     const strategyName = row.strategy_name || buildStrategyName(strategyKey);
     const geneA = inferGeneA(strategyKey);
@@ -979,7 +1001,7 @@ function buildGroupsFromStats(statsRows = [], recentRows = [], sourceDrawNo = 0,
       weight: 1,
       bet_amount: BASE_BET_AMOUNT,
       bet_weight: FIXED_BET_WEIGHT,
-      reason: `正式下注固定四組四期建立（固定單組 ${BASE_BET_AMOUNT} 元 / 固定每期 ${GROUP_COUNT * BASE_BET_AMOUNT} 元 / 市場 ${row.market_reason || 'neutral'}）`,
+      reason: `正式下注固定四組四期建立（單組 ${BASE_BET_AMOUNT} 元 / 市場 ${row.market_reason || 'neutral'} / 使用率 ${toNum(row.recent_formal_ratio, 0).toFixed(3)}）`,
       meta: {
         strategy_key: strategyKey,
         strategy_name: strategyName,
@@ -1002,8 +1024,8 @@ function buildGroupsFromStats(statsRows = [], recentRows = [], sourceDrawNo = 0,
         bet_amount: BASE_BET_AMOUNT,
         weight: FIXED_BET_WEIGHT,
         weight_multiplier: 1,
-        strength_score: row.strength_score,
-        strength_share: row.strength_share,
+        strength_score: Math.round(Math.max(0, toNum(row.decision_score, 0)) * 1000) / 1000,
+        strength_share: 0.25,
         strategy_weight: row.strategy_weight,
         market_boost: row.market_boost,
         market_reason: row.market_reason,
@@ -1015,8 +1037,7 @@ function buildGroupsFromStats(statsRows = [], recentRows = [], sourceDrawNo = 0,
         usage_penalty_reason: row.usage_penalty_reason,
         stale_bonus_multiplier: row.stale_bonus_multiplier,
         stale_index: row.stale_index,
-        selection_rank: idx + 1,
-        fixed_formal_mode: true
+        selection_rank: idx + 1
       }
     };
   });
@@ -1048,7 +1069,7 @@ function buildGroupsFromStats(statsRows = [], recentRows = [], sourceDrawNo = 0,
       weight: 1,
       bet_amount: BASE_BET_AMOUNT,
       bet_weight: FIXED_BET_WEIGHT,
-      reason: `正式下注 fallback（固定單組 ${BASE_BET_AMOUNT} 元 / 固定四組四期）`,
+      reason: `正式下注 fallback（固定單組 ${BASE_BET_AMOUNT} 元）`,
       meta: {
         strategy_key: `formal_fallback_${idx + 1}`,
         strategy_name: `Formal Fallback ${idx + 1}`,
@@ -1063,8 +1084,7 @@ function buildGroupsFromStats(statsRows = [], recentRows = [], sourceDrawNo = 0,
         market_boost: 1,
         market_reason: 'fallback',
         market_type: detectMarketType(marketSnapshot),
-        selection_rank: idx + 1,
-        fixed_formal_mode: true
+        selection_rank: idx + 1
       }
     })),
     marketSnapshot
@@ -1147,7 +1167,10 @@ export default async function handler(req, res) {
   }
 
   try {
-    const body = req.method === 'POST' && req.body && typeof req.body === 'object' ? req.body : {};
+    const body =
+      req.method === 'POST' && req.body && typeof req.body === 'object'
+        ? req.body
+        : {};
     const mode = String(body?.mode || FORMAL_MODE).toLowerCase();
 
     if (mode !== FORMAL_MODE) {
@@ -1169,7 +1192,13 @@ export default async function handler(req, res) {
       throw new Error('source draw not found');
     }
 
-    const built = buildGroupsFromStats(strategyStats, recentRows, sourceDrawNo, recentFormalUsage);
+    const built = buildGroupsFromStats(
+      strategyStats,
+      recentRows,
+      sourceDrawNo,
+      recentFormalUsage
+    );
+
     const groups = built.groups;
     const marketSnapshot =
       built.marketSnapshot ||
@@ -1188,9 +1217,6 @@ export default async function handler(req, res) {
 
     const saved = await saveFormalPrediction(payload);
 
-    const totalPerPeriod = groups.reduce((sum, group) => sum + toNum(group.bet_amount, 0), 0);
-    const totalAllPeriods = totalPerPeriod * FORMAL_TARGET_PERIODS;
-
     return res.status(200).json({
       ok: true,
       mode: FORMAL_MODE,
@@ -1202,10 +1228,9 @@ export default async function handler(req, res) {
       market_type: detectMarketType(marketSnapshot),
       recent_formal_usage: recentFormalUsage,
       base_bet_amount: BASE_BET_AMOUNT,
-      fixed_group_count: GROUP_COUNT,
-      fixed_bet_amount_per_group: BASE_BET_AMOUNT,
-      total_bet_amount_per_period: totalPerPeriod,
-      total_bet_amount_all_periods: totalAllPeriods,
+      total_bet_amount_per_period: GROUP_COUNT * BASE_BET_AMOUNT,
+      total_bet_amount_all_periods:
+        GROUP_COUNT * BASE_BET_AMOUNT * FORMAL_TARGET_PERIODS,
       selected_strategy_keys: groups.map((g) => g.meta?.strategy_key || g.key),
       groups,
       saved
