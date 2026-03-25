@@ -71,10 +71,10 @@ function decideEvolutionStatus({
 }) {
   if (comparedLastHour <= 0 && createdLastHour <= 0 && retiredLastHour <= 0) {
     return {
-      statusArrow: "↓",
-      statusLabel: "停滯",
-      statusText: "AI最近沒有明顯進步。",
-      statusColor: "#ff8d8d"
+      statusArrow: '↓',
+      statusLabel: '停滯',
+      statusText: 'AI最近沒有明顯進步。',
+      statusColor: '#ff8d8d'
     };
   }
 
@@ -85,18 +85,18 @@ function decideEvolutionStatus({
     topStrategyRecent50Roi >= 0
   ) {
     return {
-      statusArrow: "↑",
-      statusLabel: "進化中",
-      statusText: "AI正在淘汰弱策略並強化強策略。",
-      statusColor: "#7ef0a5"
+      statusArrow: '↑',
+      statusLabel: '進化中',
+      statusText: 'AI正在淘汰弱策略並強化強策略。',
+      statusColor: '#7ef0a5'
     };
   }
 
   return {
-    statusArrow: "→",
-    statusLabel: "探索中",
-    statusText: "AI正在測試新策略。",
-    statusColor: "#79b8ff"
+    statusArrow: '→',
+    statusLabel: '探索中',
+    statusText: 'AI正在測試新策略。',
+    statusColor: '#79b8ff'
   };
 }
 
@@ -147,7 +147,10 @@ async function getPoolWithStats(supabase) {
 
   if (poolError) throw poolError;
 
-  const strategyKeys = (poolRows || []).map((row) => row.strategy_key).filter(Boolean);
+  const strategyKeys = (poolRows || [])
+    .map((row) => row.strategy_key)
+    .filter(Boolean);
+
   const statsMap = new Map();
 
   if (strategyKeys.length) {
@@ -169,6 +172,18 @@ async function getPoolWithStats(supabase) {
   }));
 }
 
+async function getLatestDrawInfo(supabase) {
+  const { data, error } = await supabase
+    .from(DRAWS_TABLE)
+    .select('draw_no, draw_time, numbers')
+    .order('draw_no', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data || null;
+}
+
 export default async function handler(req, res) {
   try {
     const supabase = getSupabase();
@@ -178,7 +193,8 @@ export default async function handler(req, res) {
       poolWithStats,
       comparedRes,
       createdRes,
-      retiredRes
+      disabledRes,
+      latestDraw
     ] = await Promise.all([
       getPoolWithStats(supabase),
 
@@ -193,18 +209,31 @@ export default async function handler(req, res) {
         .select('id', { count: 'exact', head: true })
         .gte('created_at', sinceIso),
 
+      // ✅ 這裡修正：淘汰狀態改抓 disabled，不再抓 retired
       supabase
         .from(STRATEGY_POOL_TABLE)
         .select('strategy_key', { count: 'exact', head: true })
-        .eq('status', 'retired')
-        .gte('updated_at', sinceIso)
+        .eq('status', 'disabled')
+        .gte('updated_at', sinceIso),
+
+      getLatestDrawInfo(supabase)
     ]);
 
     if (comparedRes.error) throw comparedRes.error;
     if (createdRes.error) throw createdRes.error;
-    if (retiredRes.error) throw retiredRes.error;
+    if (disabledRes.error) throw disabledRes.error;
 
-    const activeRows = poolWithStats.filter((row) => row.status === 'active');
+    const activeRows = poolWithStats.filter(
+      (row) => String(row?.status || '').toLowerCase() === 'active'
+    );
+
+    const disabledRows = poolWithStats.filter(
+      (row) => String(row?.status || '').toLowerCase() === 'disabled'
+    );
+
+    const retiredRows = poolWithStats.filter(
+      (row) => String(row?.status || '').toLowerCase() === 'retired'
+    );
 
     const leaderboard = activeRows
       .map((row) => ({
@@ -222,7 +251,7 @@ export default async function handler(req, res) {
 
     const comparedLastHour = Number(comparedRes.count || 0);
     const createdLastHour = Number(createdRes.count || 0);
-    const retiredLastHour = Number(retiredRes.count || 0);
+    const retiredLastHour = Number(disabledRes.count || 0);
     const activeCount = activeRows.length;
 
     const topStrategyKey = top?.strategy_key || '-';
@@ -252,20 +281,28 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       ok: true,
-      sinceText: "最近 1 小時",
+      sinceText: '最近 1 小時',
       comparedLastHour,
       createdLastHour,
       retiredLastHour,
       activeCount,
+      disabledCount: disabledRows.length,
+      retiredCount: retiredRows.length,
+      totalPoolCount: poolWithStats.length,
       topStrategyKey,
       topStrategyScore,
+      topStrategyAvgHit,
+      topStrategyRoi,
+      topStrategyRecent50Roi,
       trainingStrength,
+      latestDrawNo: latestDraw?.draw_no || null,
+      latestDrawTime: latestDraw?.draw_time || null,
       ...status
     });
   } catch (error) {
     return res.status(500).json({
       ok: false,
-      error: error?.message || "ai-player failed"
+      error: error?.message || 'ai-player failed'
     });
   }
 }
