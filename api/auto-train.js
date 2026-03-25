@@ -105,6 +105,47 @@ const DISABLE_RULES = {
   recent50RoiFloorF: -0.4
 };
 
+/**
+ * B 版補位強度
+ * - 最低存活數保護：避免 Reaper 把 active 砍到太少
+ * - 目標策略池：當 active 少於這個值時，自動補位
+ * - 最大策略池：避免失控爆量
+ * - 每輪補位上限：單次 auto-train 最多補幾支，避免瞬間灌爆
+ */
+const MIN_ACTIVE_STRATEGY = 30;
+const TARGET_ACTIVE_STRATEGY = 60;
+const MAX_ACTIVE_STRATEGY = 80;
+const MAX_SPAWN_PER_RUN = 12;
+
+/**
+ * 補位用基因字典
+ */
+const KNOWN_GENES = [
+  'hot',
+  'cold',
+  'warm',
+  'zone',
+  'tail',
+  'mix',
+  'repeat',
+  'guard',
+  'balanced',
+  'balance',
+  'chase',
+  'jump',
+  'pattern',
+  'structure',
+  'split',
+  'cluster',
+  'gap',
+  'spread',
+  'rotation',
+  'odd',
+  'even',
+  'reverse',
+  'skip'
+];
+
 let supabase = null;
 
 function getSupabase() {
@@ -191,6 +232,10 @@ function strategyLabel(strategyKey = '') {
     .filter(Boolean)
     .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
     .join(' ');
+}
+
+function normalizeStrategyKey(raw = '') {
+  return String(raw || '').trim().toLowerCase();
 }
 
 function pickFromPool(pool = [], selectedSet = new Set(), seed = 0) {
@@ -714,7 +759,37 @@ function byPowerDesc(a, b) {
   );
 }
 
-function shouldDisableStrategy(row = {}) {
+function buildAdaptiveDisableRules(activeCount = 999) {
+  if (activeCount <= 34) {
+    return {
+      ...DISABLE_RULES,
+      roiFloorA: -0.8,
+      recent50RoiFloorB: -0.45,
+      recent50RoiFloorC: -0.55,
+      roiFloorD: -0.55,
+      roiFloorE: -0.8,
+      recent50RoiFloorF: -0.65
+    };
+  }
+
+  if (activeCount <= 45) {
+    return {
+      ...DISABLE_RULES,
+      roiFloorA: -0.65,
+      recent50RoiFloorB: -0.32,
+      recent50RoiFloorC: -0.45,
+      roiFloorD: -0.42,
+      roiFloorE: -0.65,
+      recent50RoiFloorF: -0.52
+    };
+  }
+
+  return { ...DISABLE_RULES };
+}
+
+function shouldDisableStrategy(row = {}, activeCount = 999) {
+  const rules = buildAdaptiveDisableRules(activeCount);
+
   const roi = toNum(row?.roi);
   const avgHit = toNum(row?.avg_hit);
   const recent50Roi = toNum(row?.recent_50_roi);
@@ -722,66 +797,66 @@ function shouldDisableStrategy(row = {}) {
   const totalRounds = toNum(row?.total_rounds);
 
   if (
-    totalRounds >= DISABLE_RULES.minRoundsA &&
-    roi < DISABLE_RULES.roiFloorA
+    totalRounds >= rules.minRoundsA &&
+    roi < rules.roiFloorA
   ) {
     return {
       shouldDisable: true,
-      reason: `roi_below_${DISABLE_RULES.roiFloorA}_after_${DISABLE_RULES.minRoundsA}`
+      reason: `roi_below_${rules.roiFloorA}_after_${rules.minRoundsA}`
     };
   }
 
   if (
-    totalRounds >= DISABLE_RULES.minRoundsB &&
-    recent50Roi < DISABLE_RULES.recent50RoiFloorB &&
-    avgHit < DISABLE_RULES.avgHitFloorB
+    totalRounds >= rules.minRoundsB &&
+    recent50Roi < rules.recent50RoiFloorB &&
+    avgHit < rules.avgHitFloorB
   ) {
     return {
       shouldDisable: true,
-      reason: `recent50_roi_below_${DISABLE_RULES.recent50RoiFloorB}_and_avg_hit_below_${DISABLE_RULES.avgHitFloorB}`
+      reason: `recent50_roi_below_${rules.recent50RoiFloorB}_and_avg_hit_below_${rules.avgHitFloorB}`
     };
   }
 
   if (
-    totalRounds >= DISABLE_RULES.minRoundsC &&
-    recent50Roi < DISABLE_RULES.recent50RoiFloorC &&
-    recent50HitRate < DISABLE_RULES.hitRateFloorC
+    totalRounds >= rules.minRoundsC &&
+    recent50Roi < rules.recent50RoiFloorC &&
+    recent50HitRate < rules.hitRateFloorC
   ) {
     return {
       shouldDisable: true,
-      reason: `recent50_roi_below_${DISABLE_RULES.recent50RoiFloorC}_and_hit_rate_below_${DISABLE_RULES.hitRateFloorC}`
+      reason: `recent50_roi_below_${rules.recent50RoiFloorC}_and_hit_rate_below_${rules.hitRateFloorC}`
     };
   }
 
   if (
-    totalRounds >= DISABLE_RULES.minRoundsD &&
-    roi < DISABLE_RULES.roiFloorD &&
-    avgHit < DISABLE_RULES.avgHitFloorD
+    totalRounds >= rules.minRoundsD &&
+    roi < rules.roiFloorD &&
+    avgHit < rules.avgHitFloorD
   ) {
     return {
       shouldDisable: true,
-      reason: `roi_below_${DISABLE_RULES.roiFloorD}_and_avg_hit_below_${DISABLE_RULES.avgHitFloorD}`
+      reason: `roi_below_${rules.roiFloorD}_and_avg_hit_below_${rules.avgHitFloorD}`
     };
   }
 
   if (
-    totalRounds >= DISABLE_RULES.minRoundsE &&
-    roi < DISABLE_RULES.roiFloorE
+    totalRounds >= rules.minRoundsE &&
+    roi < rules.roiFloorE
   ) {
     return {
       shouldDisable: true,
-      reason: `early_fail_roi_below_${DISABLE_RULES.roiFloorE}_after_${DISABLE_RULES.minRoundsE}`
+      reason: `early_fail_roi_below_${rules.roiFloorE}_after_${rules.minRoundsE}`
     };
   }
 
   if (
-    totalRounds >= DISABLE_RULES.minRoundsF &&
-    avgHit < DISABLE_RULES.avgHitFloorF &&
-    recent50Roi < DISABLE_RULES.recent50RoiFloorF
+    totalRounds >= rules.minRoundsF &&
+    avgHit < rules.avgHitFloorF &&
+    recent50Roi < rules.recent50RoiFloorF
   ) {
     return {
       shouldDisable: true,
-      reason: `early_fail_avg_hit_below_${DISABLE_RULES.avgHitFloorF}_and_recent50_roi_below_${DISABLE_RULES.recent50RoiFloorF}`
+      reason: `early_fail_avg_hit_below_${rules.avgHitFloorF}_and_recent50_roi_below_${rules.recent50RoiFloorF}`
     };
   }
 
@@ -789,6 +864,59 @@ function shouldDisableStrategy(row = {}) {
     shouldDisable: false,
     reason: ''
   };
+}
+
+function inferGenesFromStrategyKey(strategyKey = '') {
+  const tokens = tokenizeStrategyKey(strategyKey);
+  const genes = tokens.filter((t) => KNOWN_GENES.includes(t));
+
+  return {
+    gene_a: genes[0] || 'mix',
+    gene_b: genes[1] || 'balanced'
+  };
+}
+
+function uniqueTokens(tokens = []) {
+  return [...new Set((Array.isArray(tokens) ? tokens : []).filter(Boolean))];
+}
+
+function buildStrategyKeyFromTokens(tokens = []) {
+  return normalizeStrategyKey(uniqueTokens(tokens).slice(0, 3).join('_'));
+}
+
+function buildChildStrategyKey(parentAKey = '', parentBKey = '', mode = 'crossover', seq = 0) {
+  const tokensA = tokenizeStrategyKey(parentAKey);
+  const tokensB = tokenizeStrategyKey(parentBKey);
+
+  if (mode === 'exploration') {
+    const a = KNOWN_GENES[seq % KNOWN_GENES.length];
+    const b = KNOWN_GENES[(seq + 7) % KNOWN_GENES.length];
+    const c = KNOWN_GENES[(seq + 13) % KNOWN_GENES.length];
+    return buildStrategyKeyFromTokens([a, b, c]);
+  }
+
+  if (mode === 'mutation') {
+    const base = tokensA.length ? [...tokensA] : ['mix', 'balanced'];
+    const extra = KNOWN_GENES[(seq + base.length) % KNOWN_GENES.length];
+    return buildStrategyKeyFromTokens([...base, extra]);
+  }
+
+  const a1 = tokensA[0] || 'mix';
+  const a2 = tokensA[1] || '';
+  const b1 = tokensB[0] || 'balanced';
+  const b2 = tokensB[1] || '';
+
+  return buildStrategyKeyFromTokens([a1, b1, a2 || b2].filter(Boolean));
+}
+
+function chooseSpawnSourceType(index = 0, activeCount = 0) {
+  if (activeCount < 36) {
+    return index % 3 === 0 ? 'exploration' : 'evolved';
+  }
+
+  if (index % 4 === 0) return 'exploration';
+  if (index % 2 === 0) return 'crossover';
+  return 'evolved';
 }
 
 async function getPoolStatusMap(supabaseClient, strategyKeys = []) {
@@ -844,6 +972,25 @@ async function disableStrategies(supabaseClient, strategyKeys = [], reasonMap = 
     disabled_keys: finalKeys,
     disabled_reason_map: reasonMap
   };
+}
+
+async function getPoolRows(db) {
+  const { data, error } = await db
+    .from(STRATEGY_POOL_TABLE)
+    .select('*');
+
+  if (error) throw error;
+  return Array.isArray(data) ? data : [];
+}
+
+async function countActiveStrategies(db) {
+  const { count, error } = await db
+    .from(STRATEGY_POOL_TABLE)
+    .select('strategy_key', { count: 'exact', head: true })
+    .eq('status', 'active');
+
+  if (error) throw error;
+  return toNum(count, 0);
 }
 
 async function runSync() {
@@ -1200,14 +1347,34 @@ async function runStrategyReaper(db) {
     throw new Error(`strategy_stats scan failed: ${statsError.message || statsError}`);
   }
 
+  const poolRows = await getPoolRows(db);
+  const activeCount = poolRows.filter((row) => String(row?.status || '').toLowerCase() === 'active').length;
+
   const rows = Array.isArray(statsRows) ? statsRows : [];
   if (!rows.length) {
     return {
       ok: true,
       scanned: 0,
+      active_count: activeCount,
+      min_active_strategy: MIN_ACTIVE_STRATEGY,
       disabled_count: 0,
       disabled_keys: [],
-      disabled_reason_map: {}
+      disabled_reason_map: {},
+      skipped: false
+    };
+  }
+
+  if (activeCount <= MIN_ACTIVE_STRATEGY) {
+    return {
+      ok: true,
+      scanned: rows.length,
+      active_count: activeCount,
+      min_active_strategy: MIN_ACTIVE_STRATEGY,
+      disabled_count: 0,
+      disabled_keys: [],
+      disabled_reason_map: {},
+      skipped: true,
+      reason: 'protect_min_active_strategy'
     };
   }
 
@@ -1239,7 +1406,7 @@ async function runStrategyReaper(db) {
       continue;
     }
 
-    const disableCheck = shouldDisableStrategy(row);
+    const disableCheck = shouldDisableStrategy(row, activeCount);
 
     if (disableCheck.shouldDisable) {
       disabledKeys.push(key);
@@ -1256,21 +1423,249 @@ async function runStrategyReaper(db) {
   };
 
   if (finalDisabledKeys.length > 0) {
-    disableResult = await disableStrategies(db, finalDisabledKeys, disabledReasonMap);
+    /**
+     * 再做一次最後保護：
+     * 若這次要砍掉的數量會讓 active 低於 MIN_ACTIVE_STRATEGY，就只砍到保護線為止。
+     */
+    const maxDisableAllowed = Math.max(0, activeCount - MIN_ACTIVE_STRATEGY);
+    const safeDisableKeys = finalDisabledKeys.slice(0, maxDisableAllowed);
+
+    const safeReasonMap = {};
+    for (const key of safeDisableKeys) {
+      safeReasonMap[key] = disabledReasonMap[key];
+    }
+
+    if (safeDisableKeys.length > 0) {
+      disableResult = await disableStrategies(db, safeDisableKeys, safeReasonMap);
+    }
   }
 
   return {
     ok: true,
     scanned: rows.length,
+    active_count: activeCount,
+    min_active_strategy: MIN_ACTIVE_STRATEGY,
     disabled_count: toNum(disableResult.updated, 0),
     disabled_keys: disableResult.disabled_keys || [],
-    disabled_reason_map: disableResult.disabled_reason_map || {}
+    disabled_reason_map: disableResult.disabled_reason_map || {},
+    skipped: false
+  };
+}
+
+async function runStrategySpawner(db, latestDrawNo = 0, marketSnapshot = {}) {
+  const poolRows = await getPoolRows(db);
+
+  const activeRows = poolRows.filter(
+    (row) => String(row?.status || '').trim().toLowerCase() === 'active'
+  );
+
+  const activeCount = activeRows.length;
+  const totalCount = poolRows.length;
+
+  if (activeCount >= TARGET_ACTIVE_STRATEGY) {
+    return {
+      ok: true,
+      active_count: activeCount,
+      target_active_strategy: TARGET_ACTIVE_STRATEGY,
+      max_active_strategy: MAX_ACTIVE_STRATEGY,
+      spawned_count: 0,
+      spawned_keys: [],
+      skipped: true,
+      reason: 'active_pool_is_enough'
+    };
+  }
+
+  if (activeCount >= MAX_ACTIVE_STRATEGY) {
+    return {
+      ok: true,
+      active_count: activeCount,
+      target_active_strategy: TARGET_ACTIVE_STRATEGY,
+      max_active_strategy: MAX_ACTIVE_STRATEGY,
+      spawned_count: 0,
+      spawned_keys: [],
+      skipped: true,
+      reason: 'active_pool_reached_max'
+    };
+  }
+
+  const existingKeySet = new Set(
+    poolRows
+      .map((row) => normalizeStrategyKey(row?.strategy_key))
+      .filter(Boolean)
+  );
+
+  const activeStrategyKeys = activeRows
+    .map((row) => normalizeStrategyKey(row?.strategy_key))
+    .filter(Boolean);
+
+  let statsRows = [];
+  if (activeStrategyKeys.length) {
+    const { data, error } = await db
+      .from(STRATEGY_STATS_TABLE)
+      .select('*')
+      .in('strategy_key', activeStrategyKeys);
+
+    if (error) throw error;
+    statsRows = Array.isArray(data) ? data : [];
+  }
+
+  const statsMap = new Map(
+    statsRows.map((row) => [normalizeStrategyKey(row?.strategy_key), row])
+  );
+
+  const rankedActiveRows = activeRows
+    .map((row) => {
+      const stat = statsMap.get(normalizeStrategyKey(row?.strategy_key)) || {};
+      const evaluation = evaluateStrategyDecision(row, stat, marketSnapshot);
+
+      return {
+        ...row,
+        eval: evaluation
+      };
+    })
+    .sort((a, b) => byPowerDesc(
+      {
+        strategy_key: a.strategy_key,
+        decision_score: a.eval.decisionScore,
+        weight: a.eval.weight,
+        market_boost: a.eval.marketBoost,
+        score: a.eval.score,
+        avg_hit: a.eval.avgHit,
+        total_rounds: a.eval.totalRounds
+      },
+      {
+        strategy_key: b.strategy_key,
+        decision_score: b.eval.decisionScore,
+        weight: b.eval.weight,
+        market_boost: b.eval.marketBoost,
+        score: b.eval.score,
+        avg_hit: b.eval.avgHit,
+        total_rounds: b.eval.totalRounds
+      }
+    ));
+
+  const strongParents = rankedActiveRows.slice(0, Math.max(6, Math.min(16, rankedActiveRows.length)));
+  const needCount = Math.min(
+    MAX_SPAWN_PER_RUN,
+    TARGET_ACTIVE_STRATEGY - activeCount,
+    MAX_ACTIVE_STRATEGY - activeCount
+  );
+
+  if (needCount <= 0) {
+    return {
+      ok: true,
+      active_count: activeCount,
+      target_active_strategy: TARGET_ACTIVE_STRATEGY,
+      max_active_strategy: MAX_ACTIVE_STRATEGY,
+      spawned_count: 0,
+      spawned_keys: [],
+      skipped: true,
+      reason: 'spawn_need_is_zero'
+    };
+  }
+
+  const insertList = [];
+  let seq = 0;
+  let guard = 0;
+
+  while (insertList.length < needCount && guard < 400) {
+    guard += 1;
+    const parentA = strongParents[seq % strongParents.length] || rankedActiveRows[0] || null;
+    const parentB = strongParents[(seq + 3) % strongParents.length] || rankedActiveRows[1] || parentA || null;
+
+    if (!parentA) break;
+
+    const sourceType = chooseSpawnSourceType(seq, activeCount);
+    const mode =
+      sourceType === 'exploration'
+        ? 'exploration'
+        : sourceType === 'crossover'
+          ? 'crossover'
+          : 'mutation';
+
+    const childKey = buildChildStrategyKey(
+      parentA?.strategy_key || '',
+      parentB?.strategy_key || '',
+      mode,
+      seq
+    );
+
+    seq += 1;
+
+    if (!childKey) continue;
+    if (existingKeySet.has(childKey)) continue;
+
+    existingKeySet.add(childKey);
+
+    const genes = inferGenesFromStrategyKey(childKey);
+    const parentKeys =
+      sourceType === 'exploration'
+        ? []
+        : uniqueTokens([
+            normalizeStrategyKey(parentA?.strategy_key),
+            normalizeStrategyKey(parentB?.strategy_key)
+          ]).slice(0, 2);
+
+    const parentGeneration = Math.max(
+      toNum(parentA?.generation, 1),
+      toNum(parentB?.generation, 1),
+      1
+    );
+
+    insertList.push({
+      strategy_key: childKey,
+      strategy_name: strategyLabel(childKey),
+      gene_a: genes.gene_a,
+      gene_b: genes.gene_b,
+      parameters: {
+        mode:
+          sourceType === 'exploration'
+            ? 'exploration_v6'
+            : sourceType === 'crossover'
+              ? 'crossover_v6'
+              : 'evolution_v3',
+        createdBy: 'auto_train_spawner',
+        targetPool: TARGET_ACTIVE_STRATEGY
+      },
+      generation: sourceType === 'exploration' ? 1 : parentGeneration + 1,
+      source_type: sourceType,
+      parent_keys: parentKeys,
+      status: 'active',
+      protected_rank: false,
+      incubation_until_draw: 0,
+      created_draw_no: toNum(latestDrawNo, 0),
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    });
+  }
+
+  if (insertList.length > 0) {
+    const { error: insertError } = await db
+      .from(STRATEGY_POOL_TABLE)
+      .insert(insertList);
+
+    if (insertError) {
+      throw new Error(`strategy_pool spawn insert failed: ${insertError.message || insertError}`);
+    }
+  }
+
+  return {
+    ok: true,
+    active_count: activeCount,
+    total_count: totalCount,
+    target_active_strategy: TARGET_ACTIVE_STRATEGY,
+    max_active_strategy: MAX_ACTIVE_STRATEGY,
+    spawned_count: insertList.length,
+    spawned_keys: insertList.map((row) => row.strategy_key),
+    skipped: false
   };
 }
 
 export default async function handler(req, res) {
   try {
     const db = getSupabase();
+
+    await ensureStrategyPoolStrategies();
 
     const compareBeforeCreate = await runCompare(db);
     const catchup = await runCatchup(db);
@@ -1292,13 +1687,15 @@ export default async function handler(req, res) {
 
     if (!latestDrawRows || !latestDrawRows.length) {
       const reaperResult = await runStrategyReaper(db);
+      const spawnerResult = await runStrategySpawner(db, 0, {});
 
       return res.status(200).json({
         ok: true,
         compare_modes: [...COMPARE_MODES],
         pipeline: {
           ...pipeline,
-          reaper: reaperResult
+          reaper: reaperResult,
+          spawner: spawnerResult
         },
         market_snapshot: null,
         compared_count: toNum(compareBeforeCreate?.processed, 0),
@@ -1313,7 +1710,13 @@ export default async function handler(req, res) {
         },
         created_current_open_count: await countCreatedPredictions(db),
         disabled_keys: reaperResult.disabled_keys || [],
+        spawned_keys: spawnerResult.spawned_keys || [],
         active_created_prediction: null,
+        pool_control: {
+          min_active_strategy: MIN_ACTIVE_STRATEGY,
+          target_active_strategy: TARGET_ACTIVE_STRATEGY,
+          max_active_strategy: MAX_ACTIVE_STRATEGY
+        },
         train: {
           ok: true,
           skipped: true,
@@ -1323,17 +1726,20 @@ export default async function handler(req, res) {
     }
 
     const latestDraw = latestDrawRows[0];
-    const sourceDrawNoRaw = Number(latestDraw.draw_no) - TARGET_PERIODS;
+    const latestDrawNo = toNum(latestDraw?.draw_no, 0);
+    const sourceDrawNoRaw = latestDrawNo - TARGET_PERIODS;
 
     if (sourceDrawNoRaw <= 0) {
       const reaperResult = await runStrategyReaper(db);
+      const spawnerResult = await runStrategySpawner(db, latestDrawNo, {});
 
       return res.status(200).json({
         ok: true,
         compare_modes: [...COMPARE_MODES],
         pipeline: {
           ...pipeline,
-          reaper: reaperResult
+          reaper: reaperResult,
+          spawner: spawnerResult
         },
         market_snapshot: null,
         compared_count: toNum(compareBeforeCreate?.processed, 0),
@@ -1348,7 +1754,13 @@ export default async function handler(req, res) {
         },
         created_current_open_count: await countCreatedPredictions(db),
         disabled_keys: reaperResult.disabled_keys || [],
+        spawned_keys: spawnerResult.spawned_keys || [],
         active_created_prediction: null,
+        pool_control: {
+          min_active_strategy: MIN_ACTIVE_STRATEGY,
+          target_active_strategy: TARGET_ACTIVE_STRATEGY,
+          max_active_strategy: MAX_ACTIVE_STRATEGY
+        },
         train: {
           ok: true,
           skipped: true,
@@ -1450,6 +1862,13 @@ export default async function handler(req, res) {
     const reaperResult = await runStrategyReaper(db);
     pipeline.reaper = reaperResult;
 
+    const effectiveMarketSnapshot = marketSnapshot || normalizeMarketSnapshot(
+      buildRecentMarketSignalSnapshot(await fetchMarketRows(db), 'numbers')
+    );
+
+    const spawnerResult = await runStrategySpawner(db, latestDrawNo, effectiveMarketSnapshot);
+    pipeline.spawner = spawnerResult;
+
     let finalActiveCreatedPrediction = activeCreatedPrediction;
 
     if (finalActiveCreatedPrediction?.id) {
@@ -1475,12 +1894,13 @@ export default async function handler(req, res) {
     ];
 
     const createdRemaining = await countCreatedPredictions(db);
+    const activeStrategyCount = await countActiveStrategies(db);
 
     return res.status(200).json({
       ok: true,
       compare_modes: [...COMPARE_MODES],
       pipeline,
-      market_snapshot: marketSnapshot,
+      market_snapshot: effectiveMarketSnapshot,
       compared_count: comparedBefore + comparedAfter,
       compared_by_mode: {
         test: toNum(beforeByMode?.test, 0) + toNum(afterByMode?.test, 0),
@@ -1492,9 +1912,18 @@ export default async function handler(req, res) {
         formal: 0
       },
       created_current_open_count: createdRemaining,
+      active_strategy_count: activeStrategyCount,
       disabled_keys: [...new Set(disabledKeys)],
+      spawned_keys: Array.isArray(spawnerResult?.spawned_keys) ? spawnerResult.spawned_keys : [],
       active_created_prediction: finalActiveCreatedPrediction,
       reaper: reaperResult,
+      spawner: spawnerResult,
+      pool_control: {
+        min_active_strategy: MIN_ACTIVE_STRATEGY,
+        target_active_strategy: TARGET_ACTIVE_STRATEGY,
+        max_active_strategy: MAX_ACTIVE_STRATEGY,
+        max_spawn_per_run: MAX_SPAWN_PER_RUN
+      },
       train: {
         ok: true,
         skipped: createdCount === 0,
