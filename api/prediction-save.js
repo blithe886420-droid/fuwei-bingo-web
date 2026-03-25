@@ -1,4 +1,4 @@
-console.log('🔥 NEW VERSION LOADED v3.8 AGGRESSIVE RATE FIX');
+console.log('🔥 NEW VERSION LOADED v4.0 FORMAL LOCKED');
 
 import { createClient } from '@supabase/supabase-js';
 import { buildRecentMarketSignalSnapshot } from '../lib/marketSignalEngine.js';
@@ -33,8 +33,10 @@ const GROUP_COUNT = 4;
 const RECENT_DRAW_LIMIT = 80;
 const RECENT_FORMAL_USAGE_LIMIT = 24;
 
-const PROFIT_MODE_NAME = 'profit_mode_v2_3_aggressive_rate_fixed';
+const PROFIT_MODE_NAME = 'formal_fixed_4x4_v4';
 const BASE_BET_AMOUNT = 25;
+const FIXED_GROUP_WEIGHT = 1;
+const FIXED_BET_WEIGHT = 2500;
 
 const DEFAULT_STRATEGY_KEYS = [
   'repeat_hot',
@@ -59,7 +61,7 @@ const DEFAULT_STRATEGY_KEYS = [
   'zone_2'
 ];
 
-const AGGRESSIVE_CONFIG = {
+const FORMAL_SELECT_CONFIG = {
   minRoundsTrust: 8,
   eliteScore: 2600,
   strongScore: 1400,
@@ -393,14 +395,8 @@ function normalizeRate(raw, fallback = 0) {
   const value = toNum(raw, fallback);
 
   if (value <= 0) return 0;
-
-  // 若資料已是 0~1 比例，直接用
   if (value <= 1) return value;
-
-  // 若資料是 0~100 百分比，轉成 0~1
   if (value <= 100) return value / 100;
-
-  // 超過 100 視為異常值，封頂
   return 1;
 }
 
@@ -546,17 +542,17 @@ function buildUsagePenaltyInfo(strategyKey = '', usageInfo = {}) {
 
   const staleIndex = toNum(usageInfo?.lastSeenIndex?.[normalizedKey], 99);
   const staleBonus =
-    staleIndex >= AGGRESSIVE_CONFIG.staleBonusGap
-      ? 1 + Math.min(0.75, (staleIndex - AGGRESSIVE_CONFIG.staleBonusGap) * AGGRESSIVE_CONFIG.staleBonusScale * 0.1)
+    staleIndex >= FORMAL_SELECT_CONFIG.staleBonusGap
+      ? 1 + Math.min(0.75, (staleIndex - FORMAL_SELECT_CONFIG.staleBonusGap) * FORMAL_SELECT_CONFIG.staleBonusScale * 0.1)
       : 1;
 
   let penaltyMultiplier = 1;
   let reason = 'usage_neutral';
 
-  if (recentRatio >= AGGRESSIVE_CONFIG.recentUsageHardCap) {
+  if (recentRatio >= FORMAL_SELECT_CONFIG.recentUsageHardCap) {
     penaltyMultiplier = 0.18;
     reason = 'usage_hard_cap';
-  } else if (recentRatio >= AGGRESSIVE_CONFIG.recentUsageSoftCap) {
+  } else if (recentRatio >= FORMAL_SELECT_CONFIG.recentUsageSoftCap) {
     penaltyMultiplier = 0.48;
     reason = 'usage_soft_cap';
   } else if (recentCount >= 3) {
@@ -574,15 +570,12 @@ function buildUsagePenaltyInfo(strategyKey = '', usageInfo = {}) {
   };
 }
 
-function computeAggressiveDecision(row = {}) {
+function computeFormalDecision(row = {}) {
   const roi = toNum(row.adjusted_roi, row.roi);
   const recentRoi = toNum(row.recent_50_roi, 0);
   const avgHit = toNum(row.avg_hit, 0);
-
-  // 這裡只吃「標準化後」的比例值
   const hitRate = normalizeRate(row.hit_rate, 0);
   const recentHitRate = normalizeRate(row.recent_50_hit_rate, 0);
-
   const totalRounds = toNum(row.total_rounds, 0);
   const score = toNum(row.adjusted_score, row.score);
   const marketBoost = toNum(row.market_boost, 1);
@@ -609,49 +602,49 @@ function computeAggressiveDecision(row = {}) {
     decisionScore += score * 5.8;
   }
 
-  if (totalRounds >= AGGRESSIVE_CONFIG.minRoundsTrust) {
+  if (totalRounds >= FORMAL_SELECT_CONFIG.minRoundsTrust) {
     decisionScore += Math.min(totalRounds, 140) * 8;
   } else {
-    decisionScore -= (AGGRESSIVE_CONFIG.minRoundsTrust - totalRounds) * 130;
+    decisionScore -= (FORMAL_SELECT_CONFIG.minRoundsTrust - totalRounds) * 130;
   }
 
   decisionScore *= marketBoost;
   decisionScore *= usagePenalty;
   decisionScore *= staleBonus;
 
-  if (roi <= AGGRESSIVE_CONFIG.rejectRoi) {
+  if (roi <= FORMAL_SELECT_CONFIG.rejectRoi) {
     decisionScore -= 3200;
   } else if (roi < 0) {
     decisionScore -= Math.abs(roi) * 1900;
   }
 
-  if (recentRoi <= AGGRESSIVE_CONFIG.rejectRecentRoi) {
+  if (recentRoi <= FORMAL_SELECT_CONFIG.rejectRecentRoi) {
     decisionScore -= 3000;
   } else if (recentRoi < 0) {
     decisionScore -= Math.abs(recentRoi) * 2300;
   }
 
-  if (avgHit < AGGRESSIVE_CONFIG.rejectAvgHit) {
-    decisionScore -= (AGGRESSIVE_CONFIG.rejectAvgHit - avgHit) * 1800;
+  if (avgHit < FORMAL_SELECT_CONFIG.rejectAvgHit) {
+    decisionScore -= (FORMAL_SELECT_CONFIG.rejectAvgHit - avgHit) * 1800;
   }
 
-  if (totalRounds >= AGGRESSIVE_CONFIG.minRoundsTrust && roi < 0 && recentRoi < 0) {
+  if (totalRounds >= FORMAL_SELECT_CONFIG.minRoundsTrust && roi < 0 && recentRoi < 0) {
     decisionScore *= 0.28;
   }
 
-  if (totalRounds >= AGGRESSIVE_CONFIG.minRoundsTrust && avgHit < 1.12 && hitRate < 0.16) {
+  if (totalRounds >= FORMAL_SELECT_CONFIG.minRoundsTrust && avgHit < 1.12 && hitRate < 0.16) {
     decisionScore *= 0.38;
   }
 
   let decision = 'reject';
 
-  if (decisionScore >= AGGRESSIVE_CONFIG.eliteScore) {
+  if (decisionScore >= FORMAL_SELECT_CONFIG.eliteScore) {
     decision = 'elite';
-  } else if (decisionScore >= AGGRESSIVE_CONFIG.strongScore) {
+  } else if (decisionScore >= FORMAL_SELECT_CONFIG.strongScore) {
     decision = 'strong';
-  } else if (decisionScore >= AGGRESSIVE_CONFIG.usableScore) {
+  } else if (decisionScore >= FORMAL_SELECT_CONFIG.usableScore) {
     decision = 'usable';
-  } else if (totalRounds < AGGRESSIVE_CONFIG.minRoundsTrust && avgHit >= 1.18 && recentRoi >= 0) {
+  } else if (totalRounds < FORMAL_SELECT_CONFIG.minRoundsTrust && avgHit >= 1.18 && recentRoi >= 0) {
     decision = 'trial';
   }
 
@@ -670,7 +663,7 @@ function applyMarketDecisionToRows(rows = [], marketSnapshot = {}, recentFormalU
     const adjustedScore = base.score * marketFit.boost;
     const adjustedRoi = base.roi * marketFit.boost;
 
-    const aggressive = computeAggressiveDecision({
+    const formalDecision = computeFormalDecision({
       ...base,
       adjusted_score: adjustedScore,
       adjusted_roi: adjustedRoi,
@@ -685,8 +678,8 @@ function applyMarketDecisionToRows(rows = [], marketSnapshot = {}, recentFormalU
       market_reason: marketFit.reason,
       adjusted_score: adjustedScore,
       adjusted_roi: adjustedRoi,
-      decision: aggressive.decision,
-      decision_score: aggressive.decision_score,
+      decision: formalDecision.decision,
+      decision_score: formalDecision.decision_score,
       recent_formal_count: usageInfo.recentCount,
       recent_formal_ratio: usageInfo.recentRatio,
       usage_penalty_multiplier: usageInfo.penaltyMultiplier,
@@ -758,107 +751,6 @@ function buildFormalCandidates(statsRows = [], marketSnapshot = {}, recentFormal
   return selected.slice(0, GROUP_COUNT);
 }
 
-function calcStrategyStrength(row = {}) {
-  const roi = toNum(row.adjusted_roi, row.roi);
-  const recentRoi = toNum(row.recent_50_roi, 0);
-  const avgHit = toNum(row.avg_hit, 0);
-  const hitRate = normalizeRate(row.hit_rate, 0);
-  const recentHitRate = normalizeRate(row.recent_50_hit_rate, 0);
-  const totalRounds = toNum(row.total_rounds, 0);
-  const decisionScore = toNum(row.decision_score, 0);
-  const marketBoost = toNum(row.market_boost, 1);
-  const usagePenalty = toNum(row.usage_penalty_multiplier, 1);
-  const staleBonus = toNum(row.stale_bonus_multiplier, 1);
-
-  let strength = 0;
-
-  strength += Math.max(0, decisionScore);
-  strength += safeSquarePositive(Math.max(0, roi) + 0.2) * 2000;
-  strength += safeSquarePositive(Math.max(0, recentRoi) + 0.25) * 2600;
-  strength += safeSquarePositive(Math.max(0, avgHit - 1)) * 2900;
-  strength += safeSquarePositive(Math.max(0, hitRate)) * 1200;
-  strength += safeSquarePositive(Math.max(0, recentHitRate)) * 1400;
-  strength += Math.min(totalRounds, 100) * 9;
-  strength += Math.max(0, marketBoost - 1) * 2800;
-
-  strength *= usagePenalty;
-  strength *= staleBonus;
-
-  if (roi < 0) strength -= Math.abs(roi) * 2200;
-  if (recentRoi < 0) strength -= Math.abs(recentRoi) * 2600;
-  if (avgHit < 1) strength -= (1 - avgHit) * 1800;
-
-  return Math.max(0, strength);
-}
-
-function buildBetWeightMeta(rows = []) {
-  const normalizedRows = Array.isArray(rows) ? rows : [];
-  if (!normalizedRows.length) return [];
-
-  const strengths = normalizedRows.map((row) => calcStrategyStrength(row));
-  const totalStrength = strengths.reduce((sum, n) => sum + n, 0);
-  const maxStrength = Math.max(...strengths, 0);
-
-  if (totalStrength <= 0) {
-    return normalizedRows.map((row) => ({
-      ...row,
-      bet_weight: 2500,
-      weight: 1,
-      bet_amount: BASE_BET_AMOUNT,
-      strength_score: 0,
-      strength_share: 0.25
-    }));
-  }
-
-  const rawBasisPoints = strengths.map((strength) => (strength / totalStrength) * 10000);
-  const floorBasisPoints = rawBasisPoints.map((v) => Math.floor(v));
-  let remain = 10000 - floorBasisPoints.reduce((sum, n) => sum + n, 0);
-
-  const fractionalOrder = rawBasisPoints
-    .map((v, idx) => ({ idx, frac: v - Math.floor(v) }))
-    .sort((a, b) => b.frac - a.frac || a.idx - b.idx);
-
-  for (let i = 0; i < fractionalOrder.length && remain > 0; i += 1, remain -= 1) {
-    floorBasisPoints[fractionalOrder[i].idx] += 1;
-  }
-
-  return normalizedRows.map((row, idx) => {
-    const strength = strengths[idx];
-    const share = totalStrength > 0 ? strength / totalStrength : 0;
-    const decisionScore = toNum(row.decision_score, 0);
-    const roi = toNum(row.adjusted_roi, row.roi);
-    const recentRoi = toNum(row.recent_50_roi, 0);
-
-    let weight = 1;
-
-    if (
-      strength === maxStrength &&
-      share >= 0.4 &&
-      decisionScore >= AGGRESSIVE_CONFIG.eliteScore
-    ) {
-      weight = 3;
-    } else if (
-      share >= 0.2 &&
-      decisionScore >= AGGRESSIVE_CONFIG.strongScore
-    ) {
-      weight = 2;
-    }
-
-    if (roi < 0 || recentRoi < 0) {
-      weight = Math.min(weight, 1);
-    }
-
-    return {
-      ...row,
-      bet_weight: floorBasisPoints[idx],
-      weight,
-      bet_amount: BASE_BET_AMOUNT * weight,
-      strength_score: Math.round(strength * 1000) / 1000,
-      strength_share: Math.round(share * 1000000) / 1000000
-    };
-  });
-}
-
 function arrangeSelectedOrder(rows = [], sourceDrawNo = 0, marketSnapshot = {}) {
   const list = [...rows];
   if (list.length <= 1) return list;
@@ -873,13 +765,13 @@ function arrangeSelectedOrder(rows = [], sourceDrawNo = 0, marketSnapshot = {}) 
   const second = toNum(list[1]?.decision_score, 0);
   const third = toNum(list[2]?.decision_score, 0);
 
-  if (second > 0 && first / second <= AGGRESSIVE_CONFIG.nearTieRatio) {
+  if (second > 0 && first / second <= FORMAL_SELECT_CONFIG.nearTieRatio) {
     if (hash % 2 === 1) {
       [list[0], list[1]] = [list[1], list[0]];
     }
   }
 
-  if (third > 0 && first / third <= AGGRESSIVE_CONFIG.rotationTieRatio && list.length >= 3) {
+  if (third > 0 && first / third <= FORMAL_SELECT_CONFIG.rotationTieRatio && list.length >= 3) {
     const offset = hash % 3;
     return rotateList(list.slice(0, 3), offset).concat(list.slice(3));
   }
@@ -896,8 +788,7 @@ async function ensureDefaultStrategyPoolActive(strategyKeys = []) {
     return {
       ok: true,
       checked_count: 0,
-      inserted_count: 0,
-      updated_count: 0
+      inserted_count: 0
     };
   }
 
@@ -912,7 +803,6 @@ async function ensureDefaultStrategyPoolActive(strategyKeys = []) {
   const nowIso = new Date().toISOString();
 
   const rowsToInsert = [];
-  const keysToForceActive = [];
 
   for (const strategyKey of finalKeys) {
     const existing = existingMap.get(strategyKey);
@@ -934,11 +824,6 @@ async function ensureDefaultStrategyPoolActive(strategyKeys = []) {
         created_at: nowIso,
         updated_at: nowIso
       });
-      continue;
-    }
-
-    if (String(existing.status || '').toLowerCase() !== 'active') {
-      keysToForceActive.push(strategyKey);
     }
   }
 
@@ -950,23 +835,10 @@ async function ensureDefaultStrategyPoolActive(strategyKeys = []) {
     if (insertError) throw insertError;
   }
 
-  for (const strategyKey of keysToForceActive) {
-    const { error: updateError } = await supabase
-      .from(STRATEGY_POOL_TABLE)
-      .update({
-        status: 'active',
-        updated_at: nowIso
-      })
-      .eq('strategy_key', strategyKey);
-
-    if (updateError) throw updateError;
-  }
-
   return {
     ok: true,
     checked_count: finalKeys.length,
-    inserted_count: rowsToInsert.length,
-    updated_count: keysToForceActive.length
+    inserted_count: rowsToInsert.length
   };
 }
 
@@ -984,13 +856,15 @@ async function getRecentFormalUsage(limit = RECENT_FORMAL_USAGE_LIMIT) {
   const lastSeenIndex = {};
 
   (Array.isArray(data) ? data : []).forEach((row, idx) => {
-    const strategyKey = normalizeStrategyKey(row?.groups_json?.[0]?.key || row?.groups_json?.[0]?.meta?.strategy_key || '');
-    if (!strategyKey) return;
+    const groups = Array.isArray(row?.groups_json) ? row.groups_json : [];
+    for (const group of groups) {
+      const strategyKey = normalizeStrategyKey(group?.key || group?.meta?.strategy_key || '');
+      if (!strategyKey) continue;
 
-    counts[strategyKey] = toNum(counts[strategyKey], 0) + 1;
-
-    if (lastSeenIndex[strategyKey] == null) {
-      lastSeenIndex[strategyKey] = idx;
+      counts[strategyKey] = toNum(counts[strategyKey], 0) + 1;
+      if (lastSeenIndex[strategyKey] == null) {
+        lastSeenIndex[strategyKey] = idx;
+      }
     }
   });
 
@@ -1067,9 +941,8 @@ function buildGroupsFromStats(statsRows = [], recentRows = [], sourceDrawNo = 0,
 
   const selectedStats = buildFormalCandidates(statsRows, marketSnapshot, recentFormalUsage);
   const orderedSelectedStats = arrangeSelectedOrder(selectedStats, sourceDrawNo, marketSnapshot);
-  const selectedWithWeights = buildBetWeightMeta(orderedSelectedStats);
 
-  const groups = selectedWithWeights.map((row, idx) => {
+  const groups = orderedSelectedStats.map((row, idx) => {
     const strategyKey = row.strategy_key;
     const strategyName = row.strategy_name || buildStrategyName(strategyKey);
     const geneA = inferGeneA(strategyKey);
@@ -1089,10 +962,10 @@ function buildGroupsFromStats(statsRows = [], recentRows = [], sourceDrawNo = 0,
       key: strategyKey,
       label: strategyName,
       nums,
-      weight: row.weight,
-      bet_amount: row.bet_amount,
-      bet_weight: row.bet_weight,
-      reason: `正式下注依激進輪動決策模式建立（倍率 x${row.weight} / 單組 ${row.bet_amount} 元 / 市場 ${row.market_reason || 'neutral'} / 使用率 ${toNum(row.recent_formal_ratio, 0).toFixed(3)}）`,
+      weight: FIXED_GROUP_WEIGHT,
+      bet_amount: BASE_BET_AMOUNT,
+      bet_weight: FIXED_BET_WEIGHT,
+      reason: `正式下注固定四組四期（固定單組 ${BASE_BET_AMOUNT} 元 / 固定倍率 x1 / 市場 ${row.market_reason || 'neutral'} / 使用率 ${toNum(row.recent_formal_ratio, 0).toFixed(3)}）`,
       meta: {
         strategy_key: strategyKey,
         strategy_name: strategyName,
@@ -1111,12 +984,10 @@ function buildGroupsFromStats(statsRows = [], recentRows = [], sourceDrawNo = 0,
         recent_50_hit_rate_raw: row.recent_50_hit_rate_raw,
         profit_mode: PROFIT_MODE_NAME,
         filter_pass: row.filter_pass,
-        bet_weight: row.bet_weight,
-        bet_amount: row.bet_amount,
-        weight: row.bet_weight,
-        weight_multiplier: row.weight,
-        strength_score: row.strength_score,
-        strength_share: row.strength_share,
+        bet_weight: FIXED_BET_WEIGHT,
+        bet_amount: BASE_BET_AMOUNT,
+        weight: FIXED_GROUP_WEIGHT,
+        weight_multiplier: FIXED_GROUP_WEIGHT,
         strategy_weight: row.strategy_weight,
         market_boost: row.market_boost,
         market_reason: row.market_reason,
@@ -1157,21 +1028,20 @@ function buildGroupsFromStats(statsRows = [], recentRows = [], sourceDrawNo = 0,
       key: `formal_fallback_${idx + 1}`,
       label: `Formal Fallback ${idx + 1}`,
       nums: uniqueAsc(rotateList(safePool, idx * 4).slice(0, 4)),
-      weight: 1,
+      weight: FIXED_GROUP_WEIGHT,
       bet_amount: BASE_BET_AMOUNT,
-      bet_weight: 2500,
-      reason: `正式下注 fallback（倍率 x1 / 單組 ${BASE_BET_AMOUNT} 元）`,
+      bet_weight: FIXED_BET_WEIGHT,
+      reason: `正式下注固定 fallback（固定倍率 x1 / 單組 ${BASE_BET_AMOUNT} 元）`,
       meta: {
         strategy_key: `formal_fallback_${idx + 1}`,
         strategy_name: `Formal Fallback ${idx + 1}`,
         profit_mode: PROFIT_MODE_NAME,
         filter_pass: 'fallback',
-        bet_weight: 2500,
+        bet_weight: FIXED_BET_WEIGHT,
         bet_amount: BASE_BET_AMOUNT,
-        weight: 2500,
-        weight_multiplier: 1,
-        strength_score: 0,
-        strength_share: 0.25,
+        weight: FIXED_GROUP_WEIGHT,
+        weight_multiplier: FIXED_GROUP_WEIGHT,
+        strategy_weight: 0,
         market_boost: 1,
         market_reason: 'fallback',
         market_type: detectMarketType(marketSnapshot),
@@ -1286,6 +1156,9 @@ export default async function handler(req, res) {
       built.marketSnapshot ||
       normalizeMarketSnapshot(buildRecentMarketSignalSnapshot(recentRows, 'numbers'));
 
+    const totalBetAmountPerPeriod = groups.reduce((sum, group) => sum + toNum(group.bet_amount, 0), 0);
+    const totalBetAmountAllPeriods = totalBetAmountPerPeriod * FORMAL_TARGET_PERIODS;
+
     const payload = {
       id: Date.now(),
       mode: FORMAL_MODE,
@@ -1310,9 +1183,10 @@ export default async function handler(req, res) {
       market_type: detectMarketType(marketSnapshot),
       recent_formal_usage: recentFormalUsage,
       base_bet_amount: BASE_BET_AMOUNT,
-      total_bet_amount_per_period: groups.reduce((sum, group) => sum + toNum(group.bet_amount, 0), 0),
-      total_bet_amount_all_periods:
-        groups.reduce((sum, group) => sum + toNum(group.bet_amount, 0), 0) * FORMAL_TARGET_PERIODS,
+      fixed_group_count: GROUP_COUNT,
+      fixed_group_bet_amount: BASE_BET_AMOUNT,
+      total_bet_amount_per_period: totalBetAmountPerPeriod,
+      total_bet_amount_all_periods: totalBetAmountAllPeriods,
       selected_strategy_keys: groups.map((g) => g.meta?.strategy_key || g.key),
       groups,
       saved
