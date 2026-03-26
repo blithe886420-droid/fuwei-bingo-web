@@ -289,7 +289,14 @@ function normalizeAiPlayer(data) {
 }
 
 function normalizePredictionLatest(data) {
+  const formalBatches = toArray(data?.formal_batches);
+  const normalizedFormalBatches = formalBatches.map((batch, idx) => ({
+    ...batch,
+    formal_batch_no: toNum(batch?.formal_batch_no, idx + 1)
+  }));
+
   return {
+    apiVersion: data?.api_version || '--',
     trainingRow:
       data?.training_row ||
       getPredictionLatestRow(data?.training || data?.ai_train || data, 'test') ||
@@ -305,7 +312,12 @@ function normalizePredictionLatest(data) {
     readyForFormal: Boolean(data?.readyForFormal),
     adviceLevel: data?.adviceLevel || 'watch',
     decisionPhase: data?.decisionPhase || 'watch_only',
-    currentTopStrategies: toArray(data?.currentTopStrategies)
+    currentTopStrategies: toArray(data?.currentTopStrategies),
+    formalBatchLimit: toNum(data?.formal_batch_limit, FORMAL_BATCH_LIMIT),
+    formalBatchCount: toNum(data?.formal_batch_count, 0),
+    formalRemainingBatchCount: toNum(data?.formal_remaining_batch_count, FORMAL_BATCH_LIMIT),
+    formalSourceDrawNo: data?.formal_source_draw_no || null,
+    formalBatches: normalizedFormalBatches
   };
 }
 
@@ -470,7 +482,47 @@ function GroupCard({ group, idx, showRank = false }) {
         <MetaChip label="策略" value={fmtText(meta?.strategy_key || group?.key)} />
         <MetaChip label="排序" value={fmtText(meta?.selection_rank, idx + 1)} />
         <MetaChip label="ROI" value={fmtPercent(meta?.recent_50_roi ?? meta?.roi)} />
-        <MetaChip label="平均命中" value={fmtText(Number.isFinite(Number(meta?.avg_hit)) ? Number(meta.avg_hit).toFixed(2) : '--')} />
+        <MetaChip
+          label="平均命中"
+          value={fmtText(
+            Number.isFinite(Number(meta?.avg_hit)) ? Number(meta.avg_hit).toFixed(2) : '--'
+          )}
+        />
+      </div>
+    </div>
+  );
+}
+
+function FormalBatchCard({ batch, idx }) {
+  const groups = getPredictionGroups(batch);
+
+  return (
+    <div style={styles.batchCard}>
+      <div style={styles.batchCardHead}>
+        <div>
+          <div style={styles.batchCardTitle}>
+            第 {fmtText(batch?.formal_batch_no, idx + 1)} 批
+          </div>
+          <div style={styles.batchCardSub}>
+            建立時間：{fmtDateTime(batch?.created_at)}
+          </div>
+        </div>
+
+        <div style={styles.metaChipRow}>
+          <MetaChip label="status" value={fmtText(batch?.status)} />
+          <MetaChip label="source_draw_no" value={fmtText(batch?.source_draw_no)} />
+          <MetaChip label="groups" value={groups.length} />
+        </div>
+      </div>
+
+      <div style={styles.groupGrid}>
+        {groups.length ? (
+          groups.map((group, groupIdx) => (
+            <GroupCard key={`${batch?.id || idx}_${group?.key || groupIdx}`} group={group} idx={groupIdx} />
+          ))
+        ) : (
+          <div style={styles.emptyBox}>這一批目前沒有可顯示的組合。</div>
+        )}
       </div>
     </div>
   );
@@ -488,10 +540,16 @@ export default function App() {
   const [formalLatest, setFormalLatest] = useState(null);
   const [leaderboard, setLeaderboard] = useState([]);
   const [predictionSummary, setPredictionSummary] = useState({
+    apiVersion: '--',
     summaryLabel: '--',
     summaryText: '--',
     currentTopStrategies: [],
-    readyForFormal: false
+    readyForFormal: false,
+    formalBatchLimit: FORMAL_BATCH_LIMIT,
+    formalBatchCount: 0,
+    formalRemainingBatchCount: FORMAL_BATCH_LIMIT,
+    formalSourceDrawNo: null,
+    formalBatches: []
   });
   const [aiPlayer, setAiPlayer] = useState(normalizeAiPlayer({}));
   const [lastAutoTrainResult, setLastAutoTrainResult] = useState(null);
@@ -534,10 +592,16 @@ export default function App() {
       setFormalLatest(normalizedPrediction.formalRow || null);
       setLeaderboard(normalizedPrediction.leaderboard || []);
       setPredictionSummary({
+        apiVersion: normalizedPrediction.apiVersion,
         summaryLabel: normalizedPrediction.summaryLabel,
         summaryText: normalizedPrediction.summaryText,
         currentTopStrategies: normalizedPrediction.currentTopStrategies,
-        readyForFormal: normalizedPrediction.readyForFormal
+        readyForFormal: normalizedPrediction.readyForFormal,
+        formalBatchLimit: normalizedPrediction.formalBatchLimit,
+        formalBatchCount: normalizedPrediction.formalBatchCount,
+        formalRemainingBatchCount: normalizedPrediction.formalRemainingBatchCount,
+        formalSourceDrawNo: normalizedPrediction.formalSourceDrawNo,
+        formalBatches: normalizedPrediction.formalBatches
       });
 
       setAiPlayer(normalizeAiPlayer(aiPlayerRes));
@@ -769,14 +833,6 @@ export default function App() {
   const streakNumbers = useMemo(() => calcCurrentStreakNumbers(recent20, 5), [recent20]);
   const zoneCounts = useMemo(() => calcZoneCounts(latestNumbers), [latestNumbers]);
 
-  const formalBatchNo = useMemo(() => {
-    const recentFormalSameDraw =
-      trainingLatest && formalLatest && String(formalLatest?.source_draw_no) === String(latestDrawNo)
-        ? 1
-        : 0;
-    return recentFormalSameDraw;
-  }, [formalLatest, trainingLatest, latestDrawNo]);
-
   const lastCycleSummary = useMemo(() => buildLoopStatusText(lastAutoTrainResult), [lastAutoTrainResult]);
 
   const currentTopStrategies = predictionSummary.currentTopStrategies.length
@@ -784,6 +840,14 @@ export default function App() {
     : aiPlayer.currentTopStrategies;
 
   const canFormalBet = predictionSummary.readyForFormal || aiPlayer.readyForFormal;
+  const formalBatchCount = predictionSummary.formalBatchCount;
+  const formalRemainingBatchCount = predictionSummary.formalRemainingBatchCount;
+  const formalBatchLimit = predictionSummary.formalBatchLimit || FORMAL_BATCH_LIMIT;
+  const formalBatches = predictionSummary.formalBatches || [];
+  const formalBatchProgressText = `${formalBatchCount} / ${formalBatchLimit}`;
+  const formalButtonDisabled = busyKey !== '' || formalRemainingBatchCount <= 0;
+  const formalButtonLabel =
+    formalRemainingBatchCount <= 0 ? '本期已達 3 批上限' : '產生一批正式下注';
 
   return (
     <div style={styles.page}>
@@ -961,7 +1025,7 @@ export default function App() {
               subtitle="正式下注改為單期、前四策略、同一期最多三批。"
               right={
                 <div style={styles.predictTopTag}>
-                  每組 {COST_PER_GROUP} 元 × {FORMAL_GROUP_COUNT} 組 × 最多 {FORMAL_BATCH_LIMIT} 批
+                  每組 {COST_PER_GROUP} 元 × {FORMAL_GROUP_COUNT} 組 × 最多 {formalBatchLimit} 批
                 </div>
               }
             >
@@ -973,14 +1037,15 @@ export default function App() {
                   valueStyle={{ color: canFormalBet ? '#0f766e' : '#b45309' }}
                 />
                 <StatBox
-                  label="最新 formal 來源期數"
-                  value={fmtText(formalLatest?.source_draw_no)}
-                  hint={`建立時間：${fmtDateTime(formalLatest?.created_at)}`}
+                  label="批次進度"
+                  value={formalBatchProgressText}
+                  hint={`剩餘 ${formalRemainingBatchCount} 批`}
+                  valueStyle={{ color: formalRemainingBatchCount > 0 ? '#0f766e' : '#b45309' }}
                 />
                 <StatBox
-                  label="正式下注組數"
-                  value={formalGroups.length || 0}
-                  hint="固定應為 4 組"
+                  label="formal source_draw_no"
+                  value={fmtText(predictionSummary.formalSourceDrawNo)}
+                  hint={`API：${fmtText(predictionSummary.apiVersion)}`}
                 />
                 <StatBox
                   label="單批成本"
@@ -991,17 +1056,17 @@ export default function App() {
 
               <div style={styles.predictActionBox}>
                 <div style={styles.predictActionText}>
-                  目前邏輯：從最新 test prediction 取前四策略，各出一組，建立 formal 單期下注。
+                  目前邏輯：同一期最多三批，formal 會鎖定同一個 source_draw_no，直到 3 批滿為止。
                 </div>
                 <button
                   style={{
                     ...styles.primaryButton,
-                    ...(!canFormalBet ? styles.warningButton : {})
+                    ...((!canFormalBet || formalRemainingBatchCount <= 0) ? styles.warningButton : {})
                   }}
                   onClick={handleFormalBet}
-                  disabled={busyKey !== ''}
+                  disabled={formalButtonDisabled}
                 >
-                  產生一批正式下注
+                  {formalButtonLabel}
                 </button>
               </div>
             </Card>
@@ -1022,8 +1087,31 @@ export default function App() {
             </Card>
 
             <Card
+              title="本期 formal 批次總覽"
+              subtitle="這裡才是你現在真正的實戰面板。"
+            >
+              <div style={styles.metaChipRow}>
+
+                <MetaChip label="已下注" value={formalBatchCount} />
+                <MetaChip label="上限" value={formalBatchLimit} />
+                <MetaChip label="剩餘" value={formalRemainingBatchCount} />
+                <MetaChip label="source_draw_no" value={fmtText(predictionSummary.formalSourceDrawNo)} />
+              </div>
+
+              <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
+                {formalBatches.length ? (
+                  formalBatches.map((batch, idx) => (
+                    <FormalBatchCard key={batch?.id || idx} batch={batch} idx={idx} />
+                  ))
+                ) : (
+                  <div style={styles.emptyBox}>目前這一期還沒有 formal 批次資料。</div>
+                )}
+              </div>
+            </Card>
+
+            <Card
               title="最新 formal 正式下注"
-              subtitle="這是最近一批正式下注內容。若你已連按三次，後續會自動擋下。"
+              subtitle="保留最近一批摘要，方便你快速看最後一手。"
             >
               <div style={styles.groupGrid}>
                 {formalGroups.length ? (
@@ -1523,6 +1611,29 @@ const styles = {
   },
   metaChipLabel: {
     fontWeight: 800
+  },
+  batchCard: {
+    border: '1px solid #e0cf95',
+    borderRadius: 20,
+    background: '#fffdf7',
+    padding: 16
+  },
+  batchCardHead: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: 12,
+    marginBottom: 14
+  },
+  batchCardTitle: {
+    fontSize: 20,
+    fontWeight: 800,
+    color: '#0f766e'
+  },
+  batchCardSub: {
+    marginTop: 4,
+    fontSize: 13,
+    color: '#8b7b5b'
   },
   tableWrap: {
     overflowX: 'auto'
