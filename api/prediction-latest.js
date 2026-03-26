@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
-const API_VERSION = 'prediction-latest-batch-v3';
+const API_VERSION = 'prediction-latest-batch-v4-manual-control';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -293,52 +293,23 @@ function buildDecisionSummary(leaderboard = []) {
 
   if (!topOne) {
     return {
-      assistantMode: 'decision_support',
-      readyForFormal: false,
-      adviceLevel: 'stop',
-      decisionPhase: 'no_data',
-      summaryLabel: '資料不足',
-      summaryText: '目前沒有足夠的策略排行資料，先不要正式下注。',
+      assistantMode: 'manual_control',
+      readyForFormal: true,
+      adviceLevel: 'manual',
+      decisionPhase: 'manual_control',
+      summaryLabel: '自行決定',
+      summaryText: '目前策略資料不足，但正式下注改由你手動決定；請自行評估是否進場。',
       currentTopStrategies: []
     };
   }
 
-  const strongShortTerm =
-    topOne.avg_hit >= 1.8 && topOne.recent_50_roi >= 0;
-  const usableShortTerm =
-    topOne.avg_hit >= 1.5 && topOne.recent_50_roi >= -0.2;
-
-  if (strongShortTerm) {
-    return {
-      assistantMode: 'decision_support',
-      readyForFormal: true,
-      adviceLevel: 'go_small',
-      decisionPhase: 'ready_small_bet',
-      summaryLabel: '可小試',
-      summaryText: '目前前段策略表現偏穩，可採單期、小額方式測試。',
-      currentTopStrategies: topFour
-    };
-  }
-
-  if (usableShortTerm) {
-    return {
-      assistantMode: 'decision_support',
-      readyForFormal: false,
-      adviceLevel: 'watch',
-      decisionPhase: 'watch_only',
-      summaryLabel: '可觀察',
-      summaryText: '目前有可參考策略，但建議先觀察排行與近期成績。',
-      currentTopStrategies: topFour
-    };
-  }
-
   return {
-    assistantMode: 'decision_support',
-    readyForFormal: false,
-    adviceLevel: 'avoid',
-    decisionPhase: 'avoid_entry',
-    summaryLabel: '暫不建議',
-    summaryText: '目前前段策略偏弱，不建議急著正式下注。',
+    assistantMode: 'manual_control',
+    readyForFormal: true,
+    adviceLevel: 'manual',
+    decisionPhase: 'manual_control',
+    summaryLabel: '自行決定',
+    summaryText: 'AI 仍提供排行與分析，但正式下注是否進場，改由你手動決定。',
     currentTopStrategies: topFour
   };
 }
@@ -363,28 +334,24 @@ export default async function handler(req, res) {
     const rows = [trainingPrediction, formalPrediction].filter(Boolean);
     const decision = buildDecisionSummary(leaderboard);
 
-    // ===== 新邏輯：自動切換 source_draw_no =====
+    let formalSourceDrawNo =
+      latestFormalSourceDrawNo ||
+      formalPrediction?.source_draw_no ||
+      0;
 
-let formalSourceDrawNo =
-  latestFormalSourceDrawNo ||
-  formalPrediction?.source_draw_no ||
-  0;
+    let formalBatchRows = await getFormalBatchRows(formalSourceDrawNo);
+    let formalBatchCount = formalBatchRows.length;
 
-let formalBatchRows = await getFormalBatchRows(formalSourceDrawNo);
-let formalBatchCount = formalBatchRows.length;
+    if (formalBatchCount >= FORMAL_BATCH_LIMIT && trainingPrediction?.source_draw_no) {
+      formalSourceDrawNo = toInt(trainingPrediction.source_draw_no, 0);
+      formalBatchRows = await getFormalBatchRows(formalSourceDrawNo);
+      formalBatchCount = formalBatchRows.length;
+    }
 
-// 🔥 核心修正：如果舊批次已滿 → 切換到最新 test draw
-if (formalBatchCount >= FORMAL_BATCH_LIMIT && trainingPrediction?.source_draw_no) {
-  formalSourceDrawNo = toInt(trainingPrediction.source_draw_no, 0);
-
-  formalBatchRows = await getFormalBatchRows(formalSourceDrawNo);
-  formalBatchCount = formalBatchRows.length;
-}
-
-const formalRemainingBatchCount = Math.max(
-  0,
-  FORMAL_BATCH_LIMIT - formalBatchCount
-);
+    const formalRemainingBatchCount = Math.max(
+      0,
+      FORMAL_BATCH_LIMIT - formalBatchCount
+    );
 
     return res.status(200).json({
       ok: true,
