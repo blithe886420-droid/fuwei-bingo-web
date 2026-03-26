@@ -14,6 +14,7 @@ const SUPABASE_KEY =
 const PREDICTIONS_TABLE = 'bingo_predictions';
 const STRATEGY_STATS_TABLE = 'strategy_stats';
 const STRATEGY_POOL_TABLE = 'strategy_pool';
+const FORMAL_BATCH_LIMIT = 3;
 
 if (!SUPABASE_URL || !SUPABASE_KEY) {
   throw new Error('Missing SUPABASE_URL or SUPABASE key');
@@ -111,7 +112,7 @@ function normalizePredictionRow(row) {
   const sourceDrawNo = toInt(row.source_draw_no, 0);
   const targetPeriods = toInt(
     row.target_periods,
-    mode.includes('formal') ? 4 : 2
+    mode.includes('formal') ? 1 : 1
   );
   const groups = parseGroupsJson(row.groups_json);
 
@@ -227,6 +228,26 @@ async function getLatestPrediction(mode) {
   return normalizePredictionRow(data || null);
 }
 
+async function getFormalBatchRows(sourceDrawNo) {
+  if (!sourceDrawNo) {
+    return [];
+  }
+
+  const { data, error } = await supabase
+    .from(PREDICTIONS_TABLE)
+    .select('*')
+    .eq('mode', 'formal')
+    .eq('source_draw_no', sourceDrawNo)
+    .order('created_at', { ascending: true });
+
+  if (error) throw error;
+
+  return (Array.isArray(data) ? data : []).map((row, idx) => ({
+    ...normalizePredictionRow(row),
+    formal_batch_no: idx + 1
+  }));
+}
+
 async function getStrategyLeaderboard(limit = 50) {
   const [{ data: statsRows, error: statsError }, { data: poolRows, error: poolError }] =
     await Promise.all([
@@ -330,6 +351,12 @@ export default async function handler(req, res) {
     const rows = [trainingPrediction, formalPrediction].filter(Boolean);
     const decision = buildDecisionSummary(leaderboard);
 
+    const formalSourceDrawNo = formalPrediction?.source_draw_no || 0;
+    const formalBatchRows = await getFormalBatchRows(formalSourceDrawNo);
+
+    const formalBatchCount = formalBatchRows.length;
+    const formalRemainingBatchCount = Math.max(0, FORMAL_BATCH_LIMIT - formalBatchCount);
+
     return res.status(200).json({
       ok: true,
 
@@ -362,7 +389,13 @@ export default async function handler(req, res) {
       decisionPhase: decision.decisionPhase,
       summaryLabel: decision.summaryLabel,
       summaryText: decision.summaryText,
-      currentTopStrategies: decision.currentTopStrategies
+      currentTopStrategies: decision.currentTopStrategies,
+
+      formal_batch_limit: FORMAL_BATCH_LIMIT,
+      formal_batch_count: formalBatchCount,
+      formal_remaining_batch_count: formalRemainingBatchCount,
+      formal_source_draw_no: formalSourceDrawNo || null,
+      formal_batches: formalBatchRows
     });
   } catch (error) {
     return res.status(500).json({
