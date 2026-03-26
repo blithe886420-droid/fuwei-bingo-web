@@ -22,6 +22,7 @@ const COMPARE_BATCH_LIMIT = 50;
 const MARKET_LOOKBACK_LIMIT = 160;
 const COST_PER_GROUP_PER_PERIOD = 25;
 
+// 允許持續建立新 test prediction，但防止 created 爆量
 const MAX_CREATED_PREDICTIONS = 20;
 const ALLOW_CREATE_WHEN_EXISTING = true;
 
@@ -73,9 +74,6 @@ const DECISION_CONFIG = {
 
 const STRATEGY_STATS_TABLE = 'strategy_stats';
 const STRATEGY_POOL_TABLE = 'strategy_pool';
-const PREDICTIONS_TABLE = 'bingo_predictions';
-const DRAWS_TABLE = 'bingo_draws';
-
 const PROTECTED_STATUS = new Set(['protected']);
 const TERMINAL_STATUS = new Set(['disabled', 'retired']);
 
@@ -486,156 +484,6 @@ function getStrategyMarketBoost(strategyKey = '', marketSnapshot = {}) {
     boost,
     reason: reasons.length ? reasons.join('|') : 'market_neutral'
   };
-}
-
-function numbersByTail(tail, allNums = []) {
-  return allNums.filter((n) => n % 10 === tail);
-}
-
-function numbersByZone(zoneIndex, allNums = []) {
-  const start = zoneIndex * 20 + 1;
-  const end = start + 19;
-  return allNums.filter((n) => n >= start && n <= end);
-}
-
-function buildStrategyNums(strategyKey, market, seed = 0) {
-  const tokens = tokenizeStrategyKey(strategyKey);
-  const selected = [];
-
-  const {
-    latest,
-    hot,
-    cold,
-    warm,
-    stable,
-    gap,
-    odd,
-    even,
-    tailsHot,
-    zoneOrder,
-    allNums,
-    marketBias
-  } = market;
-
-  const fallbackPools = [hot, warm, stable, gap, cold, allNums];
-  const has = (token) => tokens.includes(token);
-
-  if (has('repeat')) {
-    selected.push(...latest.slice(0, 2));
-  }
-
-  if (has('hot')) {
-    selected.push(...hot.slice(0, 3));
-  }
-
-  if (has('cold')) {
-    selected.push(...cold.slice(0, 3));
-  }
-
-  if (has('warm')) {
-    selected.push(...warm.slice(1, 5));
-  }
-
-  if (has('gap') || has('jump') || has('chase')) {
-    selected.push(...gap.slice(0, 4));
-  }
-
-  if (has('tail')) {
-    const topTail = tailsHot[0] ?? 0;
-    const secondTail = tailsHot[1] ?? ((topTail + 4) % 10);
-    selected.push(...numbersByTail(topTail, allNums).slice(0, 2));
-    selected.push(...numbersByTail(secondTail, allNums).slice(0, 1));
-  }
-
-  if (has('zone') || has('split') || has('spread') || has('rotation')) {
-    const z1 = zoneOrder[0] ?? 0;
-    const z2 = zoneOrder[1] ?? 1;
-    selected.push(...numbersByZone(z1, allNums).slice(0, 2));
-    selected.push(...numbersByZone(z2, allNums).slice(0, 2));
-  }
-
-  if (has('balanced') || has('balance')) {
-    selected.push(...odd.slice(0, 2));
-    selected.push(...even.slice(0, 2));
-  }
-
-  if (has('odd')) {
-    selected.push(...odd.slice(0, 4));
-  }
-
-  if (has('even')) {
-    selected.push(...even.slice(0, 4));
-  }
-
-  if (has('cluster')) {
-    const base = hot[0] ?? 10;
-    selected.push(base);
-    if (base + 1 <= 80) selected.push(base + 1);
-    if (base + 2 <= 80) selected.push(base + 2);
-  }
-
-  if (has('mix') || has('pattern') || has('structure')) {
-    selected.push(hot[0], warm[1], gap[1], stable[2]);
-  }
-
-  if (has('guard')) {
-    selected.push(cold[0], gap[0]);
-  }
-
-  if (has('reverse')) {
-    selected.push(...cold.slice(0, 2));
-    selected.push(...gap.slice(0, 2));
-  }
-
-  if (has('rotation')) {
-    selected.push(...stable.slice(2, 5));
-  }
-
-  if (has('skip')) {
-    selected.push(...gap.slice(0, 2), ...cold.slice(0, 2));
-  }
-
-  if (marketBias.oddHeavy && (has('balanced') || has('mix'))) {
-    selected.push(...even.slice(0, 2));
-  }
-
-  if (marketBias.evenHeavy && (has('balanced') || has('mix'))) {
-    selected.push(...odd.slice(0, 2));
-  }
-
-  if (marketBias.compressedZones && (has('spread') || has('zone') || has('rotation'))) {
-    const safeZone = zoneOrder[2] ?? 2;
-    selected.push(...numbersByZone(safeZone, allNums).slice(0, 2));
-  }
-
-  let nums = fillToFour(selected, fallbackPools, seed);
-
-  if (has('balanced') || has('balance')) {
-    const oddNums = nums.filter((n) => n % 2 === 1);
-    const evenNums = nums.filter((n) => n % 2 === 0);
-
-    if (oddNums.length === 0 || evenNums.length === 0) {
-      nums = fillToFour(
-        [...odd.slice(0, 2), ...even.slice(0, 2), ...nums],
-        fallbackPools,
-        seed + 17
-      );
-    }
-  }
-
-  if (has('zone') || has('split') || has('spread') || has('rotation')) {
-    const zones = new Set(nums.map((n) => getZoneIndex(n)));
-    if (zones.size < 2) {
-      const extraZone = zoneOrder[1] ?? 1;
-      nums = fillToFour(
-        [...nums, ...numbersByZone(extraZone, allNums).slice(0, 2)],
-        fallbackPools,
-        seed + 29
-      );
-    }
-  }
-
-  return uniqueSorted(nums).slice(0, 4);
 }
 
 function normalizeHitRate(raw) {
@@ -1472,6 +1320,87 @@ function filterStrategiesByMarket(strategies = [], marketType = '') {
   });
 }
 
+function buildGroupRoleByIndex(idx = 0) {
+  if (idx === 0) {
+    return {
+      type: 'safe',
+      target: 'hit2',
+      role_label: '保守（保2）',
+      purpose: '穩定偏熱，優先保二'
+    };
+  }
+
+  if (idx === 1) {
+    return {
+      type: 'balanced',
+      target: 'hit2_3',
+      role_label: '平衡（2~3）',
+      purpose: '兼顧命中2與命中3'
+    };
+  }
+
+  if (idx === 2) {
+    return {
+      type: 'aggressive',
+      target: 'hit3',
+      role_label: '進攻（偏3）',
+      purpose: '偏進攻，主抓命中3'
+    };
+  }
+
+  return {
+    type: 'sniper',
+    target: 'hit4',
+    role_label: '衝高（拚4）',
+    purpose: '高風險高波動，拚衝4'
+  };
+}
+
+function applyRoleAdjustment(nums = [], role = {}, market = {}) {
+  const allNums = Array.isArray(market?.allNums) ? market.allNums : [];
+  const hot = Array.isArray(market?.hot) ? market.hot : [];
+  const warm = Array.isArray(market?.warm) ? market.warm : [];
+  const cold = Array.isArray(market?.cold) ? market.cold : [];
+  const gap = Array.isArray(market?.gap) ? market.gap : [];
+  const stable = Array.isArray(market?.stable) ? market.stable : [];
+
+  const safeFallback = [hot, warm, stable, gap, cold, allNums];
+  const attackFallback = [gap, hot, warm, stable, cold, allNums];
+  const coldFallback = [cold, gap, hot, warm, stable, allNums];
+
+  const roleType = String(role?.type || '').toLowerCase();
+
+  if (roleType === 'safe') {
+    return fillToFour([...hot.slice(0, 3), ...warm.slice(0, 2), ...nums], safeFallback, 11);
+  }
+
+  if (roleType === 'balanced') {
+    return fillToFour(
+      [...hot.slice(0, 2), ...warm.slice(0, 2), ...gap.slice(0, 1), ...nums],
+      safeFallback,
+      23
+    );
+  }
+
+  if (roleType === 'aggressive') {
+    return fillToFour(
+      [...gap.slice(0, 2), ...hot.slice(0, 2), ...stable.slice(0, 1), ...nums],
+      attackFallback,
+      37
+    );
+  }
+
+  if (roleType === 'sniper') {
+    return fillToFour(
+      [...cold.slice(0, 2), ...gap.slice(0, 2), ...hot.slice(0, 1), ...nums],
+      coldFallback,
+      49
+    );
+  }
+
+  return uniqueSorted(nums).slice(0, 4);
+}
+
 function buildPredictionGroups(candidatePack = {}, market = {}, marketSnapshot = {}, seed = Date.now()) {
   const marketType = detectMarketType(marketSnapshot);
 
@@ -1496,10 +1425,15 @@ function buildPredictionGroups(candidatePack = {}, market = {}, marketSnapshot =
 
     used.add(s.strategy_key);
 
+    const role = buildGroupRoleByIndex(groups.length);
+    const baseNums = buildStrategyNums(s.strategy_key, market, seed + i * 77);
+    const finalNums = applyRoleAdjustment(baseNums, role, market);
+
     groups.push({
       key: s.strategy_key,
-      label: s.strategy_name || strategyLabel(s.strategy_key),
-      nums: buildStrategyNums(s.strategy_key, market, seed + i * 77),
+      label: `${role.role_label}｜${s.strategy_name || strategyLabel(s.strategy_key)}`,
+      nums: finalNums,
+      reason: `${role.purpose}｜${s.strategy_name || strategyLabel(s.strategy_key)}`,
       meta: {
         strategy_key: s.strategy_key,
         strategy_name: s.strategy_name,
@@ -1509,7 +1443,12 @@ function buildPredictionGroups(candidatePack = {}, market = {}, marketSnapshot =
         market_type: marketType,
         market_boost: s.market_boost,
         avg_hit: s.avg_hit,
-        roi: s.roi
+        roi: s.roi,
+        type: role.type,
+        target: role.target,
+        role_label: role.role_label,
+        purpose: role.purpose,
+        selection_rank: groups.length + 1
       }
     });
   }
@@ -1620,7 +1559,6 @@ async function runStrategyReaper(db, marketSnapshot = {}) {
 
   const forcedDisableKeys = [];
   const forcedReasonMap = {};
-
   const shrinkCandidates = [];
 
   for (const row of mergedActiveRows) {
@@ -1693,10 +1631,8 @@ async function runStrategyReaper(db, marketSnapshot = {}) {
   }
 
   const allPlannedKeys = [...new Set([...forcedDisableKeys, ...extraShrinkKeys])];
-
   const maxDisableAllowedByMinPool = Math.max(0, activeCount - MIN_ACTIVE_STRATEGY);
   const maxDisableAllowed = Math.min(maxDisableAllowedByMinPool, shrinkPlan.maxDisablePerRun);
-
   const finalDisableKeys = allPlannedKeys.slice(0, maxDisableAllowed);
 
   const finalReasonMap = {};
@@ -1942,7 +1878,7 @@ export default async function handler(req, res) {
     };
 
     const { data: latestDrawRows, error: latestError } = await db
-      .from(DRAWS_TABLE)
+      .from('bingo_draws')
       .select('*')
       .order('draw_no', { ascending: false })
       .limit(1);
@@ -2072,7 +2008,8 @@ export default async function handler(req, res) {
     let marketSnapshot = null;
 
     const createdNowCount = await countCreatedPredictions(db);
-    const shouldCreatePrediction = createdNowCount < MAX_CREATED_PREDICTIONS;
+    const shouldCreatePrediction =
+      createdNowCount < MAX_CREATED_PREDICTIONS;
 
     if (shouldCreatePrediction) {
       const { data: existingPrediction, error: existingError } = await db
@@ -2218,6 +2155,8 @@ export default async function handler(req, res) {
       disabled_keys: [...new Set(disabledKeys)],
       spawned_keys: Array.isArray(spawnerResult?.spawned_keys) ? spawnerResult.spawned_keys : [],
       active_created_prediction: finalActiveCreatedPrediction,
+      reaper: reaperResult,
+      spawner: spawnerResult,
       combat_readiness: combatReadiness,
       pool_control: {
         min_active_strategy: MIN_ACTIVE_STRATEGY,
@@ -2231,17 +2170,19 @@ export default async function handler(req, res) {
       train: {
         ok: true,
         skipped: createdCount === 0,
-        reason: createdCount > 0 ? '' : 'already_exists_or_pool_limit',
-        mode: TEST_MODE,
-        source_draw_no: sourceDrawNo,
-        latest_draw_no: latestDrawNo,
-        target_periods: TARGET_PERIODS
+        reason:
+          createdCount === 0
+            ? (createdNowCount >= MAX_CREATED_PREDICTIONS
+                ? 'created pool reached limit'
+                : 'Prediction already exists')
+            : undefined,
+        existing: createdCount === 0 ? finalActiveCreatedPrediction : undefined
       }
     });
-  } catch (error) {
+  } catch (e) {
     return res.status(500).json({
       ok: false,
-      error: error?.message || 'auto-train failed'
+      error: e?.message || 'auto-train failed'
     });
   }
 }
