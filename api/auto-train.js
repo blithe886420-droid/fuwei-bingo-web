@@ -488,12 +488,154 @@ function getStrategyMarketBoost(strategyKey = '', marketSnapshot = {}) {
   };
 }
 
-function normalizeHitRate(raw) {
-  const value = toNum(raw, 0);
-  if (value <= 0) return 0;
-  if (value <= 1) return value;
-  if (value <= 100) return value / 100;
-  return 1;
+function numbersByTail(tail, allNums = []) {
+  return allNums.filter((n) => n % 10 === tail);
+}
+
+function numbersByZone(zoneIndex, allNums = []) {
+  const start = zoneIndex * 20 + 1;
+  const end = start + 19;
+  return allNums.filter((n) => n >= start && n <= end);
+}
+
+function buildStrategyNums(strategyKey, market, seed = 0) {
+  const tokens = tokenizeStrategyKey(strategyKey);
+  const selected = [];
+
+  const {
+    latest,
+    hot,
+    cold,
+    warm,
+    stable,
+    gap,
+    odd,
+    even,
+    tailsHot,
+    zoneOrder,
+    allNums,
+    marketBias
+  } = market;
+
+  const fallbackPools = [hot, warm, stable, gap, cold, allNums];
+  const has = (token) => tokens.includes(token);
+
+  if (has('repeat')) {
+    selected.push(...latest.slice(0, 2));
+  }
+
+  if (has('hot')) {
+    selected.push(...hot.slice(0, 3));
+  }
+
+  if (has('cold')) {
+    selected.push(...cold.slice(0, 3));
+  }
+
+  if (has('warm')) {
+    selected.push(...warm.slice(1, 5));
+  }
+
+  if (has('gap') || has('jump') || has('chase')) {
+    selected.push(...gap.slice(0, 4));
+  }
+
+  if (has('tail')) {
+    const topTail = tailsHot[0] ?? 0;
+    const secondTail = tailsHot[1] ?? ((topTail + 4) % 10);
+    selected.push(...numbersByTail(topTail, allNums).slice(0, 2));
+    selected.push(...numbersByTail(secondTail, allNums).slice(0, 1));
+  }
+
+  if (has('zone') || has('split') || has('spread') || has('rotation')) {
+    const z1 = zoneOrder[0] ?? 0;
+    const z2 = zoneOrder[1] ?? 1;
+    selected.push(...numbersByZone(z1, allNums).slice(0, 2));
+    selected.push(...numbersByZone(z2, allNums).slice(0, 2));
+  }
+
+  if (has('balanced') || has('balance')) {
+    selected.push(...odd.slice(0, 2));
+    selected.push(...even.slice(0, 2));
+  }
+
+  if (has('odd')) {
+    selected.push(...odd.slice(0, 4));
+  }
+
+  if (has('even')) {
+    selected.push(...even.slice(0, 4));
+  }
+
+  if (has('cluster')) {
+    const base = hot[0] ?? 10;
+    selected.push(base);
+    if (base + 1 <= 80) selected.push(base + 1);
+    if (base + 2 <= 80) selected.push(base + 2);
+  }
+
+  if (has('mix') || has('pattern') || has('structure')) {
+    selected.push(hot[0], warm[1], gap[1], stable[2]);
+  }
+
+  if (has('guard')) {
+    selected.push(cold[0], gap[0]);
+  }
+
+  if (has('reverse')) {
+    selected.push(...cold.slice(0, 2));
+    selected.push(...gap.slice(0, 2));
+  }
+
+  if (has('rotation')) {
+    selected.push(...stable.slice(2, 5));
+  }
+
+  if (has('skip')) {
+    selected.push(...gap.slice(0, 2), ...cold.slice(0, 2));
+  }
+
+  if (marketBias.oddHeavy && (has('balanced') || has('mix'))) {
+    selected.push(...even.slice(0, 2));
+  }
+
+  if (marketBias.evenHeavy && (has('balanced') || has('mix'))) {
+    selected.push(...odd.slice(0, 2));
+  }
+
+  if (marketBias.compressedZones && (has('spread') || has('zone') || has('rotation'))) {
+    const safeZone = zoneOrder[2] ?? 2;
+    selected.push(...numbersByZone(safeZone, allNums).slice(0, 2));
+  }
+
+  let nums = fillToFour(selected, fallbackPools, seed);
+
+  if (has('balanced') || has('balance')) {
+    const oddNums = nums.filter((n) => n % 2 === 1);
+    const evenNums = nums.filter((n) => n % 2 === 0);
+
+    if (oddNums.length === 0 || evenNums.length === 0) {
+      nums = fillToFour(
+        [...odd.slice(0, 2), ...even.slice(0, 2), ...nums],
+        fallbackPools,
+        seed + 17
+      );
+    }
+  }
+
+  if (has('zone') || has('split') || has('spread') || has('rotation')) {
+    const zones = new Set(nums.map((n) => getZoneIndex(n)));
+    if (zones.size < 2) {
+      const extraZone = zoneOrder[1] ?? 1;
+      nums = fillToFour(
+        [...nums, ...numbersByZone(extraZone, allNums).slice(0, 2)],
+        fallbackPools,
+        seed + 29
+      );
+    }
+  }
+
+  return uniqueSorted(nums).slice(0, 4);
 }
 
 function evaluateStrategyDecision(poolRow = {}, statRow = {}, marketSnapshot = {}) {
