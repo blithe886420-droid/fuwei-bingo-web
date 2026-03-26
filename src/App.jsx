@@ -16,14 +16,9 @@ const LOOP_INTERVAL_MS = 180000;
 const NIGHT_STOP_START_MINUTES = 0;
 const NIGHT_STOP_END_MINUTES = 7 * 60 + 30;
 
-// 🔒 正式下注固定設定
-const FORMAL_FIXED_GROUP_COUNT = 4;
-const FORMAL_FIXED_TARGET_PERIODS = 4;
-const FORMAL_FIXED_BET_PER_GROUP = 25;
-const FORMAL_FIXED_TOTAL_PER_PERIOD =
-  FORMAL_FIXED_GROUP_COUNT * FORMAL_FIXED_BET_PER_GROUP;
-const FORMAL_FIXED_TOTAL_ALL_PERIODS =
-  FORMAL_FIXED_TOTAL_PER_PERIOD * FORMAL_FIXED_TARGET_PERIODS;
+const FORMAL_BATCH_LIMIT = 3;
+const FORMAL_GROUP_COUNT = 4;
+const COST_PER_GROUP = 25;
 
 function toArray(v) {
   return Array.isArray(v) ? v : [];
@@ -32,12 +27,6 @@ function toArray(v) {
 function toNum(v, fallback = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
-}
-
-function fmtPercent(v, digits = 1) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return '--';
-  return `${n.toFixed(digits)}%`;
 }
 
 function fmtText(v, fallback = '--') {
@@ -50,6 +39,12 @@ function fmtDateTime(v) {
   const d = new Date(v);
   if (Number.isNaN(d.getTime())) return String(v);
   return d.toLocaleString('zh-TW', { hour12: false });
+}
+
+function fmtPercent(v, digits = 1) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '--';
+  return `${n.toFixed(digits)}%`;
 }
 
 function fmtMoney(v) {
@@ -68,6 +63,7 @@ function parseNums(input) {
   if (Array.isArray(input)) {
     return input.map(Number).filter(Number.isFinite);
   }
+
   if (typeof input === 'string') {
     return input
       .replace(/[{}[\]]/g, ' ')
@@ -75,14 +71,7 @@ function parseNums(input) {
       .map((x) => Number(x.trim()))
       .filter(Number.isFinite);
   }
-  return [];
-}
 
-function getRecentRows(data) {
-  if (Array.isArray(data)) return data;
-  if (Array.isArray(data?.rows)) return data.rows;
-  if (Array.isArray(data?.recent20)) return data.recent20;
-  if (Array.isArray(data?.data)) return data.data;
   return [];
 }
 
@@ -98,48 +87,11 @@ function normalizeGroups(rawGroups) {
 
       const meta = group?.meta && typeof group.meta === 'object' ? group.meta : {};
 
-      // 🔒 正式下注前端固定顯示，不再使用倍率配重語意
-      const isFormalGroup =
-        String(meta?.profit_mode || '').toLowerCase().includes('profit_mode') ||
-        String(group?.reason || '').includes('正式下注') ||
-        String(group?.key || '').startsWith('formal_') ||
-        String(meta?.strategy_key || '').startsWith('formal_') ||
-        String(meta?.selection_rank || '').length > 0;
-
-      const weight = isFormalGroup
-        ? 1
-        : Number.isFinite(Number(group?.weight))
-          ? Number(group.weight)
-          : Number.isFinite(Number(meta?.weight_multiplier))
-            ? Number(meta.weight_multiplier)
-            : Number.isFinite(Number(meta?.bet_multiplier))
-              ? Number(meta.bet_multiplier)
-              : null;
-
-      const betAmount = isFormalGroup
-        ? FORMAL_FIXED_BET_PER_GROUP
-        : Number.isFinite(Number(group?.bet_amount))
-          ? Number(group.bet_amount)
-          : Number.isFinite(Number(meta?.bet_amount))
-            ? Number(meta.bet_amount)
-            : null;
-
-      const betWeight = isFormalGroup
-        ? 2500
-        : Number.isFinite(Number(group?.bet_weight))
-          ? Number(group.bet_weight)
-          : Number.isFinite(Number(meta?.bet_weight))
-            ? Number(meta.bet_weight)
-            : null;
-
       return {
         key: String(group?.key || meta?.strategy_key || `group_${idx + 1}`),
         label: String(group?.label || meta?.strategy_name || `第${idx + 1}組`),
         nums,
         reason: String(group?.reason || meta?.strategy_name || '--'),
-        weight,
-        bet_amount: betAmount,
-        bet_weight: betWeight,
         meta
       };
     })
@@ -150,114 +102,18 @@ function getPredictionGroups(row) {
   return normalizeGroups(
     row?.groups_json ||
       row?.groups ||
-      row?.strategies ||
       row?.prediction_groups ||
+      row?.strategies ||
       []
   );
 }
 
-function groupTitle(group, idx) {
-  return (
-    group?.label ||
-    group?.name ||
-    group?.strategy_name ||
-    group?.key ||
-    `第${idx + 1}組`
-  );
-}
-
-function groupReason(group, latestMode = '') {
-  const mode = String(latestMode || '').toLowerCase();
-
-  if (mode === 'formal') {
-    return (
-      group?.reason ||
-      '固定四組四期正式下注（每組 25 元，不使用倍率配重）'
-    );
-  }
-
-  return group?.reason || group?.meta?.strategy_name || group?.meta?.strategy_key || '--';
-}
-
-function fmtMetaNumber(v, digits = 2) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return '--';
-  return n.toFixed(digits);
-}
-
-function calcHotNumbers(recentRows, lookback = 10) {
-  const rows = toArray(recentRows).slice(0, lookback);
-  const countMap = new Map();
-
-  rows.forEach((row) => {
-    const nums = parseNums(row?.numbers || row?.nums);
-    nums.forEach((n) => {
-      countMap.set(n, toNum(countMap.get(n), 0) + 1);
-    });
-  });
-
-  return [...countMap.entries()]
-    .sort((a, b) => b[1] - a[1] || a[0] - b[0])
-    .slice(0, 10)
-    .map(([num, count]) => ({
-      num,
-      count
-    }));
-}
-
-/**
- * 連莊定義：
- * - 從最新一期開始往前看（最多 5 期）
- * - 某號碼本期有開 = 1
- * - 上一期也有開 = 2
- * - 再上一期也有開 = 3
- * - 一旦中間斷掉就停止
- * - 只顯示 streak >= 2 的號碼
- */
-function calcCurrentStreakNumbers(recentRows, maxLookback = 5) {
-  const rows = toArray(recentRows).slice(0, maxLookback);
-  if (!rows.length) return [];
-
-  const latestNums = parseNums(rows[0]?.numbers || rows[0]?.nums);
-  const result = [];
-
-  latestNums.forEach((num) => {
-    let streak = 1;
-
-    for (let i = 1; i < rows.length; i += 1) {
-      const nums = parseNums(rows[i]?.numbers || rows[i]?.nums);
-      if (nums.includes(num)) {
-        streak += 1;
-      } else {
-        break;
-      }
-    }
-
-    if (streak >= 2) {
-      result.push({ num, streak });
-    }
-  });
-
-  return result.sort((a, b) => b.streak - a.streak || a.num - b.num);
-}
-
-function calcZoneCounts(nums = []) {
-  const source = parseNums(nums);
-  const zones = [
-    { label: '1-20', count: 0 },
-    { label: '21-40', count: 0 },
-    { label: '41-60', count: 0 },
-    { label: '61-80', count: 0 }
-  ];
-
-  source.forEach((n) => {
-    if (n >= 1 && n <= 20) zones[0].count += 1;
-    else if (n >= 21 && n <= 40) zones[1].count += 1;
-    else if (n >= 41 && n <= 60) zones[2].count += 1;
-    else if (n >= 61 && n <= 80) zones[3].count += 1;
-  });
-
-  return zones;
+function getRecentRows(data) {
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.rows)) return data.rows;
+  if (Array.isArray(data?.recent20)) return data.recent20;
+  if (Array.isArray(data?.data)) return data.data;
+  return [];
 }
 
 function safeFetchJson(url, options) {
@@ -302,135 +158,9 @@ function isDuplicateOrAlreadyExistsMessage(msg) {
 
   return (
     text.includes('duplicate key') ||
-    text.includes('unique_draw_mode') ||
     text.includes('already exists') ||
     text.includes('prediction already exists')
   );
-}
-
-function normalizeAutoTrainResult(payload, status) {
-  const result = payload && typeof payload === 'object' ? payload : {};
-
-  const train = result?.train && typeof result.train === 'object' ? result.train : null;
-  const topError =
-    result?.error ||
-    result?.message ||
-    train?.error ||
-    '';
-
-  if (train?.skipped) {
-    return {
-      ok: true,
-      skipped: true,
-      reason: train?.reason || 'already_exists',
-      existing: train?.existing || null,
-      pipeline: result?.pipeline || null,
-      raw: result
-    };
-  }
-
-  if (isDuplicateOrAlreadyExistsMessage(topError)) {
-    return {
-      ok: true,
-      skipped: true,
-      reason: 'Prediction already exists for current draw and mode',
-      existing: train?.existing || null,
-      pipeline: result?.pipeline || null,
-      raw: result
-    };
-  }
-
-  if (result?.ok === false && !isDuplicateOrAlreadyExistsMessage(topError)) {
-    return {
-      ok: false,
-      error: topError || `auto-train ${status}`
-    };
-  }
-
-  return {
-    ...result,
-    ok: result?.ok !== false
-  };
-}
-
-function calcSimpleAiStatus(trainingPrediction, leaderboard) {
-  const lb = toArray(leaderboard);
-  const active = lb.length;
-
-  const roiValues = lb
-    .map((x) => Number(x?.recent_50_roi ?? x?.roi))
-    .filter(Number.isFinite);
-
-  const avgHitValues = lb
-    .map((x) => Number(x?.avg_hit))
-    .filter(Number.isFinite);
-
-  const topScore = Number(lb?.[0]?.score);
-  const avgRoi = roiValues.length
-    ? roiValues.reduce((a, b) => a + b, 0) / roiValues.length
-    : null;
-  const avgHit = avgHitValues.length
-    ? avgHitValues.reduce((a, b) => a + b, 0) / avgHitValues.length
-    : null;
-
-  let confidence = 50;
-
-  if (Number.isFinite(avgRoi)) {
-    if (avgRoi >= 10) confidence += 20;
-    else if (avgRoi >= 0) confidence += 10;
-    else if (avgRoi <= -20) confidence -= 15;
-    else if (avgRoi < 0) confidence -= 8;
-  }
-
-  if (Number.isFinite(avgHit)) {
-    if (avgHit >= 2) confidence += 18;
-    else if (avgHit >= 1.5) confidence += 10;
-    else if (avgHit < 1) confidence -= 10;
-  }
-
-  if (active >= 10) confidence += 5;
-  if (Number.isFinite(topScore) && topScore > 0) confidence += 5;
-
-  confidence = Math.max(0, Math.min(100, Math.round(confidence)));
-
-  let advice = '觀望';
-  let adviceColor = '#b45309';
-
-  if (confidence >= 70) {
-    advice = '可下注';
-    adviceColor = '#0f766e';
-  } else if (confidence <= 40) {
-    advice = '先觀望';
-    adviceColor = '#c2410c';
-  }
-
-  return {
-    confidence,
-    advice,
-    adviceColor,
-    activeStrategies: active,
-    avgRoi,
-    avgHit,
-    latestTrainingMode: trainingPrediction?.mode || '--'
-  };
-}
-
-function getPredictionLatestRow(data, preferMode) {
-  const rows = [
-    data?.row,
-    ...(Array.isArray(data?.rows) ? data.rows : []),
-    ...(Array.isArray(data?.predictions) ? data.predictions : []),
-    ...(Array.isArray(data?.data) ? data.data : [])
-  ].filter(Boolean);
-
-  if (!rows.length) return null;
-
-  if (preferMode) {
-    const found = rows.find((r) => String(r?.mode || '').includes(preferMode));
-    if (found) return found;
-  }
-
-  return rows[0];
 }
 
 function getNowMinutes() {
@@ -455,17 +185,127 @@ function msUntilNightWindowEnd() {
   return Math.max(1000, target.getTime() - now.getTime());
 }
 
-function normalizeAiEvolution(data) {
+function getPredictionLatestRow(data, preferMode) {
+  const rows = [
+    data?.row,
+    ...(Array.isArray(data?.rows) ? data.rows : []),
+    ...(Array.isArray(data?.predictions) ? data.predictions : []),
+    ...(Array.isArray(data?.data) ? data.data : [])
+  ].filter(Boolean);
+
+  if (!rows.length) return null;
+
+  if (preferMode) {
+    const found = rows.find((r) => String(r?.mode || '').includes(preferMode));
+    if (found) return found;
+  }
+
+  return rows[0];
+}
+
+function calcHotNumbers(recentRows, lookback = 10) {
+  const rows = toArray(recentRows).slice(0, lookback);
+  const countMap = new Map();
+
+  rows.forEach((row) => {
+    const nums = parseNums(row?.numbers || row?.nums);
+    nums.forEach((n) => {
+      countMap.set(n, toNum(countMap.get(n), 0) + 1);
+    });
+  });
+
+  return [...countMap.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0] - b[0])
+    .slice(0, 10)
+    .map(([num, count]) => ({ num, count }));
+}
+
+function calcCurrentStreakNumbers(recentRows, maxLookback = 5) {
+  const rows = toArray(recentRows).slice(0, maxLookback);
+  if (!rows.length) return [];
+
+  const latestNums = parseNums(rows[0]?.numbers || rows[0]?.nums);
+  const result = [];
+
+  latestNums.forEach((num) => {
+    let streak = 1;
+
+    for (let i = 1; i < rows.length; i += 1) {
+      const nums = parseNums(rows[i]?.numbers || rows[i]?.nums);
+      if (nums.includes(num)) streak += 1;
+      else break;
+    }
+
+    if (streak >= 2) {
+      result.push({ num, streak });
+    }
+  });
+
+  return result.sort((a, b) => b.streak - a.streak || a.num - b.num);
+}
+
+function calcZoneCounts(nums = []) {
+  const source = parseNums(nums);
+  const zones = [
+    { label: '1-20', count: 0 },
+    { label: '21-40', count: 0 },
+    { label: '41-60', count: 0 },
+    { label: '61-80', count: 0 }
+  ];
+
+  source.forEach((n) => {
+    if (n >= 1 && n <= 20) zones[0].count += 1;
+    else if (n >= 21 && n <= 40) zones[1].count += 1;
+    else if (n >= 41 && n <= 60) zones[2].count += 1;
+    else if (n >= 61 && n <= 80) zones[3].count += 1;
+  });
+
+  return zones;
+}
+
+function normalizeAiPlayer(data) {
   return {
+    assistantMode: data?.assistantMode || 'decision_support',
+    readyForFormal: Boolean(data?.readyForFormal),
+    adviceLevel: data?.adviceLevel || 'watch',
+    decisionPhase: data?.decisionPhase || 'neutral',
     statusArrow: data?.statusArrow || '→',
-    statusLabel: data?.statusLabel || '探索中',
-    statusText: data?.statusText || 'AI 正在測試新策略。',
+    statusLabel: data?.statusLabel || '觀察中',
+    statusText: data?.statusText || '目前資料可參考，但尚未達到較佳進場條件。',
     statusColor: data?.statusColor || '#2563eb',
     trainingStrength: Math.max(0, Math.min(100, toNum(data?.trainingStrength, 0))),
     comparedLastHour: toNum(data?.comparedLastHour, 0),
     createdLastHour: toNum(data?.createdLastHour, 0),
-    retiredLastHour: toNum(data?.retiredLastHour, 0),
-    activeCount: toNum(data?.activeCount, 0)
+    disabledLastHour: toNum(data?.disabledLastHour ?? data?.retiredLastHour, 0),
+    activeCount: toNum(data?.activeCount, 0),
+    totalPoolCount: toNum(data?.totalPoolCount, 0),
+    topStrategyKey: data?.topStrategyKey || '--',
+    topStrategyAvgHit: toNum(data?.topStrategyAvgHit, 0),
+    topStrategyRecent50Roi: toNum(data?.topStrategyRecent50Roi, 0),
+    latestDrawNo: data?.latestDrawNo || '--',
+    latestDrawTime: data?.latestDrawTime || '--',
+    currentTopStrategies: toArray(data?.currentTopStrategies)
+  };
+}
+
+function normalizePredictionLatest(data) {
+  return {
+    trainingRow:
+      data?.training_row ||
+      getPredictionLatestRow(data?.training || data?.ai_train || data, 'test') ||
+      null,
+    formalRow:
+      data?.formal_row ||
+      getPredictionLatestRow(data?.formal || data, 'formal') ||
+      null,
+    leaderboard: toArray(data?.leaderboard),
+    summaryLabel: data?.summaryLabel || '--',
+    summaryText: data?.summaryText || '--',
+    assistantMode: data?.assistantMode || 'decision_support',
+    readyForFormal: Boolean(data?.readyForFormal),
+    adviceLevel: data?.adviceLevel || 'watch',
+    decisionPhase: data?.decisionPhase || 'watch_only',
+    currentTopStrategies: toArray(data?.currentTopStrategies)
   };
 }
 
@@ -478,29 +318,54 @@ function getPipelineItem(result, key) {
 function pipelineStatusText(result, key) {
   const item = getPipelineItem(result, key);
   if (!item) return '未執行';
-
   if (item.ok === true) return '成功';
-  if (item.ok === false) {
-    if (item.status === 401) return '401';
-    return '失敗';
-  }
-
+  if (item.ok === false) return '失敗';
   return '未執行';
 }
 
-function buildLastCycleSummary(result) {
-  if (!result) {
-    if (isNightStopWindow()) return '夜間停訓中';
-    return '--';
+function normalizeAutoTrainResult(payload, status) {
+  const result = payload && typeof payload === 'object' ? payload : {};
+  const topError = result?.error || result?.message || '';
+
+  if (result?.skipped) {
+    return {
+      ok: true,
+      skipped: true,
+      reason: result?.reason || 'already_exists',
+      raw: result
+    };
   }
 
-  if (result?.skipped || result?.train?.skipped) {
-    const existingDrawNo =
-      result?.existing?.source_draw_no ||
-      result?.train?.existing?.source_draw_no ||
-      '--';
+  if (isDuplicateOrAlreadyExistsMessage(topError)) {
+    return {
+      ok: true,
+      skipped: true,
+      reason: 'Prediction already exists for current draw and mode',
+      raw: result
+    };
+  }
 
-    return `本期已存在，略過建立（來源期數 ${existingDrawNo}）`;
+  if (result?.ok === false && !isDuplicateOrAlreadyExistsMessage(topError)) {
+    return {
+      ok: false,
+      error: topError || `auto-train ${status}`
+    };
+  }
+
+  return {
+    ...result,
+    ok: result?.ok !== false
+  };
+}
+
+function buildLoopStatusText(result) {
+  if (!result) {
+    if (isNightStopWindow()) return '夜間停訓中（00:00～07:30 不訓練）';
+    return '待命中';
+  }
+
+  if (result?.skipped) {
+    return '本期已存在（正常略過）';
   }
 
   const compared = toNum(
@@ -516,19 +381,8 @@ function buildLastCycleSummary(result) {
     0
   );
 
-  const activeCreated =
-    result?.active_created_prediction ||
-    result?.train?.existing ||
-    result?.train?.inserted ||
-    null;
-
   if (compared > 0 || created > 0) {
-    const sourceText = fmtText(activeCreated?.source_draw_no, '--');
-    return `本輪：比對 ${compared} 筆 / 新建 ${created} 筆 / 來源期數 ${sourceText}`;
-  }
-
-  if (activeCreated?.source_draw_no) {
-    return `目前掛單訓練來源 ${activeCreated.source_draw_no}`;
+    return `本輪完成：比對 ${compared} 筆 / 新建 ${created} 筆`;
   }
 
   return '本輪無異動';
@@ -590,6 +444,38 @@ function StreakBall({ n, streak }) {
   );
 }
 
+function GroupCard({ group, idx, showRank = false }) {
+  const meta = group?.meta || {};
+  return (
+    <div style={styles.groupCard}>
+      <div style={styles.groupHeader}>
+        <div style={styles.groupTitleWrap}>
+          <div style={styles.groupTitle}>
+            {showRank ? `第 ${idx + 1} 名｜` : ''}
+            {fmtText(group?.label || group?.key, `第${idx + 1}組`)}
+          </div>
+          <div style={styles.groupReason}>{fmtText(group?.reason)}</div>
+        </div>
+      </div>
+
+      <div style={styles.groupBalls}>
+        {toArray(group?.nums).map((n) => (
+          <div key={`${group?.key}_${n}`} style={styles.pickBall}>
+            {formatBallNumber(n)}
+          </div>
+        ))}
+      </div>
+
+      <div style={styles.metaChipRow}>
+        <MetaChip label="策略" value={fmtText(meta?.strategy_key || group?.key)} />
+        <MetaChip label="排序" value={fmtText(meta?.selection_rank, idx + 1)} />
+        <MetaChip label="ROI" value={fmtPercent(meta?.recent_50_roi ?? meta?.roi)} />
+        <MetaChip label="平均命中" value={fmtText(Number.isFinite(Number(meta?.avg_hit)) ? Number(meta.avg_hit).toFixed(2) : '--')} />
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState(TABS.DASHBOARD);
   const [loading, setLoading] = useState(true);
@@ -601,9 +487,15 @@ export default function App() {
   const [trainingLatest, setTrainingLatest] = useState(null);
   const [formalLatest, setFormalLatest] = useState(null);
   const [leaderboard, setLeaderboard] = useState([]);
-  const [autoTrainEnabled, setAutoTrainEnabled] = useState(false);
+  const [predictionSummary, setPredictionSummary] = useState({
+    summaryLabel: '--',
+    summaryText: '--',
+    currentTopStrategies: [],
+    readyForFormal: false
+  });
+  const [aiPlayer, setAiPlayer] = useState(normalizeAiPlayer({}));
   const [lastAutoTrainResult, setLastAutoTrainResult] = useState(null);
-  const [aiEvolution, setAiEvolution] = useState(normalizeAiEvolution({}));
+  const [autoTrainEnabled, setAutoTrainEnabled] = useState(false);
   const [marketNowText, setMarketNowText] = useState(fmtDateTime(new Date()));
 
   const mountedRef = useRef(false);
@@ -611,6 +503,17 @@ export default function App() {
   const cycleRunningRef = useRef(false);
   const sessionStartedRef = useRef(false);
   const nightPauseTimerRef = useRef(null);
+
+  const clearAllTimers = useCallback(() => {
+    if (schedulerRef.current) {
+      clearTimeout(schedulerRef.current);
+      schedulerRef.current = null;
+    }
+    if (nightPauseTimerRef.current) {
+      clearTimeout(nightPauseTimerRef.current);
+      nightPauseTimerRef.current = null;
+    }
+  }, []);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -626,28 +529,19 @@ export default function App() {
       const recentRows = getRecentRows(recentRes);
       setRecent20(recentRows);
 
-      const trainingRow =
-        predictionRes?.training_row ||
-        getPredictionLatestRow(predictionRes?.test || predictionRes?.training || predictionRes, 'test') ||
-        getPredictionLatestRow(predictionRes?.row ? { row: predictionRes.row } : predictionRes, 'test');
+      const normalizedPrediction = normalizePredictionLatest(predictionRes);
+      setTrainingLatest(normalizedPrediction.trainingRow || null);
+      setFormalLatest(normalizedPrediction.formalRow || null);
+      setLeaderboard(normalizedPrediction.leaderboard || []);
+      setPredictionSummary({
+        summaryLabel: normalizedPrediction.summaryLabel,
+        summaryText: normalizedPrediction.summaryText,
+        currentTopStrategies: normalizedPrediction.currentTopStrategies,
+        readyForFormal: normalizedPrediction.readyForFormal
+      });
 
-      const formalRow =
-        predictionRes?.formal_row ||
-        getPredictionLatestRow(predictionRes?.formal || predictionRes, 'formal') ||
-        null;
-
-      setTrainingLatest(trainingRow || null);
-      setFormalLatest(formalRow || null);
-
-      const lb =
-        predictionRes?.leaderboard ||
-        predictionRes?.auto_train_result?.leaderboard ||
-        predictionRes?.test?.leaderboard ||
-        [];
-
-      setLeaderboard(toArray(lb));
+      setAiPlayer(normalizeAiPlayer(aiPlayerRes));
       setLastAutoTrainResult(predictionRes?.auto_train_result || null);
-      setAiEvolution(normalizeAiEvolution(aiPlayerRes));
     } catch (err) {
       setError(err.message || '讀取資料失敗');
     } finally {
@@ -691,61 +585,15 @@ export default function App() {
     });
   }, [runAction]);
 
-  const buildLoopStatusText = useCallback((result) => {
-    if (!result) {
-      if (isNightStopWindow()) return '夜間停訓中（00:00～07:30 不訓練）';
-      return '待命中';
-    }
-
-    if (result?.skipped || result?.train?.skipped) {
-      const existingDrawNo =
-        result?.existing?.source_draw_no ||
-        result?.train?.existing?.source_draw_no ||
-        '--';
-
-      return `本期已存在（正常略過），目前訓練來源期數 ${existingDrawNo}`;
-    }
-
-    const compared = toNum(
-      result?.compared_count ??
-        result?.compare?.data?.processed ??
-        result?.compare?.processed,
-      0
-    );
-
-    const created = toNum(
-      result?.created_count ??
-        (result?.train?.inserted ? 1 : 0),
-      0
-    );
-
-    const activeCreated =
-      result?.active_created_prediction ||
-      result?.train?.existing ||
-      result?.train?.inserted ||
-      null;
-
-    if (compared > 0 || created > 0) {
-      return `本輪完成（本輪結果）：比對 ${compared} 筆 / 新建 ${created} 筆 / 目前訓練來源期數 ${fmtText(activeCreated?.source_draw_no, '--')}`;
-    }
-
-    if (activeCreated?.source_draw_no) {
-      return `等待中：尚未收齊第 ${toNum(activeCreated.source_draw_no, 0) + 1} 到第 ${toNum(activeCreated.source_draw_no, 0) + toNum(activeCreated.target_periods, 2)} 期開獎資料（目前訓練來源期數 ${activeCreated.source_draw_no}）`;
-    }
-
-    return '待命中';
-  }, []);
-
-  const clearAllTimers = useCallback(() => {
-    if (schedulerRef.current) {
-      clearTimeout(schedulerRef.current);
-      schedulerRef.current = null;
-    }
-    if (nightPauseTimerRef.current) {
-      clearTimeout(nightPauseTimerRef.current);
-      nightPauseTimerRef.current = null;
-    }
-  }, []);
+  const handleFormalBet = async () => {
+    await runAction('formalBet', async () => {
+      await safeFetchJson('/api/prediction-save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'formal' })
+      });
+    });
+  };
 
   const runAiCycle = useCallback(async () => {
     if (cycleRunningRef.current) return;
@@ -770,7 +618,7 @@ export default function App() {
         await safeFetchJson('/api/catchup');
       });
 
-      setLoopStatusText('自動訓練中...');
+      setLoopStatusText('自動模擬中...');
 
       const autoTrainHttp = await safeFetchJsonAllowHttpError('/api/auto-train', { method: 'POST' }).catch(async () => {
         return await safeFetchJsonAllowHttpError('/api/auto-train', { method: 'GET' });
@@ -804,7 +652,7 @@ export default function App() {
     } finally {
       cycleRunningRef.current = false;
     }
-  }, [buildLoopStatusText, loadAll]);
+  }, [loadAll]);
 
   const scheduleNightResume = useCallback(() => {
     if (nightPauseTimerRef.current) {
@@ -897,7 +745,7 @@ export default function App() {
           setLoopStatusText('夜間停訓中（00:00～07:30 不訓練）');
           scheduleNightResume();
         } else {
-          setLoopStatusText('AI 循環啟動');
+          setLoopStatusText('策略模擬啟動');
           startLoopScheduler(0);
         }
       } else {
@@ -909,26 +757,9 @@ export default function App() {
     });
   };
 
-  const handleFormalBet = async () => {
-    await runAction('formalBet', async () => {
-      await safeFetchJson('/api/prediction-save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          mode: 'formal'
-        })
-      });
-    });
-  };
-
-  const aiStatus = useMemo(
-    () => calcSimpleAiStatus(trainingLatest, leaderboard),
-    [trainingLatest, leaderboard]
-  );
-
   const latestDraw = recent20[0] || null;
-  const latestDrawNo = latestDraw?.draw_no || latestDraw?.drawNo || '--';
-  const latestDrawTime = latestDraw?.draw_time || latestDraw?.drawTime || '--';
+  const latestDrawNo = latestDraw?.draw_no || latestDraw?.drawNo || aiPlayer?.latestDrawNo || '--';
+  const latestDrawTime = latestDraw?.draw_time || latestDraw?.drawTime || aiPlayer?.latestDrawTime || '--';
   const latestNumbers = parseNums(latestDraw?.numbers || latestDraw?.nums);
 
   const trainingGroups = getPredictionGroups(trainingLatest);
@@ -938,26 +769,21 @@ export default function App() {
   const streakNumbers = useMemo(() => calcCurrentStreakNumbers(recent20, 5), [recent20]);
   const zoneCounts = useMemo(() => calcZoneCounts(latestNumbers), [latestNumbers]);
 
-  // 🔒 正式下注前端固定統計，不吃後端倍率金額
-  const formalTotalPerPeriod = useMemo(() => {
-    if (!formalGroups.length) return 0;
-    return FORMAL_FIXED_TOTAL_PER_PERIOD;
-  }, [formalGroups]);
+  const formalBatchNo = useMemo(() => {
+    const recentFormalSameDraw =
+      trainingLatest && formalLatest && String(formalLatest?.source_draw_no) === String(latestDrawNo)
+        ? 1
+        : 0;
+    return recentFormalSameDraw;
+  }, [formalLatest, trainingLatest, latestDrawNo]);
 
-  const formalTargetPeriods = useMemo(() => {
-    if (!formalGroups.length) return toNum(formalLatest?.target_periods, 0);
-    return FORMAL_FIXED_TARGET_PERIODS;
-  }, [formalGroups, formalLatest]);
+  const lastCycleSummary = useMemo(() => buildLoopStatusText(lastAutoTrainResult), [lastAutoTrainResult]);
 
-  const formalTotalAllPeriods = useMemo(() => {
-    if (!formalGroups.length) return 0;
-    return FORMAL_FIXED_TOTAL_ALL_PERIODS;
-  }, [formalGroups]);
+  const currentTopStrategies = predictionSummary.currentTopStrategies.length
+    ? predictionSummary.currentTopStrategies
+    : aiPlayer.currentTopStrategies;
 
-  const lastCycleSummary = useMemo(
-    () => buildLastCycleSummary(lastAutoTrainResult),
-    [lastAutoTrainResult]
-  );
+  const canFormalBet = predictionSummary.readyForFormal || aiPlayer.readyForFormal;
 
   return (
     <div style={styles.page}>
@@ -965,7 +791,7 @@ export default function App() {
         <header style={styles.header}>
           <div>
             <div style={styles.brand}>FUWEI BINGO AI</div>
-            <div style={styles.headerSub}>淺黃台彩風，舒服一點，也看得久一點。</div>
+            <div style={styles.headerSub}>策略輪動、單期決策、分批下注。</div>
           </div>
 
           <div style={styles.headerActions}>
@@ -1004,185 +830,125 @@ export default function App() {
         {!loading && activeTab === TABS.DASHBOARD && (
           <div style={styles.sectionStack}>
             <Card
-              title="AI 狀態總覽"
-              subtitle="先看 AI 狀態，再決定要不要正式下注。"
+              title="決策總覽"
+              subtitle="這裡不是看 AI 有沒有做夢，而是看現在能不能小試。"
             >
               <div style={styles.statsGrid4}>
                 <StatBox
-                  label="AI 信心指數"
-                  value={`${aiStatus.confidence} / 100`}
-                  hint={`模式：${aiStatus.latestTrainingMode}`}
-                  valueStyle={{ color: aiStatus.adviceColor }}
+                  label="目前判斷"
+                  value={fmtText(aiPlayer.statusLabel)}
+                  hint={fmtText(aiPlayer.decisionPhase)}
+                  valueStyle={{ color: aiPlayer.statusColor }}
                 />
                 <StatBox
-                  label="平均 ROI"
-                  value={fmtPercent(aiStatus.avgRoi)}
-                  hint="來自目前策略池"
+                  label="決策準備度"
+                  value={`${aiPlayer.trainingStrength} / 100`}
+                  hint="依近期比對、策略品質與活躍數估算"
+                  valueStyle={{ color: aiPlayer.statusColor }}
                 />
                 <StatBox
-                  label="平均命中"
-                  value={
-                    Number.isFinite(aiStatus.avgHit)
-                      ? aiStatus.avgHit.toFixed(2)
-                      : '--'
-                  }
-                  hint="策略池平均"
+                  label="第一名策略"
+                  value={fmtText(aiPlayer.topStrategyKey)}
+                  hint={`平均命中 ${Number.isFinite(aiPlayer.topStrategyAvgHit) ? aiPlayer.topStrategyAvgHit.toFixed(1) : '--'} / 近50 ROI ${fmtPercent(aiPlayer.topStrategyRecent50Roi)}`}
                 />
                 <StatBox
-                  label="建議狀態"
-                  value={aiStatus.advice}
-                  hint={`活躍策略：${aiStatus.activeStrategies}`}
-                  valueStyle={{ color: aiStatus.adviceColor }}
+                  label="是否建議正式下注"
+                  value={canFormalBet ? '可小試' : '先觀察'}
+                  hint={`活躍策略 ${aiPlayer.activeCount} / 策略池 ${aiPlayer.totalPoolCount}`}
+                  valueStyle={{ color: canFormalBet ? '#0f766e' : '#b45309' }}
                 />
               </div>
 
               <div style={styles.resultPanel}>
-                <div style={styles.resultTitle}>AI 循環狀態</div>
-                <div style={styles.resultText}>{loopStatusText}</div>
+                <div style={styles.resultTitle}>系統狀態</div>
+                <div style={styles.resultText}>
+                  {aiPlayer.statusArrow} {aiPlayer.statusText}
+                </div>
                 <div style={{ ...styles.resultText, marginTop: 8, color: '#8a7d66' }}>
                   最近一輪摘要：{lastCycleSummary}
                 </div>
+              </div>
 
-                <div style={styles.pipelineRow}>
-                  <span style={styles.pipelineBadge}>同步：{pipelineStatusText(lastAutoTrainResult, 'sync')}</span>
-                  <span style={styles.pipelineBadge}>補抓：{pipelineStatusText(lastAutoTrainResult, 'catchup')}</span>
-                  <span style={styles.pipelineBadge}>比對：{pipelineStatusText(lastAutoTrainResult, 'compare')}</span>
+              <div style={styles.resultPanel}>
+                <div style={styles.resultTitle}>本小時動作</div>
+                <div style={styles.miniStatsRow}>
+                  <MetaChip label="Compare" value={aiPlayer.comparedLastHour} />
+                  <MetaChip label="Create" value={aiPlayer.createdLastHour} />
+                  <MetaChip label="停用" value={aiPlayer.disabledLastHour} />
+                  <MetaChip label="最新期數" value={fmtText(latestDrawNo)} />
                 </div>
               </div>
 
               <div style={styles.resultPanel}>
-                <div style={styles.resultTitle}>AI 進化速度</div>
-                <div
-                  style={{
-                    ...styles.evolutionHeadline,
-                    color: aiEvolution.statusColor
-                  }}
-                >
-                  {aiEvolution.statusArrow} {aiEvolution.statusLabel}
-                </div>
-
-                <div style={styles.evolutionBarBg}>
-                  <div
-                    style={{
-                      ...styles.evolutionBarFill,
-                      width: `${aiEvolution.trainingStrength}%`,
-                      background: aiEvolution.statusColor
-                    }}
-                  />
-                </div>
-
-                <div style={styles.evolutionStrengthText}>
-                  訓練強度 {aiEvolution.trainingStrength}%
-                </div>
-
-                <div style={{ ...styles.resultText, marginTop: 8 }}>
-                  {aiEvolution.statusText}
-                </div>
-
-                <div style={styles.evolutionMiniGrid}>
-                  <div style={styles.evolutionMiniBox}>
-                    <div style={styles.evolutionMiniLabel}>本小時 Compare 累計</div>
-                    <div style={styles.evolutionMiniValue}>{aiEvolution.comparedLastHour}</div>
-                  </div>
-                  <div style={styles.evolutionMiniBox}>
-                    <div style={styles.evolutionMiniLabel}>本小時 Create 累計</div>
-                    <div style={styles.evolutionMiniValue}>{aiEvolution.createdLastHour}</div>
-                  </div>
-                  <div style={styles.evolutionMiniBox}>
-                    <div style={styles.evolutionMiniLabel}>本小時淘汰累計</div>
-                    <div style={styles.evolutionMiniValue}>{aiEvolution.retiredLastHour}</div>
-                  </div>
+                <div style={styles.resultTitle}>目前前四策略</div>
+                <div style={styles.groupGrid}>
+                  {currentTopStrategies.length ? (
+                    currentTopStrategies.slice(0, 4).map((row, idx) => (
+                      <div key={row?.strategy_key || idx} style={styles.groupCard}>
+                        <div style={styles.groupTitle}>第 {idx + 1} 名｜{fmtText(row?.strategy_key)}</div>
+                        <div style={styles.metaChipRow}>
+                          <MetaChip label="平均命中" value={Number.isFinite(Number(row?.avg_hit)) ? Number(row.avg_hit).toFixed(2) : '--'} />
+                          <MetaChip label="ROI" value={fmtPercent(row?.recent_50_roi ?? row?.roi)} />
+                          <MetaChip label="回合" value={fmtText(row?.total_rounds)} />
+                          <MetaChip label="分數" value={Number.isFinite(Number(row?.strategy_score ?? row?.score)) ? Number(row?.strategy_score ?? row?.score).toFixed(1) : '--'} />
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div style={styles.emptyBox}>目前沒有前四策略資料。</div>
+                  )}
                 </div>
               </div>
             </Card>
 
             <Card
-              title="系統控制"
-              subtitle="保留你平常真的會用到的控制項。"
+              title="策略模擬控制"
+              subtitle="這裡是模擬系統，不是無腦長開鍋爐房。"
             >
               <div style={styles.controlGrid}>
-                <div style={styles.controlItem}>
-                  <div style={styles.controlTitle}>自動訓練</div>
-                  <div style={styles.controlText}>
-                    目前狀態：
-                    <span
-                      style={{
-                        color: autoTrainEnabled ? '#0f766e' : '#dc2626',
-                        fontWeight: 800,
-                        marginLeft: 6
-                      }}
-                    >
-                      {autoTrainEnabled ? '開啟中' : '已關閉'}
-                    </span>
-                  </div>
-                  <div style={styles.controlHint}>
-                    打開網頁一律不自動訓練；只有你手動按下開關後，才會開始循環。夜間 00:00～07:30 自動停訓。循環頻率：每 180 秒。
+                <div style={styles.controlBox}>
+                  <div style={styles.controlTitle}>自動模擬</div>
+                  <div style={styles.controlDesc}>
+                    夜間 00:00～07:30 暫停，平常每 3 分鐘循環一次。
                   </div>
                   <button
-                    style={autoTrainEnabled ? styles.warnButton : styles.primaryButton}
+                    style={{
+                      ...styles.primaryButton,
+                      ...(autoTrainEnabled ? styles.stopButton : {})
+                    }}
                     onClick={handleToggleAutoTrain}
-                    disabled={busyKey !== ''}
+                    disabled={busyKey !== '' && busyKey !== 'toggleAutoTrain'}
                   >
-                    {busyKey === 'toggleAutoTrain'
-                      ? '切換中...'
-                      : autoTrainEnabled
-                        ? '停止自動訓練'
-                        : '開啟自動訓練'}
+                    {autoTrainEnabled ? '停止模擬' : '啟動模擬'}
                   </button>
                 </div>
 
-                <div style={styles.controlItem}>
+                <div style={styles.controlBox}>
                   <div style={styles.controlTitle}>資料同步</div>
-                  <div style={styles.controlText}>同步最新開獎與補抓遺漏期數。</div>
-                  <div style={styles.inlineButtons}>
+                  <div style={styles.controlDesc}>同步最新期數與補抓遺漏資料。</div>
+                  <div style={styles.inlineButtonRow}>
                     <button
                       style={styles.secondaryButton}
                       onClick={handleSync}
                       disabled={busyKey !== ''}
                     >
-                      {busyKey === 'sync' ? '同步中...' : '同步最新期數'}
+                      同步最新期數
                     </button>
                     <button
                       style={styles.secondaryButton}
                       onClick={handleCatchup}
                       disabled={busyKey !== ''}
                     >
-                      {busyKey === 'catchup' ? '補抓中...' : '補抓期數'}
+                      補抓期數
                     </button>
                   </div>
                 </div>
               </div>
-            </Card>
 
-            <Card
-              title="訓練摘要"
-              subtitle="顯示目前最近一輪自動訓練資料。"
-            >
-              <div style={styles.statsGrid4}>
-                <StatBox
-                  label="最新訓練期數"
-                  value={fmtText(trainingLatest?.source_draw_no)}
-                  hint={`目標：${fmtText(trainingLatest?.target_periods)} 期`}
-                />
-                <StatBox
-                  label="最佳策略分數"
-                  value={fmtText(
-                    leaderboard?.[0]?.score
-                      ? Number(leaderboard[0].score).toFixed(1)
-                      : '--'
-                  )}
-                  hint={leaderboard?.[0]?.label || '尚無資料'}
-                />
-                <StatBox
-                  label="最佳策略 ROI"
-                  value={fmtPercent(leaderboard?.[0]?.recent_50_roi ?? leaderboard?.[0]?.roi)}
-                  hint="取排行榜第一名"
-                />
-                <StatBox
-                  label="最新開獎期數"
-                  value={fmtText(latestDrawNo)}
-                  hint={fmtDateTime(latestDrawTime)}
-                />
+              <div style={styles.pipelineRow}>
+                <span style={styles.pipelineBadge}>同步：{pipelineStatusText(lastAutoTrainResult, 'sync')}</span>
+                <span style={styles.pipelineBadge}>補抓：{pipelineStatusText(lastAutoTrainResult, 'catchup')}</span>
+                <span style={styles.pipelineBadge}>比對：{pipelineStatusText(lastAutoTrainResult, 'compare')}</span>
               </div>
             </Card>
           </div>
@@ -1191,160 +957,98 @@ export default function App() {
         {!loading && activeTab === TABS.PREDICT && (
           <div style={styles.sectionStack}>
             <Card
-              title="正式下注"
-              subtitle="正式下注的建立與重建，都集中在這一頁。"
-              right={<div style={styles.tag}>四星賓果 / 四組 / 四期</div>}
-            >
-              <div style={styles.summaryLine}>
-                <span>模式：</span>
-                <strong>{fmtText(formalLatest?.mode, 'formal')}</strong>
-                <span style={{ marginLeft: 16 }}>來源期數：</span>
-                <strong>{fmtText(formalLatest?.source_draw_no)}</strong>
-                <span style={{ marginLeft: 16 }}>目標期數：</span>
-                <strong>{formalGroups.length ? FORMAL_FIXED_TARGET_PERIODS : fmtText(formalLatest?.target_periods)}</strong>
-              </div>
-
-              <div style={styles.infoBannerStrong}>
-                <div style={styles.infoBannerTitle}>正式下注＝固定四組四期模式</div>
-                <div>
-                  建立邏輯：先從 strategy_stats 挑出較強策略，再建立
-                  <strong> 固定四組、固定四期、每組 25 元 </strong>
-                  的正式下注。正式下注現在只負責
-                  <strong> 選策略與產號 </strong>
-                  ，不再使用倍率加碼或權重放大，避免總投入偏離固定成本框架。
+              title="正式下注面板"
+              subtitle="正式下注改為單期、前四策略、同一期最多三批。"
+              right={
+                <div style={styles.predictTopTag}>
+                  每組 {COST_PER_GROUP} 元 × {FORMAL_GROUP_COUNT} 組 × 最多 {FORMAL_BATCH_LIMIT} 批
                 </div>
-              </div>
-
+              }
+            >
               <div style={styles.statsGrid4}>
                 <StatBox
-                  label="每期總投入"
-                  value={fmtMoney(formalTotalPerPeriod)}
-                  hint="固定四組合計 100 元"
+                  label="下注建議"
+                  value={fmtText(predictionSummary.summaryLabel)}
+                  hint={fmtText(predictionSummary.summaryText)}
+                  valueStyle={{ color: canFormalBet ? '#0f766e' : '#b45309' }}
                 />
                 <StatBox
-                  label="本輪總投入"
-                  value={fmtMoney(formalTotalAllPeriods)}
-                  hint={`固定 ${FORMAL_FIXED_TARGET_PERIODS} 期，共 400 元`}
+                  label="最新 formal 來源期數"
+                  value={fmtText(formalLatest?.source_draw_no)}
+                  hint={`建立時間：${fmtDateTime(formalLatest?.created_at)}`}
                 />
                 <StatBox
-                  label="組數"
+                  label="正式下注組數"
                   value={formalGroups.length || 0}
-                  hint="正式下注組數"
+                  hint="固定應為 4 組"
                 />
                 <StatBox
-                  label="每組固定"
-                  value={fmtMoney(formalGroups.length ? FORMAL_FIXED_BET_PER_GROUP : '--')}
-                  hint="不使用倍率配重"
+                  label="單批成本"
+                  value={fmtMoney(COST_PER_GROUP * FORMAL_GROUP_COUNT)}
+                  hint="每批固定 100 元"
                 />
               </div>
 
-              <div style={styles.actionRow}>
+              <div style={styles.predictActionBox}>
+                <div style={styles.predictActionText}>
+                  目前邏輯：從最新 test prediction 取前四策略，各出一組，建立 formal 單期下注。
+                </div>
                 <button
-                  style={styles.primaryButton}
+                  style={{
+                    ...styles.primaryButton,
+                    ...(!canFormalBet ? styles.warningButton : {})
+                  }}
                   onClick={handleFormalBet}
                   disabled={busyKey !== ''}
                 >
-                  {busyKey === 'formalBet'
-                    ? '建立中...'
-                    : formalGroups.length
-                      ? '重新建立正式下注'
-                      : '建立正式下注'}
+                  產生一批正式下注
                 </button>
               </div>
+            </Card>
 
+            <Card
+              title="最新 test 模擬前四組"
+              subtitle="這是正式下注的來源，先看它再決定要不要按。"
+            >
+              <div style={styles.groupGrid}>
+                {trainingGroups.length ? (
+                  trainingGroups.slice(0, 4).map((group, idx) => (
+                    <GroupCard key={group?.key || idx} group={group} idx={idx} showRank />
+                  ))
+                ) : (
+                  <div style={styles.emptyBox}>目前沒有 test prediction 可顯示。</div>
+                )}
+              </div>
+            </Card>
+
+            <Card
+              title="最新 formal 正式下注"
+              subtitle="這是最近一批正式下注內容。若你已連按三次，後續會自動擋下。"
+            >
               <div style={styles.groupGrid}>
                 {formalGroups.length ? (
                   formalGroups.map((group, idx) => (
-                    <div key={`${group?.key || idx}`} style={styles.groupCard}>
-                      <div style={styles.groupHead}>
-                        <div>
-                          <div style={styles.groupTitle}>{groupTitle(group, idx)}</div>
-                          <div style={styles.groupMeta}>
-                            {fmtText(group?.meta?.strategy_key || group?.key)}
-                          </div>
-                        </div>
-                        <div style={styles.modeBadge}>
-                          {fmtText(group?.meta?.profit_mode, 'formal')}
-                        </div>
-                      </div>
-
-                      <div style={styles.ballRow}>
-                        {parseNums(group?.nums).map((n) => (
-                          <div key={n} style={styles.ballLarge}>
-                            {String(n).padStart(2, '0')}
-                          </div>
-                        ))}
-                      </div>
-
-                      <div style={styles.groupReason}>
-                        {groupReason(group, 'formal')}
-                      </div>
-
-                      <div style={styles.betRowSingle}>
-                        <div style={styles.betBox}>
-                          <div style={styles.betLabel}>單組金額</div>
-                          <div style={styles.betValue}>{fmtMoney(FORMAL_FIXED_BET_PER_GROUP)}</div>
-                        </div>
-                      </div>
-
-                      <div style={styles.metaChipRow}>
-                        <MetaChip label="score" value={fmtMetaNumber(group?.meta?.score, 1)} />
-                        <MetaChip label="avg_hit" value={fmtMetaNumber(group?.meta?.avg_hit, 2)} />
-                        <MetaChip label="roi" value={fmtPercent(group?.meta?.roi)} />
-                        <MetaChip label="rounds" value={fmtText(group?.meta?.total_rounds)} />
-                        <MetaChip label="filter" value={fmtText(group?.meta?.filter_pass)} />
-                      </div>
-                    </div>
+                    <GroupCard key={group?.key || idx} group={group} idx={idx} />
                   ))
                 ) : (
-                  <div style={styles.emptyBox}>目前還沒有正式下注資料。</div>
+                  <div style={styles.emptyBox}>目前沒有正式下注資料。</div>
                 )}
+              </div>
+
+              <div style={{ marginTop: 16 }}>
+                <div style={styles.metaChipRow}>
+                  <MetaChip label="mode" value={fmtText(formalLatest?.mode)} />
+                  <MetaChip label="status" value={fmtText(formalLatest?.status)} />
+                  <MetaChip label="source_draw_no" value={fmtText(formalLatest?.source_draw_no)} />
+                  <MetaChip label="target_periods" value={fmtText(formalLatest?.target_periods)} />
+                  <MetaChip label="建立時間" value={fmtDateTime(formalLatest?.created_at)} />
+                </div>
               </div>
             </Card>
 
             <Card
-              title="AI 自動訓練"
-              subtitle="這塊顯示目前最近一輪自動訓練資料。"
-              right={<div style={styles.tag}>四星賓果 / 四組 / 二期</div>}
-            >
-              <div style={styles.summaryLine}>
-                <span>模式：</span>
-                <strong>{fmtText(trainingLatest?.mode, 'test')}</strong>
-                <span style={{ marginLeft: 16 }}>來源期數：</span>
-                <strong>{fmtText(trainingLatest?.source_draw_no)}</strong>
-                <span style={{ marginLeft: 16 }}>目標期數：</span>
-                <strong>{fmtText(trainingLatest?.target_periods)}</strong>
-              </div>
-
-              <div style={styles.groupGrid}>
-                {trainingGroups.length ? (
-                  trainingGroups.map((group, idx) => (
-                    <div key={`${group?.key || idx}`} style={styles.groupCard}>
-                      <div style={styles.groupHead}>
-                        <div style={styles.groupTitle}>{groupTitle(group, idx)}</div>
-                        <div style={styles.groupMeta}>
-                          {fmtText(group?.meta?.strategy_key || group?.key)}
-                        </div>
-                      </div>
-                      <div style={styles.ballRow}>
-                        {parseNums(group?.nums).map((n) => (
-                          <div key={n} style={styles.ballLarge}>
-                            {String(n).padStart(2, '0')}
-                          </div>
-                        ))}
-                      </div>
-                      <div style={styles.groupReason}>{groupReason(group, 'test')}</div>
-                    </div>
-                  ))
-                ) : (
-                  <div style={styles.emptyBox}>目前還沒有自動訓練資料。</div>
-                )}
-              </div>
-            </Card>
-
-            <Card
-              title="策略排行榜（精簡版）"
-              subtitle="先看前 10 名就夠，不要每次都被 50 個策略轟炸。"
+              title="策略排行榜"
+              subtitle="不是誰名字帥，是誰最近真的有在贏。"
             >
               <div style={styles.tableWrap}>
                 <table style={styles.table}>
@@ -1353,7 +1057,7 @@ export default function App() {
                       <th style={styles.th}>排名</th>
                       <th style={styles.th}>策略</th>
                       <th style={styles.th}>平均命中</th>
-                      <th style={styles.th}>ROI</th>
+                      <th style={styles.th}>近50 ROI</th>
                       <th style={styles.th}>回合</th>
                       <th style={styles.th}>分數</th>
                     </tr>
@@ -1398,7 +1102,7 @@ export default function App() {
           <div style={styles.sectionStack}>
             <Card
               title="市場即時資訊"
-              subtitle="把你真正會看的市場資訊集中在同一頁。"
+              subtitle="盤面是基礎，策略是決策。"
               right={<div style={styles.marketInfoTag}>最近五期連莊 / 最近十期熱號</div>}
             >
               <div style={styles.statsGrid4}>
@@ -1440,129 +1144,58 @@ export default function App() {
 
                 <div style={styles.marketBallsHero}>
                   {latestNumbers.length ? (
-                    latestNumbers.map((n) => (
-                      <MarketBall key={n} n={n} />
-                    ))
+                    latestNumbers.map((n) => <MarketBall key={n} n={n} />)
                   ) : (
                     <div style={styles.emptyBox}>目前沒有本期球號資料。</div>
                   )}
                 </div>
-
-                <div style={styles.marketSubGrid}>
-                  <div style={styles.marketMiniPanel}>
-                    <div style={styles.marketMiniTitle}>奇偶分布</div>
-                    <div style={styles.marketMiniText}>
-                      奇數 {latestNumbers.filter((n) => n % 2 === 1).length} ／ 偶數 {latestNumbers.filter((n) => n % 2 === 0).length}
-                    </div>
-                  </div>
-
-                  <div style={styles.marketMiniPanel}>
-                    <div style={styles.marketMiniTitle}>大小分布</div>
-                    <div style={styles.marketMiniText}>
-                      小（1-40） {latestNumbers.filter((n) => n <= 40).length} ／ 大（41-80） {latestNumbers.filter((n) => n >= 41).length}
-                    </div>
-                  </div>
-                </div>
-
-                <div style={styles.zoneGrid}>
-                  {zoneCounts.map((zone) => (
-                    <div key={zone.label} style={styles.zoneBox}>
-                      <div style={styles.zoneLabel}>{zone.label}</div>
-                      <div style={styles.zoneValue}>{zone.count}</div>
-                    </div>
-                  ))}
-                </div>
               </div>
             </Card>
 
             <Card
-              title="熱門球號"
-              subtitle="統計最近 10 期，顯示出現次數最高的前 10 顆。"
+              title="五期內連莊號碼"
+              subtitle="從最新一期往前看，只顯示目前連開中的號碼。"
             >
-              <div style={styles.marketRowBlock}>
-                {hotNumbers.length ? (
-                  hotNumbers.map((item) => (
-                    <div key={item.num} style={styles.hotBallCard}>
-                      <div style={styles.hotBall}>{formatBallNumber(item.num)}</div>
-                      <div style={styles.hotBallCount}>× {item.count}</div>
-                    </div>
-                  ))
-                ) : (
-                  <div style={styles.emptyBox}>目前沒有熱門球號資料。</div>
-                )}
-              </div>
-            </Card>
-
-            <Card
-              title="熱門連莊"
-              subtitle="從最新一期開始往前看 5 期，只顯示目前連開 2 期以上的號碼。"
-            >
-              <div style={styles.marketRuleBox}>
-                規則：本期有開 = 1；上期也有開 = 2；再上期也有開 = 3。
-                一旦中間斷掉就停止，只顯示目前連莊中的號碼。
-              </div>
-
-              <div style={styles.marketRowBlock}>
+              <div style={styles.streakWrap}>
                 {streakNumbers.length ? (
                   streakNumbers.map((item) => (
-                    <StreakBall
-                      key={item.num}
-                      n={item.num}
-                      streak={item.streak}
-                    />
+                    <StreakBall key={item.num} n={item.num} streak={item.streak} />
                   ))
                 ) : (
-                  <div style={styles.emptyBox}>最近五期內，目前沒有連開 2 期以上的號碼。</div>
+                  <div style={styles.emptyBox}>目前沒有連莊中的號碼。</div>
                 )}
               </div>
             </Card>
 
             <Card
-              title="最近 20 期"
-              subtitle="保留原始資料表，方便你回頭對照。"
+              title="最近十期熱號"
+              subtitle="統計最近十期出現次數最多的號碼。"
             >
-              <div style={styles.tableWrap}>
-                <table style={styles.table}>
-                  <thead>
-                    <tr>
-                      <th style={styles.th}>期數</th>
-                      <th style={styles.th}>時間</th>
-                      <th style={styles.th}>號碼</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {recent20.length ? (
-                      recent20.map((row, idx) => {
-                        const nums = parseNums(row?.numbers || row?.nums);
-                        return (
-                          <tr key={row?.draw_no || row?.drawNo || idx}>
-                            <td style={styles.td}>
-                              {fmtText(row?.draw_no || row?.drawNo)}
-                            </td>
-                            <td style={styles.td}>
-                              {fmtDateTime(row?.draw_time || row?.drawTime)}
-                            </td>
-                            <td style={styles.td}>
-                              <div style={styles.numsInline}>
-                                {nums.map((n) => (
-                                  <span key={n} style={styles.numChip}>
-                                    {String(n).padStart(2, '0')}
-                                  </span>
-                                ))}
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })
-                    ) : (
-                      <tr>
-                        <td style={styles.td} colSpan={3}>
-                          沒有 recent20 資料。
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
+              <div style={styles.hotWrap}>
+                {hotNumbers.length ? (
+                  hotNumbers.map((item) => (
+                    <div key={item.num} style={styles.hotItem}>
+                      <div style={styles.hotBall}>{formatBallNumber(item.num)}</div>
+                      <div style={styles.hotCount}>{item.count} 次</div>
+                    </div>
+                  ))
+                ) : (
+                  <div style={styles.emptyBox}>目前沒有熱號資料。</div>
+                )}
+              </div>
+            </Card>
+
+            <Card
+              title="本期區間分布"
+              subtitle="看 1~80 四區目前各開幾顆。"
+            >
+              <div style={styles.zoneGrid}>
+                {zoneCounts.map((zone) => (
+                  <div key={zone.label} style={styles.zoneBox}>
+                    <div style={styles.zoneLabel}>{zone.label}</div>
+                    <div style={styles.zoneCount}>{zone.count}</div>
+                  </div>
+                ))}
               </div>
             </Card>
           </div>
@@ -1575,31 +1208,33 @@ export default function App() {
 const styles = {
   page: {
     minHeight: '100vh',
-    background: 'linear-gradient(180deg, #f7f0cb 0%, #f9f5df 48%, #fdfaf0 100%)',
-    color: '#4c4332',
-    padding: '20px 12px 90px'
+    background: '#f6efd7',
+    padding: 20,
+    boxSizing: 'border-box',
+    color: '#3c3428',
+    fontFamily:
+      '"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif'
   },
   app: {
-    maxWidth: 1200,
+    maxWidth: 1320,
     margin: '0 auto'
   },
   header: {
     display: 'flex',
     justifyContent: 'space-between',
+    alignItems: 'flex-start',
     gap: 16,
-    alignItems: 'center',
-    marginBottom: 16,
-    flexWrap: 'wrap'
+    marginBottom: 18
   },
   brand: {
-    fontSize: 28,
-    fontWeight: 900,
-    letterSpacing: 0.6,
-    color: '#176b5f'
+    fontSize: 24,
+    fontWeight: 800,
+    color: '#0f766e',
+    letterSpacing: 0.5
   },
   headerSub: {
-    color: '#7b705d',
-    marginTop: 6,
+    marginTop: 4,
+    color: '#8a7d66',
     fontSize: 14
   },
   headerActions: {
@@ -1608,414 +1243,286 @@ const styles = {
   },
   tabBar: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
-    gap: 10,
-    marginBottom: 16,
-    position: 'sticky',
-    top: 8,
-    zIndex: 5,
-    background: 'rgba(249,245,223,0.9)',
-    padding: 8,
-    borderRadius: 18,
-    backdropFilter: 'blur(10px)'
+    gridTemplateColumns: 'repeat(3, 1fr)',
+    gap: 12,
+    marginBottom: 18
   },
   tabButton: {
-    border: '1px solid #d8ceb1',
-    background: '#fffdf6',
-    color: '#5a5345',
-    borderRadius: 14,
-    padding: '14px 10px',
-    fontSize: 15,
-    fontWeight: 800,
+    border: '1px solid #d7c89a',
+    borderRadius: 16,
+    background: '#fffaf0',
+    padding: '14px 18px',
+    fontSize: 22,
+    fontWeight: 700,
+    color: '#4b4436',
     cursor: 'pointer',
-    boxShadow: '0 4px 12px rgba(180,160,110,0.08)'
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10
   },
   tabButtonActive: {
-    background: '#1c8a73',
-    color: '#fffef8',
-    borderColor: '#1c8a73',
-    boxShadow: '0 10px 24px rgba(28,138,115,0.22)'
+    background: '#12806d',
+    color: '#fff',
+    borderColor: '#12806d'
   },
   tabIcon: {
-    marginRight: 6
+    fontSize: 18
+  },
+  loading: {
+    background: '#fffaf0',
+    border: '1px solid #ead9a9',
+    borderRadius: 16,
+    padding: 18,
+    fontSize: 16
   },
   errorBanner: {
     background: '#fff1f2',
-    border: '1px solid #fecdd3',
-    color: '#9f1239',
-    padding: 14,
+    color: '#b42318',
+    border: '1px solid #f4c7cc',
     borderRadius: 14,
-    marginBottom: 16,
-    fontWeight: 700
-  },
-  loading: {
-    padding: 30,
-    textAlign: 'center',
-    color: '#7b705d'
+    padding: 14,
+    marginBottom: 14
   },
   sectionStack: {
-    display: 'grid',
+    display: 'flex',
+    flexDirection: 'column',
     gap: 16
   },
   card: {
-    background: 'rgba(255,250,240,0.88)',
-    border: '1px solid #e4d9bd',
-    borderRadius: 20,
+    background: '#fffaf0',
+    border: '1px solid #e7d7a9',
+    borderRadius: 22,
     padding: 18,
-    boxShadow: '0 12px 24px rgba(179,161,111,0.10)'
+    boxShadow: '0 4px 14px rgba(120, 100, 50, 0.06)'
   },
   cardHeader: {
     display: 'flex',
     justifyContent: 'space-between',
-    gap: 12,
     alignItems: 'flex-start',
-    marginBottom: 16,
-    flexWrap: 'wrap'
+    gap: 16,
+    marginBottom: 14
   },
   cardTitle: {
-    fontSize: 22,
-    fontWeight: 900,
-    color: '#176b5f'
+    fontSize: 28,
+    fontWeight: 800,
+    color: '#0b7c72'
   },
   cardSubtitle: {
+    marginTop: 4,
     fontSize: 14,
-    color: '#877b68',
-    marginTop: 6
-  },
-  tag: {
-    padding: '8px 12px',
-    borderRadius: 999,
-    background: '#f4ecd3',
-    border: '1px solid #ddd0aa',
-    fontSize: 13,
-    color: '#5c5344',
-    fontWeight: 800
-  },
-  marketInfoTag: {
-    padding: '8px 12px',
-    borderRadius: 999,
-    background: '#fff3cd',
-    border: '1px solid #ecd59a',
-    fontSize: 13,
-    color: '#8a5a00',
-    fontWeight: 900
+    color: '#8b7b5b'
   },
   statsGrid4: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-    gap: 12,
-    marginTop: 14
+    gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
+    gap: 14
   },
   statBox: {
-    background: '#fffdf8',
-    border: '1px solid #e7dcc0',
-    borderRadius: 16,
-    padding: 16
+    border: '1px solid #e7d7a9',
+    borderRadius: 18,
+    padding: 16,
+    background: '#fffdf6'
   },
   statLabel: {
     fontSize: 13,
-    color: '#8a7d66',
+    color: '#8b7b5b',
     marginBottom: 8
   },
   statValue: {
-    fontSize: 28,
-    fontWeight: 900,
-    lineHeight: 1.1,
-    color: '#4b4334'
+    fontSize: 22,
+    fontWeight: 800,
+    color: '#b45309',
+    lineHeight: 1.2
   },
   statHint: {
     marginTop: 8,
     fontSize: 12,
-    color: '#9a8e77'
+    color: '#9a8c70'
   },
-  actionRow: {
-    display: 'flex',
-    gap: 10,
-    flexWrap: 'wrap',
-    marginTop: 16
+  resultPanel: {
+    marginTop: 16,
+    border: '1px solid #ead9a9',
+    borderRadius: 18,
+    padding: 16,
+    background: '#fffdf8'
   },
-  primaryButton: {
-    border: 'none',
-    borderRadius: 14,
-    background: '#1c8a73',
-    color: '#fffef8',
-    fontWeight: 900,
-    padding: '12px 18px',
-    cursor: 'pointer',
-    boxShadow: '0 8px 18px rgba(28,138,115,0.18)'
-  },
-  secondaryButton: {
-    border: '1px solid #d8ceb1',
-    borderRadius: 14,
-    background: '#fffdf6',
-    color: '#5a5345',
+  resultTitle: {
+    fontSize: 17,
     fontWeight: 800,
-    padding: '12px 18px',
-    cursor: 'pointer'
+    color: '#0f766e',
+    marginBottom: 8
   },
-  warnButton: {
-    border: 'none',
-    borderRadius: 14,
-    background: '#d97706',
-    color: '#fffef8',
-    fontWeight: 900,
-    padding: '12px 18px',
-    cursor: 'pointer'
+  resultText: {
+    fontSize: 15,
+    color: '#544936',
+    lineHeight: 1.65
+  },
+  miniStatsRow: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 10
+  },
+  pipelineRow: {
+    marginTop: 14,
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 10
+  },
+  pipelineBadge: {
+    background: '#f8edc8',
+    border: '1px solid #dfcb8f',
+    color: '#6e5a28',
+    borderRadius: 999,
+    padding: '8px 12px',
+    fontSize: 13,
+    fontWeight: 700
   },
   controlGrid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
-    gap: 14
+    gridTemplateColumns: '1fr 1fr',
+    gap: 16
   },
-  controlItem: {
-    background: '#fffdf8',
-    border: '1px solid #e7dcc0',
-    borderRadius: 16,
+  controlBox: {
+    border: '1px solid #e7d7a9',
+    borderRadius: 18,
+    background: '#fffdf6',
     padding: 16
   },
   controlTitle: {
-    fontSize: 17,
-    fontWeight: 900,
-    marginBottom: 8,
-    color: '#176b5f'
-  },
-  controlText: {
-    fontSize: 14,
-    color: '#685f50',
+    fontSize: 18,
+    fontWeight: 800,
+    color: '#0f766e',
     marginBottom: 8
   },
-  controlHint: {
-    fontSize: 12,
-    color: '#8f836d',
-    marginBottom: 14,
-    lineHeight: 1.6
+  controlDesc: {
+    fontSize: 14,
+    color: '#8a7d66',
+    lineHeight: 1.6,
+    marginBottom: 12
   },
-  inlineButtons: {
+  inlineButtonRow: {
     display: 'flex',
     gap: 10,
     flexWrap: 'wrap'
   },
-  resultPanel: {
-    marginTop: 16,
-    background: '#fffdf8',
-    border: '1px solid #e7dcc0',
-    borderRadius: 16,
-    padding: 16
-  },
-  resultTitle: {
-    fontWeight: 900,
-    marginBottom: 8,
-    color: '#176b5f'
-  },
-  resultText: {
-    color: '#63594b',
-    lineHeight: 1.6
-  },
-  pipelineRow: {
-    display: 'flex',
-    gap: 8,
-    flexWrap: 'wrap',
-    marginTop: 12
-  },
-  pipelineBadge: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    padding: '6px 10px',
-    borderRadius: 999,
-    background: '#f4ecd3',
-    border: '1px solid #ddd0aa',
-    fontSize: 12,
-    color: '#5c5344',
-    fontWeight: 800
-  },
-  evolutionHeadline: {
-    fontSize: 30,
-    fontWeight: 900,
-    lineHeight: 1.2,
-    marginBottom: 12
-  },
-  evolutionBarBg: {
-    width: '100%',
-    height: 18,
-    borderRadius: 999,
-    background: '#efe5c9',
-    overflow: 'hidden',
-    border: '1px solid #dfd3b2'
-  },
-  evolutionBarFill: {
-    height: '100%',
-    borderRadius: 999,
-    transition: 'width 0.3s ease'
-  },
-  evolutionStrengthText: {
-    marginTop: 10,
-    fontSize: 18,
-    fontWeight: 900,
-    color: '#6d5f36'
-  },
-  evolutionMiniGrid: {
-    marginTop: 14,
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
-    gap: 10
-  },
-  evolutionMiniBox: {
-    background: '#fff9ea',
-    border: '1px solid #eadfc0',
+  primaryButton: {
+    border: 'none',
     borderRadius: 14,
-    padding: 12
+    background: '#0f766e',
+    color: '#fff',
+    padding: '12px 16px',
+    fontSize: 15,
+    fontWeight: 800,
+    cursor: 'pointer'
   },
-  evolutionMiniLabel: {
-    fontSize: 12,
-    color: '#8a7d66'
-  },
-  evolutionMiniValue: {
-    marginTop: 6,
-    fontSize: 30,
-    fontWeight: 900,
-    color: '#4c4332'
-  },
-  summaryLine: {
-    display: 'flex',
-    gap: 8,
-    flexWrap: 'wrap',
-    alignItems: 'center',
-    color: '#6a604f',
-    marginBottom: 12
-  },
-  infoBannerStrong: {
+  secondaryButton: {
+    border: '1px solid #d9c88f',
+    borderRadius: 14,
     background: '#fff7df',
-    border: '1px solid #e9d59b',
-    borderRadius: 16,
-    padding: 14,
-    color: '#705f34',
-    lineHeight: 1.7,
-    marginTop: 8
+    color: '#5a4b2f',
+    padding: '12px 16px',
+    fontSize: 14,
+    fontWeight: 700,
+    cursor: 'pointer'
   },
-  infoBannerTitle: {
-    fontWeight: 900,
-    marginBottom: 6,
-    color: '#8a5a00'
+  stopButton: {
+    background: '#b42318'
+  },
+  warningButton: {
+    background: '#b45309'
+  },
+  predictTopTag: {
+    background: '#f8edc8',
+    border: '1px solid #dfcb8f',
+    borderRadius: 999,
+    padding: '8px 12px',
+    fontSize: 13,
+    fontWeight: 700,
+    color: '#6e5a28'
+  },
+  predictActionBox: {
+    marginTop: 16,
+    border: '1px dashed #d7c27d',
+    borderRadius: 18,
+    padding: 16,
+    background: '#fffdf6',
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 16
+  },
+  predictActionText: {
+    fontSize: 14,
+    color: '#665941',
+    lineHeight: 1.7
   },
   groupGrid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
-    gap: 14,
-    marginTop: 14
+    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+    gap: 14
   },
   groupCard: {
-    background: '#fffdf8',
-    border: '1px solid #e7dcc0',
-    borderRadius: 16,
-    padding: 14
+    border: '1px solid #ead9a9',
+    borderRadius: 18,
+    padding: 16,
+    background: '#fffdf7'
   },
-  groupHead: {
+  groupHeader: {
     display: 'flex',
     justifyContent: 'space-between',
     gap: 10,
-    alignItems: 'flex-start',
     marginBottom: 10
   },
+  groupTitleWrap: {
+    flex: 1
+  },
   groupTitle: {
-    fontWeight: 900,
-    color: '#176b5f',
-    fontSize: 18,
-    lineHeight: 1.3
+    fontSize: 17,
+    fontWeight: 800,
+    color: '#0f766e'
   },
-  groupMeta: {
-    marginTop: 4,
-    fontSize: 12,
-    color: '#8f836d'
+  groupReason: {
+    marginTop: 6,
+    fontSize: 13,
+    color: '#8b7b5b',
+    lineHeight: 1.6
   },
-  modeBadge: {
-    padding: '6px 10px',
-    borderRadius: 999,
-    background: '#f0f9f4',
-    border: '1px solid #b6dcc8',
-    color: '#176b5f',
-    fontWeight: 900,
-    fontSize: 12,
-    whiteSpace: 'nowrap'
-  },
-  ballRow: {
+  groupBalls: {
     display: 'flex',
-    gap: 8,
     flexWrap: 'wrap',
-    marginBottom: 12
+    gap: 10,
+    margin: '14px 0'
   },
-  ballLarge: {
-    width: 42,
-    height: 42,
-    borderRadius: '50%',
-    background: '#f0b22b',
-    color: '#fffef8',
+  pickBall: {
+    width: 44,
+    height: 44,
+    borderRadius: 999,
+    background: '#12806d',
+    color: '#fff',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    fontWeight: 900,
-    fontSize: 18,
-    boxShadow: '0 10px 20px rgba(240,178,43,0.22)'
-  },
-  groupReason: {
-    color: '#7a6d57',
-    fontSize: 13,
-    lineHeight: 1.6
-  },
-  betRow: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-    gap: 10,
-    marginTop: 12
-  },
-  betRowSingle: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(1, minmax(0, 1fr))',
-    gap: 10,
-    marginTop: 12
-  },
-  betBox: {
-    background: '#fff9ea',
-    border: '1px solid #eadfc0',
-    borderRadius: 12,
-    padding: 10
-  },
-  betLabel: {
-    fontSize: 12,
-    color: '#8a7d66',
-    marginBottom: 6
-  },
-  betValue: {
-    fontSize: 22,
-    fontWeight: 900,
-    color: '#6d5f36'
+    fontWeight: 800,
+    fontSize: 16
   },
   metaChipRow: {
     display: 'flex',
     flexWrap: 'wrap',
-    gap: 8,
-    marginTop: 12
+    gap: 8
   },
   metaChip: {
+    background: '#f7efcf',
+    border: '1px solid #e0cf95',
+    borderRadius: 999,
+    padding: '6px 10px',
     display: 'inline-flex',
     gap: 6,
-    alignItems: 'center',
-    padding: '6px 10px',
-    borderRadius: 999,
-    background: '#f7f1de',
-    border: '1px solid #e3d7b4',
     fontSize: 12,
-    color: '#5d5343'
+    color: '#5c4d30'
   },
   metaChipLabel: {
-    fontWeight: 900,
-    color: '#8a5a00'
-  },
-  emptyBox: {
-    background: '#fffdf8',
-    border: '1px dashed #d8ceb1',
-    borderRadius: 16,
-    padding: 20,
-    color: '#8a7d66'
+    fontWeight: 800
   },
   tableWrap: {
     overflowX: 'auto'
@@ -2027,209 +1534,160 @@ const styles = {
   th: {
     textAlign: 'left',
     padding: '12px 10px',
-    borderBottom: '1px solid #e7dcc0',
-    color: '#7a6f5e',
-    fontSize: 13,
-    whiteSpace: 'nowrap'
+    background: '#f8efcf',
+    borderBottom: '1px solid #e1cf98',
+    color: '#6e5a28',
+    fontSize: 13
   },
   td: {
     padding: '12px 10px',
-    borderBottom: '1px solid #f0e7d2',
-    color: '#4c4332',
+    borderBottom: '1px solid #efe2ba',
     fontSize: 14,
-    verticalAlign: 'top'
+    color: '#463c2d'
+  },
+  marketInfoTag: {
+    background: '#f8edc8',
+    border: '1px solid #dfcb8f',
+    borderRadius: 999,
+    padding: '8px 12px',
+    fontSize: 13,
+    fontWeight: 700,
+    color: '#6e5a28'
   },
   marketHeroBox: {
-    background: '#fffdf8',
-    border: '1px solid #e7dcc0',
-    borderRadius: 18,
-    padding: 16
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 14
   },
   marketDrawNoLine: {
     fontSize: 16,
-    fontWeight: 800,
-    color: '#705f34',
-    marginBottom: 12
+    color: '#5c4d30'
   },
   marketDrawNoValue: {
-    fontSize: 24,
-    fontWeight: 900,
-    color: '#d97706',
-    marginLeft: 6
+    color: '#c77700',
+    fontWeight: 800,
+    fontSize: 22
   },
   marketDrawTimeText: {
-    fontSize: 13,
-    fontWeight: 600,
-    color: '#8a7d66'
+    color: '#8a7d66',
+    fontSize: 13
   },
   marketBallsHero: {
     display: 'flex',
     flexWrap: 'wrap',
-    gap: 10,
-    marginTop: 8
-  },
-  marketBalls: {
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginTop: 14
+    gap: 10
   },
   marketBall: {
-    minWidth: 46,
-    height: 46,
-    borderRadius: '50%',
-    background: '#f0b22b',
-    color: '#fffef8',
+    width: 42,
+    height: 42,
+    borderRadius: 999,
+    background: '#efe3b2',
+    border: '1px solid #dcc98a',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    fontWeight: 900,
-    fontSize: 17,
-    boxShadow: '0 10px 18px rgba(240,178,43,0.24)'
+    fontWeight: 800,
+    color: '#6d561c'
   },
   marketBallHighlight: {
-    background: '#d97706'
+    background: '#d97706',
+    color: '#fff',
+    borderColor: '#d97706'
   },
-  marketSubGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-    gap: 12,
-    marginTop: 16
-  },
-  marketMiniPanel: {
-    background: '#fff9ea',
-    border: '1px solid #eadfc0',
-    borderRadius: 14,
-    padding: 12
-  },
-  marketMiniTitle: {
-    fontSize: 13,
-    fontWeight: 900,
-    color: '#8a5a00',
-    marginBottom: 6
-  },
-  marketMiniText: {
-    fontSize: 14,
-    color: '#645946',
-    lineHeight: 1.5
-  },
-  zoneGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(100px, 1fr))',
-    gap: 10,
-    marginTop: 14
-  },
-  zoneBox: {
-    background: '#fffdf8',
-    border: '1px solid #e7dcc0',
-    borderRadius: 14,
-    padding: 12,
-    textAlign: 'center'
-  },
-  zoneLabel: {
-    fontSize: 12,
-    color: '#8a7d66',
-    marginBottom: 6
-  },
-  zoneValue: {
-    fontSize: 24,
-    fontWeight: 900,
-    color: '#176b5f'
-  },
-  marketRowBlock: {
+  streakWrap: {
     display: 'flex',
     flexWrap: 'wrap',
-    gap: 12,
-    alignItems: 'flex-start'
-  },
-  hotBallCard: {
-    width: 90,
-    background: '#fffdf8',
-    border: '1px solid #e7dcc0',
-    borderRadius: 16,
-    padding: '12px 10px',
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    gap: 8
-  },
-  hotBall: {
-    width: 48,
-    height: 48,
-    borderRadius: '50%',
-    background: '#f0b22b',
-    color: '#fffef8',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontWeight: 900,
-    fontSize: 18
-  },
-  hotBallCount: {
-    fontSize: 14,
-    fontWeight: 900,
-    color: '#8a5a00'
-  },
-  marketRuleBox: {
-    background: '#fff7df',
-    border: '1px solid #e9d59b',
-    borderRadius: 14,
-    padding: 12,
-    color: '#705f34',
-    lineHeight: 1.7,
-    marginBottom: 14,
-    fontSize: 13
+    gap: 14
   },
   streakBallWrap: {
     position: 'relative',
-    width: 64,
-    height: 64,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center'
+    width: 50,
+    height: 58
   },
   streakBall: {
-    width: 50,
-    height: 50,
-    borderRadius: '50%',
-    background: '#d97706',
-    color: '#fffef8',
+    width: 44,
+    height: 44,
+    borderRadius: 999,
+    background: '#c2410c',
+    color: '#fff',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    fontWeight: 900,
-    fontSize: 18,
-    boxShadow: '0 10px 20px rgba(217,119,6,0.25)'
+    fontWeight: 800
   },
   streakBadge: {
     position: 'absolute',
-    right: 2,
-    top: 2,
-    minWidth: 24,
-    height: 24,
+    right: 0,
+    bottom: 0,
+    minWidth: 22,
+    height: 22,
     borderRadius: 999,
-    background: '#176b5f',
-    color: '#fffef8',
+    background: '#12806d',
+    color: '#fff',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    fontSize: 12,
-    fontWeight: 900,
-    border: '2px solid #fff8e8'
+    fontWeight: 800,
+    fontSize: 12
   },
-  numsInline: {
+  hotWrap: {
     display: 'flex',
     flexWrap: 'wrap',
-    gap: 6
+    gap: 12
   },
-  numChip: {
-    display: 'inline-flex',
-    padding: '4px 8px',
+  hotItem: {
+    width: 76,
+    border: '1px solid #ead9a9',
+    borderRadius: 16,
+    padding: 10,
+    background: '#fffdf7',
+    textAlign: 'center'
+  },
+  hotBall: {
+    width: 40,
+    height: 40,
+    margin: '0 auto 8px',
     borderRadius: 999,
-    background: '#f7f1de',
-    border: '1px solid #e3d7b4',
-    color: '#6a604f',
-    fontSize: 12,
+    background: '#d97706',
+    color: '#fff',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
     fontWeight: 800
+  },
+  hotCount: {
+    fontSize: 13,
+    color: '#7b6540',
+    fontWeight: 700
+  },
+  zoneGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
+    gap: 12
+  },
+  zoneBox: {
+    border: '1px solid #ead9a9',
+    borderRadius: 18,
+    padding: 16,
+    background: '#fffdf6',
+    textAlign: 'center'
+  },
+  zoneLabel: {
+    fontSize: 14,
+    color: '#8a7d66',
+    marginBottom: 8
+  },
+  zoneCount: {
+    fontSize: 28,
+    fontWeight: 800,
+    color: '#0f766e'
+  },
+  emptyBox: {
+    padding: 18,
+    border: '1px dashed #d9c98f',
+    borderRadius: 16,
+    background: '#fffdf7',
+    color: '#8a7d66',
+    fontSize: 14
   }
 };
