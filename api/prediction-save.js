@@ -13,8 +13,6 @@ const SUPABASE_KEY =
 
 const DRAWS_TABLE = 'bingo_draws';
 const PREDICTIONS_TABLE = 'bingo_predictions';
-const STRATEGY_STATS_TABLE = 'strategy_stats';
-const STRATEGY_POOL_TABLE = 'strategy_pool';
 
 const TEST_MODE = 'test';
 const FORMAL_MODE = 'formal';
@@ -46,46 +44,64 @@ function uniqueAsc(nums = []) {
   );
 }
 
-function parseNums(value) {
-  if (Array.isArray(value)) return uniqueAsc(value);
+function parseGroupsJson(value) {
+  if (Array.isArray(value)) return value;
 
   if (typeof value === 'string') {
-    return uniqueAsc(
-      value
-        .split(',')
-        .map((v) => Number(String(v).trim()))
-        .filter(Number.isFinite)
-    );
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  if (value && typeof value === 'object') {
+    return Array.isArray(value) ? value : [];
   }
 
   return [];
 }
 
-function scoreStrategy(row) {
-  const protectedBonus = row?.protected_rank ? 9999 : 0;
-  const avgHit = toNum(row?.avg_hit, 0);
-  const roi = toNum(row?.roi, 0);
-  const recent50Roi = toNum(row?.recent_50_roi, 0);
-  const hitRate = toNum(row?.hit_rate, 0);
-  const recent50HitRate = toNum(row?.recent_50_hit_rate, 0);
-  const hit2 = toNum(row?.hit2, 0);
-  const hit3 = toNum(row?.hit3, 0);
-  const hit4 = toNum(row?.hit4, 0);
-  const totalRounds = toNum(row?.total_rounds, 0);
-  const matureBonus = totalRounds >= 30 ? 25 : totalRounds >= 15 ? 10 : 0;
+function normalizeGroup(group, idx = 0, latestDraw = null) {
+  if (!group || typeof group !== 'object') return null;
 
-  return (
-    protectedBonus +
-    avgHit * 55 +
-    recent50Roi * 45 +
-    roi * 10 +
-    hitRate * 18 +
-    recent50HitRate * 12 +
-    hit2 * 2 +
-    hit3 * 8 +
-    hit4 * 20 +
-    matureBonus
-  );
+  const nums = uniqueAsc(
+    Array.isArray(group.nums)
+      ? group.nums
+      : Array.isArray(group.numbers)
+        ? group.numbers
+        : []
+  ).slice(0, 4);
+
+  if (nums.length !== 4) return null;
+
+  const sourceMeta = group.meta && typeof group.meta === 'object' ? group.meta : {};
+  const strategyKey = String(
+    sourceMeta.strategy_key || group.key || `group_${idx + 1}`
+  ).trim();
+  const strategyName = String(
+    sourceMeta.strategy_name || group.label || group.key || `策略 ${idx + 1}`
+  ).trim();
+
+  return {
+    key: strategyKey,
+    label: strategyName,
+    nums,
+    reason:
+      group.reason ||
+      `正式下注採用最新 test 模擬前 ${idx + 1} 名策略（單期 / 每組 ${COST_PER_GROUP} 元）`,
+    meta: {
+      ...sourceMeta,
+      strategy_key: strategyKey,
+      strategy_name: strategyName,
+      selection_rank: idx + 1,
+      source_draw_no: toNum(latestDraw?.draw_no, 0),
+      source_draw_time: latestDraw?.draw_time || null,
+      bet_amount: COST_PER_GROUP,
+      decision: 'from_latest_test_prediction'
+    }
+  };
 }
 
 async function getLatestDraw() {
@@ -104,98 +120,6 @@ async function getLatestDraw() {
   return data;
 }
 
-async function getMergedStrategyRows() {
-  const [{ data: statsRows, error: statsError }, { data: poolRows, error: poolError }] =
-    await Promise.all([
-      supabase.from(STRATEGY_STATS_TABLE).select('*'),
-      supabase.from(STRATEGY_POOL_TABLE).select('*')
-    ]);
-
-  if (statsError) throw statsError;
-  if (poolError) throw poolError;
-
-  const poolMap = new Map();
-  for (const row of Array.isArray(poolRows) ? poolRows : []) {
-    const key = String(row?.strategy_key || '').trim().toLowerCase();
-    if (key) {
-      poolMap.set(key, row);
-    }
-  }
-
-  return (Array.isArray(statsRows) ? statsRows : [])
-    .map((stat) => {
-      const key = String(stat?.strategy_key || '').trim().toLowerCase();
-      const pool = poolMap.get(key) || null;
-
-      return {
-        ...(pool || {}),
-        ...(stat || {}),
-        strategy_key: stat?.strategy_key || pool?.strategy_key || '',
-        strategy_name:
-          stat?.strategy_name ||
-          stat?.strategy_label ||
-          pool?.strategy_name ||
-          pool?.strategy_label ||
-          stat?.strategy_key ||
-          pool?.strategy_key ||
-          '',
-        pool_status: String(pool?.status || 'active').toLowerCase(),
-        strategy_score: scoreStrategy({
-          ...(pool || {}),
-          ...(stat || {})
-        })
-      };
-    })
-    .filter((row) => String(row?.strategy_key || '').trim())
-    .filter((row) => row.pool_status !== 'disabled' && row.pool_status !== 'retired')
-    .sort((a, b) => {
-      const pa = Boolean(a.protected_rank);
-      const pb = Boolean(b.protected_rank);
-      if (pa !== pb) return Number(pb) - Number(pa);
-      return toNum(b.strategy_score, 0) - toNum(a.strategy_score, 0);
-    });
-}
-
-function buildGroupFromStrategy(row, rank, latestDraw) {
-  const rawNums =
-    row?.candidate_nums ||
-    row?.recommended_nums ||
-    row?.nums ||
-    row?.numbers ||
-    row?.pick_nums ||
-    row?.pick_numbers ||
-    [];
-
-  const nums = parseNums(rawNums).slice(0, 4);
-
-  if (nums.length !== 4) {
-    return null;
-  }
-
-  return {
-    key: String(row.strategy_key || `strategy_${rank}`),
-    label: String(row.strategy_name || row.strategy_key || `策略 ${rank}`),
-    nums,
-    reason: `正式下注採用當前排行第 ${rank} 名策略（單期 / 每組 ${COST_PER_GROUP} 元）`,
-    meta: {
-      strategy_key: String(row.strategy_key || ''),
-      strategy_name: String(row.strategy_name || row.strategy_key || ''),
-      selection_rank: rank,
-      source_draw_no: toNum(latestDraw?.draw_no, 0),
-      source_draw_time: latestDraw?.draw_time || null,
-      avg_hit: round4(row.avg_hit),
-      roi: round4(row.roi),
-      recent_50_roi: round4(row.recent_50_roi),
-      hit_rate: round4(row.hit_rate),
-      recent_50_hit_rate: round4(row.recent_50_hit_rate),
-      total_rounds: toNum(row.total_rounds, 0),
-      score: round4(row.strategy_score),
-      bet_amount: COST_PER_GROUP,
-      decision: 'top_ranked'
-    }
-  };
-}
-
 async function getFormalBatchInfo(sourceDrawNo) {
   const { data, error } = await supabase
     .from(PREDICTIONS_TABLE)
@@ -211,6 +135,67 @@ async function getFormalBatchInfo(sourceDrawNo) {
     existingRows: rows,
     existingCount: rows.length,
     nextBatchNo: rows.length + 1
+  };
+}
+
+async function getLatestTestPredictionBySourceDraw(sourceDrawNo) {
+  const { data, error } = await supabase
+    .from(PREDICTIONS_TABLE)
+    .select('*')
+    .eq('mode', TEST_MODE)
+    .eq('source_draw_no', sourceDrawNo)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data || null;
+}
+
+async function getLatestAnyTestPrediction() {
+  const { data, error } = await supabase
+    .from(PREDICTIONS_TABLE)
+    .select('*')
+    .eq('mode', TEST_MODE)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data || null;
+}
+
+async function buildFormalGroupsFromLatestTest(latestDraw) {
+  const sourceDrawNo = toNum(latestDraw?.draw_no, 0);
+
+  let testPrediction = await getLatestTestPredictionBySourceDraw(sourceDrawNo);
+
+  if (!testPrediction) {
+    testPrediction = await getLatestAnyTestPrediction();
+  }
+
+  if (!testPrediction) {
+    throw new Error('找不到可用的 test prediction，請先建立 test prediction');
+  }
+
+  const rawGroups = parseGroupsJson(testPrediction.groups_json);
+
+  if (!rawGroups.length) {
+    throw new Error('最新 test prediction 沒有可用 groups_json');
+  }
+
+  const groups = rawGroups
+    .map((group, idx) => normalizeGroup(group, idx, latestDraw))
+    .filter(Boolean)
+    .slice(0, GROUP_COUNT);
+
+  if (groups.length !== GROUP_COUNT) {
+    throw new Error(`最新 test prediction 可用組數不足，目前僅有 ${groups.length} 組`);
+  }
+
+  return {
+    groups,
+    testPrediction
   };
 }
 
@@ -235,20 +220,7 @@ async function createFormalPrediction(latestDraw) {
     };
   }
 
-  const strategies = await getMergedStrategyRows();
-  const topRows = strategies.slice(0, GROUP_COUNT);
-
-  if (topRows.length < GROUP_COUNT) {
-    throw new Error(`可用策略不足，目前僅有 ${topRows.length} 組，無法建立正式下注`);
-  }
-
-  const groups = topRows
-    .map((row, idx) => buildGroupFromStrategy(row, idx + 1, latestDraw))
-    .filter(Boolean);
-
-  if (groups.length !== GROUP_COUNT) {
-    throw new Error('前四名策略中，至少有一組缺少可用號碼（需為 4 碼）');
-  }
+  const { groups, testPrediction } = await buildFormalGroupsFromLatestTest(latestDraw);
 
   const formalBatchNo = batchInfo.nextBatchNo;
 
@@ -294,6 +266,8 @@ async function createFormalPrediction(latestDraw) {
     formal_batch_no: formalBatchNo,
     formal_batch_limit: FORMAL_BATCH_LIMIT,
     existing_count: batchInfo.existingCount,
+    source_test_prediction_id: testPrediction?.id || null,
+    source_test_draw_no: toNum(testPrediction?.source_draw_no, 0),
     prediction: {
       id: data?.id || null,
       mode: FORMAL_MODE,
@@ -314,7 +288,7 @@ async function createTestPrediction(latestDraw) {
 
   const { data: existing, error: existingError } = await supabase
     .from(PREDICTIONS_TABLE)
-    .select('id, created_at')
+    .select('id, created_at, groups_json, source_draw_no, target_periods, status')
     .eq('mode', TEST_MODE)
     .eq('source_draw_no', sourceDrawNo)
     .order('created_at', { ascending: false })
@@ -332,81 +306,16 @@ async function createTestPrediction(latestDraw) {
       prediction: {
         id: existing.id,
         mode: TEST_MODE,
-        status: 'created',
+        status: existing.status || 'created',
         source_draw_no: sourceDrawNo,
-        target_periods: 1
+        target_periods: toNum(existing.target_periods, 1),
+        group_count: parseGroupsJson(existing.groups_json).length,
+        groups: parseGroupsJson(existing.groups_json)
       }
     };
   }
 
-  const strategies = await getMergedStrategyRows();
-  const topRows = strategies.slice(0, GROUP_COUNT);
-
-  if (topRows.length < GROUP_COUNT) {
-    throw new Error(`可用策略不足，目前僅有 ${topRows.length} 組，無法建立 test prediction`);
-  }
-
-  const groups = topRows
-    .map((row, idx) => buildGroupFromStrategy(row, idx + 1, latestDraw))
-    .filter(Boolean);
-
-  if (groups.length !== GROUP_COUNT) {
-    throw new Error('前四名策略中，至少有一組缺少可用號碼（需為 4 碼）');
-  }
-
-  const payload = {
-    mode: TEST_MODE,
-    status: 'created',
-    source_draw_no: sourceDrawNo,
-    target_periods: 1,
-    groups_json: groups,
-    compare_status: 'pending',
-    compare_result: null,
-    hit_count: 0,
-    verdict: null,
-    created_at: new Date().toISOString()
-  };
-
-  const { data, error } = await supabase
-    .from(PREDICTIONS_TABLE)
-    .insert(payload)
-    .select('*')
-    .maybeSingle();
-
-  if (error) {
-    const msg = String(error.message || '');
-
-    if (
-      msg.toLowerCase().includes('duplicate key') ||
-      msg.toLowerCase().includes('unique')
-    ) {
-      return {
-        ok: true,
-        skipped: true,
-        reason: '本期 test prediction 已存在（唯一鍵擋下重複建立）',
-        source_draw_no: sourceDrawNo,
-        prediction: null
-      };
-    }
-
-    throw error;
-  }
-
-  return {
-    ok: true,
-    skipped: false,
-    reason: '',
-    source_draw_no: sourceDrawNo,
-    prediction: {
-      id: data?.id || null,
-      mode: TEST_MODE,
-      status: data?.status || 'created',
-      source_draw_no: sourceDrawNo,
-      target_periods: 1,
-      group_count: groups.length,
-      groups
-    }
-  };
+  throw new Error('目前這一版不負責自動建立 test prediction，請先由 auto-train 或既有流程建立 test prediction');
 }
 
 export default async function handler(req, res) {
@@ -436,7 +345,7 @@ export default async function handler(req, res) {
       latest_draw_no: toNum(latestDraw?.draw_no, 0),
       latest_draw_time: latestDraw?.draw_time || null,
       target_periods: 1,
-      bet_type: mode === FORMAL_MODE ? 'single_period_top4' : 'test_top4',
+      bet_type: mode === FORMAL_MODE ? 'single_period_top4_from_latest_test' : 'test_existing_only',
       cost_per_group: COST_PER_GROUP,
       group_count: GROUP_COUNT,
       formal_batch_limit: FORMAL_BATCH_LIMIT,
