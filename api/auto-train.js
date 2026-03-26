@@ -2025,7 +2025,7 @@ export default async function handler(req, res) {
 
     const latestDraw = latestDrawRows[0];
     const latestDrawNo = toNum(latestDraw?.draw_no, 0);
-    const sourceDrawNoRaw = latestDrawNo - TARGET_PERIODS;
+    const sourceDrawNoRaw = latestDrawNo;
 
     if (sourceDrawNoRaw <= 0) {
       const reaperResult = await runStrategyReaper(db, {});
