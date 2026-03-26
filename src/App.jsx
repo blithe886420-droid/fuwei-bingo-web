@@ -649,15 +649,23 @@ export default function App() {
     });
   }, [runAction]);
 
-  const handleFormalBet = async () => {
-    await runAction('formalBet', async () => {
-      await safeFetchJson('/api/prediction-save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 'formal' })
-      });
+ const handleFormalBet = async () => {
+  await runAction('formalBet', async () => {
+    await safeFetchJson('/api/prediction-save', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-manual-formal-save': 'true',
+        'x-trigger-source': 'app_button'
+      },
+      body: JSON.stringify({
+        mode: 'formal',
+        manual: true,
+        trigger_source: 'app_button'
+      })
     });
-  };
+  });
+};
 
   const runAiCycle = useCallback(async () => {
     if (cycleRunningRef.current) return;
