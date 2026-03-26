@@ -1,5 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 
+const API_VERSION = 'prediction-save-batch-v2';
+
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
   process.env.VITE_SUPABASE_URL ||
@@ -33,11 +35,6 @@ function toNum(value, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function round4(value) {
-  const n = Number(value);
-  return Number.isFinite(n) ? Number(n.toFixed(4)) : 0;
-}
-
 function uniqueAsc(nums = []) {
   return [...new Set((Array.isArray(nums) ? nums : []).map(Number).filter(Number.isFinite))].sort(
     (a, b) => a - b
@@ -63,7 +60,7 @@ function parseGroupsJson(value) {
   return [];
 }
 
-function normalizeGroup(group, idx = 0, latestDraw = null) {
+function normalizeGroup(group, idx = 0, sourceDraw = null) {
   if (!group || typeof group !== 'object') return null;
 
   const nums = uniqueAsc(
@@ -96,8 +93,8 @@ function normalizeGroup(group, idx = 0, latestDraw = null) {
       strategy_key: strategyKey,
       strategy_name: strategyName,
       selection_rank: idx + 1,
-      source_draw_no: toNum(latestDraw?.draw_no, 0),
-      source_draw_time: latestDraw?.draw_time || null,
+      source_draw_no: toNum(sourceDraw?.draw_no, 0),
+      source_draw_time: sourceDraw?.draw_time || null,
       bet_amount: COST_PER_GROUP,
       decision: 'from_latest_test_prediction'
     }
@@ -113,37 +110,76 @@ async function getLatestDraw() {
     .maybeSingle();
 
   if (error) throw error;
-  if (!data?.draw_no) {
-    throw new Error('找不到最新期數');
-  }
-
+  if (!data?.draw_no) throw new Error('找不到最新期數');
   return data;
 }
 
-async function getFormalBatchInfo(sourceDrawNo) {
+async function getFormalRowsBySourceDrawNo(sourceDrawNo) {
+  if (!sourceDrawNo) return [];
+
   const { data, error } = await supabase
     .from(PREDICTIONS_TABLE)
-    .select('id, created_at, mode, source_draw_no')
+    .select('id, created_at, source_draw_no, mode, status')
     .eq('mode', FORMAL_MODE)
     .eq('source_draw_no', sourceDrawNo)
     .order('created_at', { ascending: true });
 
   if (error) throw error;
+  return Array.isArray(data) ? data : [];
+}
 
-  const rows = Array.isArray(data) ? data : [];
+async function getLatestFormalRow() {
+  const { data, error } = await supabase
+    .from(PREDICTIONS_TABLE)
+    .select('id, created_at, source_draw_no, mode, status')
+    .eq('mode', FORMAL_MODE)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data || null;
+}
+
+async function resolveFormalSourceDraw(latestDraw) {
+  const latestFormal = await getLatestFormalRow();
+
+  if (!latestFormal?.source_draw_no) {
+    return {
+      sourceDrawNo: toNum(latestDraw?.draw_no, 0),
+      batchCount: 0,
+      nextBatchNo: 1,
+      usingExistingBatch: false
+    };
+  }
+
+  const existingRows = await getFormalRowsBySourceDrawNo(toNum(latestFormal.source_draw_no, 0));
+  const existingCount = existingRows.length;
+
+  if (existingCount > 0 && existingCount < FORMAL_BATCH_LIMIT) {
+    return {
+      sourceDrawNo: toNum(latestFormal.source_draw_no, 0),
+      batchCount: existingCount,
+      nextBatchNo: existingCount + 1,
+      usingExistingBatch: true
+    };
+  }
+
   return {
-    existingRows: rows,
-    existingCount: rows.length,
-    nextBatchNo: rows.length + 1
+    sourceDrawNo: toNum(latestDraw?.draw_no, 0),
+    batchCount: 0,
+    nextBatchNo: 1,
+    usingExistingBatch: false
   };
 }
 
-async function getLatestTestPredictionBySourceDraw(sourceDrawNo) {
+async function getLatestTestPredictionUpToSourceDraw(sourceDrawNo) {
   const { data, error } = await supabase
     .from(PREDICTIONS_TABLE)
     .select('*')
     .eq('mode', TEST_MODE)
-    .eq('source_draw_no', sourceDrawNo)
+    .lte('source_draw_no', sourceDrawNo)
+    .order('source_draw_no', { ascending: false })
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -165,11 +201,10 @@ async function getLatestAnyTestPrediction() {
   return data || null;
 }
 
-async function buildFormalGroupsFromLatestTest(latestDraw) {
-  const sourceDrawNo = toNum(latestDraw?.draw_no, 0);
+async function buildFormalGroups(sourceDraw) {
+  const sourceDrawNo = toNum(sourceDraw?.draw_no, 0);
 
-  let testPrediction = await getLatestTestPredictionBySourceDraw(sourceDrawNo);
-
+  let testPrediction = await getLatestTestPredictionUpToSourceDraw(sourceDrawNo);
   if (!testPrediction) {
     testPrediction = await getLatestAnyTestPrediction();
   }
@@ -179,13 +214,12 @@ async function buildFormalGroupsFromLatestTest(latestDraw) {
   }
 
   const rawGroups = parseGroupsJson(testPrediction.groups_json);
-
   if (!rawGroups.length) {
     throw new Error('最新 test prediction 沒有可用 groups_json');
   }
 
   const groups = rawGroups
-    .map((group, idx) => normalizeGroup(group, idx, latestDraw))
+    .map((group, idx) => normalizeGroup(group, idx, sourceDraw))
     .filter(Boolean)
     .slice(0, GROUP_COUNT);
 
@@ -195,34 +229,46 @@ async function buildFormalGroupsFromLatestTest(latestDraw) {
 
   return {
     groups,
-    testPrediction
+    sourceTestPredictionId: testPrediction.id || null,
+    sourceTestDrawNo: toNum(testPrediction.source_draw_no, 0)
   };
 }
 
-async function createFormalPrediction(latestDraw) {
-  const sourceDrawNo = toNum(latestDraw?.draw_no, 0);
+async function createFormalPrediction() {
+  const latestDraw = await getLatestDraw();
+
+  const batchInfo = await resolveFormalSourceDraw(latestDraw);
+  const sourceDrawNo = batchInfo.sourceDrawNo;
+
   if (!sourceDrawNo) {
     throw new Error('無法判斷正式下注來源期數');
   }
 
-  const batchInfo = await getFormalBatchInfo(sourceDrawNo);
+  const sourceDraw = {
+    draw_no: sourceDrawNo,
+    draw_time:
+      sourceDrawNo === toNum(latestDraw?.draw_no, 0)
+        ? latestDraw?.draw_time || null
+        : null
+  };
 
-  if (batchInfo.existingCount >= FORMAL_BATCH_LIMIT) {
+  const existingRows = await getFormalRowsBySourceDrawNo(sourceDrawNo);
+  if (existingRows.length >= FORMAL_BATCH_LIMIT) {
     return {
       ok: true,
       skipped: true,
       reason: `本期正式下注已達上限 ${FORMAL_BATCH_LIMIT} 次`,
       source_draw_no: sourceDrawNo,
-      formal_batch_no: batchInfo.existingCount,
+      formal_batch_no: existingRows.length,
       formal_batch_limit: FORMAL_BATCH_LIMIT,
-      existing_count: batchInfo.existingCount,
+      existing_count: existingRows.length,
       prediction: null
     };
   }
 
-  const { groups, testPrediction } = await buildFormalGroupsFromLatestTest(latestDraw);
+  const nextBatchNo = existingRows.length + 1;
 
-  const formalBatchNo = batchInfo.nextBatchNo;
+  const { groups, sourceTestPredictionId, sourceTestDrawNo } = await buildFormalGroups(sourceDraw);
 
   const payload = {
     mode: FORMAL_MODE,
@@ -243,31 +289,20 @@ async function createFormalPrediction(latestDraw) {
     .select('*')
     .maybeSingle();
 
-  if (error) {
-    const msg = String(error.message || '');
-
-    if (
-      msg.toLowerCase().includes('duplicate key') ||
-      msg.toLowerCase().includes('unique')
-    ) {
-      throw new Error(
-        '資料表目前可能仍有限制同一期 formal 只能建立 1 筆，請先確認 bingo_predictions 的唯一鍵設定'
-      );
-    }
-
-    throw error;
-  }
+  if (error) throw error;
 
   return {
     ok: true,
     skipped: false,
     reason: '',
+    latest_draw_no: toNum(latestDraw?.draw_no, 0),
+    latest_draw_time: latestDraw?.draw_time || null,
     source_draw_no: sourceDrawNo,
-    formal_batch_no: formalBatchNo,
+    formal_batch_no: nextBatchNo,
     formal_batch_limit: FORMAL_BATCH_LIMIT,
-    existing_count: batchInfo.existingCount,
-    source_test_prediction_id: testPrediction?.id || null,
-    source_test_draw_no: toNum(testPrediction?.source_draw_no, 0),
+    existing_count: existingRows.length,
+    source_test_prediction_id: sourceTestPredictionId,
+    source_test_draw_no: sourceTestDrawNo,
     prediction: {
       id: data?.id || null,
       mode: FORMAL_MODE,
@@ -280,13 +315,10 @@ async function createFormalPrediction(latestDraw) {
   };
 }
 
-async function createTestPrediction(latestDraw) {
+async function getOrCreateTestResponse(latestDraw) {
   const sourceDrawNo = toNum(latestDraw?.draw_no, 0);
-  if (!sourceDrawNo) {
-    throw new Error('無法判斷測試來源期數');
-  }
 
-  const { data: existing, error: existingError } = await supabase
+  const { data: existing, error } = await supabase
     .from(PREDICTIONS_TABLE)
     .select('id, created_at, groups_json, source_draw_no, target_periods, status')
     .eq('mode', TEST_MODE)
@@ -295,7 +327,7 @@ async function createTestPrediction(latestDraw) {
     .limit(1)
     .maybeSingle();
 
-  if (existingError) throw existingError;
+  if (error) throw error;
 
   if (existing?.id) {
     return {
@@ -322,6 +354,7 @@ export default async function handler(req, res) {
   if (req.method !== 'POST' && req.method !== 'GET') {
     return res.status(405).json({
       ok: false,
+      api_version: API_VERSION,
       error: 'Method not allowed'
     });
   }
@@ -332,20 +365,33 @@ export default async function handler(req, res) {
         ? TEST_MODE
         : FORMAL_MODE;
 
-    const latestDraw = await getLatestDraw();
+    if (mode === TEST_MODE) {
+      const latestDraw = await getLatestDraw();
+      const result = await getOrCreateTestResponse(latestDraw);
 
-    const result =
-      mode === TEST_MODE
-        ? await createTestPrediction(latestDraw)
-        : await createFormalPrediction(latestDraw);
+      return res.status(200).json({
+        ok: true,
+        api_version: API_VERSION,
+        mode,
+        latest_draw_no: toNum(latestDraw?.draw_no, 0),
+        latest_draw_time: latestDraw?.draw_time || null,
+        target_periods: 1,
+        bet_type: 'test_existing_only',
+        cost_per_group: COST_PER_GROUP,
+        group_count: GROUP_COUNT,
+        formal_batch_limit: FORMAL_BATCH_LIMIT,
+        ...result
+      });
+    }
+
+    const result = await createFormalPrediction();
 
     return res.status(200).json({
       ok: true,
-      mode,
-      latest_draw_no: toNum(latestDraw?.draw_no, 0),
-      latest_draw_time: latestDraw?.draw_time || null,
+      api_version: API_VERSION,
+      mode: FORMAL_MODE,
       target_periods: 1,
-      bet_type: mode === FORMAL_MODE ? 'single_period_top4_from_latest_test' : 'test_existing_only',
+      bet_type: 'single_period_top4_batch_locked',
       cost_per_group: COST_PER_GROUP,
       group_count: GROUP_COUNT,
       formal_batch_limit: FORMAL_BATCH_LIMIT,
@@ -354,6 +400,7 @@ export default async function handler(req, res) {
   } catch (error) {
     return res.status(500).json({
       ok: false,
+      api_version: API_VERSION,
       error: error?.message || 'prediction-save failed'
     });
   }
