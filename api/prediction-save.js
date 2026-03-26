@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
-const API_VERSION = 'prediction-save-batch-v2';
+const API_VERSION = 'prediction-save-batch-v3-manual-lock';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -33,6 +33,24 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
 function toNum(value, fallback = 0) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
+}
+
+function toBool(value, fallback = false) {
+  if (typeof value === 'boolean') return value;
+
+  if (typeof value === 'string') {
+    const v = value.trim().toLowerCase();
+    if (v === 'true') return true;
+    if (v === 'false') return false;
+    if (v === '1') return true;
+    if (v === '0') return false;
+  }
+
+  if (typeof value === 'number') {
+    return value !== 0;
+  }
+
+  return fallback;
 }
 
 function uniqueAsc(nums = []) {
@@ -99,6 +117,29 @@ function normalizeGroup(group, idx = 0, sourceDraw = null) {
       decision: 'from_latest_test_prediction'
     }
   };
+}
+
+function getMode(req) {
+  return String(req.body?.mode || req.query?.mode || FORMAL_MODE).toLowerCase() === TEST_MODE
+    ? TEST_MODE
+    : FORMAL_MODE;
+}
+
+function isManualFormalRequest(req) {
+  const bodyManual = toBool(req.body?.manual, false);
+  const queryManual = toBool(req.query?.manual, false);
+  const headerManual = toBool(req.headers['x-manual-formal-save'], false);
+
+  return bodyManual || queryManual || headerManual;
+}
+
+function getTriggerSource(req) {
+  return String(
+    req.body?.trigger_source ||
+      req.query?.trigger_source ||
+      req.headers['x-trigger-source'] ||
+      'unknown'
+  ).trim();
 }
 
 async function getLatestDraw() {
@@ -315,7 +356,7 @@ async function createFormalPrediction() {
   };
 }
 
-async function getOrCreateTestResponse(latestDraw) {
+async function getExistingTestResponse(latestDraw) {
   const sourceDrawNo = toNum(latestDraw?.draw_no, 0);
 
   const { data: existing, error } = await supabase
@@ -360,19 +401,18 @@ export default async function handler(req, res) {
   }
 
   try {
-    const mode =
-      String(req.body?.mode || req.query?.mode || FORMAL_MODE).toLowerCase() === TEST_MODE
-        ? TEST_MODE
-        : FORMAL_MODE;
+    const mode = getMode(req);
+    const triggerSource = getTriggerSource(req);
 
     if (mode === TEST_MODE) {
       const latestDraw = await getLatestDraw();
-      const result = await getOrCreateTestResponse(latestDraw);
+      const result = await getExistingTestResponse(latestDraw);
 
       return res.status(200).json({
         ok: true,
         api_version: API_VERSION,
         mode,
+        trigger_source: triggerSource,
         latest_draw_no: toNum(latestDraw?.draw_no, 0),
         latest_draw_time: latestDraw?.draw_time || null,
         target_periods: 1,
@@ -384,14 +424,36 @@ export default async function handler(req, res) {
       });
     }
 
+    if (req.method !== 'POST') {
+      return res.status(405).json({
+        ok: false,
+        api_version: API_VERSION,
+        mode: FORMAL_MODE,
+        trigger_source: triggerSource,
+        error: '正式下注只允許 POST'
+      });
+    }
+
+    if (!isManualFormalRequest(req)) {
+      return res.status(403).json({
+        ok: false,
+        api_version: API_VERSION,
+        mode: FORMAL_MODE,
+        trigger_source: triggerSource,
+        error: '正式下注已鎖定為手動觸發，請由前端按鈕使用 manual=true 呼叫'
+      });
+    }
+
     const result = await createFormalPrediction();
 
     return res.status(200).json({
       ok: true,
       api_version: API_VERSION,
       mode: FORMAL_MODE,
+      trigger_source: triggerSource,
+      manual_locked: true,
       target_periods: 1,
-      bet_type: 'single_period_top4_batch_locked',
+      bet_type: 'single_period_top4_batch_locked_manual_only',
       cost_per_group: COST_PER_GROUP,
       group_count: GROUP_COUNT,
       formal_batch_limit: FORMAL_BATCH_LIMIT,
