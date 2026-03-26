@@ -853,9 +853,16 @@ export default function App() {
   const formalBatchLimit = predictionSummary.formalBatchLimit || FORMAL_BATCH_LIMIT;
   const formalBatches = predictionSummary.formalBatches || [];
   const formalBatchProgressText = `${formalBatchCount} / ${formalBatchLimit}`;
-  const formalButtonDisabled = busyKey !== '' || formalRemainingBatchCount <= 0;
-  const formalButtonLabel =
-    formalRemainingBatchCount <= 0 ? '本期已達 3 批上限' : '產生一批正式下注';
+ const formalButtonDisabled =
+  busyKey !== '' ||
+  !canFormalBet ||
+  formalRemainingBatchCount <= 0;
+
+const formalButtonLabel = !canFormalBet
+  ? '暫不建議正式下注'
+  : formalRemainingBatchCount <= 0
+    ? '本期已達 3 批上限'
+    : '手動產生一批正式下注';
 
   return (
     <div style={styles.page}>
