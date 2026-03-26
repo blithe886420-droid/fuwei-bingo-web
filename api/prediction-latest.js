@@ -12,6 +12,8 @@ const SUPABASE_KEY =
   process.env.SUPABASE_ANON_KEY;
 
 const PREDICTIONS_TABLE = 'bingo_predictions';
+const STRATEGY_STATS_TABLE = 'strategy_stats';
+const STRATEGY_POOL_TABLE = 'strategy_pool';
 
 if (!SUPABASE_URL || !SUPABASE_KEY) {
   throw new Error('Missing SUPABASE_URL or SUPABASE key');
@@ -29,6 +31,11 @@ function toInt(value, fallback = 0) {
 function toNum(value, fallback = 0) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
+}
+
+function round4(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Number(n.toFixed(4)) : 0;
 }
 
 function uniqueAsc(nums = []) {
@@ -76,7 +83,7 @@ function normalizeGroups(groups) {
       };
     })
     .filter(Boolean)
-    .slice(0, 4);
+    .slice(0, 12);
 }
 
 function parseGroupsJson(value) {
@@ -102,7 +109,10 @@ function normalizePredictionRow(row) {
 
   const mode = String(row.mode || '').toLowerCase();
   const sourceDrawNo = toInt(row.source_draw_no, 0);
-  const targetPeriods = toInt(row.target_periods, mode.includes('formal') ? 4 : 2);
+  const targetPeriods = toInt(
+    row.target_periods,
+    mode.includes('formal') ? 4 : 2
+  );
   const groups = parseGroupsJson(row.groups_json);
 
   return {
@@ -122,53 +132,85 @@ function normalizePredictionRow(row) {
     compare_status: row.compare_status || null,
     compared_at: row.compared_at || null,
     verdict: row.verdict || null,
-    hit_count: toInt(row.hit_count, 0)
+    hit_count: toInt(row.hit_count, 0),
+    group_count: groups.length
   };
 }
 
-function normalizeLeaderboardRow(row) {
+function buildStrategyScore(row) {
+  const totalRounds = toNum(row.total_rounds, 0);
+  const avgHit = toNum(row.avg_hit, 0);
+  const roi = toNum(row.roi, 0);
+  const recent50Roi = toNum(row.recent_50_roi, 0);
+  const hitRate = toNum(row.hit_rate, 0);
+  const recent50HitRate = toNum(row.recent_50_hit_rate, 0);
+  const hit2 = toNum(row.hit2, 0);
+  const hit3 = toNum(row.hit3, 0);
+  const hit4 = toNum(row.hit4, 0);
+  const protectedBonus = row?.protected_rank ? 9999 : 0;
+  const matureBonus = totalRounds >= 30 ? 25 : totalRounds >= 15 ? 10 : 0;
+
+  return (
+    protectedBonus +
+    avgHit * 55 +
+    recent50Roi * 45 +
+    roi * 10 +
+    hitRate * 18 +
+    recent50HitRate * 12 +
+    hit2 * 2 +
+    hit3 * 8 +
+    hit4 * 20 +
+    matureBonus
+  );
+}
+
+function normalizeLeaderboardRow(row, poolRow = null) {
   if (!row) return null;
 
   const totalRounds = toNum(row.total_rounds, 0);
-  const avgHit = Number(row.avg_hit ?? 0);
-  const roi = Number(row.roi ?? 0);
-  const recent50Roi = Number(row.recent_50_roi ?? 0);
-  const hitRate = Number(row.hit_rate ?? 0);
-  const hit3 = toNum(row.hit3, 0);
-  const hit4 = toNum(row.hit4, 0);
+  const avgHit = toNum(row.avg_hit, 0);
+  const roi = toNum(row.roi, 0);
+  const recent50Roi = toNum(row.recent_50_roi, 0);
+  const hitRate = toNum(row.hit_rate, 0);
+  const recent50HitRate = toNum(row.recent_50_hit_rate, 0);
 
-  const score =
-    (recent50Roi * 0.45) +
-    (roi * 0.2) +
-    (avgHit * 18) +
-    (hitRate * 12) +
-    (Math.min(totalRounds, 500) * 0.02) +
-    (hit4 * 8) +
-    (hit3 * 3);
+  const merged = {
+    ...poolRow,
+    ...row
+  };
+
+  const score = buildStrategyScore(merged);
 
   return {
-    key: row.strategy_key || '',
-    label: row.strategy_label || row.strategy_name || row.strategy_key || '',
-    strategy_key: row.strategy_key || '',
+    key: merged.strategy_key || '',
+    label:
+      merged.strategy_label ||
+      merged.strategy_name ||
+      merged.strategy_key ||
+      '',
+    strategy_key: merged.strategy_key || '',
+    strategy_name:
+      merged.strategy_name ||
+      merged.strategy_label ||
+      merged.strategy_key ||
+      '',
     total_rounds: totalRounds,
-    total_hits: toNum(row.total_hits, 0),
-    avg_hit: Number.isFinite(avgHit) ? Number(avgHit.toFixed(6)) : 0,
-    hit_rate: Number.isFinite(hitRate) ? Number(hitRate.toFixed(6)) : 0,
-    total_profit: Number.isFinite(Number(row.total_profit))
-      ? Number(Number(row.total_profit).toFixed(6))
-      : 0,
-    roi: Number.isFinite(roi) ? Number(roi.toFixed(6)) : 0,
-    recent_50_roi: Number.isFinite(recent50Roi)
-      ? Number(recent50Roi.toFixed(6))
-      : 0,
-    total_cost: Number.isFinite(Number(row.total_cost))
-      ? Number(Number(row.total_cost).toFixed(6))
-      : 0,
-    total_reward: Number.isFinite(Number(row.total_reward))
-      ? Number(Number(row.total_reward).toFixed(6))
-      : 0,
-    updated_at: row.updated_at || row.last_updated || null,
-    score: Number.isFinite(score) ? Number(score.toFixed(4)) : 0
+    total_hits: toNum(merged.total_hits, 0),
+    avg_hit: round4(avgHit),
+    hit_rate: round4(hitRate),
+    recent_50_hit_rate: round4(recent50HitRate),
+    total_profit: round4(merged.total_profit),
+    roi: round4(roi),
+    recent_50_roi: round4(recent50Roi),
+    total_cost: round4(merged.total_cost),
+    total_reward: round4(merged.total_reward),
+    hit2: toNum(merged.hit2, 0),
+    hit3: toNum(merged.hit3, 0),
+    hit4: toNum(merged.hit4, 0),
+    protected_rank: Boolean(merged.protected_rank),
+    pool_status: merged.status || null,
+    updated_at: merged.updated_at || merged.last_updated || null,
+    score: round4(score)
   };
 }
 
@@ -185,25 +227,89 @@ async function getLatestPrediction(mode) {
   return normalizePredictionRow(data || null);
 }
 
-async function getLeaderboard(limit = 50) {
-  const { data, error } = await supabase
-    .from('strategy_stats')
-    .select('*')
-    .order('updated_at', { ascending: false })
-    .limit(limit);
+async function getStrategyLeaderboard(limit = 50) {
+  const [{ data: statsRows, error: statsError }, { data: poolRows, error: poolError }] =
+    await Promise.all([
+      supabase.from(STRATEGY_STATS_TABLE).select('*'),
+      supabase.from(STRATEGY_POOL_TABLE).select('*')
+    ]);
 
-  if (error) throw error;
+  if (statsError) throw statsError;
+  if (poolError) throw poolError;
 
-  return (Array.isArray(data) ? data : [])
-    .map(normalizeLeaderboardRow)
+  const poolMap = new Map();
+  for (const row of Array.isArray(poolRows) ? poolRows : []) {
+    if (row?.strategy_key) {
+      poolMap.set(row.strategy_key, row);
+    }
+  }
+
+  return (Array.isArray(statsRows) ? statsRows : [])
+    .map((row) => normalizeLeaderboardRow(row, poolMap.get(row.strategy_key) || null))
     .filter(Boolean)
     .sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score;
       if (b.recent_50_roi !== a.recent_50_roi) return b.recent_50_roi - a.recent_50_roi;
-      if (b.roi !== a.roi) return b.roi - a.roi;
+      if (b.avg_hit !== a.avg_hit) return b.avg_hit - a.avg_hit;
       return b.total_rounds - a.total_rounds;
     })
     .slice(0, limit);
+}
+
+function buildDecisionSummary(leaderboard = []) {
+  const topFour = leaderboard.slice(0, 4);
+  const topOne = topFour[0] || null;
+
+  if (!topOne) {
+    return {
+      assistantMode: 'decision_support',
+      readyForFormal: false,
+      adviceLevel: 'stop',
+      decisionPhase: 'no_data',
+      summaryLabel: '資料不足',
+      summaryText: '目前沒有足夠的策略排行資料，先不要正式下注。',
+      currentTopStrategies: []
+    };
+  }
+
+  const strongShortTerm =
+    topOne.avg_hit >= 1.8 && topOne.recent_50_roi >= 0;
+  const usableShortTerm =
+    topOne.avg_hit >= 1.5 && topOne.recent_50_roi >= -0.2;
+
+  if (strongShortTerm) {
+    return {
+      assistantMode: 'decision_support',
+      readyForFormal: true,
+      adviceLevel: 'go_small',
+      decisionPhase: 'ready_small_bet',
+      summaryLabel: '可小試',
+      summaryText: '目前前段策略表現偏穩，可採單期、小額方式測試。',
+      currentTopStrategies: topFour
+    };
+  }
+
+  if (usableShortTerm) {
+    return {
+      assistantMode: 'decision_support',
+      readyForFormal: false,
+      adviceLevel: 'watch',
+      decisionPhase: 'watch_only',
+      summaryLabel: '可觀察',
+      summaryText: '目前有可參考策略，但建議先觀察排行與近期成績。',
+      currentTopStrategies: topFour
+    };
+  }
+
+  return {
+    assistantMode: 'decision_support',
+    readyForFormal: false,
+    adviceLevel: 'avoid',
+    decisionPhase: 'avoid_entry',
+    summaryLabel: '暫不建議',
+    summaryText: '目前前段策略偏弱，不建議急著正式下注。',
+    currentTopStrategies: topFour
+  };
 }
 
 export default async function handler(req, res) {
@@ -218,31 +324,45 @@ export default async function handler(req, res) {
     const [trainingPrediction, formalPrediction, leaderboard] = await Promise.all([
       getLatestPrediction('test'),
       getLatestPrediction('formal'),
-      getLeaderboard(50)
+      getStrategyLeaderboard(50)
     ]);
 
     const rows = [trainingPrediction, formalPrediction].filter(Boolean);
+    const decision = buildDecisionSummary(leaderboard);
 
     return res.status(200).json({
       ok: true,
+
       training: {
         row: trainingPrediction,
         rows: trainingPrediction ? [trainingPrediction] : []
       },
+
       formal: {
         row: formalPrediction,
         rows: formalPrediction ? [formalPrediction] : []
       },
+
       ai_train: {
         row: trainingPrediction,
         rows: trainingPrediction ? [trainingPrediction] : []
       },
+
       training_row: trainingPrediction,
       formal_row: formalPrediction,
       row: trainingPrediction || formalPrediction || null,
       rows,
+
       leaderboard,
-      leaderboard_source: 'strategy_stats'
+      leaderboard_source: 'strategy_stats+strategy_pool',
+
+      assistantMode: decision.assistantMode,
+      readyForFormal: decision.readyForFormal,
+      adviceLevel: decision.adviceLevel,
+      decisionPhase: decision.decisionPhase,
+      summaryLabel: decision.summaryLabel,
+      summaryText: decision.summaryText,
+      currentTopStrategies: decision.currentTopStrategies
     });
   } catch (error) {
     return res.status(500).json({
