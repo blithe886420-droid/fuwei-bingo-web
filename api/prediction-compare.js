@@ -1,24 +1,54 @@
 import { createClient } from '@supabase/supabase-js';
-import { buildComparePayload } from '../lib/buildComparePayload.js';
-import { recordStrategyCompareResult } from '../lib/strategyStatsRecorder.js';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
+  process.env.VITE_SUPABASE_URL ||
   process.env.NEXT_PUBLIC_SUPABASE_URL;
 
 const SUPABASE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
+  process.env.SUPABASE_SECRET_KEY ||
+  process.env.SUPABASE_KEY ||
   process.env.SUPABASE_ANON_KEY;
 
-let supabase = null;
+const DRAWS_TABLE = 'bingo_draws';
+const PREDICTIONS_TABLE = 'bingo_predictions';
+const STRATEGY_STATS_TABLE = 'strategy_stats';
 
-function safeArray(v) {
-  if (Array.isArray(v)) return v;
+if (!SUPABASE_URL || !SUPABASE_KEY) {
+  throw new Error('Missing SUPABASE env');
+}
 
-  if (typeof v === 'string') {
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+  auth: { persistSession: false }
+});
+
+function toNum(v, fallback = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function parseNumbers(value) {
+  if (Array.isArray(value)) return value.map(Number).filter(Number.isFinite);
+
+  if (typeof value === 'string') {
+    return value
+      .split(',')
+      .map((n) => Number(n.trim()))
+      .filter(Number.isFinite);
+  }
+
+  return [];
+}
+
+function parseGroups(groupsJson) {
+  if (!groupsJson) return [];
+
+  if (Array.isArray(groupsJson)) return groupsJson;
+
+  if (typeof groupsJson === 'string') {
     try {
-      const parsed = JSON.parse(v);
-      return Array.isArray(parsed) ? parsed : [];
+      return JSON.parse(groupsJson);
     } catch {
       return [];
     }
@@ -27,189 +57,155 @@ function safeArray(v) {
   return [];
 }
 
-function toNum(v) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : 0;
+function countHit(a = [], b = []) {
+  const set = new Set(b);
+  return a.filter((n) => set.has(n)).length;
+}
+
+function calcReward(hit) {
+  if (hit >= 4) return 1000;
+  if (hit === 3) return 100;
+  if (hit === 2) return 25;
+  return 0;
+}
+
+async function upsertStrategyStat(strategyKey, hit, cost, reward) {
+  const { data: existing } = await supabase
+    .from(STRATEGY_STATS_TABLE)
+    .select('*')
+    .eq('strategy_key', strategyKey)
+    .maybeSingle();
+
+  const prevRounds = toNum(existing?.total_rounds, 0);
+  const prevHits = toNum(existing?.total_hits, 0);
+  const prevCost = toNum(existing?.total_cost, 0);
+  const prevReward = toNum(existing?.total_reward, 0);
+
+  const newRounds = prevRounds + 1;
+  const newHits = prevHits + hit;
+  const newCost = prevCost + cost;
+  const newReward = prevReward + reward;
+
+  const avgHit = newHits / newRounds;
+  const roi = newCost > 0 ? (newReward - newCost) / newCost : 0;
+
+  await supabase.from(STRATEGY_STATS_TABLE).upsert({
+    strategy_key: strategyKey,
+    total_rounds: newRounds,
+    total_hits: newHits,
+    total_cost: newCost,
+    total_reward: newReward,
+    avg_hit: avgHit,
+    roi: roi,
+    updated_at: new Date().toISOString()
+  });
+}
+
+async function processPrediction(prediction, draw) {
+  const groups = parseGroups(prediction.groups_json);
+  const drawNums = parseNumbers(draw.numbers);
+
+  let totalHit = 0;
+  let totalCost = 0;
+  let totalReward = 0;
+
+  const detail = [];
+
+  for (const g of groups) {
+    const nums = parseNumbers(g.nums || g.numbers || []);
+    const hit = countHit(nums, drawNums);
+    const cost = 25;
+    const reward = calcReward(hit);
+
+    totalHit += hit;
+    totalCost += cost;
+    totalReward += reward;
+
+    const strategyKey = g.meta?.strategy_key || g.key || 'unknown';
+
+    await upsertStrategyStat(strategyKey, hit, cost, reward);
+
+    detail.push({
+      nums,
+      hit,
+      cost,
+      reward,
+      strategy_key: strategyKey
+    });
+  }
+
+  const profit = totalReward - totalCost;
+  const roi = totalCost > 0 ? profit / totalCost : 0;
+
+  return {
+    total_hit: totalHit,
+    total_cost: totalCost,
+    total_reward: totalReward,
+    total_profit: profit,
+    roi,
+    detail
+  };
 }
 
 export default async function handler(req, res) {
   try {
-    if (!SUPABASE_URL || !SUPABASE_KEY) {
-      return res.status(200).json({
-        ok: false,
-        error: 'Missing SUPABASE env'
-      });
-    }
-
-    if (!supabase) {
-      supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
-        auth: { persistSession: false }
-      });
-    }
-
-    const COST = 25;
-
-    const { data: predictions, error: pError } = await supabase
-      .from('bingo_predictions')
+    // 1️⃣ 找尚未 compare 的 prediction
+    const { data: predictions } = await supabase
+      .from(PREDICTIONS_TABLE)
       .select('*')
       .eq('status', 'created')
       .order('created_at', { ascending: true })
-      .limit(10);
+      .limit(5);
 
-    if (pError) throw pError;
+    if (!predictions || predictions.length === 0) {
+      return res.status(200).json({
+        ok: true,
+        message: 'no pending predictions'
+      });
+    }
 
     let processed = 0;
-    let skipped = 0;
-    let failed = 0;
 
-    const errorDetails = [];
-    const disabledKeysAll = [];
+    for (const p of predictions) {
+      const targetDrawNo =
+        toNum(p.source_draw_no) + toNum(p.target_periods);
 
-    for (const p of safeArray(predictions)) {
-      try {
-        const sourceDrawNo = toNum(p.source_draw_no);
-        const targetPeriods = toNum(p.target_periods);
+      // 2️⃣ 找開獎
+      const { data: draw } = await supabase
+        .from(DRAWS_TABLE)
+        .select('*')
+        .eq('draw_no', targetDrawNo)
+        .maybeSingle();
 
-        if (!sourceDrawNo || !targetPeriods) {
-          skipped++;
-          errorDetails.push({
-            id: p?.id || null,
-            source_draw_no: p?.source_draw_no || null,
-            reason: 'invalid source_draw_no or target_periods'
-          });
-          continue;
-        }
+      if (!draw) continue;
 
-        const { data: draws, error: dError } = await supabase
-          .from('bingo_draws')
-          .select('*')
-          .gt('draw_no', sourceDrawNo)
-          .order('draw_no', { ascending: true })
-          .limit(targetPeriods);
+      // 3️⃣ 計算 compare
+      const result = await processPrediction(p, draw);
 
-        if (dError) throw dError;
+      // 4️⃣ 寫回 prediction
+      await supabase
+        .from(PREDICTIONS_TABLE)
+        .update({
+          status: 'compared',
+          compare_status: 'done',
+          compared_at: new Date().toISOString(),
+          compare_result: result,
+          hit_count: result.total_hit,
+          verdict: result.total_profit >= 0 ? 'good' : 'bad'
+        })
+        .eq('id', p.id);
 
-        if (!Array.isArray(draws) || draws.length < targetPeriods) {
-          skipped++;
-          errorDetails.push({
-            id: p?.id || null,
-            source_draw_no: p?.source_draw_no || null,
-            reason: 'not enough future draws yet'
-          });
-          continue;
-        }
-
-        const groups = safeArray(p.groups_json);
-
-        if (groups.length === 0) {
-          skipped++;
-          errorDetails.push({
-            id: p?.id || null,
-            source_draw_no: p?.source_draw_no || null,
-            reason: 'groups_json empty'
-          });
-          continue;
-        }
-
-        const payload = buildComparePayload({
-          groups,
-          drawRows: draws,
-          costPerGroupPerPeriod: COST
-        });
-
-        if (!payload || !payload.compareResult) {
-          failed++;
-          errorDetails.push({
-            id: p?.id || null,
-            source_draw_no: p?.source_draw_no || null,
-            reason: 'buildComparePayload returned empty compareResult'
-          });
-          continue;
-        }
-
-        const compareResult = payload.compareResult;
-        const compareDetail = Array.isArray(compareResult.detail) ? compareResult.detail : [];
-
-        if (compareDetail.length === 0) {
-          failed++;
-          errorDetails.push({
-            id: p?.id || null,
-            source_draw_no: p?.source_draw_no || null,
-            reason: 'compareResult.detail empty'
-          });
-          continue;
-        }
-
-        const { error: uError } = await supabase
-          .from('bingo_predictions')
-          .update({
-            status: 'compared',
-            compare_status: 'done',
-            hit_count: toNum(payload.hitCount),
-            compare_result: compareResult,
-            verdict: payload.verdict || 'bad',
-            compared_at: new Date().toISOString()
-          })
-          .eq('id', p.id);
-
-        if (uError) throw uError;
-
-        try {
-          const statsResult = await recordStrategyCompareResult(compareResult);
-
-          if (Array.isArray(statsResult?.disabled_keys) && statsResult.disabled_keys.length > 0) {
-            disabledKeysAll.push(...statsResult.disabled_keys);
-          }
-        } catch (statsError) {
-          console.error('recordStrategyCompareResult failed:', {
-            prediction_id: p?.id || null,
-            source_draw_no: p?.source_draw_no || null,
-            mode: p?.mode || null,
-            error: statsError?.message || String(statsError)
-          });
-
-          errorDetails.push({
-            id: p?.id || null,
-            source_draw_no: p?.source_draw_no || null,
-            reason: `recordStrategyCompareResult failed: ${statsError?.message || String(statsError)}`
-          });
-
-          throw statsError;
-        }
-
-        processed++;
-      } catch (err) {
-        failed++;
-
-        console.error('prediction-compare item failed:', {
-          id: p?.id || null,
-          source_draw_no: p?.source_draw_no || null,
-          mode: p?.mode || null,
-          error: err?.message || String(err)
-        });
-
-        errorDetails.push({
-          id: p?.id || null,
-          source_draw_no: p?.source_draw_no || null,
-          reason: err?.message || String(err)
-        });
-      }
+      processed++;
     }
 
     return res.status(200).json({
       ok: true,
-      processed,
-      skipped,
-      failed,
-      disabled_keys: [...new Set(disabledKeysAll)],
-      error_details: errorDetails.slice(0, 20)
+      processed
     });
-  } catch (e) {
-    console.error('prediction-compare fatal error:', e);
-
-    return res.status(200).json({
+  } catch (err) {
+    return res.status(500).json({
       ok: false,
-      error: e?.message || 'error'
+      error: err.message
     });
   }
 }
