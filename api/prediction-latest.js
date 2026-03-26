@@ -14,6 +14,7 @@ const SUPABASE_KEY =
 const PREDICTIONS_TABLE = 'bingo_predictions';
 const STRATEGY_STATS_TABLE = 'strategy_stats';
 const STRATEGY_POOL_TABLE = 'strategy_pool';
+
 const FORMAL_BATCH_LIMIT = 3;
 
 if (!SUPABASE_URL || !SUPABASE_KEY) {
@@ -229,9 +230,7 @@ async function getLatestPrediction(mode) {
 }
 
 async function getFormalBatchRows(sourceDrawNo) {
-  if (!sourceDrawNo) {
-    return [];
-  }
+  if (!sourceDrawNo) return [];
 
   const { data, error } = await supabase
     .from(PREDICTIONS_TABLE)
@@ -355,7 +354,10 @@ export default async function handler(req, res) {
     const formalBatchRows = await getFormalBatchRows(formalSourceDrawNo);
 
     const formalBatchCount = formalBatchRows.length;
-    const formalRemainingBatchCount = Math.max(0, FORMAL_BATCH_LIMIT - formalBatchCount);
+    const formalRemainingBatchCount = Math.max(
+      0,
+      FORMAL_BATCH_LIMIT - formalBatchCount
+    );
 
     return res.status(200).json({
       ok: true,
