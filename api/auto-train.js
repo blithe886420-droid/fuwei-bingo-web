@@ -22,45 +22,8 @@ const COMPARE_BATCH_LIMIT = 50;
 const MARKET_LOOKBACK_LIMIT = 160;
 const COST_PER_GROUP_PER_PERIOD = 25;
 
-// 允許持續建立新 test prediction，但防止 created 爆量
 const MAX_CREATED_PREDICTIONS = 20;
 const ALLOW_CREATE_WHEN_EXISTING = true;
-
-const DEFAULT_STRATEGY_KEYS = [
-  'hot_balanced',
-  'balanced_zone',
-  'mix_zone_3',
-  'warm_gap',
-  'mix_repeat',
-  'zone_gap',
-  'tail_repeat',
-  'gap_mix',
-  'chase_balanced_2',
-  'odd_even_gap',
-  'gap_cluster',
-  'reverse_hot',
-  'gap_chase',
-  'gap_cluster_2',
-  'tail_mix',
-  'hot_zone',
-  'warm_balanced',
-  'repeat_guard',
-  'zone_split',
-  'pattern_mix',
-  'cluster_hot',
-  'cluster_chase',
-  'spread_zone_rotation',
-  'mix_gap',
-  'chase_skip',
-  'pattern_gap',
-  'gap_balanced',
-  'zone_rotation_gap',
-  'zone_cold',
-  'gap_cold',
-  'skip_hot',
-  'mix_balanced_2',
-  'balanced_skip_4'
-];
 
 const DECISION_CONFIG = {
   hardRejectRoi: -0.85,
@@ -76,6 +39,7 @@ const STRATEGY_STATS_TABLE = 'strategy_stats';
 const STRATEGY_POOL_TABLE = 'strategy_pool';
 const PREDICTIONS_TABLE = 'bingo_predictions';
 const DRAWS_TABLE = 'bingo_draws';
+
 const PROTECTED_STATUS = new Set(['protected']);
 const TERMINAL_STATUS = new Set(['disabled', 'retired']);
 
@@ -195,6 +159,14 @@ function parseNums(value) {
   }
 
   return [];
+}
+
+function normalizeHitRate(raw) {
+  const value = toNum(raw, 0);
+  if (value <= 0) return 0;
+  if (value <= 1) return value;
+  if (value <= 100) return value / 100;
+  return 1;
 }
 
 function isDuplicateDrawModeError(error) {
@@ -2022,7 +1994,7 @@ export default async function handler(req, res) {
     };
 
     const { data: latestDrawRows, error: latestError } = await db
-      .from('bingo_draws')
+      .from(DRAWS_TABLE)
       .select('*')
       .order('draw_no', { ascending: false })
       .limit(1);
@@ -2087,7 +2059,6 @@ export default async function handler(req, res) {
     const latestDraw = latestDrawRows[0];
     const latestDrawNo = toNum(latestDraw?.draw_no, 0);
 
-    // 即時型手動下注模式：直接使用最新一期當 source
     const sourceDrawNoRaw = latestDrawNo;
 
     if (sourceDrawNoRaw <= 0) {
@@ -2152,8 +2123,7 @@ export default async function handler(req, res) {
     let marketSnapshot = null;
 
     const createdNowCount = await countCreatedPredictions(db);
-    const shouldCreatePrediction =
-      createdNowCount < MAX_CREATED_PREDICTIONS;
+    const shouldCreatePrediction = createdNowCount < MAX_CREATED_PREDICTIONS;
 
     if (shouldCreatePrediction) {
       const { data: existingPrediction, error: existingError } = await db
@@ -2168,8 +2138,7 @@ export default async function handler(req, res) {
 
       if (existingError) throw existingError;
 
-      const allowCreateNow =
-        ALLOW_CREATE_WHEN_EXISTING || !existingPrediction;
+      const allowCreateNow = ALLOW_CREATE_WHEN_EXISTING || !existingPrediction;
 
       if (allowCreateNow) {
         const marketRows = await fetchMarketRows(db);
@@ -2210,7 +2179,7 @@ export default async function handler(req, res) {
 
         if (insertError) {
           if (isDuplicateDrawModeError(insertError)) {
-            const { data: existingAfterDup } = await db
+            const { data: existingAfterDup, error: dupReadError } = await db
               .from(PREDICTIONS_TABLE)
               .select('*')
               .eq('mode', TEST_MODE)
@@ -2220,6 +2189,7 @@ export default async function handler(req, res) {
               .limit(1)
               .maybeSingle();
 
+            if (dupReadError) throw dupReadError;
             activeCreatedPrediction = existingAfterDup || null;
           } else {
             throw insertError;
@@ -2234,9 +2204,11 @@ export default async function handler(req, res) {
     const compareAfterCreate = await runCompare(db);
     pipeline.compare_after_create = compareAfterCreate;
 
-    const effectiveMarketSnapshot = marketSnapshot || normalizeMarketSnapshot(
-      buildRecentMarketSignalSnapshot(await fetchMarketRows(db), 'numbers')
-    );
+    const effectiveMarketSnapshot =
+      marketSnapshot ||
+      normalizeMarketSnapshot(
+        buildRecentMarketSignalSnapshot(await fetchMarketRows(db), 'numbers')
+      );
 
     const reaperResult = await runStrategyReaper(db, effectiveMarketSnapshot);
     pipeline.reaper = reaperResult;
@@ -2247,12 +2219,13 @@ export default async function handler(req, res) {
     let finalActiveCreatedPrediction = activeCreatedPrediction;
 
     if (finalActiveCreatedPrediction?.id) {
-      const { data: refreshedPrediction } = await db
+      const { data: refreshedPrediction, error: refreshedError } = await db
         .from(PREDICTIONS_TABLE)
         .select('*')
         .eq('id', finalActiveCreatedPrediction.id)
         .maybeSingle();
 
+      if (refreshedError) throw refreshedError;
       finalActiveCreatedPrediction = refreshedPrediction || finalActiveCreatedPrediction;
     }
 
@@ -2316,9 +2289,11 @@ export default async function handler(req, res) {
         skipped: createdCount === 0,
         reason:
           createdCount === 0
-            ? (createdNowCount >= MAX_CREATED_PREDICTIONS
-                ? 'created pool reached limit'
-                : 'Prediction already exists')
+            ? (
+                createdNowCount >= MAX_CREATED_PREDICTIONS
+                  ? 'created pool reached limit'
+                  : 'Prediction already exists'
+              )
             : undefined,
         existing: createdCount === 0 ? finalActiveCreatedPrediction : undefined
       }
