@@ -40,6 +40,12 @@ function round1(value) {
   return Number(n.toFixed(1));
 }
 
+function round4(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Number(n.toFixed(4));
+}
+
 function isoHourAgo(hours = 1) {
   return new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
 }
@@ -49,99 +55,157 @@ function scoreActiveStrategy(row) {
   const avgHit = toNum(row?.avg_hit, 0);
   const roi = toNum(row?.roi, 0);
   const recent50Roi = toNum(row?.recent_50_roi, 0);
+  const hitRate = toNum(row?.hit_rate, 0);
+  const recent50HitRate = toNum(row?.recent_50_hit_rate, 0);
   const hit2 = toNum(row?.hit2, 0);
   const hit3 = toNum(row?.hit3, 0);
   const hit4 = toNum(row?.hit4, 0);
   const totalRounds = toNum(row?.total_rounds, 0);
 
-  const explosionScore = hit2 * 3 + hit3 * 8 + hit4 * 20;
-  const stabilityScore = avgHit * 60 + recent50Roi * 45 + roi * 10;
+  const explosionScore = hit2 * 2 + hit3 * 8 + hit4 * 20;
+  const qualityScore =
+    avgHit * 55 +
+    recent50Roi * 45 +
+    roi * 10 +
+    hitRate * 18 +
+    recent50HitRate * 12;
   const matureBonus = totalRounds >= 30 ? 25 : totalRounds >= 15 ? 10 : 0;
 
-  return protectedBonus + explosionScore + stabilityScore + matureBonus;
+  return protectedBonus + explosionScore + qualityScore + matureBonus;
 }
 
-function decideEvolutionStatus({
+function detectDecisionPhase({
   comparedLastHour,
   createdLastHour,
-  retiredLastHour,
-  activeCount,
-  topStrategyAvgHit,
-  topStrategyRecent50Roi
-}) {
-  if (comparedLastHour <= 0 && createdLastHour <= 0 && retiredLastHour <= 0) {
-    return {
-      statusArrow: '↓',
-      statusLabel: '停滯',
-      statusText: 'AI最近沒有明顯進步。',
-      statusColor: '#ff8d8d'
-    };
-  }
-
-  if (
-    retiredLastHour >= 1 ||
-    activeCount <= 45 ||
-    topStrategyAvgHit >= 1.9 ||
-    topStrategyRecent50Roi >= 0
-  ) {
-    return {
-      statusArrow: '↑',
-      statusLabel: '進化中',
-      statusText: 'AI正在淘汰弱策略並強化強策略。',
-      statusColor: '#7ef0a5'
-    };
-  }
-
-  return {
-    statusArrow: '→',
-    statusLabel: '探索中',
-    statusText: 'AI正在測試新策略。',
-    statusColor: '#79b8ff'
-  };
-}
-
-function calculateTrainingStrength({
-  comparedLastHour,
-  createdLastHour,
-  retiredLastHour,
   activeCount,
   topStrategyAvgHit,
   topStrategyRoi,
   topStrategyRecent50Roi
 }) {
-  const compareScore = Math.min(35, comparedLastHour * 2);
-  const createScore = Math.min(20, createdLastHour * 2);
-  const retireScore = Math.min(15, retiredLastHour * 5);
+  const hasRecentWork = comparedLastHour > 0 || createdLastHour > 0;
+  const strongShortTerm =
+    topStrategyAvgHit >= 1.8 && topStrategyRecent50Roi >= 0;
+  const usableShortTerm =
+    topStrategyAvgHit >= 1.5 && topStrategyRecent50Roi >= -0.2;
+  const poorShortTerm =
+    topStrategyAvgHit < 1.2 || topStrategyRecent50Roi < -0.5 || topStrategyRoi < -0.7;
 
-  let convergeScore = 0;
-  if (activeCount <= 36) convergeScore = 15;
-  else if (activeCount <= 45) convergeScore = 10;
-  else if (activeCount <= 50) convergeScore = 6;
-  else convergeScore = 2;
+  if (activeCount <= 0) {
+    return {
+      phase: 'no_data',
+      statusArrow: '↓',
+      statusLabel: '資料不足',
+      statusText: '目前沒有可用的策略資料，先不要進場。',
+      statusColor: '#ff8d8d',
+      adviceLevel: 'stop',
+      readyForFormal: false
+    };
+  }
 
-  let qualityScore = 0;
+  if (!hasRecentWork) {
+    return {
+      phase: 'waiting_update',
+      statusArrow: '→',
+      statusLabel: '待更新',
+      statusText: '系統目前沒有新的模擬或比對紀錄，先同步資料再判斷。',
+      statusColor: '#ffd36c',
+      adviceLevel: 'wait',
+      readyForFormal: false
+    };
+  }
 
-  if (topStrategyAvgHit >= 2.2) qualityScore += 8;
-  else if (topStrategyAvgHit >= 1.9) qualityScore += 6;
-  else if (topStrategyAvgHit >= 1.6) qualityScore += 4;
-  else if (topStrategyAvgHit >= 1.3) qualityScore += 2;
+  if (strongShortTerm && activeCount >= 8) {
+    return {
+      phase: 'ready_small_bet',
+      statusArrow: '↑',
+      statusLabel: '可小試',
+      statusText: '目前前段策略表現偏穩，可做小額、單期觀察。',
+      statusColor: '#7ef0a5',
+      adviceLevel: 'go_small',
+      readyForFormal: true
+    };
+  }
 
-  if (topStrategyRecent50Roi >= 10) qualityScore += 7;
-  else if (topStrategyRecent50Roi >= 0) qualityScore += 5;
-  else if (topStrategyRecent50Roi >= -20) qualityScore += 3;
-  else if (topStrategyRecent50Roi >= -40) qualityScore += 1;
+  if (usableShortTerm && activeCount >= 5) {
+    return {
+      phase: 'watch_only',
+      statusArrow: '→',
+      statusLabel: '可觀察',
+      statusText: '目前有可參考策略，但仍建議先看排行與近期表現。',
+      statusColor: '#79b8ff',
+      adviceLevel: 'watch',
+      readyForFormal: false
+    };
+  }
 
-  if (topStrategyRoi >= 0) qualityScore += 8;
-  else if (topStrategyRoi >= -20) qualityScore += 5;
-  else if (topStrategyRoi >= -40) qualityScore += 3;
-  else if (topStrategyRoi >= -60) qualityScore += 1;
+  if (poorShortTerm) {
+    return {
+      phase: 'avoid_entry',
+      statusArrow: '↓',
+      statusLabel: '暫不建議',
+      statusText: '目前前段策略表現偏弱，不建議急著正式下注。',
+      statusColor: '#ff8d8d',
+      adviceLevel: 'avoid',
+      readyForFormal: false
+    };
+  }
+
+  return {
+    phase: 'neutral',
+    statusArrow: '→',
+    statusLabel: '觀察中',
+    statusText: '目前資料可參考，但尚未達到較佳進場條件。',
+    statusColor: '#79b8ff',
+    adviceLevel: 'watch',
+    readyForFormal: false
+  };
+}
+
+function calculateDecisionStrength({
+  comparedLastHour,
+  createdLastHour,
+  activeCount,
+  topStrategyAvgHit,
+  topStrategyRoi,
+  topStrategyRecent50Roi
+}) {
+  const compareScore = Math.min(25, comparedLastHour * 2);
+  const createScore = Math.min(10, createdLastHour * 2);
+
+  let activeScore = 0;
+  if (activeCount >= 20) activeScore = 15;
+  else if (activeCount >= 10) activeScore = 12;
+  else if (activeCount >= 5) activeScore = 8;
+  else if (activeCount >= 1) activeScore = 4;
+
+  let avgHitScore = 0;
+  if (topStrategyAvgHit >= 2.2) avgHitScore = 25;
+  else if (topStrategyAvgHit >= 1.8) avgHitScore = 20;
+  else if (topStrategyAvgHit >= 1.5) avgHitScore = 14;
+  else if (topStrategyAvgHit >= 1.2) avgHitScore = 8;
+  else avgHitScore = 2;
+
+  let recentRoiScore = 0;
+  if (topStrategyRecent50Roi >= 0.2) recentRoiScore = 20;
+  else if (topStrategyRecent50Roi >= 0) recentRoiScore = 16;
+  else if (topStrategyRecent50Roi >= -0.2) recentRoiScore = 10;
+  else if (topStrategyRecent50Roi >= -0.4) recentRoiScore = 5;
+  else recentRoiScore = 1;
+
+  let roiScore = 0;
+  if (topStrategyRoi >= 0.2) roiScore = 5;
+  else if (topStrategyRoi >= 0) roiScore = 4;
+  else if (topStrategyRoi >= -0.2) roiScore = 3;
+  else if (topStrategyRoi >= -0.5) roiScore = 2;
+  else roiScore = 0;
 
   const total =
     compareScore +
     createScore +
-    retireScore +
-    convergeScore +
-    qualityScore;
+    activeScore +
+    avgHitScore +
+    recentRoiScore +
+    roiScore;
 
   return Math.max(0, Math.min(100, Math.round(total)));
 }
@@ -190,6 +254,34 @@ async function getLatestDrawInfo(supabase) {
   return data || null;
 }
 
+async function getLatestFormalPrediction(supabase) {
+  const { data, error } = await supabase
+    .from(PREDICTIONS_TABLE)
+    .select('id, mode, status, created_at, source_draw_no, target_periods, groups_json')
+    .eq('mode', 'formal')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data || null;
+}
+
+function countGroups(groupsJson) {
+  if (Array.isArray(groupsJson)) return groupsJson.length;
+
+  if (typeof groupsJson === 'string') {
+    try {
+      const parsed = JSON.parse(groupsJson);
+      return Array.isArray(parsed) ? parsed.length : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  return 0;
+}
+
 export default async function handler(req, res) {
   try {
     const supabase = getSupabase();
@@ -200,7 +292,8 @@ export default async function handler(req, res) {
       comparedRes,
       createdRes,
       disabledRes,
-      latestDraw
+      latestDraw,
+      latestFormalPrediction
     ] = await Promise.all([
       getPoolWithStats(supabase),
 
@@ -221,7 +314,8 @@ export default async function handler(req, res) {
         .eq('status', 'disabled')
         .gte('updated_at', sinceIso),
 
-      getLatestDrawInfo(supabase)
+      getLatestDrawInfo(supabase),
+      getLatestFormalPrediction(supabase)
     ]);
 
     if (comparedRes.error) throw comparedRes.error;
@@ -247,22 +341,17 @@ export default async function handler(req, res) {
       }))
       .sort((a, b) => {
         if (Boolean(a.protected_rank) !== Boolean(b.protected_rank)) {
-          return (
-            Number(Boolean(b.protected_rank)) -
-            Number(Boolean(a.protected_rank))
-          );
+          return Number(Boolean(b.protected_rank)) - Number(Boolean(a.protected_rank));
         }
         return toNum(b.strategy_score, 0) - toNum(a.strategy_score, 0);
       });
 
     const top = leaderboard[0] || null;
+    const topFour = leaderboard.slice(0, 4);
 
     const comparedLastHour = Number(comparedRes.count || 0);
     const createdLastHour = Number(createdRes.count || 0);
-
-    // 內部語意修正：這裡實際抓的是 disabled，不是 retired
     const disabledLastHour = Number(disabledRes.count || 0);
-
     const activeCount = activeRows.length;
 
     const topStrategyKey = top?.strategy_key || '-';
@@ -271,19 +360,18 @@ export default async function handler(req, res) {
     const topStrategyRoi = round1(top?.roi || 0);
     const topStrategyRecent50Roi = round1(top?.recent_50_roi || 0);
 
-    const status = decideEvolutionStatus({
+    const status = detectDecisionPhase({
       comparedLastHour,
       createdLastHour,
-      retiredLastHour: disabledLastHour,
       activeCount,
       topStrategyAvgHit,
+      topStrategyRoi,
       topStrategyRecent50Roi
     });
 
-    const trainingStrength = calculateTrainingStrength({
+    const trainingStrength = calculateDecisionStrength({
       comparedLastHour,
       createdLastHour,
-      retiredLastHour: disabledLastHour,
       activeCount,
       topStrategyAvgHit,
       topStrategyRoi,
@@ -293,28 +381,64 @@ export default async function handler(req, res) {
     return res.status(200).json({
       ok: true,
       sinceText: '最近 1 小時',
+
       comparedLastHour,
       createdLastHour,
 
-      // 保留舊欄位名稱，避免前端或其他地方還在吃 retiredLastHour 時直接壞掉
+      // 舊欄位保留，避免前端直接壞掉
       retiredLastHour: disabledLastHour,
 
-      // 新增正確語意欄位，讓後續前端可以逐步改成 disabledLastHour
+      // 新欄位
       disabledLastHour,
 
       activeCount,
       disabledCount: disabledRows.length,
       retiredCount: retiredRows.length,
       totalPoolCount: poolWithStats.length,
+
       topStrategyKey,
       topStrategyScore,
       topStrategyAvgHit,
       topStrategyRoi,
       topStrategyRecent50Roi,
+
+      // 舊欄位名稱保留，但語意改為「決策準備度」
       trainingStrength,
+
       latestDrawNo: latestDraw?.draw_no || null,
       latestDrawTime: latestDraw?.draw_time || null,
-      ...status
+
+      latestFormalPrediction: latestFormalPrediction
+        ? {
+            id: latestFormalPrediction.id,
+            status: latestFormalPrediction.status || 'created',
+            created_at: latestFormalPrediction.created_at || null,
+            source_draw_no: toNum(latestFormalPrediction.source_draw_no, 0),
+            target_periods: toNum(latestFormalPrediction.target_periods, 0),
+            group_count: countGroups(latestFormalPrediction.groups_json)
+          }
+        : null,
+
+      // 新語意欄位
+      assistantMode: 'decision_support',
+      readyForFormal: status.readyForFormal,
+      adviceLevel: status.adviceLevel,
+      decisionPhase: status.phase,
+      currentTopStrategies: topFour.map((row, idx) => ({
+        rank: idx + 1,
+        strategy_key: row.strategy_key || '',
+        avg_hit: round4(row.avg_hit || 0),
+        roi: round4(row.roi || 0),
+        recent_50_roi: round4(row.recent_50_roi || 0),
+        hit_rate: round4(row.hit_rate || 0),
+        total_rounds: toNum(row.total_rounds, 0),
+        strategy_score: round4(row.strategy_score || 0)
+      })),
+
+      statusArrow: status.statusArrow,
+      statusLabel: status.statusLabel,
+      statusText: status.statusText,
+      statusColor: status.statusColor
     });
   } catch (error) {
     return res.status(500).json({
