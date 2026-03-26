@@ -363,18 +363,28 @@ export default async function handler(req, res) {
     const rows = [trainingPrediction, formalPrediction].filter(Boolean);
     const decision = buildDecisionSummary(leaderboard);
 
-    const formalSourceDrawNo =
-      latestFormalSourceDrawNo ||
-      formalPrediction?.source_draw_no ||
-      0;
+    // ===== 新邏輯：自動切換 source_draw_no =====
 
-    const formalBatchRows = await getFormalBatchRows(formalSourceDrawNo);
+let formalSourceDrawNo =
+  latestFormalSourceDrawNo ||
+  formalPrediction?.source_draw_no ||
+  0;
 
-    const formalBatchCount = formalBatchRows.length;
-    const formalRemainingBatchCount = Math.max(
-      0,
-      FORMAL_BATCH_LIMIT - formalBatchCount
-    );
+let formalBatchRows = await getFormalBatchRows(formalSourceDrawNo);
+let formalBatchCount = formalBatchRows.length;
+
+// 🔥 核心修正：如果舊批次已滿 → 切換到最新 test draw
+if (formalBatchCount >= FORMAL_BATCH_LIMIT && trainingPrediction?.source_draw_no) {
+  formalSourceDrawNo = toInt(trainingPrediction.source_draw_no, 0);
+
+  formalBatchRows = await getFormalBatchRows(formalSourceDrawNo);
+  formalBatchCount = formalBatchRows.length;
+}
+
+const formalRemainingBatchCount = Math.max(
+  0,
+  FORMAL_BATCH_LIMIT - formalBatchCount
+);
 
     return res.status(200).json({
       ok: true,
