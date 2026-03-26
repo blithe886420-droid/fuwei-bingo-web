@@ -74,6 +74,8 @@ const DECISION_CONFIG = {
 
 const STRATEGY_STATS_TABLE = 'strategy_stats';
 const STRATEGY_POOL_TABLE = 'strategy_pool';
+const PREDICTIONS_TABLE = 'bingo_predictions';
+const DRAWS_TABLE = 'bingo_draws';
 const PROTECTED_STATUS = new Set(['protected']);
 const TERMINAL_STATUS = new Set(['disabled', 'retired']);
 
