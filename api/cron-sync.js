@@ -20,14 +20,17 @@ function nowTs() {
 
 function toBool(value, fallback = false) {
   if (typeof value === 'boolean') return value;
+
   if (typeof value === 'string') {
     const v = value.trim().toLowerCase();
     if (v === 'true') return true;
     if (v === 'false') return false;
   }
+
   if (typeof value === 'number') {
     return value !== 0;
   }
+
   return fallback;
 }
 
@@ -125,19 +128,6 @@ async function runSyncFlow(baseUrl, startedAt) {
     };
   }
 
-  const saveAfterSync = await callInternalApi(baseUrl, '/api/save', {
-    method: 'POST'
-  });
-  steps.push(saveAfterSync);
-
-  if (nowTs() - startedAt > SOFT_TIMEOUT_MS) {
-    return {
-      ok: false,
-      steps,
-      error: 'soft timeout after save'
-    };
-  }
-
   const recent20Result = await callInternalApi(baseUrl, '/api/recent20');
   steps.push(recent20Result);
 
@@ -159,11 +149,6 @@ async function runSyncFlow(baseUrl, startedAt) {
       error: 'soft timeout after catchup'
     };
   }
-
-  const saveAfterCatchup = await callInternalApi(baseUrl, '/api/save', {
-    method: 'POST'
-  });
-  steps.push(saveAfterCatchup);
 
   return {
     ok: steps.every((s) => s.ok),
@@ -187,18 +172,6 @@ export default async function handler(req, res) {
 
     if (action === 'sync') {
       const result = await callInternalApi(baseUrl, '/api/sync');
-      return res.status(200).json({
-        ok: result.ok,
-        mode: 'cron-sync',
-        action,
-        result
-      });
-    }
-
-    if (action === 'save') {
-      const result = await callInternalApi(baseUrl, '/api/save', {
-        method: 'POST'
-      });
       return res.status(200).json({
         ok: result.ok,
         mode: 'cron-sync',
@@ -231,6 +204,7 @@ export default async function handler(req, res) {
       const result = await callInternalApi(baseUrl, '/api/auto-train', {
         method: 'POST'
       });
+
       return res.status(200).json({
         ok: result.ok,
         mode: 'cron-sync',
@@ -247,6 +221,7 @@ export default async function handler(req, res) {
         mode: 'cron-sync',
         action: 'run',
         auto_train_enabled: false,
+        message: '本次排程只執行同步流程，且同步流程未完全成功。',
         step_count: flow.steps.length,
         steps: flow.steps,
         duration_ms: nowTs() - startedAt,
@@ -262,7 +237,7 @@ export default async function handler(req, res) {
         mode: 'cron-sync',
         action: 'run',
         auto_train_enabled: false,
-        message: '自動訓練未啟用，本次排程只執行同步流程。',
+        message: '自動訓練未啟用，本次排程只執行同步流程，不會自動正式下注。',
         system_config_updated_at: cfg.updated_at,
         step_count: flow.steps.length,
         steps: flow.steps,
@@ -281,7 +256,7 @@ export default async function handler(req, res) {
       mode: 'cron-sync',
       action: 'run',
       auto_train_enabled: true,
-      message: '自動訓練已啟用，本次排程已執行同步流程與 auto-train。',
+      message: '自動訓練已啟用，本次排程已執行同步流程與 auto-train，不會自動正式下注。',
       system_config_updated_at: cfg.updated_at,
       step_count: flow.steps.length + 1,
       steps: [...flow.steps, autoTrainResult],
@@ -298,4 +273,3 @@ export default async function handler(req, res) {
     });
   }
 }
-
