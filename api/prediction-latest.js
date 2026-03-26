@@ -1,5 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 
+const API_VERSION = 'prediction-latest-batch-v3';
+
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
   process.env.VITE_SUPABASE_URL ||
@@ -14,7 +16,6 @@ const SUPABASE_KEY =
 const PREDICTIONS_TABLE = 'bingo_predictions';
 const STRATEGY_STATS_TABLE = 'strategy_stats';
 const STRATEGY_POOL_TABLE = 'strategy_pool';
-
 const FORMAL_BATCH_LIMIT = 3;
 
 if (!SUPABASE_URL || !SUPABASE_KEY) {
@@ -111,10 +112,7 @@ function normalizePredictionRow(row) {
 
   const mode = String(row.mode || '').toLowerCase();
   const sourceDrawNo = toInt(row.source_draw_no, 0);
-  const targetPeriods = toInt(
-    row.target_periods,
-    mode.includes('formal') ? 1 : 1
-  );
+  const targetPeriods = toInt(row.target_periods, 1);
   const groups = parseGroupsJson(row.groups_json);
 
   return {
@@ -229,6 +227,19 @@ async function getLatestPrediction(mode) {
   return normalizePredictionRow(data || null);
 }
 
+async function getLatestFormalSourceDrawNo() {
+  const { data, error } = await supabase
+    .from(PREDICTIONS_TABLE)
+    .select('source_draw_no, created_at')
+    .eq('mode', 'formal')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw error;
+  return toInt(data?.source_draw_no, 0);
+}
+
 async function getFormalBatchRows(sourceDrawNo) {
   if (!sourceDrawNo) return [];
 
@@ -341,16 +352,22 @@ export default async function handler(req, res) {
   }
 
   try {
-    const [trainingPrediction, formalPrediction, leaderboard] = await Promise.all([
-      getLatestPrediction('test'),
-      getLatestPrediction('formal'),
-      getStrategyLeaderboard(50)
-    ]);
+    const [trainingPrediction, formalPrediction, leaderboard, latestFormalSourceDrawNo] =
+      await Promise.all([
+        getLatestPrediction('test'),
+        getLatestPrediction('formal'),
+        getStrategyLeaderboard(50),
+        getLatestFormalSourceDrawNo()
+      ]);
 
     const rows = [trainingPrediction, formalPrediction].filter(Boolean);
     const decision = buildDecisionSummary(leaderboard);
 
-    const formalSourceDrawNo = formalPrediction?.source_draw_no || 0;
+    const formalSourceDrawNo =
+      latestFormalSourceDrawNo ||
+      formalPrediction?.source_draw_no ||
+      0;
+
     const formalBatchRows = await getFormalBatchRows(formalSourceDrawNo);
 
     const formalBatchCount = formalBatchRows.length;
@@ -361,6 +378,7 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       ok: true,
+      api_version: API_VERSION,
 
       training: {
         row: trainingPrediction,
@@ -402,6 +420,7 @@ export default async function handler(req, res) {
   } catch (error) {
     return res.status(500).json({
       ok: false,
+      api_version: API_VERSION,
       error: error?.message || 'prediction-latest failed'
     });
   }
