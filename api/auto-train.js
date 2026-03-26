@@ -22,7 +22,6 @@ const COMPARE_BATCH_LIMIT = 50;
 const MARKET_LOOKBACK_LIMIT = 160;
 const COST_PER_GROUP_PER_PERIOD = 25;
 
-// 真進化版：允許持續建立新 test prediction，但防止 created 爆量
 const MAX_CREATED_PREDICTIONS = 20;
 const ALLOW_CREATE_WHEN_EXISTING = true;
 
@@ -74,13 +73,12 @@ const DECISION_CONFIG = {
 
 const STRATEGY_STATS_TABLE = 'strategy_stats';
 const STRATEGY_POOL_TABLE = 'strategy_pool';
+const PREDICTIONS_TABLE = 'bingo_predictions';
+const DRAWS_TABLE = 'bingo_draws';
+
 const PROTECTED_STATUS = new Set(['protected']);
 const TERMINAL_STATUS = new Set(['disabled', 'retired']);
 
-/**
- * 主動淘汰規則（與 strategyStatsRecorder 的快速淘汰精神一致）
- * 目的：即使本輪 compare 沒觸發，也能在 auto-train 週期內主動清理弱策略
- */
 const DISABLE_RULES = {
   minRoundsA: 5,
   roiFloorA: -0.5,
@@ -105,32 +103,15 @@ const DISABLE_RULES = {
   recent50RoiFloorF: -0.4
 };
 
-/**
- * B 版補位強度
- * - 最低存活數保護：避免 Reaper 把 active 砍到太少
- * - 目標策略池：當 active 少於這個值時，自動補位
- * - 最大策略池：避免失控爆量
- * - 每輪補位上限：單次 auto-train 最多補幾支，避免瞬間灌爆
- */
 const MIN_ACTIVE_STRATEGY = 30;
 const TARGET_ACTIVE_STRATEGY = 60;
 const MAX_ACTIVE_STRATEGY = 80;
 const MAX_SPAWN_PER_RUN = 12;
 
-/**
- * C1 縮池控制
- * 目標：
- * - active > 80 時，不只是一般淘汰，而是啟動「縮池模式」
- * - active 太胖時，加大單輪淘汰數量，但仍保留最低存活保護
- * - 先砍弱、再砍候補、最後才碰邊緣 usable
- */
 const SOFT_SHRINK_TRIGGER = MAX_ACTIVE_STRATEGY + 1;
 const HARD_SHRINK_TRIGGER = 120;
 const EXTREME_SHRINK_TRIGGER = 160;
 
-/**
- * 補位用基因字典
- */
 const KNOWN_GENES = [
   'hot',
   'cold',
@@ -1201,7 +1182,7 @@ async function runCatchup() {
 
 async function countCreatedPredictions(db) {
   const { count, error } = await db
-    .from('bingo_predictions')
+    .from(PREDICTIONS_TABLE)
     .select('id', { count: 'exact', head: true })
     .eq('status', 'created');
 
@@ -1211,7 +1192,7 @@ async function countCreatedPredictions(db) {
 
 async function runCompare(db) {
   const { data: predictions, error: predError } = await db
-    .from('bingo_predictions')
+    .from(PREDICTIONS_TABLE)
     .select('*')
     .in('mode', COMPARE_MODES)
     .eq('status', 'created')
@@ -1274,7 +1255,7 @@ async function runCompare(db) {
     }
 
     const { data: drawRows, error: drawError } = await db
-      .from('bingo_draws')
+      .from(DRAWS_TABLE)
       .select('*')
       .gt('draw_no', sourceDrawNo)
       .order('draw_no', { ascending: true })
@@ -1303,7 +1284,7 @@ async function runCompare(db) {
     const comparedAt = new Date().toISOString();
 
     const { error: updateError } = await db
-      .from('bingo_predictions')
+      .from(PREDICTIONS_TABLE)
       .update({
         status: 'compared',
         compare_status: 'done',
@@ -1340,7 +1321,7 @@ async function runCompare(db) {
 
 async function fetchMarketRows(db) {
   const { data, error } = await db
-    .from('bingo_draws')
+    .from(DRAWS_TABLE)
     .select('*')
     .order('draw_no', { ascending: false })
     .limit(MARKET_LOOKBACK_LIMIT);
@@ -1353,7 +1334,7 @@ async function fetchStrategyCandidates(db, marketSnapshot = {}) {
   await ensureStrategyPoolStrategies();
 
   const { data: poolRows, error: poolError } = await db
-    .from('strategy_pool')
+    .from(STRATEGY_POOL_TABLE)
     .select('*')
     .eq('status', 'active')
     .order('updated_at', { ascending: false });
@@ -1369,7 +1350,7 @@ async function fetchStrategyCandidates(db, marketSnapshot = {}) {
   }
 
   const { data: statsRows, error: statsError } = await db
-    .from('strategy_stats')
+    .from(STRATEGY_STATS_TABLE)
     .select('*')
     .in('strategy_key', strategyKeys);
 
@@ -1961,7 +1942,7 @@ export default async function handler(req, res) {
     };
 
     const { data: latestDrawRows, error: latestError } = await db
-      .from('bingo_draws')
+      .from(DRAWS_TABLE)
       .select('*')
       .order('draw_no', { ascending: false })
       .limit(1);
@@ -2025,6 +2006,8 @@ export default async function handler(req, res) {
 
     const latestDraw = latestDrawRows[0];
     const latestDrawNo = toNum(latestDraw?.draw_no, 0);
+
+    // 即時型手動下注模式：直接使用最新一期當 source
     const sourceDrawNoRaw = latestDrawNo;
 
     if (sourceDrawNoRaw <= 0) {
@@ -2089,13 +2072,11 @@ export default async function handler(req, res) {
     let marketSnapshot = null;
 
     const createdNowCount = await countCreatedPredictions(db);
-
-    const shouldCreatePrediction =
-      createdNowCount < MAX_CREATED_PREDICTIONS;
+    const shouldCreatePrediction = createdNowCount < MAX_CREATED_PREDICTIONS;
 
     if (shouldCreatePrediction) {
       const { data: existingPrediction, error: existingError } = await db
-        .from('bingo_predictions')
+        .from(PREDICTIONS_TABLE)
         .select('*')
         .eq('mode', TEST_MODE)
         .eq('source_draw_no', sourceDrawNo)
@@ -2141,7 +2122,7 @@ export default async function handler(req, res) {
         };
 
         const { data: inserted, error: insertError } = await db
-          .from('bingo_predictions')
+          .from(PREDICTIONS_TABLE)
           .insert(payload)
           .select('*')
           .single();
@@ -2149,7 +2130,7 @@ export default async function handler(req, res) {
         if (insertError) {
           if (isDuplicateDrawModeError(insertError)) {
             const { data: existingAfterDup } = await db
-              .from('bingo_predictions')
+              .from(PREDICTIONS_TABLE)
               .select('*')
               .eq('mode', TEST_MODE)
               .eq('source_draw_no', sourceDrawNo)
@@ -2186,7 +2167,7 @@ export default async function handler(req, res) {
 
     if (finalActiveCreatedPrediction?.id) {
       const { data: refreshedPrediction } = await db
-        .from('bingo_predictions')
+        .from(PREDICTIONS_TABLE)
         .select('*')
         .eq('id', finalActiveCreatedPrediction.id)
         .maybeSingle();
@@ -2237,8 +2218,6 @@ export default async function handler(req, res) {
       disabled_keys: [...new Set(disabledKeys)],
       spawned_keys: Array.isArray(spawnerResult?.spawned_keys) ? spawnerResult.spawned_keys : [],
       active_created_prediction: finalActiveCreatedPrediction,
-      reaper: reaperResult,
-      spawner: spawnerResult,
       combat_readiness: combatReadiness,
       pool_control: {
         min_active_strategy: MIN_ACTIVE_STRATEGY,
@@ -2252,19 +2231,17 @@ export default async function handler(req, res) {
       train: {
         ok: true,
         skipped: createdCount === 0,
-        reason:
-          createdCount === 0
-            ? (createdNowCount >= MAX_CREATED_PREDICTIONS
-                ? 'created pool reached limit'
-                : 'Prediction already exists')
-            : undefined,
-        existing: createdCount === 0 ? finalActiveCreatedPrediction : undefined
+        reason: createdCount > 0 ? '' : 'already_exists_or_pool_limit',
+        mode: TEST_MODE,
+        source_draw_no: sourceDrawNo,
+        latest_draw_no: latestDrawNo,
+        target_periods: TARGET_PERIODS
       }
     });
-  } catch (e) {
+  } catch (error) {
     return res.status(500).json({
       ok: false,
-      error: e?.message || 'auto-train failed'
+      error: error?.message || 'auto-train failed'
     });
   }
 }
