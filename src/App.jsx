@@ -718,11 +718,14 @@ export default function App() {
           'x-manual-formal-save': 'true',
           'x-trigger-source': 'app_button'
         },
-        body: JSON.stringify({
-          mode: 'formal',
-          manual: true,
-          trigger_source: 'app_button'
-        })
+       body: JSON.stringify({
+  mode: 'formal',
+  manual: true,
+  trigger_source: 'app_button',
+  analysisPeriod,
+  strategyMode,
+  riskMode
+})
       });
     });
   }, [runAction]);
