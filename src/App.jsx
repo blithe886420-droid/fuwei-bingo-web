@@ -20,6 +20,21 @@ const FORMAL_BATCH_LIMIT = 3;
 const FORMAL_GROUP_COUNT = 4;
 const COST_PER_GROUP = 25;
 
+const ANALYSIS_PERIOD_OPTIONS = [5, 10, 20, 50];
+const STRATEGY_MODE_OPTIONS = [
+  { key: 'hot', label: '追熱策略', desc: '偏向近期熱門號與連續熱勢' },
+  { key: 'cold', label: '補冷策略', desc: '偏向補位冷號與久未出現號' },
+  { key: 'mix', label: '均衡策略', desc: '熱冷混合，分散風險與提高覆蓋' },
+  { key: 'burst', label: '爆發策略', desc: '接受波動，追求較高命中上限' }
+];
+
+const RISK_MODE_OPTIONS = [
+  { key: 'safe', label: '保守', desc: '以穩定中 2 為主' },
+  { key: 'balanced', label: '平衡', desc: '兼顧中 2 與中 3' },
+  { key: 'aggressive', label: '進攻', desc: '偏向中 3 的主力組' },
+  { key: 'sniper', label: '衝高', desc: '接受波動，拚中 4 爆發' }
+];
+
 function toArray(v) {
   return Array.isArray(v) ? v : [];
 }
@@ -380,24 +395,79 @@ function buildLoopStatusText(result) {
     return '本期已存在（正常略過）';
   }
 
-  const compared = toNum(
-    result?.compared_count ??
-      result?.compare?.data?.processed ??
-      result?.compare?.processed,
-    0
-  );
+  const compareBefore = result?.pipeline?.compare_before_create;
+  const compareAfter = result?.pipeline?.compare_after_create;
 
-  const created = toNum(
-    result?.created_count ??
-      (result?.train?.inserted ? 1 : 0),
-    0
-  );
+  const compared = toNum(compareBefore?.processed, 0) + toNum(compareAfter?.processed, 0);
+  const created = toNum(result?.created_count ?? result?.pipeline?.created_count, 0);
 
   if (compared > 0 || created > 0) {
     return `本輪完成：比對 ${compared} 筆 / 新建 ${created} 筆`;
   }
 
   return '本輪無異動';
+}
+
+function getStrategyModeLabel(mode) {
+  const found = STRATEGY_MODE_OPTIONS.find((item) => item.key === mode);
+  return found ? found.label : mode;
+}
+
+function getRiskModeLabel(mode) {
+  const found = RISK_MODE_OPTIONS.find((item) => item.key === mode);
+  return found ? found.label : mode;
+}
+
+function filterGroupsByRisk(groups, riskMode) {
+  if (!Array.isArray(groups)) return [];
+
+  if (!riskMode) return groups;
+
+  return groups.filter((group) => {
+    const type = String(group?.meta?.type || '').toLowerCase();
+
+    if (riskMode === 'safe') return type === 'safe';
+    if (riskMode === 'balanced') return type === 'balanced';
+    if (riskMode === 'aggressive') return type === 'aggressive';
+    if (riskMode === 'sniper') return type === 'sniper';
+    return true;
+  });
+}
+
+function filterGroupsByStrategyMode(groups, strategyMode) {
+  if (!Array.isArray(groups)) return [];
+
+  return groups.filter((group) => {
+    const key = String(group?.meta?.strategy_key || group?.key || '').toLowerCase();
+    const reason = String(group?.reason || '').toLowerCase();
+
+    if (strategyMode === 'hot') {
+      return key.includes('hot') || key.includes('repeat') || reason.includes('熱');
+    }
+
+    if (strategyMode === 'cold') {
+      return key.includes('cold') || key.includes('gap') || key.includes('guard') || reason.includes('冷');
+    }
+
+    if (strategyMode === 'mix') {
+      return key.includes('mix') || key.includes('balanced') || reason.includes('均衡');
+    }
+
+    if (strategyMode === 'burst') {
+      return key.includes('tail') || key.includes('zone') || key.includes('cluster') || key.includes('burst') || reason.includes('爆發');
+    }
+
+    return true;
+  });
+}
+
+function getFilteredDisplayGroups(groups, strategyMode, riskMode) {
+  const byRisk = filterGroupsByRisk(groups, riskMode);
+  const byStrategy = filterGroupsByStrategyMode(byRisk, strategyMode);
+
+  if (byStrategy.length) return byStrategy.slice(0, 4);
+  if (byRisk.length) return byRisk.slice(0, 4);
+  return groups.slice(0, 4);
 }
 
 function Card({ title, subtitle, right, children }) {
@@ -479,6 +549,7 @@ function GroupCard({ group, idx, showRank = false }) {
       </div>
 
       <div style={styles.metaChipRow}>
+        <MetaChip label="角色" value={fmtText(meta?.role_label || meta?.type || '--')} />
         <MetaChip label="策略" value={fmtText(meta?.strategy_key || group?.key)} />
         <MetaChip label="排序" value={fmtText(meta?.selection_rank, idx + 1)} />
         <MetaChip label="ROI" value={fmtPercent(meta?.recent_50_roi ?? meta?.roi)} />
@@ -518,7 +589,11 @@ function FormalBatchCard({ batch, idx }) {
       <div style={styles.groupGrid}>
         {groups.length ? (
           groups.map((group, groupIdx) => (
-            <GroupCard key={`${batch?.id || idx}_${group?.key || groupIdx}`} group={group} idx={groupIdx} />
+            <GroupCard
+              key={`${batch?.id || idx}_${group?.key || groupIdx}`}
+              group={group}
+              idx={groupIdx}
+            />
           ))
         ) : (
           <div style={styles.emptyBox}>這一批目前沒有可顯示的組合。</div>
@@ -528,12 +603,30 @@ function FormalBatchCard({ batch, idx }) {
   );
 }
 
+function SelectorButton({ active, onClick, children }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        ...styles.selectorButton,
+        ...(active ? styles.selectorButtonActive : {})
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState(TABS.DASHBOARD);
   const [loading, setLoading] = useState(true);
   const [busyKey, setBusyKey] = useState('');
   const [error, setError] = useState('');
   const [loopStatusText, setLoopStatusText] = useState('待命中');
+
+  const [analysisPeriod, setAnalysisPeriod] = useState(20);
+  const [strategyMode, setStrategyMode] = useState('mix');
+  const [riskMode, setRiskMode] = useState('balanced');
 
   const [recent20, setRecent20] = useState([]);
   const [trainingLatest, setTrainingLatest] = useState(null);
@@ -649,23 +742,23 @@ export default function App() {
     });
   }, [runAction]);
 
- const handleFormalBet = async () => {
-  await runAction('formalBet', async () => {
-    await safeFetchJson('/api/prediction-save', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-manual-formal-save': 'true',
-        'x-trigger-source': 'app_button'
-      },
-      body: JSON.stringify({
-        mode: 'formal',
-        manual: true,
-        trigger_source: 'app_button'
-      })
+  const handleFormalBet = useCallback(async () => {
+    await runAction('formalBet', async () => {
+      await safeFetchJson('/api/prediction-save', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-manual-formal-save': 'true',
+          'x-trigger-source': 'app_button'
+        },
+        body: JSON.stringify({
+          mode: 'formal',
+          manual: true,
+          trigger_source: 'app_button'
+        })
+      });
     });
-  });
-};
+  }, [runAction]);
 
   const runAiCycle = useCallback(async () => {
     if (cycleRunningRef.current) return;
@@ -692,7 +785,9 @@ export default function App() {
 
       setLoopStatusText('自動模擬中...');
 
-      const autoTrainHttp = await safeFetchJsonAllowHttpError('/api/auto-train', { method: 'POST' }).catch(async () => {
+      const autoTrainHttp = await safeFetchJsonAllowHttpError('/api/auto-train', {
+        method: 'POST'
+      }).catch(async () => {
         return await safeFetchJsonAllowHttpError('/api/auto-train', { method: 'GET' });
       });
 
@@ -746,6 +841,7 @@ export default function App() {
           }
 
           await runAiCycle();
+
           if (!sessionStartedRef.current) return;
           schedulerRef.current = setTimeout(loopRunner, LOOP_INTERVAL_MS);
         }, LOOP_INTERVAL_MS);
@@ -805,7 +901,7 @@ export default function App() {
     return () => clearInterval(timer);
   }, []);
 
-  const handleToggleAutoTrain = async () => {
+  const handleToggleAutoTrain = useCallback(async () => {
     await runAction('toggleAutoTrain', async () => {
       const nextEnabled = !autoTrainEnabled;
 
@@ -827,18 +923,27 @@ export default function App() {
         setLoopStatusText('已停止');
       }
     });
-  };
+  }, [autoTrainEnabled, runAction, scheduleNightResume, startLoopScheduler, clearAllTimers]);
 
   const latestDraw = recent20[0] || null;
   const latestDrawNo = latestDraw?.draw_no || latestDraw?.drawNo || aiPlayer?.latestDrawNo || '--';
-  const latestDrawTime = latestDraw?.draw_time || latestDraw?.drawTime || aiPlayer?.latestDrawTime || '--';
+  const latestDrawTime =
+    latestDraw?.draw_time || latestDraw?.drawTime || aiPlayer?.latestDrawTime || '--';
   const latestNumbers = parseNums(latestDraw?.numbers || latestDraw?.nums);
 
-  const trainingGroups = getPredictionGroups(trainingLatest);
-  const formalGroups = getPredictionGroups(formalLatest);
+  const recentRowsByPeriod = useMemo(() => {
+    return toArray(recent20).slice(0, analysisPeriod);
+  }, [recent20, analysisPeriod]);
 
-  const hotNumbers = useMemo(() => calcHotNumbers(recent20, 10), [recent20]);
-  const streakNumbers = useMemo(() => calcCurrentStreakNumbers(recent20, 5), [recent20]);
+  const trainingGroups = useMemo(() => getPredictionGroups(trainingLatest), [trainingLatest]);
+  const formalGroups = useMemo(() => getPredictionGroups(formalLatest), [formalLatest]);
+
+  const displayTrainingGroups = useMemo(() => {
+    return getFilteredDisplayGroups(trainingGroups, strategyMode, riskMode);
+  }, [trainingGroups, strategyMode, riskMode]);
+
+  const hotNumbers = useMemo(() => calcHotNumbers(recentRowsByPeriod, Math.min(analysisPeriod, 10)), [recentRowsByPeriod, analysisPeriod]);
+  const streakNumbers = useMemo(() => calcCurrentStreakNumbers(recentRowsByPeriod, Math.min(analysisPeriod, 5)), [recentRowsByPeriod, analysisPeriod]);
   const zoneCounts = useMemo(() => calcZoneCounts(latestNumbers), [latestNumbers]);
 
   const lastCycleSummary = useMemo(() => buildLoopStatusText(lastAutoTrainResult), [lastAutoTrainResult]);
@@ -853,16 +958,15 @@ export default function App() {
   const formalBatchLimit = predictionSummary.formalBatchLimit || FORMAL_BATCH_LIMIT;
   const formalBatches = predictionSummary.formalBatches || [];
   const formalBatchProgressText = `${formalBatchCount} / ${formalBatchLimit}`;
- const formalButtonDisabled =
-  busyKey !== '' ||
-  !canFormalBet ||
-  formalRemainingBatchCount <= 0;
 
-const formalButtonLabel = !canFormalBet
-  ? '暫不建議正式下注'
-  : formalRemainingBatchCount <= 0
-    ? '本期已達 3 批上限'
-    : '手動產生一批正式下注';
+  const formalButtonDisabled =
+    busyKey !== '' || !canFormalBet || formalRemainingBatchCount <= 0;
+
+  const formalButtonLabel = !canFormalBet
+    ? '暫不建議正式下注'
+    : formalRemainingBatchCount <= 0
+      ? '本期已達 3 批上限'
+      : '手動產生一批正式下注';
 
   return (
     <div style={styles.page}>
@@ -964,12 +1068,31 @@ const formalButtonLabel = !canFormalBet
                   {currentTopStrategies.length ? (
                     currentTopStrategies.slice(0, 4).map((row, idx) => (
                       <div key={row?.strategy_key || idx} style={styles.groupCard}>
-                        <div style={styles.groupTitle}>第 {idx + 1} 名｜{fmtText(row?.strategy_key)}</div>
+                        <div style={styles.groupTitle}>
+                          第 {idx + 1} 名｜{fmtText(row?.strategy_key)}
+                        </div>
                         <div style={styles.metaChipRow}>
-                          <MetaChip label="平均命中" value={Number.isFinite(Number(row?.avg_hit)) ? Number(row.avg_hit).toFixed(2) : '--'} />
-                          <MetaChip label="ROI" value={fmtPercent(row?.recent_50_roi ?? row?.roi)} />
+                          <MetaChip
+                            label="平均命中"
+                            value={
+                              Number.isFinite(Number(row?.avg_hit))
+                                ? Number(row.avg_hit).toFixed(2)
+                                : '--'
+                            }
+                          />
+                          <MetaChip
+                            label="ROI"
+                            value={fmtPercent(row?.recent_50_roi ?? row?.roi)}
+                          />
                           <MetaChip label="回合" value={fmtText(row?.total_rounds)} />
-                          <MetaChip label="分數" value={Number.isFinite(Number(row?.strategy_score ?? row?.score)) ? Number(row?.strategy_score ?? row?.score).toFixed(1) : '--'} />
+                          <MetaChip
+                            label="分數"
+                            value={
+                              Number.isFinite(Number(row?.strategy_score ?? row?.score))
+                                ? Number(row?.strategy_score ?? row?.score).toFixed(1)
+                                : '--'
+                            }
+                          />
                         </div>
                       </div>
                     ))
@@ -1025,9 +1148,18 @@ const formalButtonLabel = !canFormalBet
               </div>
 
               <div style={styles.pipelineRow}>
-                <span style={styles.pipelineBadge}>同步：{pipelineStatusText(lastAutoTrainResult, 'sync')}</span>
-                <span style={styles.pipelineBadge}>補抓：{pipelineStatusText(lastAutoTrainResult, 'catchup')}</span>
-                <span style={styles.pipelineBadge}>比對：{pipelineStatusText(lastAutoTrainResult, 'compare')}</span>
+                <span style={styles.pipelineBadge}>
+                  同步：{pipelineStatusText(lastAutoTrainResult, 'sync')}
+                </span>
+                <span style={styles.pipelineBadge}>
+                  補抓：{pipelineStatusText(lastAutoTrainResult, 'catchup')}
+                </span>
+                <span style={styles.pipelineBadge}>
+                  比對：{pipelineStatusText(lastAutoTrainResult, 'compare_before_create')}
+                </span>
+                <span style={styles.pipelineBadge}>
+                  建立後比對：{pipelineStatusText(lastAutoTrainResult, 'compare_after_create')}
+                </span>
               </div>
             </Card>
           </div>
@@ -1035,6 +1167,85 @@ const formalButtonLabel = !canFormalBet
 
         {!loading && activeTab === TABS.PREDICT && (
           <div style={styles.sectionStack}>
+            <Card
+              title="預測控制面板"
+              subtitle="先決定你想看幾期、偏好什麼策略、要走哪一種風險風格。"
+            >
+              <div style={styles.predictControlStack}>
+                <div style={styles.selectorBlock}>
+                  <div style={styles.selectorTitle}>分析期數</div>
+                  <div style={styles.selectorDesc}>
+                    選擇較少期數可觀察近期變動，較多期數可看長一點的分布。
+                  </div>
+                  <div style={styles.selectorRow}>
+                    {ANALYSIS_PERIOD_OPTIONS.map((period) => (
+                      <SelectorButton
+                        key={period}
+                        active={analysisPeriod === period}
+                        onClick={() => setAnalysisPeriod(period)}
+                      >
+                        {period} 期
+                      </SelectorButton>
+                    ))}
+                  </div>
+                </div>
+
+                <div style={styles.selectorBlock}>
+                  <div style={styles.selectorTitle}>策略模式</div>
+                  <div style={styles.selectorDesc}>
+                    這裡是操作偏好，不是保證中獎，但能讓面板更符合你的思路。
+                  </div>
+                  <div style={styles.selectorGrid}>
+                    {STRATEGY_MODE_OPTIONS.map((item) => (
+                      <button
+                        key={item.key}
+                        onClick={() => setStrategyMode(item.key)}
+                        style={{
+                          ...styles.modeCard,
+                          ...(strategyMode === item.key ? styles.modeCardActive : {})
+                        }}
+                      >
+                        <div style={styles.modeCardTitle}>{item.label}</div>
+                        <div style={styles.modeCardDesc}>{item.desc}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div style={styles.selectorBlock}>
+                  <div style={styles.selectorTitle}>下注風格</div>
+                  <div style={styles.selectorDesc}>
+                    對應四種打法：保守、平衡、進攻、衝高。
+                  </div>
+                  <div style={styles.selectorGrid}>
+                    {RISK_MODE_OPTIONS.map((item) => (
+                      <button
+                        key={item.key}
+                        onClick={() => setRiskMode(item.key)}
+                        style={{
+                          ...styles.modeCard,
+                          ...(riskMode === item.key ? styles.modeCardActive : {})
+                        }}
+                      >
+                        <div style={styles.modeCardTitle}>{item.label}</div>
+                        <div style={styles.modeCardDesc}>{item.desc}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div style={styles.selectionSummaryBox}>
+                  <div style={styles.selectionSummaryTitle}>目前選擇摘要</div>
+                  <div style={styles.metaChipRow}>
+                    <MetaChip label="分析期數" value={`${analysisPeriod} 期`} />
+                    <MetaChip label="策略模式" value={getStrategyModeLabel(strategyMode)} />
+                    <MetaChip label="下注風格" value={getRiskModeLabel(riskMode)} />
+                    <MetaChip label="最新期數" value={fmtText(latestDrawNo)} />
+                  </div>
+                </div>
+              </div>
+            </Card>
+
             <Card
               title="正式下注面板"
               subtitle="正式下注改為單期、前四策略、同一期最多三批。"
@@ -1055,7 +1266,9 @@ const formalButtonLabel = !canFormalBet
                   label="批次進度"
                   value={formalBatchProgressText}
                   hint={`剩餘 ${formalRemainingBatchCount} 批`}
-                  valueStyle={{ color: formalRemainingBatchCount > 0 ? '#0f766e' : '#b45309' }}
+                  valueStyle={{
+                    color: formalRemainingBatchCount > 0 ? '#0f766e' : '#b45309'
+                  }}
                 />
                 <StatBox
                   label="formal source_draw_no"
@@ -1076,7 +1289,9 @@ const formalButtonLabel = !canFormalBet
                 <button
                   style={{
                     ...styles.primaryButton,
-                    ...((!canFormalBet || formalRemainingBatchCount <= 0) ? styles.warningButton : {})
+                    ...((!canFormalBet || formalRemainingBatchCount <= 0)
+                      ? styles.warningButton
+                      : {})
                   }}
                   onClick={handleFormalBet}
                   disabled={formalButtonDisabled}
@@ -1089,9 +1304,18 @@ const formalButtonLabel = !canFormalBet
             <Card
               title="最新 test 模擬前四組"
               subtitle="這是正式下注的來源，先看它再決定要不要按。"
+              right={
+                <div style={styles.predictTopTag}>
+                  依目前面板偏好顯示：{getStrategyModeLabel(strategyMode)} / {getRiskModeLabel(riskMode)}
+                </div>
+              }
             >
               <div style={styles.groupGrid}>
-                {trainingGroups.length ? (
+                {displayTrainingGroups.length ? (
+                  displayTrainingGroups.slice(0, 4).map((group, idx) => (
+                    <GroupCard key={group?.key || idx} group={group} idx={idx} showRank />
+                  ))
+                ) : trainingGroups.length ? (
                   trainingGroups.slice(0, 4).map((group, idx) => (
                     <GroupCard key={group?.key || idx} group={group} idx={idx} showRank />
                   ))
@@ -1106,11 +1330,13 @@ const formalButtonLabel = !canFormalBet
               subtitle="這裡才是你現在真正的實戰面板。"
             >
               <div style={styles.metaChipRow}>
-
                 <MetaChip label="已下注" value={formalBatchCount} />
                 <MetaChip label="上限" value={formalBatchLimit} />
                 <MetaChip label="剩餘" value={formalRemainingBatchCount} />
-                <MetaChip label="source_draw_no" value={fmtText(predictionSummary.formalSourceDrawNo)} />
+                <MetaChip
+                  label="source_draw_no"
+                  value={fmtText(predictionSummary.formalSourceDrawNo)}
+                />
               </div>
 
               <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -1142,60 +1368,16 @@ const formalButtonLabel = !canFormalBet
                 <div style={styles.metaChipRow}>
                   <MetaChip label="mode" value={fmtText(formalLatest?.mode)} />
                   <MetaChip label="status" value={fmtText(formalLatest?.status)} />
-                  <MetaChip label="source_draw_no" value={fmtText(formalLatest?.source_draw_no)} />
-                  <MetaChip label="target_periods" value={fmtText(formalLatest?.target_periods)} />
+                  <MetaChip
+                    label="source_draw_no"
+                    value={fmtText(formalLatest?.source_draw_no)}
+                  />
+                  <MetaChip
+                    label="target_periods"
+                    value={fmtText(formalLatest?.target_periods)}
+                  />
                   <MetaChip label="建立時間" value={fmtDateTime(formalLatest?.created_at)} />
                 </div>
-              </div>
-            </Card>
-
-            <Card
-              title="策略排行榜"
-              subtitle="不是誰名字帥，是誰最近真的有在贏。"
-            >
-              <div style={styles.tableWrap}>
-                <table style={styles.table}>
-                  <thead>
-                    <tr>
-                      <th style={styles.th}>排名</th>
-                      <th style={styles.th}>策略</th>
-                      <th style={styles.th}>平均命中</th>
-                      <th style={styles.th}>近50 ROI</th>
-                      <th style={styles.th}>回合</th>
-                      <th style={styles.th}>分數</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {leaderboard.length ? (
-                      leaderboard.slice(0, 10).map((row, idx) => (
-                        <tr key={row?.key || idx}>
-                          <td style={styles.td}>{idx + 1}</td>
-                          <td style={styles.td}>{fmtText(row?.label || row?.key)}</td>
-                          <td style={styles.td}>
-                            {Number.isFinite(Number(row?.avg_hit))
-                              ? Number(row.avg_hit).toFixed(2)
-                              : '--'}
-                          </td>
-                          <td style={styles.td}>
-                            {fmtPercent(row?.recent_50_roi ?? row?.roi)}
-                          </td>
-                          <td style={styles.td}>{fmtText(row?.total_rounds)}</td>
-                          <td style={styles.td}>
-                            {Number.isFinite(Number(row?.score))
-                              ? Number(row.score).toFixed(1)
-                              : '--'}
-                          </td>
-                        </tr>
-                      ))
-                    ) : (
-                      <tr>
-                        <td style={styles.td} colSpan={6}>
-                          目前無排行榜資料。
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
               </div>
             </Card>
           </div>
@@ -1204,101 +1386,143 @@ const formalButtonLabel = !canFormalBet
         {!loading && activeTab === TABS.MARKET && (
           <div style={styles.sectionStack}>
             <Card
-              title="市場即時資訊"
-              subtitle="盤面是基礎，策略是決策。"
-              right={<div style={styles.marketInfoTag}>最近五期連莊 / 最近十期熱號</div>}
+              title="最新開獎盤面"
+              subtitle="市場資料不是水晶球，但至少比閉著眼睛好。"
+              right={<div style={styles.predictTopTag}>現在時間：{marketNowText}</div>}
             >
               <div style={styles.statsGrid4}>
                 <StatBox
                   label="最新期數"
                   value={fmtText(latestDrawNo)}
-                  hint="即時最新一期"
-                  valueStyle={{ color: '#d97706' }}
+                  hint={`開獎時間：${fmtText(latestDrawTime)}`}
                 />
                 <StatBox
-                  label="目前時間"
-                  value={marketNowText}
-                  hint="前端即時顯示"
+                  label="分析期數"
+                  value={`${analysisPeriod} 期`}
+                  hint="可從預測下注面板切換"
                 />
                 <StatBox
-                  label="開出號碼數"
-                  value={latestNumbers.length}
-                  hint="BINGO 1~80"
+                  label="策略模式"
+                  value={getStrategyModeLabel(strategyMode)}
+                  hint="這會影響預測面板的顯示偏好"
                 />
                 <StatBox
-                  label="五期內連莊數"
-                  value={streakNumbers.length}
-                  hint="只算目前連開 2 期以上"
-                  valueStyle={{ color: '#c2410c' }}
+                  label="下注風格"
+                  value={getRiskModeLabel(riskMode)}
+                  hint="對應保守 / 平衡 / 進攻 / 衝高"
                 />
               </div>
-            </Card>
 
-            <Card
-              title="本期球號"
-              subtitle="最新一期的 20 顆球。"
-            >
-              <div style={styles.marketHeroBox}>
-                <div style={styles.marketDrawNoLine}>
-                  最新期數：
-                  <span style={styles.marketDrawNoValue}>{fmtText(latestDrawNo)}</span>
-                  <span style={styles.marketDrawTimeText}>　{fmtDateTime(latestDrawTime)}</span>
-                </div>
-
-                <div style={styles.marketBallsHero}>
+              <div style={styles.marketPanel}>
+                <div style={styles.marketPanelTitle}>最新 20 顆號碼</div>
+                <div style={styles.marketBallsWrap}>
                   {latestNumbers.length ? (
-                    latestNumbers.map((n) => <MarketBall key={n} n={n} />)
+                    latestNumbers.map((n) => <MarketBall key={n} n={n} highlight />)
                   ) : (
-                    <div style={styles.emptyBox}>目前沒有本期球號資料。</div>
+                    <div style={styles.emptyBox}>目前沒有最新開獎號碼。</div>
                   )}
                 </div>
               </div>
-            </Card>
 
-            <Card
-              title="五期內連莊號碼"
-              subtitle="從最新一期往前看，只顯示目前連開中的號碼。"
-            >
-              <div style={styles.streakWrap}>
-                {streakNumbers.length ? (
-                  streakNumbers.map((item) => (
-                    <StreakBall key={item.num} n={item.num} streak={item.streak} />
-                  ))
-                ) : (
-                  <div style={styles.emptyBox}>目前沒有連莊中的號碼。</div>
-                )}
-              </div>
-            </Card>
-
-            <Card
-              title="最近十期熱號"
-              subtitle="統計最近十期出現次數最多的號碼。"
-            >
-              <div style={styles.hotWrap}>
-                {hotNumbers.length ? (
-                  hotNumbers.map((item) => (
-                    <div key={item.num} style={styles.hotItem}>
-                      <div style={styles.hotBall}>{formatBallNumber(item.num)}</div>
-                      <div style={styles.hotCount}>{item.count} 次</div>
-                    </div>
-                  ))
-                ) : (
-                  <div style={styles.emptyBox}>目前沒有熱號資料。</div>
-                )}
-              </div>
-            </Card>
-
-            <Card
-              title="本期區間分布"
-              subtitle="看 1~80 四區目前各開幾顆。"
-            >
-              <div style={styles.zoneGrid}>
-                {zoneCounts.map((zone) => (
-                  <div key={zone.label} style={styles.zoneBox}>
-                    <div style={styles.zoneLabel}>{zone.label}</div>
-                    <div style={styles.zoneCount}>{zone.count}</div>
+              <div style={styles.marketGrid2}>
+                <div style={styles.marketPanel}>
+                  <div style={styles.marketPanelTitle}>近期熱號（依目前分析期數）</div>
+                  <div style={styles.marketBallsWrap}>
+                    {hotNumbers.length ? (
+                      hotNumbers.map((item) => (
+                        <div key={item.num} style={styles.hotBallWrap}>
+                          <MarketBall n={item.num} />
+                          <div style={styles.hotBallCount}>{item.count}</div>
+                        </div>
+                      ))
+                    ) : (
+                      <div style={styles.emptyBox}>目前沒有熱號資料。</div>
+                    )}
                   </div>
-                ))}
+                </div>
+
+                <div style={styles.marketPanel}>
+                  <div style={styles.marketPanelTitle}>連莊號</div>
+                  <div style={styles.marketBallsWrap}>
+                    {streakNumbers.length ? (
+                      streakNumbers.map((item) => (
+                        <StreakBall key={item.num} n={item.num} streak={item.streak} />
+                      ))
+                    ) : (
+                      <div style={styles.emptyBox}>目前沒有連莊號。</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div style={styles.marketPanel}>
+                <div style={styles.marketPanelTitle}>分區分布</div>
+                <div style={styles.zoneGrid}>
+                  {zoneCounts.map((zone) => (
+                    <div key={zone.label} style={styles.zoneBox}>
+                      <div style={styles.zoneLabel}>{zone.label}</div>
+                      <div style={styles.zoneCount}>{zone.count}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div style={styles.marketPanel}>
+                <div style={styles.marketPanelTitle}>近期資料列</div>
+                <div style={styles.historyRows}>
+                  {recentRowsByPeriod.length ? (
+                    recentRowsByPeriod.map((row, idx) => {
+                      const nums = parseNums(row?.numbers || row?.nums);
+                      return (
+                        <div key={`${row?.draw_no || idx}`} style={styles.historyRow}>
+                          <div style={styles.historyMeta}>
+                            <span>期數：{fmtText(row?.draw_no || row?.drawNo)}</span>
+                            <span>時間：{fmtText(row?.draw_time || row?.drawTime, '--')}</span>
+                          </div>
+                          <div style={styles.historyBalls}>
+                            {nums.map((n) => (
+                              <MarketBall key={`${row?.draw_no || idx}_${n}`} n={n} />
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div style={styles.emptyBox}>目前沒有近期資料列。</div>
+                  )}
+                </div>
+              </div>
+
+              <div style={styles.marketPanel}>
+                <div style={styles.marketPanelTitle}>排行榜摘要</div>
+                <div style={styles.groupGrid}>
+                  {leaderboard.length ? (
+                    leaderboard.slice(0, 6).map((row, idx) => (
+                      <div key={`${row?.strategy_key || idx}`} style={styles.groupCard}>
+                        <div style={styles.groupTitle}>
+                          第 {idx + 1} 名｜{fmtText(row?.strategy_key)}
+                        </div>
+                        <div style={styles.metaChipRow}>
+                          <MetaChip
+                            label="avg_hit"
+                            value={
+                              Number.isFinite(Number(row?.avg_hit))
+                                ? Number(row.avg_hit).toFixed(2)
+                                : '--'
+                            }
+                          />
+                          <MetaChip
+                            label="recent_50_roi"
+                            value={fmtPercent(row?.recent_50_roi)}
+                          />
+                          <MetaChip label="rounds" value={fmtText(row?.total_rounds)} />
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div style={styles.emptyBox}>目前沒有 leaderboard 資料。</div>
+                  )}
+                </div>
               </div>
             </Card>
           </div>
@@ -1311,480 +1535,513 @@ const formalButtonLabel = !canFormalBet
 const styles = {
   page: {
     minHeight: '100vh',
-    background: '#f6efd7',
-    padding: 20,
-    boxSizing: 'border-box',
-    color: '#3c3428',
-    fontFamily:
-      '"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif'
+    background: '#f3ece0',
+    padding: 24,
+    color: '#23413a',
+    boxSizing: 'border-box'
   },
   app: {
-    maxWidth: 1320,
-    margin: '0 auto'
+    maxWidth: 1400,
+    margin: '0 auto',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 20
   },
   header: {
     display: 'flex',
     justifyContent: 'space-between',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     gap: 16,
-    marginBottom: 18
+    padding: '8px 4px 0'
   },
   brand: {
-    fontSize: 24,
-    fontWeight: 800,
+    fontSize: 38,
+    fontWeight: 900,
     color: '#0f766e',
-    letterSpacing: 0.5
+    letterSpacing: '0.5px'
   },
   headerSub: {
-    marginTop: 4,
-    color: '#8a7d66',
-    fontSize: 14
+    marginTop: 6,
+    color: '#7b6e5c',
+    fontSize: 15
   },
   headerActions: {
     display: 'flex',
-    gap: 10
+    alignItems: 'center',
+    gap: 12
   },
   tabBar: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(3, 1fr)',
-    gap: 12,
-    marginBottom: 18
+    gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+    gap: 12
   },
   tabButton: {
-    border: '1px solid #d7c89a',
-    borderRadius: 16,
-    background: '#fffaf0',
-    padding: '14px 18px',
-    fontSize: 22,
-    fontWeight: 700,
-    color: '#4b4436',
+    border: '2px solid #2e4b44',
+    background: '#f7f1e7',
+    color: '#23413a',
+    borderRadius: 18,
+    padding: '18px 16px',
+    fontSize: 28,
+    fontWeight: 800,
     cursor: 'pointer',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 10
+    gap: 10,
+    transition: 'all .15s ease'
   },
   tabButtonActive: {
-    background: '#12806d',
+    background: '#0f766e',
     color: '#fff',
-    borderColor: '#12806d'
+    borderColor: '#0f766e'
   },
   tabIcon: {
-    fontSize: 18
-  },
-  loading: {
-    background: '#fffaf0',
-    border: '1px solid #ead9a9',
-    borderRadius: 16,
-    padding: 18,
-    fontSize: 16
-  },
-  errorBanner: {
-    background: '#fff1f2',
-    color: '#b42318',
-    border: '1px solid #f4c7cc',
-    borderRadius: 14,
-    padding: 14,
-    marginBottom: 14
+    fontSize: 24
   },
   sectionStack: {
     display: 'flex',
     flexDirection: 'column',
-    gap: 16
+    gap: 20
   },
   card: {
-    background: '#fffaf0',
-    border: '1px solid #e7d7a9',
-    borderRadius: 22,
-    padding: 18,
-    boxShadow: '0 4px 14px rgba(120, 100, 50, 0.06)'
+    background: '#efe8db',
+    border: '2px solid #d8c7ad',
+    borderRadius: 24,
+    padding: 20,
+    boxShadow: '0 2px 0 rgba(124, 90, 34, 0.04)'
   },
   cardHeader: {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
     gap: 16,
-    marginBottom: 14
+    marginBottom: 18
   },
   cardTitle: {
-    fontSize: 28,
-    fontWeight: 800,
-    color: '#0b7c72'
+    fontSize: 24,
+    fontWeight: 900,
+    color: '#0f766e'
   },
   cardSubtitle: {
-    marginTop: 4,
+    marginTop: 6,
+    color: '#7b6e5c',
     fontSize: 14,
-    color: '#8b7b5b'
+    lineHeight: 1.6
   },
   statsGrid4: {
     display: 'grid',
     gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
-    gap: 14
+    gap: 16
   },
   statBox: {
-    border: '1px solid #e7d7a9',
+    background: '#f8f1e6',
+    border: '2px solid #d9c7a8',
     borderRadius: 18,
     padding: 16,
-    background: '#fffdf6'
+    minHeight: 120,
+    boxSizing: 'border-box'
   },
   statLabel: {
-    fontSize: 13,
-    color: '#8b7b5b',
-    marginBottom: 8
+    fontSize: 14,
+    color: '#7b6e5c',
+    marginBottom: 10
   },
   statValue: {
     fontSize: 22,
-    fontWeight: 800,
-    color: '#b45309',
+    fontWeight: 900,
+    color: '#d2534f',
     lineHeight: 1.2
   },
   statHint: {
     marginTop: 8,
-    fontSize: 12,
-    color: '#9a8c70'
+    color: '#7b6e5c',
+    fontSize: 13,
+    lineHeight: 1.5
   },
   resultPanel: {
-    marginTop: 16,
-    border: '1px solid #ead9a9',
+    marginTop: 18,
+    background: '#f8f1e6',
+    border: '2px solid #d9c7a8',
     borderRadius: 18,
-    padding: 16,
-    background: '#fffdf8'
+    padding: 16
   },
   resultTitle: {
-    fontSize: 17,
+    fontSize: 18,
     fontWeight: 800,
     color: '#0f766e',
-    marginBottom: 8
+    marginBottom: 10
   },
   resultText: {
+    color: '#23413a',
     fontSize: 15,
-    color: '#544936',
-    lineHeight: 1.65
+    lineHeight: 1.7
   },
   miniStatsRow: {
     display: 'flex',
     flexWrap: 'wrap',
     gap: 10
   },
-  pipelineRow: {
-    marginTop: 14,
+  metaChipRow: {
     display: 'flex',
     flexWrap: 'wrap',
     gap: 10
   },
-  pipelineBadge: {
-    background: '#f8edc8',
-    border: '1px solid #dfcb8f',
-    color: '#6e5a28',
+  metaChip: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    background: '#f0e4c8',
+    border: '1px solid #d1b989',
+    color: '#5f5139',
     borderRadius: 999,
-    padding: '8px 12px',
+    padding: '6px 10px',
     fontSize: 13,
     fontWeight: 700
   },
+  metaChipLabel: {
+    color: '#886f46'
+  },
   controlGrid: {
     display: 'grid',
-    gridTemplateColumns: '1fr 1fr',
+    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
     gap: 16
   },
   controlBox: {
-    border: '1px solid #e7d7a9',
+    background: '#f8f1e6',
+    border: '2px solid #d9c7a8',
     borderRadius: 18,
-    background: '#fffdf6',
     padding: 16
   },
   controlTitle: {
     fontSize: 18,
     fontWeight: 800,
-    color: '#0f766e',
-    marginBottom: 8
+    color: '#0f766e'
   },
   controlDesc: {
+    marginTop: 8,
+    color: '#7b6e5c',
     fontSize: 14,
-    color: '#8a7d66',
-    lineHeight: 1.6,
-    marginBottom: 12
+    lineHeight: 1.6
   },
   inlineButtonRow: {
     display: 'flex',
-    gap: 10,
-    flexWrap: 'wrap'
+    gap: 12,
+    flexWrap: 'wrap',
+    marginTop: 14
   },
   primaryButton: {
-    border: 'none',
-    borderRadius: 14,
+    marginTop: 14,
     background: '#0f766e',
     color: '#fff',
+    border: 'none',
+    borderRadius: 16,
+    padding: '14px 18px',
+    fontSize: 16,
+    fontWeight: 800,
+    cursor: 'pointer'
+  },
+  secondaryButton: {
+    background: '#f8f1e6',
+    color: '#23413a',
+    border: '2px solid #d9c7a8',
+    borderRadius: 14,
     padding: '12px 16px',
     fontSize: 15,
     fontWeight: 800,
     cursor: 'pointer'
   },
-  secondaryButton: {
-    border: '1px solid #d9c88f',
-    borderRadius: 14,
-    background: '#fff7df',
-    color: '#5a4b2f',
-    padding: '12px 16px',
-    fontSize: 14,
-    fontWeight: 700,
-    cursor: 'pointer'
-  },
   stopButton: {
-    background: '#b42318'
+    background: '#a1433d'
   },
   warningButton: {
-    background: '#b45309'
+    background: '#c0841c'
   },
-  predictTopTag: {
-    background: '#f8edc8',
-    border: '1px solid #dfcb8f',
+  pipelineRow: {
+    marginTop: 18,
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 10
+  },
+  pipelineBadge: {
+    background: '#efe3cb',
+    border: '1px solid #d3b88e',
     borderRadius: 999,
     padding: '8px 12px',
     fontSize: 13,
     fontWeight: 700,
-    color: '#6e5a28'
+    color: '#6a583a'
+  },
+  predictTopTag: {
+    background: '#efe3cb',
+    border: '1px solid #d3b88e',
+    borderRadius: 999,
+    padding: '8px 12px',
+    fontSize: 13,
+    fontWeight: 700,
+    color: '#6a583a',
+    whiteSpace: 'nowrap'
+  },
+  predictControlStack: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 18
+  },
+  selectorBlock: {
+    background: '#f8f1e6',
+    border: '2px solid #d9c7a8',
+    borderRadius: 18,
+    padding: 16
+  },
+  selectorTitle: {
+    fontSize: 18,
+    fontWeight: 800,
+    color: '#0f766e'
+  },
+  selectorDesc: {
+    marginTop: 6,
+    color: '#7b6e5c',
+    fontSize: 14,
+    lineHeight: 1.6
+  },
+  selectorRow: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 12,
+    marginTop: 14
+  },
+  selectorGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+    gap: 12,
+    marginTop: 14
+  },
+  selectorButton: {
+    background: '#f0e4c8',
+    border: '2px solid #d3b88e',
+    color: '#5f5139',
+    borderRadius: 14,
+    padding: '12px 16px',
+    fontSize: 15,
+    fontWeight: 800,
+    cursor: 'pointer'
+  },
+  selectorButtonActive: {
+    background: '#0f766e',
+    borderColor: '#0f766e',
+    color: '#fff'
+  },
+  modeCard: {
+    textAlign: 'left',
+    background: '#f7f0e4',
+    border: '2px solid #dcc9ad',
+    borderRadius: 16,
+    padding: 16,
+    cursor: 'pointer'
+  },
+  modeCardActive: {
+    background: '#e0f0ea',
+    borderColor: '#0f766e'
+  },
+  modeCardTitle: {
+    fontSize: 16,
+    fontWeight: 800,
+    color: '#23413a'
+  },
+  modeCardDesc: {
+    marginTop: 8,
+    fontSize: 13,
+    color: '#7b6e5c',
+    lineHeight: 1.6
+  },
+  selectionSummaryBox: {
+    background: '#f8f1e6',
+    border: '2px dashed #d3b88e',
+    borderRadius: 18,
+    padding: 16
+  },
+  selectionSummaryTitle: {
+    fontSize: 17,
+    fontWeight: 800,
+    color: '#0f766e',
+    marginBottom: 10
   },
   predictActionBox: {
-    marginTop: 16,
-    border: '1px dashed #d7c27d',
-    borderRadius: 18,
-    padding: 16,
-    background: '#fffdf6',
+    marginTop: 18,
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
-    gap: 16
+    gap: 16,
+    background: '#f8f1e6',
+    border: '2px solid #d9c7a8',
+    borderRadius: 18,
+    padding: 16
   },
   predictActionText: {
+    color: '#6f624d',
     fontSize: 14,
-    color: '#665941',
-    lineHeight: 1.7
+    lineHeight: 1.6,
+    flex: 1
   },
   groupGrid: {
     display: 'grid',
     gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-    gap: 14
+    gap: 16
   },
   groupCard: {
-    border: '1px solid #ead9a9',
+    background: '#f8f1e6',
+    border: '2px solid #d9c7a8',
     borderRadius: 18,
-    padding: 16,
-    background: '#fffdf7'
+    padding: 16
   },
   groupHeader: {
     display: 'flex',
     justifyContent: 'space-between',
-    gap: 10,
-    marginBottom: 10
+    alignItems: 'flex-start',
+    gap: 12
   },
   groupTitleWrap: {
-    flex: 1
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6
   },
   groupTitle: {
-    fontSize: 17,
-    fontWeight: 800,
+    fontSize: 18,
+    fontWeight: 900,
     color: '#0f766e'
   },
   groupReason: {
-    marginTop: 6,
     fontSize: 13,
-    color: '#8b7b5b',
-    lineHeight: 1.6
+    color: '#7b6e5c',
+    lineHeight: 1.5
   },
   groupBalls: {
     display: 'flex',
     flexWrap: 'wrap',
     gap: 10,
-    margin: '14px 0'
+    marginTop: 14,
+    marginBottom: 14
   },
   pickBall: {
-    width: 44,
-    height: 44,
-    borderRadius: 999,
-    background: '#12806d',
+    width: 52,
+    height: 52,
+    borderRadius: '50%',
+    background: '#0f766e',
     color: '#fff',
+    fontSize: 18,
+    fontWeight: 900,
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    fontWeight: 800,
-    fontSize: 16
-  },
-  metaChipRow: {
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: 8
-  },
-  metaChip: {
-    background: '#f7efcf',
-    border: '1px solid #e0cf95',
-    borderRadius: 999,
-    padding: '6px 10px',
-    display: 'inline-flex',
-    gap: 6,
-    fontSize: 12,
-    color: '#5c4d30'
-  },
-  metaChipLabel: {
-    fontWeight: 800
+    boxShadow: 'inset 0 -3px 0 rgba(0,0,0,0.12)'
   },
   batchCard: {
-    border: '1px solid #e0cf95',
-    borderRadius: 20,
-    background: '#fffdf7',
+    background: '#f8f1e6',
+    border: '2px solid #d9c7a8',
+    borderRadius: 18,
     padding: 16
   },
   batchCardHead: {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
-    gap: 12,
-    marginBottom: 14
+    gap: 16,
+    marginBottom: 16
   },
   batchCardTitle: {
-    fontSize: 20,
-    fontWeight: 800,
+    fontSize: 18,
+    fontWeight: 900,
     color: '#0f766e'
   },
   batchCardSub: {
-    marginTop: 4,
+    marginTop: 6,
     fontSize: 13,
-    color: '#8b7b5b'
+    color: '#7b6e5c'
   },
-  tableWrap: {
-    overflowX: 'auto'
+  marketPanel: {
+    marginTop: 18,
+    background: '#f8f1e6',
+    border: '2px solid #d9c7a8',
+    borderRadius: 18,
+    padding: 16
   },
-  table: {
-    width: '100%',
-    borderCollapse: 'collapse'
+  marketPanelTitle: {
+    fontSize: 18,
+    fontWeight: 900,
+    color: '#0f766e',
+    marginBottom: 12
   },
-  th: {
-    textAlign: 'left',
-    padding: '12px 10px',
-    background: '#f8efcf',
-    borderBottom: '1px solid #e1cf98',
-    color: '#6e5a28',
-    fontSize: 13
+  marketGrid2: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+    gap: 16
   },
-  td: {
-    padding: '12px 10px',
-    borderBottom: '1px solid #efe2ba',
-    fontSize: 14,
-    color: '#463c2d'
-  },
-  marketInfoTag: {
-    background: '#f8edc8',
-    border: '1px solid #dfcb8f',
-    borderRadius: 999,
-    padding: '8px 12px',
-    fontSize: 13,
-    fontWeight: 700,
-    color: '#6e5a28'
-  },
-  marketHeroBox: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 14
-  },
-  marketDrawNoLine: {
-    fontSize: 16,
-    color: '#5c4d30'
-  },
-  marketDrawNoValue: {
-    color: '#c77700',
-    fontWeight: 800,
-    fontSize: 22
-  },
-  marketDrawTimeText: {
-    color: '#8a7d66',
-    fontSize: 13
-  },
-  marketBallsHero: {
+  marketBallsWrap: {
     display: 'flex',
     flexWrap: 'wrap',
     gap: 10
   },
   marketBall: {
-    width: 42,
-    height: 42,
-    borderRadius: 999,
-    background: '#efe3b2',
-    border: '1px solid #dcc98a',
+    width: 46,
+    height: 46,
+    borderRadius: '50%',
+    background: '#efe3cb',
+    border: '2px solid #d3b88e',
+    color: '#4a4031',
+    fontSize: 15,
+    fontWeight: 900,
     display: 'flex',
     alignItems: 'center',
-    justifyContent: 'center',
-    fontWeight: 800,
-    color: '#6d561c'
+    justifyContent: 'center'
   },
   marketBallHighlight: {
-    background: '#d97706',
-    color: '#fff',
-    borderColor: '#d97706'
+    background: '#0f766e',
+    borderColor: '#0f766e',
+    color: '#fff'
   },
-  streakWrap: {
+  hotBallWrap: {
     display: 'flex',
-    flexWrap: 'wrap',
-    gap: 14
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: 4
+  },
+  hotBallCount: {
+    fontSize: 12,
+    color: '#7b6e5c',
+    fontWeight: 700
   },
   streakBallWrap: {
     position: 'relative',
-    width: 50,
-    height: 58
+    width: 48,
+    height: 56
   },
   streakBall: {
-    width: 44,
-    height: 44,
-    borderRadius: 999,
-    background: '#c2410c',
-    color: '#fff',
+    width: 46,
+    height: 46,
+    borderRadius: '50%',
+    background: '#f0e4c8',
+    border: '2px solid #d3b88e',
+    color: '#4a4031',
+    fontSize: 15,
+    fontWeight: 900,
     display: 'flex',
     alignItems: 'center',
-    justifyContent: 'center',
-    fontWeight: 800
+    justifyContent: 'center'
   },
   streakBadge: {
     position: 'absolute',
-    right: 0,
+    right: -2,
     bottom: 0,
-    minWidth: 22,
-    height: 22,
-    borderRadius: 999,
-    background: '#12806d',
+    minWidth: 20,
+    height: 20,
+    borderRadius: 10,
+    background: '#c84a4a',
     color: '#fff',
+    fontSize: 11,
+    fontWeight: 900,
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    fontWeight: 800,
-    fontSize: 12
-  },
-  hotWrap: {
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: 12
-  },
-  hotItem: {
-    width: 76,
-    border: '1px solid #ead9a9',
-    borderRadius: 16,
-    padding: 10,
-    background: '#fffdf7',
-    textAlign: 'center'
-  },
-  hotBall: {
-    width: 40,
-    height: 40,
-    margin: '0 auto 8px',
-    borderRadius: 999,
-    background: '#d97706',
-    color: '#fff',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontWeight: 800
-  },
-  hotCount: {
-    fontSize: 13,
-    color: '#7b6540',
-    fontWeight: 700
+    padding: '0 5px'
   },
   zoneGrid: {
     display: 'grid',
@@ -1792,28 +2049,75 @@ const styles = {
     gap: 12
   },
   zoneBox: {
-    border: '1px solid #ead9a9',
-    borderRadius: 18,
+    background: '#efe3cb',
+    border: '1px solid #d3b88e',
+    borderRadius: 16,
     padding: 16,
-    background: '#fffdf6',
     textAlign: 'center'
   },
   zoneLabel: {
     fontSize: 14,
-    color: '#8a7d66',
+    color: '#7b6e5c',
     marginBottom: 8
   },
   zoneCount: {
-    fontSize: 28,
-    fontWeight: 800,
+    fontSize: 26,
+    fontWeight: 900,
     color: '#0f766e'
   },
+  historyRows: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 12
+  },
+  historyRow: {
+    background: '#fbf6ee',
+    border: '1px solid #ddcfbb',
+    borderRadius: 14,
+    padding: 14
+  },
+  historyMeta: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 12,
+    marginBottom: 10,
+    color: '#7b6e5c',
+    fontSize: 13
+  },
+  historyBalls: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 8
+  },
   emptyBox: {
-    padding: 18,
-    border: '1px dashed #d9c98f',
+    width: '100%',
+    minHeight: 72,
+    border: '2px dashed #d3b88e',
+    background: '#faf6f0',
     borderRadius: 16,
-    background: '#fffdf7',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
     color: '#8a7d66',
-    fontSize: 14
+    fontSize: 14,
+    padding: 16,
+    boxSizing: 'border-box'
+  },
+  errorBanner: {
+    background: '#f8d7d7',
+    color: '#9f2f2f',
+    border: '1px solid #e8b7b7',
+    borderRadius: 16,
+    padding: 14,
+    fontWeight: 700
+  },
+  loading: {
+    background: '#f8f1e6',
+    border: '2px solid #d9c7a8',
+    borderRadius: 16,
+    padding: 18,
+    textAlign: 'center',
+    color: '#7b6e5c',
+    fontWeight: 700
   }
 };
