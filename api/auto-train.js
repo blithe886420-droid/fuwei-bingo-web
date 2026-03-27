@@ -1739,8 +1739,16 @@ function buildPredictionGroups(candidatePack = {}, market = {}, marketSnapshot =
     });
   }
 
-  return groups.slice(0, BET_GROUP_COUNT);
+ return groups.slice(0, BET_GROUP_COUNT);
 }
+
+function mergePoolWithStats(poolRows = [], statsRows = [], marketSnapshot = {}) {
+  const statsMap = new Map(
+    (Array.isArray(statsRows) ? statsRows : []).map((row) => [
+      normalizeStrategyKey(row?.strategy_key),
+      row
+    ])
+  );
 
   return (Array.isArray(poolRows) ? poolRows : []).map((row) => {
     const stat = statsMap.get(normalizeStrategyKey(row?.strategy_key)) || {};
