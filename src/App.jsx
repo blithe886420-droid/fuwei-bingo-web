@@ -21,6 +21,7 @@ const FORMAL_GROUP_COUNT = 4;
 const COST_PER_GROUP = 25;
 
 const ANALYSIS_PERIOD_OPTIONS = [5, 10, 20, 50];
+
 const STRATEGY_MODE_OPTIONS = [
   { key: 'hot', label: '追熱策略', desc: '偏向近期熱門號與連續熱勢' },
   { key: 'cold', label: '補冷策略', desc: '偏向補位冷號與久未出現號' },
@@ -395,11 +396,18 @@ function buildLoopStatusText(result) {
     return '本期已存在（正常略過）';
   }
 
-  const compareBefore = result?.pipeline?.compare_before_create;
-  const compareAfter = result?.pipeline?.compare_after_create;
+  const compared = toNum(
+    result?.compared_count ??
+      result?.compare?.data?.processed ??
+      result?.compare?.processed,
+    0
+  );
 
-  const compared = toNum(compareBefore?.processed, 0) + toNum(compareAfter?.processed, 0);
-  const created = toNum(result?.created_count ?? result?.pipeline?.created_count, 0);
+  const created = toNum(
+    result?.created_count ??
+      (result?.train?.inserted ? 1 : 0),
+    0
+  );
 
   if (compared > 0 || created > 0) {
     return `本輪完成：比對 ${compared} 筆 / 新建 ${created} 筆`;
@@ -416,58 +424,6 @@ function getStrategyModeLabel(mode) {
 function getRiskModeLabel(mode) {
   const found = RISK_MODE_OPTIONS.find((item) => item.key === mode);
   return found ? found.label : mode;
-}
-
-function filterGroupsByRisk(groups, riskMode) {
-  if (!Array.isArray(groups)) return [];
-
-  if (!riskMode) return groups;
-
-  return groups.filter((group) => {
-    const type = String(group?.meta?.type || '').toLowerCase();
-
-    if (riskMode === 'safe') return type === 'safe';
-    if (riskMode === 'balanced') return type === 'balanced';
-    if (riskMode === 'aggressive') return type === 'aggressive';
-    if (riskMode === 'sniper') return type === 'sniper';
-    return true;
-  });
-}
-
-function filterGroupsByStrategyMode(groups, strategyMode) {
-  if (!Array.isArray(groups)) return [];
-
-  return groups.filter((group) => {
-    const key = String(group?.meta?.strategy_key || group?.key || '').toLowerCase();
-    const reason = String(group?.reason || '').toLowerCase();
-
-    if (strategyMode === 'hot') {
-      return key.includes('hot') || key.includes('repeat') || reason.includes('熱');
-    }
-
-    if (strategyMode === 'cold') {
-      return key.includes('cold') || key.includes('gap') || key.includes('guard') || reason.includes('冷');
-    }
-
-    if (strategyMode === 'mix') {
-      return key.includes('mix') || key.includes('balanced') || reason.includes('均衡');
-    }
-
-    if (strategyMode === 'burst') {
-      return key.includes('tail') || key.includes('zone') || key.includes('cluster') || key.includes('burst') || reason.includes('爆發');
-    }
-
-    return true;
-  });
-}
-
-function getFilteredDisplayGroups(groups, strategyMode, riskMode) {
-  const byRisk = filterGroupsByRisk(groups, riskMode);
-  const byStrategy = filterGroupsByStrategyMode(byRisk, strategyMode);
-
-  if (byStrategy.length) return byStrategy.slice(0, 4);
-  if (byRisk.length) return byRisk.slice(0, 4);
-  return groups.slice(0, 4);
 }
 
 function Card({ title, subtitle, right, children }) {
@@ -549,8 +505,8 @@ function GroupCard({ group, idx, showRank = false }) {
       </div>
 
       <div style={styles.metaChipRow}>
-        <MetaChip label="角色" value={fmtText(meta?.role_label || meta?.type || '--')} />
         <MetaChip label="策略" value={fmtText(meta?.strategy_key || group?.key)} />
+        <MetaChip label="角色" value={fmtText(meta?.role_label || meta?.type || '--')} />
         <MetaChip label="排序" value={fmtText(meta?.selection_rank, idx + 1)} />
         <MetaChip label="ROI" value={fmtPercent(meta?.recent_50_roi ?? meta?.roi)} />
         <MetaChip
@@ -589,11 +545,7 @@ function FormalBatchCard({ batch, idx }) {
       <div style={styles.groupGrid}>
         {groups.length ? (
           groups.map((group, groupIdx) => (
-            <GroupCard
-              key={`${batch?.id || idx}_${group?.key || groupIdx}`}
-              group={group}
-              idx={groupIdx}
-            />
+            <GroupCard key={`${batch?.id || idx}_${group?.key || groupIdx}`} group={group} idx={groupIdx} />
           ))
         ) : (
           <div style={styles.emptyBox}>這一批目前沒有可顯示的組合。</div>
@@ -613,6 +565,21 @@ function SelectorButton({ active, onClick, children }) {
       }}
     >
       {children}
+    </button>
+  );
+}
+
+function SelectorCard({ active, onClick, title, desc }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        ...styles.modeCard,
+        ...(active ? styles.modeCardActive : {})
+      }}
+    >
+      <div style={styles.modeCardTitle}>{title}</div>
+      <div style={styles.modeCardDesc}>{desc}</div>
     </button>
   );
 }
@@ -785,9 +752,7 @@ export default function App() {
 
       setLoopStatusText('自動模擬中...');
 
-      const autoTrainHttp = await safeFetchJsonAllowHttpError('/api/auto-train', {
-        method: 'POST'
-      }).catch(async () => {
+      const autoTrainHttp = await safeFetchJsonAllowHttpError('/api/auto-train', { method: 'POST' }).catch(async () => {
         return await safeFetchJsonAllowHttpError('/api/auto-train', { method: 'GET' });
       });
 
@@ -841,7 +806,6 @@ export default function App() {
           }
 
           await runAiCycle();
-
           if (!sessionStartedRef.current) return;
           schedulerRef.current = setTimeout(loopRunner, LOOP_INTERVAL_MS);
         }, LOOP_INTERVAL_MS);
@@ -927,8 +891,7 @@ export default function App() {
 
   const latestDraw = recent20[0] || null;
   const latestDrawNo = latestDraw?.draw_no || latestDraw?.drawNo || aiPlayer?.latestDrawNo || '--';
-  const latestDrawTime =
-    latestDraw?.draw_time || latestDraw?.drawTime || aiPlayer?.latestDrawTime || '--';
+  const latestDrawTime = latestDraw?.draw_time || latestDraw?.drawTime || aiPlayer?.latestDrawTime || '--';
   const latestNumbers = parseNums(latestDraw?.numbers || latestDraw?.nums);
 
   const recentRowsByPeriod = useMemo(() => {
@@ -937,10 +900,6 @@ export default function App() {
 
   const trainingGroups = useMemo(() => getPredictionGroups(trainingLatest), [trainingLatest]);
   const formalGroups = useMemo(() => getPredictionGroups(formalLatest), [formalLatest]);
-
-  const displayTrainingGroups = useMemo(() => {
-    return getFilteredDisplayGroups(trainingGroups, strategyMode, riskMode);
-  }, [trainingGroups, strategyMode, riskMode]);
 
   const hotNumbers = useMemo(() => calcHotNumbers(recentRowsByPeriod, Math.min(analysisPeriod, 10)), [recentRowsByPeriod, analysisPeriod]);
   const streakNumbers = useMemo(() => calcCurrentStreakNumbers(recentRowsByPeriod, Math.min(analysisPeriod, 5)), [recentRowsByPeriod, analysisPeriod]);
@@ -960,7 +919,9 @@ export default function App() {
   const formalBatchProgressText = `${formalBatchCount} / ${formalBatchLimit}`;
 
   const formalButtonDisabled =
-    busyKey !== '' || !canFormalBet || formalRemainingBatchCount <= 0;
+    busyKey !== '' ||
+    !canFormalBet ||
+    formalRemainingBatchCount <= 0;
 
   const formalButtonLabel = !canFormalBet
     ? '暫不建議正式下注'
@@ -1068,31 +1029,12 @@ export default function App() {
                   {currentTopStrategies.length ? (
                     currentTopStrategies.slice(0, 4).map((row, idx) => (
                       <div key={row?.strategy_key || idx} style={styles.groupCard}>
-                        <div style={styles.groupTitle}>
-                          第 {idx + 1} 名｜{fmtText(row?.strategy_key)}
-                        </div>
+                        <div style={styles.groupTitle}>第 {idx + 1} 名｜{fmtText(row?.strategy_key)}</div>
                         <div style={styles.metaChipRow}>
-                          <MetaChip
-                            label="平均命中"
-                            value={
-                              Number.isFinite(Number(row?.avg_hit))
-                                ? Number(row.avg_hit).toFixed(2)
-                                : '--'
-                            }
-                          />
-                          <MetaChip
-                            label="ROI"
-                            value={fmtPercent(row?.recent_50_roi ?? row?.roi)}
-                          />
+                          <MetaChip label="平均命中" value={Number.isFinite(Number(row?.avg_hit)) ? Number(row.avg_hit).toFixed(2) : '--'} />
+                          <MetaChip label="ROI" value={fmtPercent(row?.recent_50_roi ?? row?.roi)} />
                           <MetaChip label="回合" value={fmtText(row?.total_rounds)} />
-                          <MetaChip
-                            label="分數"
-                            value={
-                              Number.isFinite(Number(row?.strategy_score ?? row?.score))
-                                ? Number(row?.strategy_score ?? row?.score).toFixed(1)
-                                : '--'
-                            }
-                          />
+                          <MetaChip label="分數" value={Number.isFinite(Number(row?.strategy_score ?? row?.score)) ? Number(row?.strategy_score ?? row?.score).toFixed(1) : '--'} />
                         </div>
                       </div>
                     ))
@@ -1193,21 +1135,17 @@ export default function App() {
                 <div style={styles.selectorBlock}>
                   <div style={styles.selectorTitle}>策略模式</div>
                   <div style={styles.selectorDesc}>
-                    這裡是操作偏好，不是保證中獎，但能讓面板更符合你的思路。
+                    先做前端操作面板，這一版先不改後端 API 計算邏輯。
                   </div>
                   <div style={styles.selectorGrid}>
                     {STRATEGY_MODE_OPTIONS.map((item) => (
-                      <button
+                      <SelectorCard
                         key={item.key}
+                        active={strategyMode === item.key}
                         onClick={() => setStrategyMode(item.key)}
-                        style={{
-                          ...styles.modeCard,
-                          ...(strategyMode === item.key ? styles.modeCardActive : {})
-                        }}
-                      >
-                        <div style={styles.modeCardTitle}>{item.label}</div>
-                        <div style={styles.modeCardDesc}>{item.desc}</div>
-                      </button>
+                        title={item.label}
+                        desc={item.desc}
+                      />
                     ))}
                   </div>
                 </div>
@@ -1215,21 +1153,17 @@ export default function App() {
                 <div style={styles.selectorBlock}>
                   <div style={styles.selectorTitle}>下注風格</div>
                   <div style={styles.selectorDesc}>
-                    對應四種打法：保守、平衡、進攻、衝高。
+                    對應目前四組分工：保守、平衡、進攻、衝高。
                   </div>
                   <div style={styles.selectorGrid}>
                     {RISK_MODE_OPTIONS.map((item) => (
-                      <button
+                      <SelectorCard
                         key={item.key}
+                        active={riskMode === item.key}
                         onClick={() => setRiskMode(item.key)}
-                        style={{
-                          ...styles.modeCard,
-                          ...(riskMode === item.key ? styles.modeCardActive : {})
-                        }}
-                      >
-                        <div style={styles.modeCardTitle}>{item.label}</div>
-                        <div style={styles.modeCardDesc}>{item.desc}</div>
-                      </button>
+                        title={item.label}
+                        desc={item.desc}
+                      />
                     ))}
                   </div>
                 </div>
@@ -1306,16 +1240,12 @@ export default function App() {
               subtitle="這是正式下注的來源，先看它再決定要不要按。"
               right={
                 <div style={styles.predictTopTag}>
-                  依目前面板偏好顯示：{getStrategyModeLabel(strategyMode)} / {getRiskModeLabel(riskMode)}
+                  顯示偏好：{getStrategyModeLabel(strategyMode)} / {getRiskModeLabel(riskMode)}
                 </div>
               }
             >
               <div style={styles.groupGrid}>
-                {displayTrainingGroups.length ? (
-                  displayTrainingGroups.slice(0, 4).map((group, idx) => (
-                    <GroupCard key={group?.key || idx} group={group} idx={idx} showRank />
-                  ))
-                ) : trainingGroups.length ? (
+                {trainingGroups.length ? (
                   trainingGroups.slice(0, 4).map((group, idx) => (
                     <GroupCard key={group?.key || idx} group={group} idx={idx} showRank />
                   ))
@@ -1404,7 +1334,7 @@ export default function App() {
                 <StatBox
                   label="策略模式"
                   value={getStrategyModeLabel(strategyMode)}
-                  hint="這會影響預測面板的顯示偏好"
+                  hint="目前只影響前端顯示偏好"
                 />
                 <StatBox
                   label="下注風格"
