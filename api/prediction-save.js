@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
-const API_VERSION = 'prediction-save-batch-v3-manual-lock';
+const API_VERSION = 'prediction-save-batch-v4-manual-selection';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -21,6 +21,11 @@ const FORMAL_MODE = 'formal';
 const COST_PER_GROUP = 25;
 const FORMAL_BATCH_LIMIT = 3;
 const GROUP_COUNT = 4;
+
+const DEFAULT_ANALYSIS_PERIOD = 20;
+const ALLOWED_ANALYSIS_PERIODS = new Set([5, 10, 20, 50]);
+const ALLOWED_STRATEGY_MODES = new Set(['hot', 'cold', 'mix', 'burst']);
+const ALLOWED_RISK_MODES = new Set(['safe', 'balanced', 'aggressive', 'sniper']);
 
 if (!SUPABASE_URL || !SUPABASE_KEY) {
   throw new Error('Missing SUPABASE_URL or SUPABASE key');
@@ -54,9 +59,35 @@ function toBool(value, fallback = false) {
 }
 
 function uniqueAsc(nums = []) {
-  return [...new Set((Array.isArray(nums) ? nums : []).map(Number).filter(Number.isFinite))].sort(
-    (a, b) => a - b
-  );
+  return [...new Set((Array.isArray(nums) ? nums : []).map(Number).filter(Number.isFinite))]
+    .filter((n) => n >= 1 && n <= 80)
+    .sort((a, b) => a - b);
+}
+
+function parseNums(value) {
+  if (Array.isArray(value)) return uniqueAsc(value);
+
+  if (typeof value === 'string') {
+    return uniqueAsc(
+      value
+        .replace(/[{}[\]]/g, ' ')
+        .split(/[,\s|/]+/)
+        .map(Number)
+    );
+  }
+
+  if (value && typeof value === 'object') {
+    return parseNums(
+      value.numbers ||
+      value.draw_numbers ||
+      value.result_numbers ||
+      value.open_numbers ||
+      value.nums ||
+      []
+    );
+  }
+
+  return [];
 }
 
 function parseGroupsJson(value) {
@@ -101,7 +132,7 @@ function normalizeGroup(group, idx = 0, sourceDraw = null) {
 
   return {
     key: strategyKey,
-    label: strategyName,
+    label: String(group.label || strategyName).trim(),
     nums,
     reason:
       group.reason ||
@@ -119,14 +150,30 @@ function normalizeGroup(group, idx = 0, sourceDraw = null) {
   };
 }
 
+function getBody(req) {
+  if (req?.body && typeof req.body === 'object') return req.body;
+
+  if (typeof req?.body === 'string') {
+    try {
+      return JSON.parse(req.body);
+    } catch {
+      return {};
+    }
+  }
+
+  return {};
+}
+
 function getMode(req) {
-  return String(req.body?.mode || req.query?.mode || FORMAL_MODE).toLowerCase() === TEST_MODE
+  const body = getBody(req);
+  return String(body?.mode || req.query?.mode || FORMAL_MODE).toLowerCase() === TEST_MODE
     ? TEST_MODE
     : FORMAL_MODE;
 }
 
 function isManualFormalRequest(req) {
-  const bodyManual = toBool(req.body?.manual, false);
+  const body = getBody(req);
+  const bodyManual = toBool(body?.manual, false);
   const queryManual = toBool(req.query?.manual, false);
   const headerManual = toBool(req.headers['x-manual-formal-save'], false);
 
@@ -134,12 +181,76 @@ function isManualFormalRequest(req) {
 }
 
 function getTriggerSource(req) {
+  const body = getBody(req);
   return String(
-    req.body?.trigger_source ||
+    body?.trigger_source ||
       req.query?.trigger_source ||
       req.headers['x-trigger-source'] ||
       'unknown'
   ).trim();
+}
+
+function getSelectionParams(req) {
+  const body = getBody(req);
+
+  const analysisPeriodRaw = toNum(
+    body?.analysisPeriod ??
+      body?.analysis_period ??
+      req.query?.analysisPeriod ??
+      req.query?.analysis_period,
+    DEFAULT_ANALYSIS_PERIOD
+  );
+
+  const analysisPeriod = ALLOWED_ANALYSIS_PERIODS.has(analysisPeriodRaw)
+    ? analysisPeriodRaw
+    : DEFAULT_ANALYSIS_PERIOD;
+
+  const strategyModeRaw = String(
+    body?.strategyMode ??
+      body?.strategy_mode ??
+      req.query?.strategyMode ??
+      req.query?.strategy_mode ??
+      'mix'
+  ).trim().toLowerCase();
+
+  const strategyMode = ALLOWED_STRATEGY_MODES.has(strategyModeRaw)
+    ? strategyModeRaw
+    : 'mix';
+
+  const riskModeRaw = String(
+    body?.riskMode ??
+      body?.risk_mode ??
+      req.query?.riskMode ??
+      req.query?.risk_mode ??
+      'balanced'
+  ).trim().toLowerCase();
+
+  const riskMode = ALLOWED_RISK_MODES.has(riskModeRaw)
+    ? riskModeRaw
+    : 'balanced';
+
+  return {
+    analysisPeriod,
+    strategyMode,
+    riskMode
+  };
+}
+
+function roleLabelOf(type = '') {
+  const key = String(type || '').trim().toLowerCase();
+  if (key === 'safe') return '保守';
+  if (key === 'balanced') return '平衡';
+  if (key === 'aggressive') return '進攻';
+  if (key === 'sniper') return '衝高';
+  return '一般';
+}
+
+function strategyModeLabel(mode = '') {
+  if (mode === 'hot') return '追熱';
+  if (mode === 'cold') return '補冷';
+  if (mode === 'mix') return '均衡';
+  if (mode === 'burst') return '爆發';
+  return '均衡';
 }
 
 async function getLatestDraw() {
@@ -153,6 +264,17 @@ async function getLatestDraw() {
   if (error) throw error;
   if (!data?.draw_no) throw new Error('找不到最新期數');
   return data;
+}
+
+async function getRecentDraws(limitCount = DEFAULT_ANALYSIS_PERIOD) {
+  const { data, error } = await supabase
+    .from(DRAWS_TABLE)
+    .select('draw_no, draw_time, numbers')
+    .order('draw_no', { ascending: false })
+    .limit(limitCount);
+
+  if (error) throw error;
+  return Array.isArray(data) ? data : [];
 }
 
 async function getFormalRowsBySourceDrawNo(sourceDrawNo) {
@@ -242,7 +364,308 @@ async function getLatestAnyTestPrediction() {
   return data || null;
 }
 
-async function buildFormalGroups(sourceDraw) {
+function buildMarketPools(drawRows = []) {
+  const rows = Array.isArray(drawRows) ? drawRows : [];
+  const freqMap = new Map();
+  const lastSeen = new Map();
+  const allNums = Array.from({ length: 80 }, (_, i) => i + 1);
+
+  allNums.forEach((n) => {
+    freqMap.set(n, 0);
+  });
+
+  rows.forEach((row, idx) => {
+    const nums = parseNums(row?.numbers);
+    nums.forEach((n) => {
+      freqMap.set(n, toNum(freqMap.get(n), 0) + 1);
+      if (!lastSeen.has(n)) {
+        lastSeen.set(n, idx);
+      }
+    });
+  });
+
+  const hot = [...freqMap.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0] - b[0])
+    .map(([n]) => n);
+
+  const cold = [...freqMap.entries()]
+    .sort((a, b) => a[1] - b[1] || a[0] - b[0])
+    .map(([n]) => n);
+
+  const gap = allNums
+    .slice()
+    .sort((a, b) => {
+      const gapA = lastSeen.has(a) ? lastSeen.get(a) : 999;
+      const gapB = lastSeen.has(b) ? lastSeen.get(b) : 999;
+      return gapB - gapA || a - b;
+    });
+
+  const warm = hot.slice(10).concat(hot.slice(0, 10));
+  const odd = allNums.filter((n) => n % 2 === 1);
+  const even = allNums.filter((n) => n % 2 === 0);
+
+  return {
+    hot,
+    cold,
+    warm,
+    gap,
+    odd,
+    even,
+    all: allNums
+  };
+}
+
+function pickFromPool(pool = [], selectedSet = new Set(), seed = 0) {
+  const candidates = uniqueAsc(pool).filter((n) => !selectedSet.has(n));
+  if (!candidates.length) return null;
+  return candidates[Math.abs(toNum(seed, 0)) % candidates.length];
+}
+
+function fillToFour(base = [], fallbackPools = [], seed = 0) {
+  const result = uniqueAsc(base).slice(0, 4);
+  const selected = new Set(result);
+  let cursor = 0;
+
+  for (const pool of fallbackPools) {
+    while (result.length < 4 && cursor < 220) {
+      const value = pickFromPool(pool, selected, seed + cursor);
+      cursor += 1;
+      if (value == null) break;
+      selected.add(value);
+      result.push(value);
+    }
+    if (result.length >= 4) break;
+  }
+
+  if (result.length < 4) {
+    const allNums = Array.from({ length: 80 }, (_, i) => i + 1);
+    while (result.length < 4 && cursor < 500) {
+      const value = pickFromPool(allNums, selected, seed + cursor);
+      cursor += 1;
+      if (value == null) break;
+      selected.add(value);
+      result.push(value);
+    }
+  }
+
+  return uniqueAsc(result).slice(0, 4);
+}
+
+function countOverlap(a = [], b = []) {
+  const setB = new Set(uniqueAsc(b));
+  return uniqueAsc(a).filter((n) => setB.has(n)).length;
+}
+
+function mutateOne(nums = [], pools = [], seed = 0) {
+  const current = uniqueAsc(nums).slice(0, 4);
+  if (current.length !== 4) return current;
+
+  const selected = new Set(current);
+  const removeIndex = Math.abs(seed) % current.length;
+  selected.delete(current[removeIndex]);
+
+  for (let i = 0; i < pools.length; i += 1) {
+    const value = pickFromPool(pools[i], selected, seed + i * 17 + 3);
+    if (value != null) {
+      selected.add(value);
+      return uniqueAsc([...selected]).slice(0, 4);
+    }
+  }
+
+  return uniqueAsc([...selected]).slice(0, 4);
+}
+
+function forceGroupDifference(nums = [], existingGroups = [], pools = {}, seed = 0) {
+  let result = uniqueAsc(nums).slice(0, 4);
+  const poolOrder = [pools.hot, pools.cold, pools.gap, pools.warm, pools.all];
+
+  for (let round = 0; round < 10; round += 1) {
+    let changed = false;
+
+    for (const group of existingGroups) {
+      const overlap = countOverlap(result, group?.nums || []);
+      if (overlap >= 3) {
+        result = mutateOne(result, poolOrder, seed + round * 23 + overlap);
+        changed = true;
+        break;
+      }
+    }
+
+    if (!changed) break;
+  }
+
+  return uniqueAsc(result).slice(0, 4);
+}
+
+function getRiskOrder(riskMode = 'balanced') {
+  if (riskMode === 'safe') {
+    return ['safe', 'balanced', 'aggressive', 'sniper'];
+  }
+  if (riskMode === 'balanced') {
+    return ['balanced', 'safe', 'aggressive', 'sniper'];
+  }
+  if (riskMode === 'aggressive') {
+    return ['aggressive', 'balanced', 'sniper', 'safe'];
+  }
+  return ['sniper', 'aggressive', 'balanced', 'safe'];
+}
+
+function buildModePools(strategyMode, pools) {
+  if (strategyMode === 'hot') {
+    return [pools.hot, pools.warm, pools.gap, pools.all];
+  }
+  if (strategyMode === 'cold') {
+    return [pools.cold, pools.gap, pools.warm, pools.all];
+  }
+  if (strategyMode === 'burst') {
+    return [pools.gap, pools.cold, pools.hot, pools.all];
+  }
+  return [pools.hot, pools.cold, pools.warm, pools.all];
+}
+
+function scoreGroupForMode(group, strategyMode, pools) {
+  const nums = uniqueAsc(group?.nums || []);
+  const key = String(group?.meta?.strategy_key || group?.key || '').toLowerCase();
+  const type = String(group?.meta?.type || '').toLowerCase();
+
+  const hotSet = new Set(pools.hot.slice(0, 20));
+  const coldSet = new Set(pools.cold.slice(0, 20));
+  const gapSet = new Set(pools.gap.slice(0, 20));
+
+  const hotCount = nums.filter((n) => hotSet.has(n)).length;
+  const coldCount = nums.filter((n) => coldSet.has(n)).length;
+  const gapCount = nums.filter((n) => gapSet.has(n)).length;
+
+  let score = 0;
+
+  if (strategyMode === 'hot') {
+    score += hotCount * 10;
+    if (key.includes('hot') || key.includes('repeat')) score += 6;
+  } else if (strategyMode === 'cold') {
+    score += coldCount * 10;
+    if (key.includes('cold') || key.includes('gap') || key.includes('guard')) score += 6;
+  } else if (strategyMode === 'burst') {
+    score += gapCount * 7 + coldCount * 4 + hotCount * 2;
+    if (key.includes('tail') || key.includes('zone') || key.includes('cluster')) score += 6;
+    if (type === 'sniper' || type === 'aggressive') score += 4;
+  } else {
+    score += Math.min(hotCount, 2) * 5 + Math.min(coldCount, 2) * 5;
+    if (key.includes('mix') || key.includes('balanced')) score += 6;
+    if (type === 'balanced') score += 4;
+  }
+
+  score += toNum(group?.meta?.selection_rank, 0) * -0.5;
+  return score;
+}
+
+function adaptNumsBySelection(baseNums, roleType, strategyMode, pools, seed = 0) {
+  const nums = uniqueAsc(baseNums).slice(0, 4);
+  const modePools = buildModePools(strategyMode, pools);
+
+  if (roleType === 'safe') {
+    return fillToFour(
+      [...nums.slice(0, 3), ...modePools[0].slice(0, 2)],
+      [modePools[0], modePools[1], pools.warm, pools.all],
+      seed + 11
+    );
+  }
+
+  if (roleType === 'balanced') {
+    return fillToFour(
+      [...nums.slice(0, 2), modePools[0][0], modePools[1][0]],
+      [modePools[0], modePools[1], pools.warm, pools.all],
+      seed + 23
+    );
+  }
+
+  if (roleType === 'aggressive') {
+    return fillToFour(
+      [modePools[0][0], modePools[0][1], ...nums.slice(0, 1), modePools[1][0]],
+      [modePools[0], modePools[1], pools.gap, pools.all],
+      seed + 37
+    );
+  }
+
+  return fillToFour(
+    [modePools[0][0], modePools[0][1], modePools[1][0], modePools[2][0]],
+    [modePools[0], modePools[1], modePools[2], pools.all],
+    seed + 49
+  );
+}
+
+function reorderAndTransformGroups(rawGroups, selection, recentDraws, sourceDraw) {
+  const pools = buildMarketPools(recentDraws);
+  const normalized = rawGroups
+    .map((group, idx) => normalizeGroup(group, idx, sourceDraw))
+    .filter(Boolean)
+    .slice(0, 12);
+
+  if (!normalized.length) {
+    throw new Error('最新 test prediction 沒有可用 groups_json');
+  }
+
+  const riskOrder = getRiskOrder(selection.riskMode);
+  const riskRankMap = new Map(riskOrder.map((type, idx) => [type, idx]));
+
+  const sorted = normalized
+    .map((group, idx) => {
+      const type = String(group?.meta?.type || '').toLowerCase();
+      const riskRank = riskRankMap.has(type) ? riskRankMap.get(type) : 99;
+      const modeScore = scoreGroupForMode(group, selection.strategyMode, pools);
+
+      return {
+        ...group,
+        _originIdx: idx,
+        _riskRank: riskRank,
+        _modeScore: modeScore
+      };
+    })
+    .sort((a, b) => {
+      if (a._riskRank !== b._riskRank) return a._riskRank - b._riskRank;
+      if (b._modeScore !== a._modeScore) return b._modeScore - a._modeScore;
+      return a._originIdx - b._originIdx;
+    })
+    .slice(0, GROUP_COUNT);
+
+  const result = [];
+
+  sorted.forEach((group, idx) => {
+    const roleType = String(group?.meta?.type || '').toLowerCase();
+    let nums = adaptNumsBySelection(
+      group.nums,
+      roleType,
+      selection.strategyMode,
+      pools,
+      selection.analysisPeriod + idx * 31
+    );
+
+    nums = forceGroupDifference(nums, result, pools, selection.analysisPeriod + idx * 97);
+
+    result.push({
+      ...group,
+      nums,
+      label: `${roleLabelOf(roleType)}｜${group.meta?.strategy_name || group.label}`,
+      reason: `${strategyModeLabel(selection.strategyMode)} / ${roleLabelOf(roleType)} / 分析 ${selection.analysisPeriod} 期`,
+      meta: {
+        ...group.meta,
+        selection_rank: idx + 1,
+        requested_analysis_period: selection.analysisPeriod,
+        requested_strategy_mode: selection.strategyMode,
+        requested_risk_mode: selection.riskMode,
+        formal_role_label: roleLabelOf(roleType),
+        formal_selection_applied: true
+      }
+    });
+  });
+
+  if (result.length !== GROUP_COUNT) {
+    throw new Error(`最新 test prediction 可用組數不足，目前僅有 ${result.length} 組`);
+  }
+
+  return result;
+}
+
+async function buildFormalGroups(sourceDraw, selection) {
   const sourceDrawNo = toNum(sourceDraw?.draw_no, 0);
 
   let testPrediction = await getLatestTestPredictionUpToSourceDraw(sourceDrawNo);
@@ -259,23 +682,18 @@ async function buildFormalGroups(sourceDraw) {
     throw new Error('最新 test prediction 沒有可用 groups_json');
   }
 
-  const groups = rawGroups
-    .map((group, idx) => normalizeGroup(group, idx, sourceDraw))
-    .filter(Boolean)
-    .slice(0, GROUP_COUNT);
-
-  if (groups.length !== GROUP_COUNT) {
-    throw new Error(`最新 test prediction 可用組數不足，目前僅有 ${groups.length} 組`);
-  }
+  const recentDraws = await getRecentDraws(selection.analysisPeriod);
+  const groups = reorderAndTransformGroups(rawGroups, selection, recentDraws, sourceDraw);
 
   return {
     groups,
+    recentDrawCount: recentDraws.length,
     sourceTestPredictionId: testPrediction.id || null,
     sourceTestDrawNo: toNum(testPrediction.source_draw_no, 0)
   };
 }
 
-async function createFormalPrediction() {
+async function createFormalPrediction(selection) {
   const latestDraw = await getLatestDraw();
 
   const batchInfo = await resolveFormalSourceDraw(latestDraw);
@@ -303,13 +721,19 @@ async function createFormalPrediction() {
       formal_batch_no: existingRows.length,
       formal_batch_limit: FORMAL_BATCH_LIMIT,
       existing_count: existingRows.length,
+      requested_selection: selection,
       prediction: null
     };
   }
 
   const nextBatchNo = existingRows.length + 1;
 
-  const { groups, sourceTestPredictionId, sourceTestDrawNo } = await buildFormalGroups(sourceDraw);
+  const {
+    groups,
+    recentDrawCount,
+    sourceTestPredictionId,
+    sourceTestDrawNo
+  } = await buildFormalGroups(sourceDraw, selection);
 
   const payload = {
     mode: FORMAL_MODE,
@@ -344,6 +768,8 @@ async function createFormalPrediction() {
     existing_count: existingRows.length,
     source_test_prediction_id: sourceTestPredictionId,
     source_test_draw_no: sourceTestDrawNo,
+    requested_selection: selection,
+    recent_draw_count: recentDrawCount,
     prediction: {
       id: data?.id || null,
       mode: FORMAL_MODE,
@@ -403,6 +829,7 @@ export default async function handler(req, res) {
   try {
     const mode = getMode(req);
     const triggerSource = getTriggerSource(req);
+    const selection = getSelectionParams(req);
 
     if (mode === TEST_MODE) {
       const latestDraw = await getLatestDraw();
@@ -420,6 +847,7 @@ export default async function handler(req, res) {
         cost_per_group: COST_PER_GROUP,
         group_count: GROUP_COUNT,
         formal_batch_limit: FORMAL_BATCH_LIMIT,
+        requested_selection: selection,
         ...result
       });
     }
@@ -430,6 +858,7 @@ export default async function handler(req, res) {
         api_version: API_VERSION,
         mode: FORMAL_MODE,
         trigger_source: triggerSource,
+        requested_selection: selection,
         error: '正式下注只允許 POST'
       });
     }
@@ -440,11 +869,12 @@ export default async function handler(req, res) {
         api_version: API_VERSION,
         mode: FORMAL_MODE,
         trigger_source: triggerSource,
+        requested_selection: selection,
         error: '正式下注已鎖定為手動觸發，請由前端按鈕使用 manual=true 呼叫'
       });
     }
 
-    const result = await createFormalPrediction();
+    const result = await createFormalPrediction(selection);
 
     return res.status(200).json({
       ok: true,
