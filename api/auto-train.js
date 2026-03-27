@@ -790,7 +790,7 @@ function buildAdaptiveDisableRules(activeCount = 999) {
       roiFloorE: -0.38,
       recent50RoiFloorF: -0.28,
       avgHitFloorB: 1.04,
-            avgHitFloorD: 1.14,
+avgHitFloorD: 1.14,
       avgHitFloorF: 0.9,
       hitRateFloorC: 0.15
     };
@@ -1482,7 +1482,9 @@ function buildGroupRoleByIndex(idx = 0) {
       type: 'safe',
       target: 'hit2',
       role_label: '保守（保2）',
-      purpose: '穩定偏熱，優先保二'
+      purpose: '穩定命中2碼，優先保留回收能力',
+      preferred_tiers: ['safe', 'balanced', 'core'],
+      preferred_decisions: ['strong', 'usable', 'candidate']
     };
   }
 
@@ -1491,7 +1493,9 @@ function buildGroupRoleByIndex(idx = 0) {
       type: 'balanced',
       target: 'hit2_3',
       role_label: '平衡（2~3）',
-      purpose: '兼顧命中2與命中3'
+      purpose: '兼顧命中2與命中3，作為主力過渡組',
+      preferred_tiers: ['balanced', 'core', 'safe'],
+      preferred_decisions: ['strong', 'usable', 'candidate']
     };
   }
 
@@ -1500,7 +1504,9 @@ function buildGroupRoleByIndex(idx = 0) {
       type: 'aggressive',
       target: 'hit3',
       role_label: '進攻（偏3）',
-      purpose: '偏進攻，主抓命中3'
+      purpose: '偏向命中3能力，拉高有效爆發率',
+      preferred_tiers: ['core', 'balanced', 'burst'],
+      preferred_decisions: ['strong', 'usable', 'candidate']
     };
   }
 
@@ -1508,195 +1514,95 @@ function buildGroupRoleByIndex(idx = 0) {
     type: 'sniper',
     target: 'hit4',
     role_label: '衝高（拚4）',
-    purpose: '高風險高波動，拚衝4'
+    purpose: '接受波動，換取命中4的高上限',
+    preferred_tiers: ['burst', 'core', 'balanced'],
+    preferred_decisions: ['strong', 'usable', 'candidate', 'weak']
   };
 }
 
-function countSameNumbers(a = [], b = []) {
-  const setB = new Set(uniqueSorted(b));
-  return uniqueSorted(a).filter((n) => setB.has(n)).length;
-}
-
-function replaceOneNumber(nums = [], addPools = [], usedSet = new Set(), seed = 0) {
-  const current = uniqueSorted(nums).slice(0, 4);
-  if (current.length !== 4) return current;
-
-  const selected = new Set(current);
-  const removeIndex = Math.abs(toNum(seed, 0)) % current.length;
-  const removed = current[removeIndex];
-  selected.delete(removed);
-
-  let cursor = 0;
-  for (const pool of addPools) {
-    const normalizedPool = uniqueSorted(pool);
-    while (cursor < 220) {
-      const value = pickFromPool(normalizedPool, selected, seed + cursor);
-      cursor += 1;
-      if (value == null) break;
-      if (usedSet.has(value) && !selected.has(value)) continue;
-      selected.add(value);
-      const next = uniqueSorted([...selected]).slice(0, 4);
-      if (next.length === 4) return next;
-    }
-  }
-
-  const fallbackAll = Array.from({ length: 80 }, (_, i) => i + 1);
-  while (cursor < 500) {
-    const value = pickFromPool(fallbackAll, selected, seed + cursor);
-    cursor += 1;
-    if (value == null) break;
-    if (usedSet.has(value) && !selected.has(value)) continue;
-    selected.add(value);
-    const next = uniqueSorted([...selected]).slice(0, 4);
-    if (next.length === 4) return next;
-  }
-
-  return uniqueSorted([...selected]).slice(0, 4);
-}
-
-function forceGroupDifference(nums = [], role = {}, market = {}, existingGroups = [], seed = 0) {
-  let result = uniqueSorted(nums).slice(0, 4);
-  if (result.length !== 4) return result;
-
+function applyRoleAdjustment(nums = [], role = {}, market = {}) {
   const allNums = Array.isArray(market?.allNums) ? market.allNums : [];
   const hot = Array.isArray(market?.hot) ? market.hot : [];
   const warm = Array.isArray(market?.warm) ? market.warm : [];
   const cold = Array.isArray(market?.cold) ? market.cold : [];
   const gap = Array.isArray(market?.gap) ? market.gap : [];
   const stable = Array.isArray(market?.stable) ? market.stable : [];
-  const odd = Array.isArray(market?.odd) ? market.odd : [];
-  const even = Array.isArray(market?.even) ? market.even : [];
+
+  const safeFallback = [hot, warm, stable, gap, cold, allNums];
+  const attackFallback = [gap, hot, warm, stable, cold, allNums];
+  const coldFallback = [cold, gap, hot, warm, stable, allNums];
 
   const roleType = String(role?.type || '').toLowerCase();
 
-  let rolePools = [allNums];
-
   if (roleType === 'safe') {
-    rolePools = [hot, warm, stable, gap, cold, odd, even, allNums];
-  } else if (roleType === 'balanced') {
-    rolePools = [hot, warm, gap, odd, even, stable, cold, allNums];
-  } else if (roleType === 'aggressive') {
-    rolePools = [gap, stable, hot, warm, odd, even, cold, allNums];
-  } else if (roleType === 'sniper') {
-    rolePools = [cold, gap, even, odd, hot, warm, stable, allNums];
+    return fillToFour([...hot.slice(0, 3), ...warm.slice(0, 2), ...nums], safeFallback, 11);
   }
 
-  for (let round = 0; round < 12; round += 1) {
-    let duplicated = false;
-
-    for (const existing of existingGroups) {
-      const otherNums = uniqueSorted(existing?.nums || []);
-      if (otherNums.length !== 4) continue;
-
-      const sameCount = countSameNumbers(result, otherNums);
-
-      if (sameCount === 4) {
-        result = replaceOneNumber(result, rolePools, new Set(otherNums), seed + round * 31 + 1);
-        duplicated = true;
-        break;
-      }
-
-      if (sameCount >= 3) {
-        result = replaceOneNumber(result, rolePools, new Set(otherNums), seed + round * 31 + 7);
-        duplicated = true;
-        break;
-      }
-    }
-
-    if (!duplicated) break;
-  }
-
-  return uniqueSorted(result).slice(0, 4);
-}
-
-function applyRoleAdjustment(nums = [], role = {}, market = {}, existingGroups = [], seed = 0) {
-  const allNums = Array.isArray(market?.allNums) ? market.allNums : [];
-  const hot = Array.isArray(market?.hot) ? market.hot : [];
-  const warm = Array.isArray(market?.warm) ? market.warm : [];
-  const cold = Array.isArray(market?.cold) ? market.cold : [];
-  const gap = Array.isArray(market?.gap) ? market.gap : [];
-  const stable = Array.isArray(market?.stable) ? market.stable : [];
-  const odd = Array.isArray(market?.odd) ? market.odd : [];
-  const even = Array.isArray(market?.even) ? market.even : [];
-
-  const safeFallback = [hot, warm, stable, gap, cold, odd, even, allNums];
-  const balancedFallback = [hot, warm, odd, even, gap, stable, cold, allNums];
-  const attackFallback = [gap, stable, hot, warm, odd, even, cold, allNums];
-  const coldFallback = [cold, gap, even, odd, hot, warm, stable, allNums];
-
-  const roleType = String(role?.type || '').toLowerCase();
-  let adjusted = uniqueSorted(nums).slice(0, 4);
-
-  if (roleType === 'safe') {
-    adjusted = fillToFour(
-      [...hot.slice(0, 3), ...warm.slice(0, 2), ...stable.slice(0, 1), ...adjusted],
+  if (roleType === 'balanced') {
+    return fillToFour(
+      [...hot.slice(0, 2), ...warm.slice(0, 2), ...gap.slice(0, 1), ...nums],
       safeFallback,
-      seed + 11
-    );
-  } else if (roleType === 'balanced') {
-    adjusted = fillToFour(
-      [...hot.slice(0, 2), ...warm.slice(0, 2), ...odd.slice(0, 1), ...even.slice(0, 1), ...adjusted],
-      balancedFallback,
-      seed + 23
-    );
-  } else if (roleType === 'aggressive') {
-    adjusted = fillToFour(
-      [...gap.slice(0, 2), ...stable.slice(0, 1), ...hot.slice(0, 1), ...cold.slice(0, 1), ...adjusted],
-      attackFallback,
-      seed + 37
-    );
-  } else if (roleType === 'sniper') {
-    adjusted = fillToFour(
-      [...cold.slice(0, 2), ...gap.slice(0, 2), ...even.slice(0, 1), ...adjusted],
-      coldFallback,
-      seed + 49
+      23
     );
   }
 
-  adjusted = forceGroupDifference(adjusted, role, market, existingGroups, seed + 101);
+  if (roleType === 'aggressive') {
+    return fillToFour(
+      [...gap.slice(0, 2), ...hot.slice(0, 2), ...stable.slice(0, 1), ...nums],
+      attackFallback,
+      37
+    );
+  }
 
-  return uniqueSorted(adjusted).slice(0, 4);
+  if (roleType === 'sniper') {
+    return fillToFour(
+      [...cold.slice(0, 2), ...gap.slice(0, 2), ...hot.slice(0, 1), ...nums],
+      coldFallback,
+      49
+    );
+  }
+
+  return uniqueSorted(nums).slice(0, 4);
+}
+
+function pickStrategyForRole(candidatePack = {}, role = {}, used = new Set()) {
+  const preferredTiers = Array.isArray(role?.preferred_tiers) ? role.preferred_tiers : [];
+  const preferredDecisions = Array.isArray(role?.preferred_decisions) ? role.preferred_decisions : [];
+  const allRows = Array.isArray(candidatePack?.all) ? candidatePack.all : [];
+
+  const tierFiltered = allRows.filter((row) => {
+    if (!row || used.has(row.strategy_key)) return false;
+    if (!preferredTiers.length) return true;
+    return preferredTiers.includes(String(row.strategy_tier || ''));
+  });
+
+  const decisionFiltered = tierFiltered.filter((row) => {
+    if (!preferredDecisions.length) return true;
+    return preferredDecisions.includes(String(row.decision || ''));
+  });
+
+  const primaryPool = decisionFiltered.length ? decisionFiltered : tierFiltered;
+    if (primaryPool.length) return primaryPool[0];
+
+  const fallback = allRows.filter((row) => row && !used.has(row.strategy_key));
+  return fallback[0] || null;
 }
 
 function buildPredictionGroups(candidatePack = {}, market = {}, marketSnapshot = {}, seed = Date.now()) {
   const marketType = detectMarketType(marketSnapshot);
-
-  let strategies = Array.isArray(candidatePack?.all) ? candidatePack.all : [];
-  strategies = filterStrategiesByMarket(strategies, marketType);
-
-  const rankedStrategies = strategies
-    .filter((s) => (s.final_weight || 0) > 0)
-    .sort((a, b) =>
-      (b.final_weight - a.final_weight) ||
-      (b.avg_hit - a.avg_hit) ||
-      (b.roi - a.roi)
-    );
-
-  const roleStrategyFilters = [
-    (s) => String(s?.decision || '').toLowerCase() === 'strong' || toNum(s?.avg_hit, 0) >= 1.3,
-    (s) => toNum(s?.avg_hit, 0) >= 1.2 || toNum(s?.recent_50_hit_rate, 0) >= 0.18,
-    (s) => toNum(s?.recent_50_hit_rate, 0) >= 0.16 || toNum(s?.avg_hit, 0) >= 1.25,
-    (s) => toNum(s?.roi, 0) > -0.2 || toNum(s?.recent_50_roi, 0) > -0.2 || toNum(s?.market_boost, 1) > 1
-  ];
-
-  const usedStrategyKeys = new Set();
+  const roles = Array.from({ length: BET_GROUP_COUNT }, (_, idx) => buildGroupRoleByIndex(idx));
+  const used = new Set();
   const groups = [];
 
-  for (let idx = 0; idx < BET_GROUP_COUNT; idx += 1) {
-    const role = buildGroupRoleByIndex(idx);
-    const filterFn = roleStrategyFilters[idx] || (() => true);
+  for (let i = 0; i < roles.length; i += 1) {
+    const role = roles[i];
+    const picked = pickStrategyForRole(candidatePack, role, used);
+    if (!picked) continue;
 
-    let picked =
-      rankedStrategies.find((s) => !usedStrategyKeys.has(s.strategy_key) && filterFn(s)) ||
-      rankedStrategies.find((s) => !usedStrategyKeys.has(s.strategy_key)) ||
-      null;
+    used.add(picked.strategy_key);
 
-    if (!picked) break;
-
-    usedStrategyKeys.add(picked.strategy_key);
-
-    const baseNums = buildStrategyNums(picked.strategy_key, market, seed + idx * 77);
-    const finalNums = applyRoleAdjustment(baseNums, role, market, groups, seed + idx * 131);
+    const baseNums = buildStrategyNums(picked.strategy_key, market, seed + i * 77);
+    const finalNums = applyRoleAdjustment(baseNums, role, market);
 
     groups.push({
       key: picked.strategy_key,
@@ -1707,29 +1613,22 @@ function buildPredictionGroups(candidatePack = {}, market = {}, marketSnapshot =
         strategy_key: picked.strategy_key,
         strategy_name: picked.strategy_name,
         decision: picked.decision,
+        strategy_tier: picked.strategy_tier,
         weight: picked.weight,
-        final_weight: picked.final_weight,
+        final_weight: picked.final_weight || picked.weight,
         market_type: marketType,
         market_boost: picked.market_boost,
         market_reason: picked.market_reason,
         avg_hit: picked.avg_hit,
         roi: picked.roi,
-        recent_50_roi: picked.recent_50_roi,
-        recent_50_hit_rate: picked.recent_50_hit_rate,
-        hit2_rate: normalizeHitRate(picked?.stats?.hit2_rate ?? picked?.hit2_rate),
-        hit3_rate: normalizeHitRate(picked?.stats?.hit3_rate ?? picked?.hit3_rate),
-        hit4_rate: normalizeHitRate(picked?.stats?.hit4_rate ?? picked?.hit4_rate),
-        hit2: toNum(picked?.stats?.hit2 ?? picked?.hit2, 0),
-        hit3: toNum(picked?.stats?.hit3 ?? picked?.hit3, 0),
-        hit4: toNum(picked?.stats?.hit4 ?? picked?.hit4, 0),
-        strategy_tier:
-          idx === 0
-            ? 'safe'
-            : idx === 1
-              ? 'balanced'
-              : idx === 2
-                ? 'burst'
-                : 'sniper',
+        hit2: toNum(picked.hit2, 0),
+        hit3: toNum(picked.hit3, 0),
+        hit4: toNum(picked.hit4, 0),
+        hit2_rate: Number(toNum(picked.hit2_rate, 0).toFixed(4)),
+        hit3_rate: Number(toNum(picked.hit3_rate, 0).toFixed(4)),
+        hit4_rate: Number(toNum(picked.hit4_rate, 0).toFixed(4)),
+        recent_50_hit_rate: Number(toNum(picked.recent_50_hit_rate, 0).toFixed(4)),
+        recent_50_roi: Number(toNum(picked.recent_50_roi, 0).toFixed(4)),
         type: role.type,
         target: role.target,
         role_label: role.role_label,
@@ -1739,7 +1638,7 @@ function buildPredictionGroups(candidatePack = {}, market = {}, marketSnapshot =
     });
   }
 
- return groups.slice(0, BET_GROUP_COUNT);
+  return groups.slice(0, BET_GROUP_COUNT);
 }
 
 function mergePoolWithStats(poolRows = [], statsRows = [], marketSnapshot = {}) {
