@@ -728,7 +728,7 @@ export default function App() {
 })
       });
     });
-  }, [runAction]);
+  }, [runAction, analysisPeriod, strategyMode, riskMode]);
 
   const runAiCycle = useCallback(async () => {
     if (cycleRunningRef.current) return;
