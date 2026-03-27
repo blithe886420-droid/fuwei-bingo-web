@@ -790,7 +790,7 @@ function buildAdaptiveDisableRules(activeCount = 999) {
       roiFloorE: -0.38,
       recent50RoiFloorF: -0.28,
       avgHitFloorB: 1.04,
-      avgHitFloorD: 1.14,
+            avgHitFloorD: 1.14,
       avgHitFloorF: 0.9,
       hitRateFloorC: 0.15
     };
@@ -1328,6 +1328,28 @@ async function fetchStrategyCandidates(db, marketSnapshot = {}) {
     const stat = statsMap.get(String(row?.strategy_key || '').trim().toLowerCase()) || {};
     const evaluation = evaluateStrategyDecision(row, stat, marketSnapshot);
 
+    const hit2 = toNum(stat?.hit2, 0);
+    const hit3 = toNum(stat?.hit3, 0);
+    const hit4 = toNum(stat?.hit4, 0);
+    const totalRounds = Math.max(1, evaluation.totalRounds || 0);
+    const hit2Rate = hit2 / totalRounds;
+    const hit3Rate = hit3 / totalRounds;
+    const hit4Rate = hit4 / totalRounds;
+
+    let strategyTier = 'simulate';
+
+    if (evaluation.decision === 'reject') {
+      strategyTier = 'forbidden';
+    } else if (hit4 > 0 || hit4Rate >= 0.03) {
+      strategyTier = 'burst';
+    } else if (hit3 >= 2 || hit3Rate >= 0.12 || evaluation.recent50Roi > 0) {
+      strategyTier = 'core';
+    } else if (evaluation.decision === 'strong' || evaluation.decision === 'usable') {
+      strategyTier = 'balanced';
+    } else {
+      strategyTier = 'safe';
+    }
+
     return {
       ...row,
       stats: stat,
@@ -1342,7 +1364,14 @@ async function fetchStrategyCandidates(db, marketSnapshot = {}) {
       recent_50_roi: evaluation.recent50Roi,
       market_boost: evaluation.marketBoost,
       market_reason: evaluation.marketReason,
-      decision_score: evaluation.decisionScore
+      decision_score: evaluation.decisionScore,
+      hit2,
+      hit3,
+      hit4,
+      hit2_rate: hit2Rate,
+      hit3_rate: hit3Rate,
+      hit4_rate: hit4Rate,
+      strategy_tier: strategyTier
     };
   });
 
@@ -1350,6 +1379,7 @@ async function fetchStrategyCandidates(db, marketSnapshot = {}) {
   const usable = merged.filter((row) => row.decision === 'usable').sort(byPowerDesc);
   const candidate = merged.filter((row) => row.decision === 'candidate').sort(byPowerDesc);
   const weak = merged.filter((row) => row.decision === 'weak').sort(byPowerDesc);
+  const reject = merged.filter((row) => row.decision === 'reject').sort(byWeaknessDesc);
 
   let finalRows = [...strong, ...usable, ...candidate];
 
@@ -1370,7 +1400,17 @@ async function fetchStrategyCandidates(db, marketSnapshot = {}) {
     strong,
     usable,
     candidate,
-    weak
+    weak,
+    reject,
+    safe: finalRows
+      .filter((row) => ['safe', 'balanced'].includes(String(row.strategy_tier || '')))
+      .sort(byPowerDesc),
+    core: finalRows
+      .filter((row) => ['core', 'balanced'].includes(String(row.strategy_tier || '')))
+      .sort(byPowerDesc),
+    burst: finalRows
+      .filter((row) => ['burst', 'core'].includes(String(row.strategy_tier || '')))
+      .sort(byPowerDesc)
   };
 }
 
@@ -1442,7 +1482,9 @@ function buildGroupRoleByIndex(idx = 0) {
       type: 'safe',
       target: 'hit2',
       role_label: '保守（保2）',
-      purpose: '穩定偏熱，優先保二'
+      purpose: '穩定命中2碼，優先保留回收能力',
+      preferred_tiers: ['safe', 'balanced', 'core'],
+      preferred_decisions: ['strong', 'usable', 'candidate']
     };
   }
 
@@ -1451,7 +1493,9 @@ function buildGroupRoleByIndex(idx = 0) {
       type: 'balanced',
       target: 'hit2_3',
       role_label: '平衡（2~3）',
-      purpose: '兼顧命中2與命中3'
+      purpose: '兼顧命中2與命中3，作為主力過渡組',
+      preferred_tiers: ['balanced', 'core', 'safe'],
+      preferred_decisions: ['strong', 'usable', 'candidate']
     };
   }
 
@@ -1460,7 +1504,9 @@ function buildGroupRoleByIndex(idx = 0) {
       type: 'aggressive',
       target: 'hit3',
       role_label: '進攻（偏3）',
-      purpose: '偏進攻，主抓命中3'
+      purpose: '偏向命中3能力，拉高有效爆發率',
+      preferred_tiers: ['core', 'balanced', 'burst'],
+      preferred_decisions: ['strong', 'usable', 'candidate']
     };
   }
 
@@ -1468,7 +1514,9 @@ function buildGroupRoleByIndex(idx = 0) {
     type: 'sniper',
     target: 'hit4',
     role_label: '衝高（拚4）',
-    purpose: '高風險高波動，拚衝4'
+    purpose: '接受波動，換取命中4的高上限',
+    preferred_tiers: ['burst', 'core', 'balanced'],
+    preferred_decisions: ['strong', 'usable', 'candidate', 'weak']
   };
 }
 
@@ -1517,49 +1565,70 @@ function applyRoleAdjustment(nums = [], role = {}, market = {}) {
   return uniqueSorted(nums).slice(0, 4);
 }
 
+function pickStrategyForRole(candidatePack = {}, role = {}, used = new Set()) {
+  const preferredTiers = Array.isArray(role?.preferred_tiers) ? role.preferred_tiers : [];
+  const preferredDecisions = Array.isArray(role?.preferred_decisions) ? role.preferred_decisions : [];
+  const allRows = Array.isArray(candidatePack?.all) ? candidatePack.all : [];
+
+  const tierFiltered = allRows.filter((row) => {
+    if (!row || used.has(row.strategy_key)) return false;
+    if (!preferredTiers.length) return true;
+    return preferredTiers.includes(String(row.strategy_tier || ''));
+  });
+
+  const decisionFiltered = tierFiltered.filter((row) => {
+    if (!preferredDecisions.length) return true;
+    return preferredDecisions.includes(String(row.decision || ''));
+  });
+
+  const primaryPool = decisionFiltered.length ? decisionFiltered : tierFiltered;
+    if (primaryPool.length) return primaryPool[0];
+
+  const fallback = allRows.filter((row) => row && !used.has(row.strategy_key));
+  return fallback[0] || null;
+}
+
 function buildPredictionGroups(candidatePack = {}, market = {}, marketSnapshot = {}, seed = Date.now()) {
   const marketType = detectMarketType(marketSnapshot);
-
-  let strategies = Array.isArray(candidatePack?.all) ? candidatePack.all : [];
-
-  strategies = filterStrategiesByMarket(strategies, marketType);
-
-  strategies = strategies
-    .filter((s) => (s.final_weight || 0) > 0)
-    .sort((a, b) =>
-      (b.final_weight - a.final_weight) ||
-      (b.avg_hit - a.avg_hit) ||
-      (b.roi - a.roi)
-    );
-
+  const roles = Array.from({ length: BET_GROUP_COUNT }, (_, idx) => buildGroupRoleByIndex(idx));
   const used = new Set();
   const groups = [];
 
-  for (let i = 0; i < strategies.length && groups.length < BET_GROUP_COUNT; i += 1) {
-    const s = strategies[i];
-    if (used.has(s.strategy_key)) continue;
+  for (let i = 0; i < roles.length; i += 1) {
+    const role = roles[i];
+    const picked = pickStrategyForRole(candidatePack, role, used);
+    if (!picked) continue;
 
-    used.add(s.strategy_key);
+    used.add(picked.strategy_key);
 
-    const role = buildGroupRoleByIndex(groups.length);
-    const baseNums = buildStrategyNums(s.strategy_key, market, seed + i * 77);
+    const baseNums = buildStrategyNums(picked.strategy_key, market, seed + i * 77);
     const finalNums = applyRoleAdjustment(baseNums, role, market);
 
     groups.push({
-      key: s.strategy_key,
-      label: `${role.role_label}｜${s.strategy_name || strategyLabel(s.strategy_key)}`,
+      key: picked.strategy_key,
+      label: `${role.role_label}｜${picked.strategy_name || strategyLabel(picked.strategy_key)}`,
       nums: finalNums,
-      reason: `${role.purpose}｜${s.strategy_name || strategyLabel(s.strategy_key)}`,
+      reason: `${role.purpose}｜${picked.strategy_name || strategyLabel(picked.strategy_key)}`,
       meta: {
-        strategy_key: s.strategy_key,
-        strategy_name: s.strategy_name,
-        decision: s.decision,
-        weight: s.weight,
-        final_weight: s.final_weight,
+        strategy_key: picked.strategy_key,
+        strategy_name: picked.strategy_name,
+        decision: picked.decision,
+        strategy_tier: picked.strategy_tier,
+        weight: picked.weight,
+        final_weight: picked.final_weight || picked.weight,
         market_type: marketType,
-        market_boost: s.market_boost,
-        avg_hit: s.avg_hit,
-        roi: s.roi,
+        market_boost: picked.market_boost,
+        market_reason: picked.market_reason,
+        avg_hit: picked.avg_hit,
+        roi: picked.roi,
+        hit2: toNum(picked.hit2, 0),
+        hit3: toNum(picked.hit3, 0),
+        hit4: toNum(picked.hit4, 0),
+        hit2_rate: Number(toNum(picked.hit2_rate, 0).toFixed(4)),
+        hit3_rate: Number(toNum(picked.hit3_rate, 0).toFixed(4)),
+        hit4_rate: Number(toNum(picked.hit4_rate, 0).toFixed(4)),
+        recent_50_hit_rate: Number(toNum(picked.recent_50_hit_rate, 0).toFixed(4)),
+        recent_50_roi: Number(toNum(picked.recent_50_roi, 0).toFixed(4)),
         type: role.type,
         target: role.target,
         role_label: role.role_label,
