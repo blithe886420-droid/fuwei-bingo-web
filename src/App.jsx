@@ -1299,9 +1299,9 @@ export default function App() {
             </Card>
 
             <Card
-              title="最新 formal 正式下注"
-              subtitle="保留最近一批摘要，方便你快速看最後一手。"
-            >
+  title="現在可下注號碼"
+  subtitle="優先顯示即戰候選（instant_formal），沒有才退回最近 formal。"
+>
               <div style={styles.groupGrid}>
                 {formalGroups.length ? (
                   formalGroups.map((group, idx) => (
