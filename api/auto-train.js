@@ -191,9 +191,43 @@ function normalizeGroups(groups = []) {
     .filter(Boolean);
 }
 
+function buildGroupPriorityTuple(group = {}) {
+  const meta = group?.meta && typeof group.meta === 'object' ? group.meta : {};
+
+  return [
+    toNum(meta.hit3_rate, 0),
+    toNum(meta.recent_50_hit3_rate, 0),
+    toNum(meta.hit4_rate, 0),
+    toNum(meta.roi, 0),
+    toNum(meta.score, 0),
+    toNum(meta.decision_score, 0),
+    toNum(meta.market_boost, 1) - 1,
+    -toNum(meta.selection_rank, 999)
+  ];
+}
+
+function compareGroupPriorityDesc(a, b) {
+  const aTuple = buildGroupPriorityTuple(a);
+  const bTuple = buildGroupPriorityTuple(b);
+  const size = Math.max(aTuple.length, bTuple.length);
+
+  for (let i = 0; i < size; i += 1) {
+    const diff = toNum(bTuple[i], 0) - toNum(aTuple[i], 0);
+    if (diff !== 0) return diff;
+  }
+
+  return String(a?.key || a?.meta?.strategy_key || '').localeCompare(
+    String(b?.key || b?.meta?.strategy_key || '')
+  );
+}
+
+function sortGroupsForInstantCandidate(groups = []) {
+  return normalizeGroups(groups).sort(compareGroupPriorityDesc);
+}
+
 
 function buildInstantFormalCandidateGroups(groups = []) {
-  const normalized = normalizeGroups(groups).slice(0, 12);
+  const normalized = sortGroupsForInstantCandidate(groups).slice(0, 12);
   if (normalized.length < 2) return [];
 
   const top1 = normalized[0];
@@ -1576,10 +1610,14 @@ function buildPredictionGroups(strategyCandidates = [], market = {}, marketSnaps
   const selected = [];
   const usedKeys = new Set();
 
-  const strong = strategyCandidates.filter((row) => row.decision === 'strong');
-  const usable = strategyCandidates.filter((row) => row.decision === 'usable');
-  const candidate = strategyCandidates.filter((row) => row.decision === 'candidate');
-  const weak = strategyCandidates.filter((row) => row.decision === 'weak');
+  const rankedCandidates = [...(Array.isArray(strategyCandidates) ? strategyCandidates : [])].sort(
+    sortByFormalSelection
+  );
+
+  const strong = rankedCandidates.filter((row) => row.decision === 'strong');
+  const usable = rankedCandidates.filter((row) => row.decision === 'usable');
+  const candidate = rankedCandidates.filter((row) => row.decision === 'candidate');
+  const weak = rankedCandidates.filter((row) => row.decision === 'weak');
 
   const queues = [strong, usable, candidate, weak];
 
@@ -1594,33 +1632,37 @@ function buildPredictionGroups(strategyCandidates = [], market = {}, marketSnaps
     if (selected.length >= BET_GROUP_COUNT) break;
   }
 
-  return selected.slice(0, BET_GROUP_COUNT).map((row, idx) => ({
-    key: String(row.strategy_key),
-    label: String(row.strategy_name || strategyLabel(row.strategy_key)),
-    nums: buildStrategyNums(row.strategy_key, market, seedBase + idx + 11),
-    meta: {
-      strategy_key: String(row.strategy_key),
-      strategy_name: String(row.strategy_name || strategyLabel(row.strategy_key)),
-      strategy_tier: row.strategy_tier || 'test',
-      decision: row.decision,
-      decision_score: round4(row.decision_score),
-      market_boost: round4(row.market_boost),
-      market_reason: row.market_reason || '',
-      hit2: toNum(row.hit2, 0),
-      hit3: toNum(row.hit3, 0),
-      hit4: toNum(row.hit4, 0),
-      hit2_rate: round4(row.hit2_rate),
-      hit3_rate: round4(row.hit3_rate),
-      hit4_rate: round4(row.hit4_rate),
-      recent_50_hit3_rate: round4(row.recent_50_hit3_rate),
-      recent_50_hit4_rate: round4(row.recent_50_hit4_rate),
-      roi: round4(row.roi),
-      avg_hit: round4(row.avg_hit),
-      score: round4(row.score),
-      requested_mode: TEST_MODE,
-      reason: 'auto_train_latest_test_groups'
-    }
-  }));
+  return selected
+    .sort(sortByFormalSelection)
+    .slice(0, BET_GROUP_COUNT)
+    .map((row, idx) => ({
+      key: String(row.strategy_key),
+      label: String(row.strategy_name || strategyLabel(row.strategy_key)),
+      nums: buildStrategyNums(row.strategy_key, market, seedBase + idx + 11),
+      meta: {
+        strategy_key: String(row.strategy_key),
+        strategy_name: String(row.strategy_name || strategyLabel(row.strategy_key)),
+        strategy_tier: row.strategy_tier || 'test',
+        decision: row.decision,
+        selection_rank: idx + 1,
+        decision_score: round4(row.decision_score),
+        market_boost: round4(row.market_boost),
+        market_reason: row.market_reason || '',
+        hit2: toNum(row.hit2, 0),
+        hit3: toNum(row.hit3, 0),
+        hit4: toNum(row.hit4, 0),
+        hit2_rate: round4(row.hit2_rate),
+        hit3_rate: round4(row.hit3_rate),
+        hit4_rate: round4(row.hit4_rate),
+        recent_50_hit3_rate: round4(row.recent_50_hit3_rate),
+        recent_50_hit4_rate: round4(row.recent_50_hit4_rate),
+        roi: round4(row.roi),
+        avg_hit: round4(row.avg_hit),
+        score: round4(row.score),
+        requested_mode: TEST_MODE,
+        reason: 'auto_train_latest_test_groups'
+      }
+    }));
 }
 
 function buildCombatReadiness({
