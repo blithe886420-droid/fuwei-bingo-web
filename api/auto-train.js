@@ -227,7 +227,34 @@ function sortGroupsForInstantCandidate(groups = []) {
 
 
 function buildInstantFormalCandidateGroups(groups = []) {
-  const normalized = sortGroupsForInstantCandidate(groups).slice(0, 12);
+  const normalized = normalizeGroups(groups)
+    .slice(0, 12)
+    .sort((a, b) => {
+      const scoreA =
+        toNum(a?.meta?.decision_score, Number.NEGATIVE_INFINITY);
+      const scoreB =
+        toNum(b?.meta?.decision_score, Number.NEGATIVE_INFINITY);
+
+      if (scoreB !== scoreA) return scoreB - scoreA;
+
+      const rankA = toNum(a?.meta?.selection_rank, 9999);
+      const rankB = toNum(b?.meta?.selection_rank, 9999);
+
+      if (rankA !== rankB) return rankA - rankB;
+
+      const rawScoreA = toNum(a?.meta?.score, Number.NEGATIVE_INFINITY);
+      const rawScoreB = toNum(b?.meta?.score, Number.NEGATIVE_INFINITY);
+
+      if (rawScoreB !== rawScoreA) return rawScoreB - rawScoreA;
+
+      const avgHitA = toNum(a?.meta?.avg_hit, Number.NEGATIVE_INFINITY);
+      const avgHitB = toNum(b?.meta?.avg_hit, Number.NEGATIVE_INFINITY);
+
+      if (avgHitB !== avgHitA) return avgHitB - avgHitA;
+
+      return String(a?.key || '').localeCompare(String(b?.key || ''));
+    });
+
   if (normalized.length < 2) return [];
 
   const top1 = normalized[0];
@@ -240,7 +267,7 @@ function buildInstantFormalCandidateGroups(groups = []) {
     meta: {
       ...(sourceGroup.meta || {}),
       selection_rank: rank,
-      source_selection_rank: rank,
+      source_selection_rank: toNum(sourceGroup?.meta?.selection_rank, rank),
       instant_candidate: true,
       instant_candidate_mode: 'weighted_focus_b',
       focus_mode: 'weighted_focus_b',
