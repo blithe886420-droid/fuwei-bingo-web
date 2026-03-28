@@ -328,7 +328,7 @@ function normalizePredictionLatest(data) {
     getPredictionLatestRow(data?.instant_formal || data?.candidate || data, 'formal_candidate') ||
     null;
 
-  const displayFormalRow = instantFormalRow || formalRow || null;
+  const displayFormalRow = instantFormalRow || trainingRow || formalRow || null;
 
   return {
     apiVersion: data?.api_version || '--',
@@ -1300,7 +1300,7 @@ export default function App() {
 
             <Card
   title="現在可下注號碼"
-  subtitle="優先顯示即戰候選（instant_formal），沒有才退回最近 formal。"
+  subtitle="優先顯示即戰候選（instant_formal），沒有才退回最新 test，再退回最近 formal。"
 >
               <div style={styles.groupGrid}>
                 {formalGroups.length ? (
