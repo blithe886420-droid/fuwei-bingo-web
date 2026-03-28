@@ -323,7 +323,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const [trainingPrediction, formalPrediction, leaderboard, latestFormalSourceDrawNo] =
+   const [trainingPrediction, formalPrediction, leaderboard, latestFormalSourceDrawNo] =
       await Promise.all([
         getLatestPrediction('test'),
         getLatestPrediction('formal'),
@@ -334,19 +334,23 @@ export default async function handler(req, res) {
     const rows = [trainingPrediction, formalPrediction].filter(Boolean);
     const decision = buildDecisionSummary(leaderboard);
 
-    let formalSourceDrawNo =
+    const latestFormalDrawNo =
       latestFormalSourceDrawNo ||
       formalPrediction?.source_draw_no ||
       0;
 
+    const latestTrainingDrawNo = toInt(trainingPrediction?.source_draw_no, 0);
+
+    let formalSourceDrawNo = latestFormalDrawNo;
+
+    if (latestTrainingDrawNo > 0) {
+      if (!formalSourceDrawNo || latestTrainingDrawNo > formalSourceDrawNo) {
+        formalSourceDrawNo = latestTrainingDrawNo;
+      }
+    }
+
     let formalBatchRows = await getFormalBatchRows(formalSourceDrawNo);
     let formalBatchCount = formalBatchRows.length;
-
-    if (formalBatchCount >= FORMAL_BATCH_LIMIT && trainingPrediction?.source_draw_no) {
-      formalSourceDrawNo = toInt(trainingPrediction.source_draw_no, 0);
-      formalBatchRows = await getFormalBatchRows(formalSourceDrawNo);
-      formalBatchCount = formalBatchRows.length;
-    }
 
     const formalRemainingBatchCount = Math.max(
       0,
