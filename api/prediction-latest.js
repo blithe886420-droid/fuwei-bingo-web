@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
-const API_VERSION = 'prediction-latest-batch-v4-manual-control';
+const API_VERSION = 'prediction-latest-batch-v5-instant-ready';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -17,6 +17,9 @@ const PREDICTIONS_TABLE = 'bingo_predictions';
 const STRATEGY_STATS_TABLE = 'strategy_stats';
 const STRATEGY_POOL_TABLE = 'strategy_pool';
 const FORMAL_BATCH_LIMIT = 3;
+const TEST_MODE = 'test';
+const FORMAL_MODE = 'formal';
+const FORMAL_CANDIDATE_MODE = 'formal_candidate';
 
 if (!SUPABASE_URL || !SUPABASE_KEY) {
   throw new Error('Missing SUPABASE_URL or SUPABASE key');
@@ -137,80 +140,25 @@ function normalizePredictionRow(row) {
   };
 }
 
-function buildStrategyScore(row) {
-  const totalRounds = toNum(row.total_rounds, 0);
-  const avgHit = toNum(row.avg_hit, 0);
-  const roi = toNum(row.roi, 0);
-  const recent50Roi = toNum(row.recent_50_roi, 0);
-  const hitRate = toNum(row.hit_rate, 0);
-  const recent50HitRate = toNum(row.recent_50_hit_rate, 0);
-  const hit2 = toNum(row.hit2, 0);
-  const hit3 = toNum(row.hit3, 0);
-  const hit4 = toNum(row.hit4, 0);
-  const protectedBonus = row?.protected_rank ? 9999 : 0;
-  const matureBonus = totalRounds >= 30 ? 25 : totalRounds >= 15 ? 10 : 0;
-
-  return (
-    protectedBonus +
-    avgHit * 55 +
-    recent50Roi * 45 +
-    roi * 10 +
-    hitRate * 18 +
-    recent50HitRate * 12 +
-    hit2 * 2 +
-    hit3 * 8 +
-    hit4 * 20 +
-    matureBonus
-  );
-}
-
 function normalizeLeaderboardRow(row, poolRow = null) {
-  if (!row) return null;
+  if (!row || !row.strategy_key) return null;
 
-  const totalRounds = toNum(row.total_rounds, 0);
-  const avgHit = toNum(row.avg_hit, 0);
-  const roi = toNum(row.roi, 0);
-  const recent50Roi = toNum(row.recent_50_roi, 0);
-  const hitRate = toNum(row.hit_rate, 0);
-  const recent50HitRate = toNum(row.recent_50_hit_rate, 0);
-
-  const merged = {
-    ...poolRow,
-    ...row
-  };
-
-  const score = buildStrategyScore(merged);
+  const pool = poolRow && typeof poolRow === 'object' ? poolRow : {};
 
   return {
-    key: merged.strategy_key || '',
-    label:
-      merged.strategy_label ||
-      merged.strategy_name ||
-      merged.strategy_key ||
-      '',
-    strategy_key: merged.strategy_key || '',
-    strategy_name:
-      merged.strategy_name ||
-      merged.strategy_label ||
-      merged.strategy_key ||
-      '',
-    total_rounds: totalRounds,
-    total_hits: toNum(merged.total_hits, 0),
-    avg_hit: round4(avgHit),
-    hit_rate: round4(hitRate),
-    recent_50_hit_rate: round4(recent50HitRate),
-    total_profit: round4(merged.total_profit),
-    roi: round4(roi),
-    recent_50_roi: round4(recent50Roi),
-    total_cost: round4(merged.total_cost),
-    total_reward: round4(merged.total_reward),
-    hit2: toNum(merged.hit2, 0),
-    hit3: toNum(merged.hit3, 0),
-    hit4: toNum(merged.hit4, 0),
-    protected_rank: Boolean(merged.protected_rank),
-    pool_status: merged.status || null,
-    updated_at: merged.updated_at || merged.last_updated || null,
-    score: round4(score)
+    strategy_key: String(row.strategy_key || ''),
+    strategy_name: pool.strategy_name || row.strategy_name || row.strategy_key,
+    avg_hit: round4(row.avg_hit),
+    roi: round4(row.roi),
+    recent_50_roi: round4(row.recent_50_roi),
+    total_rounds: toInt(row.total_rounds, 0),
+    hit2: toInt(row.hit2, 0),
+    hit3: toInt(row.hit3, 0),
+    hit4: toInt(row.hit4, 0),
+    strategy_score: round4(row.score ?? row.strategy_score ?? 0),
+    score: round4(row.score ?? row.strategy_score ?? 0),
+    status: pool.status || 'active',
+    protected_rank: Boolean(pool.protected_rank)
   };
 }
 
@@ -224,14 +172,14 @@ async function getLatestPrediction(mode) {
     .maybeSingle();
 
   if (error) throw error;
-  return normalizePredictionRow(data || null);
+  return normalizePredictionRow(data);
 }
 
 async function getLatestFormalSourceDrawNo() {
   const { data, error } = await supabase
     .from(PREDICTIONS_TABLE)
-    .select('source_draw_no, created_at')
-    .eq('mode', 'formal')
+    .select('source_draw_no')
+    .eq('mode', FORMAL_MODE)
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -246,24 +194,32 @@ async function getFormalBatchRows(sourceDrawNo) {
   const { data, error } = await supabase
     .from(PREDICTIONS_TABLE)
     .select('*')
-    .eq('mode', 'formal')
+    .eq('mode', FORMAL_MODE)
     .eq('source_draw_no', sourceDrawNo)
     .order('created_at', { ascending: true });
 
   if (error) throw error;
 
-  return (Array.isArray(data) ? data : []).map((row, idx) => ({
-    ...normalizePredictionRow(row),
-    formal_batch_no: idx + 1
-  }));
+  return (Array.isArray(data) ? data : [])
+    .map(normalizePredictionRow)
+    .filter(Boolean)
+    .map((row, idx) => ({
+      ...row,
+      formal_batch_no: idx + 1
+    }));
 }
 
 async function getStrategyLeaderboard(limit = 50) {
-  const [{ data: statsRows, error: statsError }, { data: poolRows, error: poolError }] =
-    await Promise.all([
-      supabase.from(STRATEGY_STATS_TABLE).select('*'),
-      supabase.from(STRATEGY_POOL_TABLE).select('*')
-    ]);
+  const [{ data: statsRows, error: statsError }, { data: poolRows, error: poolError }] = await Promise.all([
+    supabase
+      .from(STRATEGY_STATS_TABLE)
+      .select('strategy_key, avg_hit, roi, recent_50_roi, total_rounds, hit2, hit3, hit4, score')
+      .order('score', { ascending: false })
+      .limit(limit),
+    supabase
+      .from(STRATEGY_POOL_TABLE)
+      .select('strategy_key, strategy_name, status, protected_rank')
+  ]);
 
   if (statsError) throw statsError;
   if (poolError) throw poolError;
@@ -323,10 +279,11 @@ export default async function handler(req, res) {
   }
 
   try {
-   const [trainingPrediction, formalPrediction, leaderboard, latestFormalSourceDrawNo] =
+    const [trainingPrediction, formalPrediction, instantFormal, leaderboard, latestFormalSourceDrawNo] =
       await Promise.all([
-        getLatestPrediction('test'),
-        getLatestPrediction('formal'),
+        getLatestPrediction(TEST_MODE),
+        getLatestPrediction(FORMAL_MODE),
+        getLatestPrediction(FORMAL_CANDIDATE_MODE),
         getStrategyLeaderboard(50),
         getLatestFormalSourceDrawNo()
       ]);
@@ -340,7 +297,6 @@ export default async function handler(req, res) {
       0;
 
     const latestTrainingDrawNo = toInt(trainingPrediction?.source_draw_no, 0);
-
     let formalSourceDrawNo = latestFormalDrawNo;
 
     if (latestTrainingDrawNo > 0) {
@@ -351,11 +307,7 @@ export default async function handler(req, res) {
 
     let formalBatchRows = await getFormalBatchRows(formalSourceDrawNo);
     let formalBatchCount = formalBatchRows.length;
-
-    const formalRemainingBatchCount = Math.max(
-      0,
-      FORMAL_BATCH_LIMIT - formalBatchCount
-    );
+    const formalRemainingBatchCount = Math.max(0, FORMAL_BATCH_LIMIT - formalBatchCount);
 
     return res.status(200).json({
       ok: true,
@@ -370,6 +322,8 @@ export default async function handler(req, res) {
         row: formalPrediction,
         rows: formalPrediction ? [formalPrediction] : []
       },
+
+      instant_formal: instantFormal,
 
       ai_train: {
         row: trainingPrediction,
