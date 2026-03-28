@@ -43,30 +43,6 @@ const DRAWS_TABLE = 'bingo_draws';
 const PROTECTED_STATUS = new Set(['protected']);
 const TERMINAL_STATUS = new Set(['disabled', 'retired']);
 
-const DISABLE_RULES = {
-  minRoundsA: 5,
-  roiFloorA: -0.5,
-
-  minRoundsB: 4,
-  recent50RoiFloorB: -0.2,
-  avgHitFloorB: 1.0,
-
-  minRoundsC: 6,
-  recent50RoiFloorC: -0.35,
-  hitRateFloorC: 0.12,
-
-  minRoundsD: 8,
-  roiFloorD: -0.3,
-  avgHitFloorD: 1.1,
-
-  minRoundsE: 3,
-  roiFloorE: -0.5,
-
-  minRoundsF: 3,
-  avgHitFloorF: 0.8,
-  recent50RoiFloorF: -0.4
-};
-
 const MIN_ACTIVE_STRATEGY = 30;
 const TARGET_ACTIVE_STRATEGY = 60;
 const MAX_ACTIVE_STRATEGY = 80;
@@ -127,6 +103,12 @@ function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
+function round4(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Number(n.toFixed(4));
+}
+
 function uniqueSorted(nums = []) {
   return [...new Set((Array.isArray(nums) ? nums : []).map(Number).filter(Number.isFinite))]
     .filter((n) => n >= 1 && n <= 80)
@@ -158,6 +140,19 @@ function parseNums(value) {
     );
   }
 
+  return [];
+}
+
+function safeArray(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
   return [];
 }
 
@@ -200,6 +195,13 @@ function strategyLabel(strategyKey = '') {
 
 function normalizeStrategyKey(raw = '') {
   return String(raw || '').trim().toLowerCase();
+}
+
+function normalizeMode(rawMode = '') {
+  const mode = String(rawMode || '').trim().toLowerCase();
+  if (mode === 'formal_synced_from_server_prediction') return FORMAL_MODE;
+  if (mode === TEST_MODE || mode === FORMAL_MODE) return mode;
+  return TEST_MODE;
 }
 
 function pickFromPool(pool = [], selectedSet = new Set(), seed = 0) {
@@ -718,10 +720,13 @@ function byPowerDesc(a, b) {
 function byWeaknessDesc(a, b) {
   return (
     toNum(a.decision_rank, 99) - toNum(b.decision_rank, 99) ||
+    toNum(a.hit3_rate, 0) - toNum(b.hit3_rate, 0) ||
+    toNum(a.recent_50_hit3_rate, 0) - toNum(b.recent_50_hit3_rate, 0) ||
+    toNum(a.hit4_rate, 0) - toNum(b.hit4_rate, 0) ||
+    toNum(a.roi, 0) - toNum(b.roi, 0) ||
+    toNum(a.score, 0) - toNum(b.score, 0) ||
     toNum(a.decision_score, 0) - toNum(b.decision_score, 0) ||
     toNum(a.weight, 0) - toNum(b.weight, 0) ||
-    toNum(a.roi, 0) - toNum(b.roi, 0) ||
-    toNum(a.recent_50_roi, 0) - toNum(b.recent_50_roi, 0) ||
     toNum(a.avg_hit, 0) - toNum(b.avg_hit, 0) ||
     toNum(a.total_rounds, 0) - toNum(b.total_rounds, 0) ||
     String(a.strategy_key).localeCompare(String(b.strategy_key))
@@ -737,161 +742,6 @@ function getDecisionRank(decision = '') {
   if (d === 'usable') return 3;
   if (d === 'strong') return 4;
   return 5;
-}
-
-function buildAdaptiveDisableRules(activeCount = 999) {
-  if (activeCount <= 34) {
-    return {
-      ...DISABLE_RULES,
-      roiFloorA: -0.8,
-      recent50RoiFloorB: -0.45,
-      recent50RoiFloorC: -0.55,
-      roiFloorD: -0.55,
-      roiFloorE: -0.8,
-      recent50RoiFloorF: -0.65
-    };
-  }
-
-  if (activeCount <= 45) {
-    return {
-      ...DISABLE_RULES,
-      roiFloorA: -0.65,
-      recent50RoiFloorB: -0.32,
-      recent50RoiFloorC: -0.45,
-      roiFloorD: -0.42,
-      roiFloorE: -0.65,
-      recent50RoiFloorF: -0.52
-    };
-  }
-
-  if (activeCount >= EXTREME_SHRINK_TRIGGER) {
-    return {
-      ...DISABLE_RULES,
-      roiFloorA: -0.28,
-      recent50RoiFloorB: -0.08,
-      recent50RoiFloorC: -0.18,
-      roiFloorD: -0.2,
-      roiFloorE: -0.3,
-      recent50RoiFloorF: -0.22,
-      avgHitFloorB: 1.08,
-      avgHitFloorD: 1.18,
-      avgHitFloorF: 0.95,
-      hitRateFloorC: 0.18
-    };
-  }
-
-  if (activeCount >= HARD_SHRINK_TRIGGER) {
-    return {
-      ...DISABLE_RULES,
-      roiFloorA: -0.35,
-      recent50RoiFloorB: -0.12,
-      recent50RoiFloorC: -0.24,
-      roiFloorD: -0.24,
-      roiFloorE: -0.38,
-      recent50RoiFloorF: -0.28,
-      avgHitFloorB: 1.04,
-avgHitFloorD: 1.14,
-      avgHitFloorF: 0.9,
-      hitRateFloorC: 0.15
-    };
-  }
-
-  if (activeCount >= SOFT_SHRINK_TRIGGER) {
-    return {
-      ...DISABLE_RULES,
-      roiFloorA: -0.42,
-      recent50RoiFloorB: -0.16,
-      recent50RoiFloorC: -0.28,
-      roiFloorD: -0.26,
-      roiFloorE: -0.44,
-      recent50RoiFloorF: -0.34,
-      avgHitFloorB: 1.02,
-      avgHitFloorD: 1.12,
-      avgHitFloorF: 0.86,
-      hitRateFloorC: 0.13
-    };
-  }
-
-  return { ...DISABLE_RULES };
-}
-
-function shouldDisableStrategy(row = {}, activeCount = 999) {
-  const rules = buildAdaptiveDisableRules(activeCount);
-
-  const roi = toNum(row?.roi);
-  const avgHit = toNum(row?.avg_hit);
-  const recent50Roi = toNum(row?.recent_50_roi);
-  const recent50HitRate = toNum(row?.recent_50_hit_rate);
-  const totalRounds = toNum(row?.total_rounds);
-
-  if (
-    totalRounds >= rules.minRoundsA &&
-    roi < rules.roiFloorA
-  ) {
-    return {
-      shouldDisable: true,
-      reason: `roi_below_${rules.roiFloorA}_after_${rules.minRoundsA}`
-    };
-  }
-
-  if (
-    totalRounds >= rules.minRoundsB &&
-    recent50Roi < rules.recent50RoiFloorB &&
-    avgHit < rules.avgHitFloorB
-  ) {
-    return {
-      shouldDisable: true,
-      reason: `recent50_roi_below_${rules.recent50RoiFloorB}_and_avg_hit_below_${rules.avgHitFloorB}`
-    };
-  }
-
-  if (
-    totalRounds >= rules.minRoundsC &&
-    recent50Roi < rules.recent50RoiFloorC &&
-    recent50HitRate < rules.hitRateFloorC
-  ) {
-    return {
-      shouldDisable: true,
-      reason: `recent50_roi_below_${rules.recent50RoiFloorC}_and_hit_rate_below_${rules.hitRateFloorC}`
-    };
-  }
-
-  if (
-    totalRounds >= rules.minRoundsD &&
-    roi < rules.roiFloorD &&
-    avgHit < rules.avgHitFloorD
-  ) {
-    return {
-      shouldDisable: true,
-      reason: `roi_below_${rules.roiFloorD}_and_avg_hit_below_${rules.avgHitFloorD}`
-    };
-  }
-
-  if (
-    totalRounds >= rules.minRoundsE &&
-    roi < rules.roiFloorE
-  ) {
-    return {
-      shouldDisable: true,
-      reason: `early_fail_roi_below_${rules.roiFloorE}_after_${rules.minRoundsE}`
-    };
-  }
-
-  if (
-    totalRounds >= rules.minRoundsF &&
-    avgHit < rules.avgHitFloorF &&
-    recent50Roi < rules.recent50RoiFloorF
-  ) {
-    return {
-      shouldDisable: true,
-      reason: `early_fail_avg_hit_below_${rules.avgHitFloorF}_and_recent50_roi_below_${rules.recent50RoiFloorF}`
-    };
-  }
-
-  return {
-    shouldDisable: false,
-    reason: ''
-  };
 }
 
 function inferGenesFromStrategyKey(strategyKey = '') {
@@ -1021,6 +871,17 @@ async function countActiveStrategies(db) {
   return toNum(count, 0);
 }
 
+async function getLatestDrawRows(db, limit = MARKET_LOOKBACK_LIMIT) {
+  const { data, error } = await db
+    .from(DRAWS_TABLE)
+    .select('*')
+    .order('draw_no', { ascending: false })
+    .limit(limit);
+
+  if (error) throw error;
+  return Array.isArray(data) ? data : [];
+}
+
 function getShrinkPlan(activeCount = 0) {
   if (activeCount <= MAX_ACTIVE_STRATEGY) {
     return {
@@ -1028,313 +889,73 @@ function getShrinkPlan(activeCount = 0) {
       overTarget: Math.max(0, activeCount - TARGET_ACTIVE_STRATEGY),
       overMax: 0,
       extraDisableTarget: 0,
-      maxDisablePerRun: 8
+      maxDisablePerRun: 0
     };
   }
 
-  const overTarget = Math.max(0, activeCount - TARGET_ACTIVE_STRATEGY);
-  const overMax = Math.max(0, activeCount - MAX_ACTIVE_STRATEGY);
-
   if (activeCount >= EXTREME_SHRINK_TRIGGER) {
+    const overTarget = Math.max(0, activeCount - TARGET_ACTIVE_STRATEGY);
     return {
       shrinkMode: 'extreme',
       overTarget,
-      overMax,
-      extraDisableTarget: Math.min(overTarget, 30),
-      maxDisablePerRun: 30
+      overMax: Math.max(0, activeCount - MAX_ACTIVE_STRATEGY),
+      extraDisableTarget: overTarget,
+      maxDisablePerRun: Math.max(10, Math.min(30, overTarget))
     };
   }
 
   if (activeCount >= HARD_SHRINK_TRIGGER) {
+    const overTarget = Math.max(0, activeCount - TARGET_ACTIVE_STRATEGY);
     return {
       shrinkMode: 'hard',
       overTarget,
-      overMax,
-      extraDisableTarget: Math.min(overTarget, 22),
-      maxDisablePerRun: 22
+      overMax: Math.max(0, activeCount - MAX_ACTIVE_STRATEGY),
+      extraDisableTarget: Math.max(8, Math.min(overTarget, 20)),
+      maxDisablePerRun: Math.max(8, Math.min(20, overTarget))
     };
   }
 
-  if (activeCount >= 100) {
+  if (activeCount >= SOFT_SHRINK_TRIGGER) {
+    const overTarget = Math.max(0, activeCount - TARGET_ACTIVE_STRATEGY);
     return {
-      shrinkMode: 'medium',
+      shrinkMode: 'soft',
       overTarget,
-      overMax,
-      extraDisableTarget: Math.min(overTarget, 16),
-      maxDisablePerRun: 16
+      overMax: Math.max(0, activeCount - MAX_ACTIVE_STRATEGY),
+      extraDisableTarget: Math.max(1, overTarget),
+      maxDisablePerRun: Math.max(4, Math.min(12, overTarget))
     };
   }
 
   return {
-    shrinkMode: 'soft',
-    overTarget,
-    overMax,
-    extraDisableTarget: Math.min(overTarget, 10),
-    maxDisablePerRun: 10
+    shrinkMode: 'off',
+    overTarget: 0,
+    overMax: 0,
+    extraDisableTarget: 0,
+    maxDisablePerRun: 0
   };
 }
 
-function buildCombatReadiness({
-  activeStrategyCount = 0,
-  comparedCount = 0,
-  reaperResult = {},
-  spawnerResult = {},
-  createdRemaining = 0
-} = {}) {
-  const readyFlags = {
-    compare_running: comparedCount > 0,
-    pool_below_max: activeStrategyCount <= MAX_ACTIVE_STRATEGY,
-    pool_close_to_target: activeStrategyCount <= TARGET_ACTIVE_STRATEGY + 10,
-    reaper_alive: Boolean(reaperResult?.ok),
-    spawner_alive: Boolean(spawnerResult?.ok),
-    created_pool_not_overloaded: createdRemaining < MAX_CREATED_PREDICTIONS
-  };
-
-  let phase = 'not_ready';
-  let readyForFormal = false;
-  let advice = '繼續縮池，先不要把正式下注當成穩定回本模式。';
-
-  if (
-    readyFlags.compare_running &&
-    readyFlags.pool_below_max &&
-    readyFlags.reaper_alive &&
-    readyFlags.spawner_alive &&
-    readyFlags.created_pool_not_overloaded
-  ) {
-    phase = 'watch';
-    advice = '可小額觀察實戰，但仍以測試與監控為主。';
-  }
-
-  if (
-    readyFlags.compare_running &&
-    readyFlags.pool_close_to_target &&
-    readyFlags.reaper_alive &&
-    readyFlags.spawner_alive &&
-    readyFlags.created_pool_not_overloaded
-  ) {
-    phase = 'near_ready';
-    advice = '已接近正式下注門檻，可用固定四組四期做小額觀察。';
-  }
-
-  if (
-    readyFlags.compare_running &&
-    activeStrategyCount <= TARGET_ACTIVE_STRATEGY &&
-    readyFlags.reaper_alive &&
-    readyFlags.spawner_alive &&
-    readyFlags.created_pool_not_overloaded
-  ) {
-    phase = 'ready';
-    readyForFormal = true;
-    advice = '已進入可正式上場區，但仍應控資金與追蹤 ROI。';
-  }
-
-  return {
-    ready_for_formal: readyForFormal,
-    phase,
-    flags: readyFlags,
-    advice
-  };
-}
-
-async function runSync() {
-  return { ok: true };
-}
-
-async function runCatchup() {
-  return { ok: true };
-}
-
-async function countCreatedPredictions(db) {
-  const { count, error } = await db
-    .from(PREDICTIONS_TABLE)
-    .select('id', { count: 'exact', head: true })
-    .eq('status', 'created');
-
-  if (error) throw error;
-  return toNum(count, 0);
-}
-
-async function runCompare(db) {
-  const { data: predictions, error: predError } = await db
-    .from(PREDICTIONS_TABLE)
-    .select('*')
-    .in('mode', COMPARE_MODES)
-    .eq('status', 'created')
-    .order('created_at', { ascending: true })
-    .limit(COMPARE_BATCH_LIMIT);
-
-  if (predError) throw predError;
-
-  if (!predictions || !predictions.length) {
-    return {
-      ok: true,
-      processed: 0,
-      waiting: 0,
-      processed_by_mode: {
-        test: 0,
-        formal: 0
-      },
-      waiting_by_mode: {
-        test: 0,
-        formal: 0
-      },
-      total_candidates: 0,
-      compare_modes: [...COMPARE_MODES],
-      disabled_keys: []
-    };
-  }
-
-  let processed = 0;
-  let waiting = 0;
-
-  const processedByMode = {
-    test: 0,
-    formal: 0
-  };
-
-  const waitingByMode = {
-    test: 0,
-    formal: 0
-  };
-
-  const disabledKeysAll = [];
-
-  for (const prediction of predictions) {
-    const mode =
-      String(prediction?.mode || '').toLowerCase() === FORMAL_MODE
-        ? FORMAL_MODE
-        : TEST_MODE;
-
-    const sourceDrawNo = toNum(prediction?.source_draw_no, 0);
-    const targetPeriods = Math.max(
-      1,
-      toNum(prediction?.target_periods, mode === FORMAL_MODE ? 4 : TARGET_PERIODS)
-    );
-    const groups = Array.isArray(prediction?.groups_json) ? prediction.groups_json : [];
-
-    if (!sourceDrawNo || groups.length === 0) {
-      waiting += 1;
-      waitingByMode[mode] += 1;
-      continue;
-    }
-
-    const { data: drawRows, error: drawError } = await db
-      .from(DRAWS_TABLE)
-      .select('*')
-      .gt('draw_no', sourceDrawNo)
-      .order('draw_no', { ascending: true })
-      .limit(targetPeriods);
-
-    if (drawError) throw drawError;
-
-    if (!drawRows || drawRows.length < targetPeriods) {
-      waiting += 1;
-      waitingByMode[mode] += 1;
-      continue;
-    }
-
-    const payload = buildComparePayload({
-      groups,
-      drawRows,
-      costPerGroupPerPeriod: COST_PER_GROUP_PER_PERIOD
-    });
-
-    if (!payload || !payload.compareResult) {
-      waiting += 1;
-      waitingByMode[mode] += 1;
-      continue;
-    }
-
-    const comparedAt = new Date().toISOString();
-
-    const { error: updateError } = await db
-      .from(PREDICTIONS_TABLE)
-      .update({
-        status: 'compared',
-        compare_status: 'done',
-        hit_count: toNum(payload.hitCount, 0),
-        compare_result: payload.compareResult,
-        verdict: payload.verdict || 'bad',
-        compared_at: comparedAt
-      })
-      .eq('id', prediction.id);
-
-    if (updateError) throw updateError;
-
-    const statsResult = await recordStrategyCompareResult(payload.compareResult);
-
-    if (Array.isArray(statsResult?.disabled_keys) && statsResult.disabled_keys.length) {
-      disabledKeysAll.push(...statsResult.disabled_keys);
-    }
-
-    processed += 1;
-    processedByMode[mode] += 1;
-  }
-
-  return {
-    ok: true,
-    processed,
-    waiting,
-    processed_by_mode: processedByMode,
-    waiting_by_mode: waitingByMode,
-    total_candidates: predictions.length,
-    compare_modes: [...COMPARE_MODES],
-    disabled_keys: [...new Set(disabledKeysAll)]
-  };
-}
-
-async function fetchMarketRows(db) {
-  const { data, error } = await db
-    .from(DRAWS_TABLE)
-    .select('*')
-    .order('draw_no', { ascending: false })
-    .limit(MARKET_LOOKBACK_LIMIT);
-
-  if (error) throw error;
-  return Array.isArray(data) ? data : [];
-}
-
-async function fetchStrategyCandidates(db, marketSnapshot = {}) {
-  await ensureStrategyPoolStrategies();
-
-  const { data: poolRows, error: poolError } = await db
-    .from(STRATEGY_POOL_TABLE)
-    .select('*')
-    .eq('status', 'active')
-    .order('updated_at', { ascending: false });
-
-  if (poolError) throw poolError;
-
-  const strategyKeys = (poolRows || [])
-    .map((row) => String(row?.strategy_key || '').trim().toLowerCase())
-    .filter(Boolean);
-
-  if (!strategyKeys.length) {
-    throw new Error('No active strategy_pool rows');
-  }
-
-  const { data: statsRows, error: statsError } = await db
-    .from(STRATEGY_STATS_TABLE)
-    .select('*')
-    .in('strategy_key', strategyKeys);
-
-  if (statsError) throw statsError;
-
+function mergePoolWithStats(poolRows = [], statsRows = [], marketSnapshot = {}) {
   const statsMap = new Map(
-    (statsRows || []).map((row) => [String(row?.strategy_key || '').trim().toLowerCase(), row])
+    (Array.isArray(statsRows) ? statsRows : []).map((row) => [
+      normalizeStrategyKey(row?.strategy_key),
+      row
+    ])
   );
 
-  const merged = (poolRows || []).map((row) => {
-    const stat = statsMap.get(String(row?.strategy_key || '').trim().toLowerCase()) || {};
+  return (Array.isArray(poolRows) ? poolRows : []).map((row) => {
+    const stat = statsMap.get(normalizeStrategyKey(row?.strategy_key)) || {};
     const evaluation = evaluateStrategyDecision(row, stat, marketSnapshot);
 
     const hit2 = toNum(stat?.hit2, 0);
     const hit3 = toNum(stat?.hit3, 0);
     const hit4 = toNum(stat?.hit4, 0);
-    const totalRounds = Math.max(1, evaluation.totalRounds || 0);
-    const hit2Rate = hit2 / totalRounds;
-    const hit3Rate = hit3 / totalRounds;
-    const hit4Rate = hit4 / totalRounds;
+    const totalRoundsBase = Math.max(1, toNum(evaluation.totalRounds, 0));
+    const hit2Rate = toNum(stat?.hit2_rate, hit2 / totalRoundsBase);
+    const hit3Rate = toNum(stat?.hit3_rate, hit3 / totalRoundsBase);
+    const hit4Rate = toNum(stat?.hit4_rate, hit4 / totalRoundsBase);
+    const recent50Hit3Rate = normalizeHitRate(stat?.recent_50_hit3_rate);
+    const recent50Hit4Rate = normalizeHitRate(stat?.recent_50_hit4_rate);
 
     let strategyTier = 'simulate';
 
@@ -1354,6 +975,7 @@ async function fetchStrategyCandidates(db, marketSnapshot = {}) {
       ...row,
       stats: stat,
       decision: evaluation.decision,
+      decision_rank: getDecisionRank(evaluation.decision),
       weight: evaluation.weight,
       avg_hit: evaluation.avgHit,
       roi: evaluation.roi,
@@ -1362,6 +984,8 @@ async function fetchStrategyCandidates(db, marketSnapshot = {}) {
       hit_rate: evaluation.hitRate,
       recent_50_hit_rate: evaluation.recent50HitRate,
       recent_50_roi: evaluation.recent50Roi,
+      recent_50_hit3_rate: recent50Hit3Rate,
+      recent_50_hit4_rate: recent50Hit4Rate,
       market_boost: evaluation.marketBoost,
       market_reason: evaluation.marketReason,
       decision_score: evaluation.decisionScore,
@@ -1374,303 +998,48 @@ async function fetchStrategyCandidates(db, marketSnapshot = {}) {
       strategy_tier: strategyTier
     };
   });
-
-  const strong = merged.filter((row) => row.decision === 'strong').sort(byPowerDesc);
-  const usable = merged.filter((row) => row.decision === 'usable').sort(byPowerDesc);
-  const candidate = merged.filter((row) => row.decision === 'candidate').sort(byPowerDesc);
-  const weak = merged.filter((row) => row.decision === 'weak').sort(byPowerDesc);
-  const reject = merged.filter((row) => row.decision === 'reject').sort(byWeaknessDesc);
-
-  let finalRows = [...strong, ...usable, ...candidate];
-
-  if (finalRows.length < BET_GROUP_COUNT) {
-    finalRows = [...finalRows, ...weak];
-  }
-
-  finalRows = finalRows
-    .filter((row) => toNum(row.weight, 0) > 0)
-    .sort(byPowerDesc);
-
-  if (!finalRows.length) {
-    throw new Error('No usable strategy candidates after decision filter');
-  }
-
-  return {
-    all: finalRows,
-    strong,
-    usable,
-    candidate,
-    weak,
-    reject,
-    safe: finalRows
-      .filter((row) => ['safe', 'balanced'].includes(String(row.strategy_tier || '')))
-      .sort(byPowerDesc),
-    core: finalRows
-      .filter((row) => ['core', 'balanced'].includes(String(row.strategy_tier || '')))
-      .sort(byPowerDesc),
-    burst: finalRows
-      .filter((row) => ['burst', 'core'].includes(String(row.strategy_tier || '')))
-      .sort(byPowerDesc)
-  };
 }
 
-function detectMarketType(marketSnapshot = {}) {
-  const s = marketSnapshot?.latest?.summary;
-  if (!s) return 'UNKNOWN';
-
-  const { sum_band, big_small_bias, hot_zone, compactness } = s;
-
-  if (sum_band === 'high' && big_small_bias === 'big' && hot_zone === 4) {
-    return 'HIGH_BIG_ZONE4';
-  }
-
-  if (sum_band === 'low' && big_small_bias === 'small' && hot_zone === 1) {
-    return 'LOW_SMALL_ZONE1';
-  }
-
-  if (compactness === 'wide') {
-    return 'WIDE_SPREAD';
-  }
-
-  if (compactness === 'tight') {
-    return 'TIGHT_CLUSTER';
-  }
-
-  return 'NORMAL';
+function buildFormalRank(row = {}) {
+  return [
+    toNum(row.hit3_rate, 0),
+    toNum(row.recent_50_hit3_rate, 0),
+    toNum(row.hit4_rate, 0),
+    toNum(row.roi, 0),
+    toNum(row.score, 0),
+    toNum(row.decision_score, 0),
+    toNum(row.weight, 0)
+  ];
 }
 
-function filterStrategiesByMarket(strategies = [], marketType = '') {
-  return strategies.map((s) => {
-    let boost = 1;
-
-    if (marketType === 'HIGH_BIG_ZONE4') {
-      if (String(s.strategy_key || '').includes('hot') || String(s.strategy_key || '').includes('chase')) {
-        boost *= 1.3;
-      }
-    }
-
-    if (marketType === 'LOW_SMALL_ZONE1') {
-      if (String(s.strategy_key || '').includes('cold') || String(s.strategy_key || '').includes('guard')) {
-        boost *= 1.3;
-      }
-    }
-
-    if (marketType === 'WIDE_SPREAD') {
-      if (String(s.strategy_key || '').includes('gap') || String(s.strategy_key || '').includes('chase')) {
-        boost *= 1.25;
-      }
-    }
-
-    if (marketType === 'TIGHT_CLUSTER') {
-      if (String(s.strategy_key || '').includes('pattern') || String(s.strategy_key || '').includes('cluster')) {
-        boost *= 1.25;
-      }
-    }
-
-    return {
-      ...s,
-      final_weight: Math.round((s.weight || 0) * boost),
-      market_type: marketType,
-      market_boost: boost
-    };
-  });
+function compareRankTupleDesc(aTuple = [], bTuple = []) {
+  const size = Math.max(aTuple.length, bTuple.length);
+  for (let i = 0; i < size; i += 1) {
+    const diff = toNum(bTuple[i], 0) - toNum(aTuple[i], 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
 }
 
-function buildGroupRoleByIndex(idx = 0) {
-  if (idx === 0) {
-    return {
-      type: 'safe',
-      target: 'hit2',
-      role_label: '保守（保2）',
-      purpose: '穩定命中2碼，優先保留回收能力',
-      preferred_tiers: ['safe', 'balanced', 'core'],
-      preferred_decisions: ['strong', 'usable', 'candidate']
-    };
-  }
-
-  if (idx === 1) {
-    return {
-      type: 'balanced',
-      target: 'hit2_3',
-      role_label: '平衡（2~3）',
-      purpose: '兼顧命中2與命中3，作為主力過渡組',
-      preferred_tiers: ['balanced', 'core', 'safe'],
-      preferred_decisions: ['strong', 'usable', 'candidate']
-    };
-  }
-
-  if (idx === 2) {
-    return {
-      type: 'aggressive',
-      target: 'hit3',
-      role_label: '進攻（偏3）',
-      purpose: '偏向命中3能力，拉高有效爆發率',
-      preferred_tiers: ['core', 'balanced', 'burst'],
-      preferred_decisions: ['strong', 'usable', 'candidate']
-    };
-  }
-
-  return {
-    type: 'sniper',
-    target: 'hit4',
-    role_label: '衝高（拚4）',
-    purpose: '接受波動，換取命中4的高上限',
-    preferred_tiers: ['burst', 'core', 'balanced'],
-    preferred_decisions: ['strong', 'usable', 'candidate', 'weak']
-  };
-}
-
-function applyRoleAdjustment(nums = [], role = {}, market = {}) {
-  const allNums = Array.isArray(market?.allNums) ? market.allNums : [];
-  const hot = Array.isArray(market?.hot) ? market.hot : [];
-  const warm = Array.isArray(market?.warm) ? market.warm : [];
-  const cold = Array.isArray(market?.cold) ? market.cold : [];
-  const gap = Array.isArray(market?.gap) ? market.gap : [];
-  const stable = Array.isArray(market?.stable) ? market.stable : [];
-
-  const safeFallback = [hot, warm, stable, gap, cold, allNums];
-  const attackFallback = [gap, hot, warm, stable, cold, allNums];
-  const coldFallback = [cold, gap, hot, warm, stable, allNums];
-
-  const roleType = String(role?.type || '').toLowerCase();
-
-  if (roleType === 'safe') {
-    return fillToFour([...hot.slice(0, 3), ...warm.slice(0, 2), ...nums], safeFallback, 11);
-  }
-
-  if (roleType === 'balanced') {
-    return fillToFour(
-      [...hot.slice(0, 2), ...warm.slice(0, 2), ...gap.slice(0, 1), ...nums],
-      safeFallback,
-      23
-    );
-  }
-
-  if (roleType === 'aggressive') {
-    return fillToFour(
-      [...gap.slice(0, 2), ...hot.slice(0, 2), ...stable.slice(0, 1), ...nums],
-      attackFallback,
-      37
-    );
-  }
-
-  if (roleType === 'sniper') {
-    return fillToFour(
-      [...cold.slice(0, 2), ...gap.slice(0, 2), ...hot.slice(0, 1), ...nums],
-      coldFallback,
-      49
-    );
-  }
-
-  return uniqueSorted(nums).slice(0, 4);
-}
-
-function pickStrategyForRole(candidatePack = {}, role = {}, used = new Set()) {
-  const preferredTiers = Array.isArray(role?.preferred_tiers) ? role.preferred_tiers : [];
-  const preferredDecisions = Array.isArray(role?.preferred_decisions) ? role.preferred_decisions : [];
-  const allRows = Array.isArray(candidatePack?.all) ? candidatePack.all : [];
-
-  const tierFiltered = allRows.filter((row) => {
-    if (!row || used.has(row.strategy_key)) return false;
-    if (!preferredTiers.length) return true;
-    return preferredTiers.includes(String(row.strategy_tier || ''));
-  });
-
-  const decisionFiltered = tierFiltered.filter((row) => {
-    if (!preferredDecisions.length) return true;
-    return preferredDecisions.includes(String(row.decision || ''));
-  });
-
-  const primaryPool = decisionFiltered.length ? decisionFiltered : tierFiltered;
-    if (primaryPool.length) return primaryPool[0];
-
-  const fallback = allRows.filter((row) => row && !used.has(row.strategy_key));
-  return fallback[0] || null;
-}
-
-function buildPredictionGroups(candidatePack = {}, market = {}, marketSnapshot = {}, seed = Date.now()) {
-  const marketType = detectMarketType(marketSnapshot);
-  const roles = Array.from({ length: BET_GROUP_COUNT }, (_, idx) => buildGroupRoleByIndex(idx));
-  const used = new Set();
-  const groups = [];
-
-  for (let i = 0; i < roles.length; i += 1) {
-    const role = roles[i];
-    const picked = pickStrategyForRole(candidatePack, role, used);
-    if (!picked) continue;
-
-    used.add(picked.strategy_key);
-
-    const baseNums = buildStrategyNums(picked.strategy_key, market, seed + i * 77);
-    const finalNums = applyRoleAdjustment(baseNums, role, market);
-
-    groups.push({
-      key: picked.strategy_key,
-      label: `${role.role_label}｜${picked.strategy_name || strategyLabel(picked.strategy_key)}`,
-      nums: finalNums,
-      reason: `${role.purpose}｜${picked.strategy_name || strategyLabel(picked.strategy_key)}`,
-      meta: {
-        strategy_key: picked.strategy_key,
-        strategy_name: picked.strategy_name,
-        decision: picked.decision,
-        strategy_tier: picked.strategy_tier,
-        weight: picked.weight,
-        final_weight: picked.final_weight || picked.weight,
-        market_type: marketType,
-        market_boost: picked.market_boost,
-        market_reason: picked.market_reason,
-        avg_hit: picked.avg_hit,
-        roi: picked.roi,
-        hit2: toNum(picked.hit2, 0),
-        hit3: toNum(picked.hit3, 0),
-        hit4: toNum(picked.hit4, 0),
-        hit2_rate: Number(toNum(picked.hit2_rate, 0).toFixed(4)),
-        hit3_rate: Number(toNum(picked.hit3_rate, 0).toFixed(4)),
-        hit4_rate: Number(toNum(picked.hit4_rate, 0).toFixed(4)),
-        recent_50_hit_rate: Number(toNum(picked.recent_50_hit_rate, 0).toFixed(4)),
-        recent_50_roi: Number(toNum(picked.recent_50_roi, 0).toFixed(4)),
-        type: role.type,
-        target: role.target,
-        role_label: role.role_label,
-        purpose: role.purpose,
-        selection_rank: groups.length + 1
-      }
-    });
-  }
-
-  return groups.slice(0, BET_GROUP_COUNT);
-}
-
-function mergePoolWithStats(poolRows = [], statsRows = [], marketSnapshot = {}) {
-  const statsMap = new Map(
-    (Array.isArray(statsRows) ? statsRows : []).map((row) => [
-      normalizeStrategyKey(row?.strategy_key),
-      row
-    ])
+function sortByFormalSelection(a, b) {
+  return (
+    compareRankTupleDesc(buildFormalRank(a), buildFormalRank(b)) ||
+    toNum(b.market_boost, 1) - toNum(a.market_boost, 1) ||
+    String(a.strategy_key).localeCompare(String(b.strategy_key))
   );
+}
 
-  return (Array.isArray(poolRows) ? poolRows : []).map((row) => {
-    const stat = statsMap.get(normalizeStrategyKey(row?.strategy_key)) || {};
-    const evaluation = evaluateStrategyDecision(row, stat, marketSnapshot);
-
-    return {
-      ...row,
-      stats: stat,
-      decision: evaluation.decision,
-      decision_rank: getDecisionRank(evaluation.decision),
-      weight: evaluation.weight,
-      avg_hit: evaluation.avgHit,
-      roi: evaluation.roi,
-      score: evaluation.score,
-      total_rounds: evaluation.totalRounds,
-      hit_rate: evaluation.hitRate,
-      recent_50_hit_rate: evaluation.recent50HitRate,
-      recent_50_roi: evaluation.recent50Roi,
-      market_boost: evaluation.marketBoost,
-      market_reason: evaluation.marketReason,
-      decision_score: evaluation.decisionScore
-    };
-  });
+function sortByForcedShrink(a, b) {
+  return (
+    toNum(a.hit3_rate, 0) - toNum(b.hit3_rate, 0) ||
+    toNum(a.recent_50_hit3_rate, 0) - toNum(b.recent_50_hit3_rate, 0) ||
+    toNum(a.hit4_rate, 0) - toNum(b.hit4_rate, 0) ||
+    toNum(a.roi, 0) - toNum(b.roi, 0) ||
+    toNum(a.score, 0) - toNum(b.score, 0) ||
+    toNum(a.decision_score, 0) - toNum(b.decision_score, 0) ||
+    toNum(a.weight, 0) - toNum(b.weight, 0) ||
+    String(a.strategy_key).localeCompare(String(b.strategy_key))
+  );
 }
 
 async function runStrategyReaper(db, marketSnapshot = {}) {
@@ -1702,6 +1071,8 @@ async function runStrategyReaper(db, marketSnapshot = {}) {
       reason: 'no_active_rows',
       shrink: {
         mode: shrinkPlan.shrinkMode,
+        over_target: shrinkPlan.overTarget,
+        over_max: shrinkPlan.overMax,
         extra_disable_target: shrinkPlan.extraDisableTarget,
         max_disable_per_run: shrinkPlan.maxDisablePerRun
       }
@@ -1721,6 +1092,29 @@ async function runStrategyReaper(db, marketSnapshot = {}) {
       reason: 'protect_min_active_strategy',
       shrink: {
         mode: shrinkPlan.shrinkMode,
+        over_target: shrinkPlan.overTarget,
+        over_max: shrinkPlan.overMax,
+        extra_disable_target: shrinkPlan.extraDisableTarget,
+        max_disable_per_run: shrinkPlan.maxDisablePerRun
+      }
+    };
+  }
+
+  if (shrinkPlan.shrinkMode === 'off' || shrinkPlan.extraDisableTarget <= 0) {
+    return {
+      ok: true,
+      scanned: activeRows.length,
+      active_count: activeCount,
+      min_active_strategy: MIN_ACTIVE_STRATEGY,
+      disabled_count: 0,
+      disabled_keys: [],
+      disabled_reason_map: {},
+      skipped: true,
+      reason: 'shrink_not_required',
+      shrink: {
+        mode: shrinkPlan.shrinkMode,
+        over_target: shrinkPlan.overTarget,
+        over_max: shrinkPlan.overMax,
         extra_disable_target: shrinkPlan.extraDisableTarget,
         max_disable_per_run: shrinkPlan.maxDisablePerRun
       }
@@ -1742,66 +1136,24 @@ async function runStrategyReaper(db, marketSnapshot = {}) {
     mergedActiveRows.map((row) => String(row?.strategy_key || '').trim()).filter(Boolean)
   );
 
-  const forcedDisableKeys = [];
-  const forcedReasonMap = {};
-  const shrinkCandidates = [];
-
-  for (const row of mergedActiveRows) {
-    const key = String(row?.strategy_key || '').trim();
-    if (!key) continue;
-
-    const poolInfo = poolStatusMap.get(key) || {
-      status: '',
-      protected_rank: false
-    };
-
-    const currentStatus = String(poolInfo.status || '').trim().toLowerCase();
-
-    if (poolInfo.protected_rank || PROTECTED_STATUS.has(currentStatus)) {
-      continue;
-    }
-
-    if (TERMINAL_STATUS.has(currentStatus)) {
-      continue;
-    }
-
-    const disableCheck = shouldDisableStrategy(row, activeCount);
-    if (disableCheck.shouldDisable) {
-      forcedDisableKeys.push(key);
-      forcedReasonMap[key] = disableCheck.reason;
-    }
-
-    shrinkCandidates.push({
-      ...row,
-      protected_rank: Boolean(poolInfo.protected_rank)
-    });
-  }
-
-  const extraShrinkPool = shrinkCandidates
-    .filter((row) => !forcedDisableKeys.includes(String(row?.strategy_key || '').trim()))
-    .filter((row) => !Boolean(row?.protected_rank))
+  const extraShrinkPool = mergedActiveRows
     .filter((row) => {
-      const decision = String(row?.decision || '').toLowerCase();
+      const key = String(row?.strategy_key || '').trim();
+      if (!key) return false;
 
-      if (shrinkPlan.shrinkMode === 'extreme') {
-        return decision !== 'strong';
-      }
+      const poolInfo = poolStatusMap.get(key) || {
+        status: '',
+        protected_rank: false
+      };
 
-      if (shrinkPlan.shrinkMode === 'hard') {
-        return decision === 'reject' || decision === 'weak' || decision === 'candidate' || row.roi < 0;
-      }
+      const currentStatus = String(poolInfo.status || '').trim().toLowerCase();
 
-      if (shrinkPlan.shrinkMode === 'medium') {
-        return decision === 'reject' || decision === 'weak' || decision === 'candidate';
-      }
+      if (poolInfo.protected_rank || PROTECTED_STATUS.has(currentStatus)) return false;
+      if (TERMINAL_STATUS.has(currentStatus)) return false;
 
-      if (shrinkPlan.shrinkMode === 'soft') {
-        return decision === 'reject' || decision === 'weak';
-      }
-
-      return false;
+      return true;
     })
-    .sort(byWeaknessDesc);
+    .sort(sortByForcedShrink);
 
   const extraShrinkKeys = [];
   const extraReasonMap = {};
@@ -1812,18 +1164,17 @@ async function runStrategyReaper(db, marketSnapshot = {}) {
     if (!key) continue;
 
     extraShrinkKeys.push(key);
-    extraReasonMap[key] = `c1_shrink_${shrinkPlan.shrinkMode}_pool_${activeCount}`;
+    extraReasonMap[key] =
+      `forced_shrink_${shrinkPlan.shrinkMode}` +
+      `_hit3_${round4(row.hit3_rate)}` +
+      `_recentHit3_${round4(row.recent_50_hit3_rate)}` +
+      `_hit4_${round4(row.hit4_rate)}` +
+      `_roi_${round4(row.roi)}`;
   }
 
-  const allPlannedKeys = [...new Set([...forcedDisableKeys, ...extraShrinkKeys])];
   const maxDisableAllowedByMinPool = Math.max(0, activeCount - MIN_ACTIVE_STRATEGY);
   const maxDisableAllowed = Math.min(maxDisableAllowedByMinPool, shrinkPlan.maxDisablePerRun);
-  const finalDisableKeys = allPlannedKeys.slice(0, maxDisableAllowed);
-
-  const finalReasonMap = {};
-  for (const key of finalDisableKeys) {
-    finalReasonMap[key] = forcedReasonMap[key] || extraReasonMap[key] || 'c1_shrink_disable';
-  }
+  const finalDisableKeys = extraShrinkKeys.slice(0, maxDisableAllowed);
 
   let disableResult = {
     updated: 0,
@@ -1832,6 +1183,11 @@ async function runStrategyReaper(db, marketSnapshot = {}) {
   };
 
   if (finalDisableKeys.length > 0) {
+    const finalReasonMap = {};
+    for (const key of finalDisableKeys) {
+      finalReasonMap[key] = extraReasonMap[key] || 'forced_shrink_disable';
+    }
+
     disableResult = await disableStrategies(db, finalDisableKeys, finalReasonMap);
   }
 
@@ -1850,8 +1206,7 @@ async function runStrategyReaper(db, marketSnapshot = {}) {
       over_max: shrinkPlan.overMax,
       extra_disable_target: shrinkPlan.extraDisableTarget,
       max_disable_per_run: shrinkPlan.maxDisablePerRun,
-      forced_disable_count: forcedDisableKeys.length,
-      extra_shrink_candidate_count: extraShrinkPool.length
+      candidate_count: extraShrinkPool.length
     }
   };
 }
@@ -1864,7 +1219,6 @@ async function runStrategySpawner(db, latestDrawNo = 0, marketSnapshot = {}) {
   );
 
   const activeCount = activeRows.length;
-  const totalCount = poolRows.length;
 
   if (activeCount >= TARGET_ACTIVE_STRATEGY) {
     return {
@@ -1898,45 +1252,26 @@ async function runStrategySpawner(db, latestDrawNo = 0, marketSnapshot = {}) {
       .filter(Boolean)
   );
 
-  const activeStrategyKeys = activeRows
-    .map((row) => normalizeStrategyKey(row?.strategy_key))
-    .filter(Boolean);
+  const { data: statsRows, error: statsError } = await db
+    .from(STRATEGY_STATS_TABLE)
+    .select('*');
 
-  let statsRows = [];
-  if (activeStrategyKeys.length) {
-    const { data, error } = await db
-      .from(STRATEGY_STATS_TABLE)
-      .select('*')
-      .in('strategy_key', activeStrategyKeys);
-
-    if (error) throw error;
-    statsRows = Array.isArray(data) ? data : [];
+  if (statsError) {
+    throw new Error(`strategy_stats scan failed for spawn: ${statsError.message || statsError}`);
   }
 
-  const rankedActiveRows = mergePoolWithStats(activeRows, statsRows, marketSnapshot)
-    .sort(byPowerDesc)
-    .map((row) => ({
-      ...row,
-      eval: {
-        decision: row.decision,
-        decisionScore: row.decision_score,
-        weight: row.weight,
-        avgHit: row.avg_hit,
-        roi: row.roi,
-        score: row.score,
-        totalRounds: row.total_rounds,
-        marketBoost: row.market_boost
-      }
-    }));
+  const merged = mergePoolWithStats(activeRows, statsRows || [], marketSnapshot);
+  const powerRows = [...merged].sort(byPowerDesc);
 
-  const strongParents = rankedActiveRows.slice(0, Math.max(6, Math.min(16, rankedActiveRows.length)));
-  const needCount = Math.min(
-    MAX_SPAWN_PER_RUN,
-    TARGET_ACTIVE_STRATEGY - activeCount,
-    MAX_ACTIVE_STRATEGY - activeCount
+  const parentA = powerRows[0] || null;
+  const parentB = powerRows[1] || powerRows[0] || null;
+
+  const spawnTarget = Math.max(
+    0,
+    Math.min(MAX_SPAWN_PER_RUN, TARGET_ACTIVE_STRATEGY - activeCount)
   );
 
-  if (needCount <= 0) {
+  if (spawnTarget <= 0) {
     return {
       ok: true,
       active_count: activeCount,
@@ -1945,89 +1280,78 @@ async function runStrategySpawner(db, latestDrawNo = 0, marketSnapshot = {}) {
       spawned_count: 0,
       spawned_keys: [],
       skipped: true,
-      reason: 'spawn_need_is_zero'
+      reason: 'spawn_target_zero'
     };
   }
 
-  const insertList = [];
-  let seq = 0;
-  let guard = 0;
+  const insertRows = [];
+  const spawnedKeys = [];
+  const nowIso = new Date().toISOString();
 
-  while (insertList.length < needCount && guard < 400) {
-    guard += 1;
-    const parentA = strongParents[seq % strongParents.length] || rankedActiveRows[0] || null;
-    const parentB = strongParents[(seq + 3) % strongParents.length] || rankedActiveRows[1] || parentA || null;
+  for (let i = 0; i < spawnTarget; i += 1) {
+    const sourceType = chooseSpawnSourceType(i, activeCount);
 
-    if (!parentA) break;
+    let childKey = '';
+    if (sourceType === 'exploration') {
+      childKey = buildChildStrategyKey('', '', 'exploration', i + latestDrawNo);
+    } else if (sourceType === 'crossover') {
+      childKey = buildChildStrategyKey(
+        parentA?.strategy_key || 'mix_balanced',
+        parentB?.strategy_key || 'hot_zone',
+        'crossover',
+        i + latestDrawNo
+      );
+    } else {
+      childKey = buildChildStrategyKey(
+        parentA?.strategy_key || 'mix_balanced',
+        '',
+        'mutation',
+        i + latestDrawNo
+      );
+    }
 
-    const sourceType = chooseSpawnSourceType(seq, activeCount);
-    const mode =
-      sourceType === 'exploration'
-        ? 'exploration'
-        : sourceType === 'crossover'
-          ? 'crossover'
-          : 'mutation';
-
-    const childKey = buildChildStrategyKey(
-      parentA?.strategy_key || '',
-      parentB?.strategy_key || '',
-      mode,
-      seq
-    );
-
-    seq += 1;
-
+    childKey = normalizeStrategyKey(childKey);
     if (!childKey) continue;
     if (existingKeySet.has(childKey)) continue;
 
     existingKeySet.add(childKey);
+    spawnedKeys.push(childKey);
 
     const genes = inferGenesFromStrategyKey(childKey);
-    const parentKeys =
-      sourceType === 'exploration'
-        ? []
-        : uniqueTokens([
-            normalizeStrategyKey(parentA?.strategy_key),
-            normalizeStrategyKey(parentB?.strategy_key)
-          ]).slice(0, 2);
 
-    const parentGeneration = Math.max(
-      toNum(parentA?.generation, 1),
-      toNum(parentB?.generation, 1),
-      1
-    );
-
-    insertList.push({
+    insertRows.push({
       strategy_key: childKey,
       strategy_name: strategyLabel(childKey),
       gene_a: genes.gene_a,
       gene_b: genes.gene_b,
       parameters: {
-        mode:
-          sourceType === 'exploration'
-            ? 'exploration_v6'
-            : sourceType === 'crossover'
-              ? 'crossover_v6'
-              : 'evolution_v3',
-        createdBy: 'auto_train_spawner',
-        targetPool: TARGET_ACTIVE_STRATEGY
+        source_type: sourceType,
+        parent_a: parentA?.strategy_key || null,
+        parent_b: parentB?.strategy_key || null
       },
-      generation: sourceType === 'exploration' ? 1 : parentGeneration + 1,
+      generation: Math.max(
+        1,
+        toNum(parentA?.generation, 1),
+        toNum(parentB?.generation, 1)
+      ) + 1,
       source_type: sourceType,
-      parent_keys: parentKeys,
+      parent_keys: [
+        parentA?.strategy_key || null,
+        parentB?.strategy_key || null
+      ].filter(Boolean),
       status: 'active',
       protected_rank: false,
-      incubation_until_draw: 0,
-      created_draw_no: toNum(latestDrawNo, 0),
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString()
+      incubation_until_draw: latestDrawNo + 1,
+      created_draw_no: latestDrawNo,
+      created_at: nowIso,
+      updated_at: nowIso
     });
   }
 
-  if (insertList.length > 0) {
+  if (insertRows.length > 0) {
     const { error: insertError } = await db
       .from(STRATEGY_POOL_TABLE)
-      .insert(insertList);
+      .insert(insertRows);
 
     if (insertError) {
       throw new Error(`strategy_pool spawn insert failed: ${insertError.message || insertError}`);
@@ -2037,340 +1361,592 @@ async function runStrategySpawner(db, latestDrawNo = 0, marketSnapshot = {}) {
   return {
     ok: true,
     active_count: activeCount,
-    total_count: totalCount,
     target_active_strategy: TARGET_ACTIVE_STRATEGY,
     max_active_strategy: MAX_ACTIVE_STRATEGY,
-    spawned_count: insertList.length,
-    spawned_keys: insertList.map((row) => row.strategy_key),
+    spawned_count: insertRows.length,
+    spawned_keys: spawnedKeys,
     skipped: false
   };
 }
 
-export default async function handler(req, res) {
-  try {
-    const db = getSupabase();
+function normalizePredictionGroups(groups = []) {
+  return (Array.isArray(groups) ? groups : [])
+    .map((group, idx) => {
+      if (!group || typeof group !== 'object') return null;
 
-    await ensureStrategyPoolStrategies();
+      const numsSource = Array.isArray(group.nums)
+        ? group.nums
+        : Array.isArray(group.numbers)
+          ? group.numbers
+          : Array.isArray(group.values)
+            ? group.values
+            : [];
 
-    const compareBeforeCreate = await runCompare(db);
-    const catchup = await runCatchup(db);
-    const sync = await runSync(db);
+      const nums = uniqueSorted(numsSource).slice(0, 4);
+      if (nums.length !== 4) return null;
 
-    const pipeline = {
-      compare_before_create: compareBeforeCreate,
-      catchup,
-      sync
-    };
+      const meta = group.meta && typeof group.meta === 'object' ? group.meta : {};
 
-    const { data: latestDrawRows, error: latestError } = await db
-      .from(DRAWS_TABLE)
-      .select('*')
-      .order('draw_no', { ascending: false })
-      .limit(1);
-
-    if (latestError) throw latestError;
-
-    if (!latestDrawRows || !latestDrawRows.length) {
-      const reaperResult = await runStrategyReaper(db, {});
-      const spawnerResult = await runStrategySpawner(db, 0, {});
-      const createdRemainingNoDraw = await countCreatedPredictions(db);
-      const activeStrategyCountNoDraw = await countActiveStrategies(db);
-      const combatReadinessNoDraw = buildCombatReadiness({
-        activeStrategyCount: activeStrategyCountNoDraw,
-        comparedCount: toNum(compareBeforeCreate?.processed, 0),
-        reaperResult,
-        spawnerResult,
-        createdRemaining: createdRemainingNoDraw
-      });
-
-      return res.status(200).json({
-        ok: true,
-        compare_modes: [...COMPARE_MODES],
-        pipeline: {
-          ...pipeline,
-          reaper: reaperResult,
-          spawner: spawnerResult
-        },
-        market_snapshot: null,
-        compared_count: toNum(compareBeforeCreate?.processed, 0),
-        compared_by_mode: compareBeforeCreate?.processed_by_mode || {
-          test: 0,
-          formal: 0
-        },
-        created_count: 0,
-        created_by_mode: {
-          test: 0,
-          formal: 0
-        },
-        created_current_open_count: createdRemainingNoDraw,
-        active_strategy_count: activeStrategyCountNoDraw,
-        disabled_keys: reaperResult.disabled_keys || [],
-        spawned_keys: spawnerResult.spawned_keys || [],
-        active_created_prediction: null,
-        combat_readiness: combatReadinessNoDraw,
-        pool_control: {
-          min_active_strategy: MIN_ACTIVE_STRATEGY,
-          target_active_strategy: TARGET_ACTIVE_STRATEGY,
-          max_active_strategy: MAX_ACTIVE_STRATEGY,
-          max_spawn_per_run: MAX_SPAWN_PER_RUN,
-          soft_shrink_trigger: SOFT_SHRINK_TRIGGER,
-          hard_shrink_trigger: HARD_SHRINK_TRIGGER,
-          extreme_shrink_trigger: EXTREME_SHRINK_TRIGGER
-        },
-        train: {
-          ok: true,
-          skipped: true,
-          reason: 'No bingo_draws'
+      return {
+        key: String(group.key || meta.strategy_key || `group_${idx + 1}`),
+        label: String(group.label || meta.strategy_name || `第${idx + 1}組`),
+        nums,
+        meta: {
+          ...meta,
+          strategy_key: String(meta.strategy_key || group.key || `group_${idx + 1}`),
+          strategy_name: String(meta.strategy_name || group.label || `第${idx + 1}組`)
         }
-      });
+      };
+    })
+    .filter(Boolean);
+}
+
+function buildFormalGroups(mergedRows = [], market = {}, latestDrawNo = 0) {
+  const strong = mergedRows.filter((row) => row.decision === 'strong').sort(sortByFormalSelection);
+  const usable = mergedRows.filter((row) => row.decision === 'usable').sort(sortByFormalSelection);
+  const candidate = mergedRows.filter((row) => row.decision === 'candidate').sort(sortByFormalSelection);
+  const weak = mergedRows.filter((row) => row.decision === 'weak').sort(sortByFormalSelection);
+  const reject = mergedRows.filter((row) => row.decision === 'reject').sort(sortByFormalSelection);
+
+  let finalRows = [...strong, ...usable, ...candidate];
+  if (finalRows.length < BET_GROUP_COUNT) finalRows = [...finalRows, ...weak];
+  if (finalRows.length < BET_GROUP_COUNT) finalRows = [...finalRows, ...reject];
+
+  finalRows = finalRows
+    .filter((row) => toNum(row.weight, 0) > 0)
+    .slice(0, BET_GROUP_COUNT);
+
+  return finalRows.map((row, idx) => ({
+    key: String(row.strategy_key),
+    label: String(row.strategy_name || strategyLabel(row.strategy_key)),
+    nums: buildStrategyNums(row.strategy_key, market, latestDrawNo + idx + 11),
+    meta: {
+      strategy_key: String(row.strategy_key),
+      strategy_name: String(row.strategy_name || strategyLabel(row.strategy_key)),
+      strategy_tier: row.strategy_tier || 'formal',
+      decision: row.decision,
+      decision_score: round4(row.decision_score),
+      market_boost: round4(row.market_boost),
+      market_reason: row.market_reason || '',
+      hit2: toNum(row.hit2, 0),
+      hit3: toNum(row.hit3, 0),
+      hit4: toNum(row.hit4, 0),
+      hit2_rate: round4(row.hit2_rate),
+      hit3_rate: round4(row.hit3_rate),
+      hit4_rate: round4(row.hit4_rate),
+      recent_50_hit3_rate: round4(row.recent_50_hit3_rate),
+      recent_50_hit4_rate: round4(row.recent_50_hit4_rate),
+      roi: round4(row.roi),
+      avg_hit: round4(row.avg_hit),
+      score: round4(row.score),
+      reason: 'formal_top_ranked_by_hit3_recent_hit3_hit4_roi'
     }
+  }));
+}
 
-    const latestDraw = latestDrawRows[0];
-    const latestDrawNo = toNum(latestDraw?.draw_no, 0);
+function buildTestGroups(mergedRows = [], market = {}, latestDrawNo = 0) {
+  const rows = [...mergedRows].sort(byPowerDesc);
 
-    const sourceDrawNoRaw = latestDrawNo;
+  const explorationRows = [];
+  const primaryRows = [];
 
-    if (sourceDrawNoRaw <= 0) {
-      const reaperResult = await runStrategyReaper(db, {});
-      const spawnerResult = await runStrategySpawner(db, latestDrawNo, {});
-      const createdRemainingSmallDraw = await countCreatedPredictions(db);
-      const activeStrategyCountSmallDraw = await countActiveStrategies(db);
-      const combatReadinessSmallDraw = buildCombatReadiness({
-        activeStrategyCount: activeStrategyCountSmallDraw,
-        comparedCount: toNum(compareBeforeCreate?.processed, 0),
-        reaperResult,
-        spawnerResult,
-        createdRemaining: createdRemainingSmallDraw
-      });
-
-      return res.status(200).json({
-        ok: true,
-        compare_modes: [...COMPARE_MODES],
-        pipeline: {
-          ...pipeline,
-          reaper: reaperResult,
-          spawner: spawnerResult
-        },
-        market_snapshot: null,
-        compared_count: toNum(compareBeforeCreate?.processed, 0),
-        compared_by_mode: compareBeforeCreate?.processed_by_mode || {
-          test: 0,
-          formal: 0
-        },
-        created_count: 0,
-        created_by_mode: {
-          test: 0,
-          formal: 0
-        },
-        created_current_open_count: createdRemainingSmallDraw,
-        active_strategy_count: activeStrategyCountSmallDraw,
-        disabled_keys: reaperResult.disabled_keys || [],
-        spawned_keys: spawnerResult.spawned_keys || [],
-        active_created_prediction: null,
-        combat_readiness: combatReadinessSmallDraw,
-        pool_control: {
-          min_active_strategy: MIN_ACTIVE_STRATEGY,
-          target_active_strategy: TARGET_ACTIVE_STRATEGY,
-          max_active_strategy: MAX_ACTIVE_STRATEGY,
-          max_spawn_per_run: MAX_SPAWN_PER_RUN,
-          soft_shrink_trigger: SOFT_SHRINK_TRIGGER,
-          hard_shrink_trigger: HARD_SHRINK_TRIGGER,
-          extreme_shrink_trigger: EXTREME_SHRINK_TRIGGER
-        },
-        train: {
-          ok: true,
-          skipped: true,
-          reason: 'draw_no too small'
-        }
-      });
+  for (const row of rows) {
+    if (row.decision === 'reject') continue;
+    if (explorationRows.length < 2 && (row.decision === 'candidate' || row.decision === 'weak')) {
+      explorationRows.push(row);
+      continue;
     }
+    if (primaryRows.length < BET_GROUP_COUNT) {
+      primaryRows.push(row);
+    }
+    if (primaryRows.length >= BET_GROUP_COUNT) break;
+  }
 
-    const sourceDrawNo = String(sourceDrawNoRaw);
+  let finalRows = [...primaryRows];
 
-    let createdCount = 0;
-    let activeCreatedPrediction = null;
-    let marketSnapshot = null;
+  for (const row of explorationRows) {
+    if (finalRows.length >= BET_GROUP_COUNT) break;
+    if (!finalRows.find((x) => x.strategy_key === row.strategy_key)) {
+      finalRows.push(row);
+    }
+  }
 
-    const createdNowCount = await countCreatedPredictions(db);
-    const shouldCreatePrediction = createdNowCount < MAX_CREATED_PREDICTIONS;
+  finalRows = finalRows.slice(0, BET_GROUP_COUNT);
 
-    if (shouldCreatePrediction) {
-      const { data: existingPrediction, error: existingError } = await db
+  return finalRows.map((row, idx) => ({
+    key: String(row.strategy_key),
+    label: String(row.strategy_name || strategyLabel(row.strategy_key)),
+    nums: buildStrategyNums(row.strategy_key, market, latestDrawNo + idx + 101),
+    meta: {
+      strategy_key: String(row.strategy_key),
+      strategy_name: String(row.strategy_name || strategyLabel(row.strategy_key)),
+      strategy_tier: row.strategy_tier || 'test',
+      decision: row.decision,
+      decision_score: round4(row.decision_score),
+      market_boost: round4(row.market_boost),
+      market_reason: row.market_reason || '',
+      hit2: toNum(row.hit2, 0),
+      hit3: toNum(row.hit3, 0),
+      hit4: toNum(row.hit4, 0),
+      hit2_rate: round4(row.hit2_rate),
+      hit3_rate: round4(row.hit3_rate),
+      hit4_rate: round4(row.hit4_rate),
+      recent_50_hit3_rate: round4(row.recent_50_hit3_rate),
+      recent_50_hit4_rate: round4(row.recent_50_hit4_rate),
+      roi: round4(row.roi),
+      avg_hit: round4(row.avg_hit),
+      score: round4(row.score),
+      reason: 'test_mix_of_power_and_exploration'
+    }
+  }));
+}
+
+async function buildPredictionGroupsByMode(db, mode, latestDrawNo = 0, marketSnapshot = {}) {
+  const { data: poolRows, error: poolError } = await db
+    .from(STRATEGY_POOL_TABLE)
+    .select('*')
+    .eq('status', 'active');
+
+  if (poolError) {
+    throw new Error(`strategy_pool active select failed: ${poolError.message || poolError}`);
+  }
+
+  if (!Array.isArray(poolRows) || !poolRows.length) {
+    throw new Error('No active strategy_pool rows');
+  }
+
+  const strategyKeys = poolRows
+    .map((row) => normalizeStrategyKey(row?.strategy_key))
+    .filter(Boolean);
+
+  const { data: statsRows, error: statsError } = await db
+    .from(STRATEGY_STATS_TABLE)
+    .select('*')
+    .in('strategy_key', strategyKeys);
+
+  if (statsError) {
+    throw new Error(`strategy_stats select failed: ${statsError.message || statsError}`);
+  }
+
+  const marketRows = await getLatestDrawRows(db, MARKET_LOOKBACK_LIMIT);
+  const market = buildMarketState(marketRows);
+  const merged = mergePoolWithStats(poolRows || [], statsRows || [], marketSnapshot);
+
+  let groups = [];
+  if (normalizeMode(mode) === FORMAL_MODE) {
+    groups = buildFormalGroups(merged, market, latestDrawNo);
+  } else {
+    groups = buildTestGroups(merged, market, latestDrawNo);
+  }
+
+  const normalizedGroups = normalizePredictionGroups(groups);
+
+  if (!normalizedGroups.length) {
+    throw new Error(`No prediction groups built for mode=${mode}`);
+  }
+
+  return normalizedGroups;
+}
+
+async function createPredictionRow(db, payload = {}) {
+  const nowIso = new Date().toISOString();
+  const insertPayload = {
+    draw_no: toNum(payload.draw_no, 0),
+    mode: normalizeMode(payload.mode),
+    groups: payload.groups || [],
+    group_count: toNum(payload.group_count, BET_GROUP_COUNT),
+    target_periods: toNum(payload.target_periods, TARGET_PERIODS),
+    cost_per_group_per_period: toNum(payload.cost_per_group_per_period, COST_PER_GROUP_PER_PERIOD),
+    total_cost: toNum(payload.total_cost, 0),
+    compare_status: 'pending',
+    compare_result: null,
+    total_hit: null,
+    total_reward: null,
+    total_profit: null,
+    roi: null,
+    created_at: nowIso,
+    updated_at: nowIso
+  };
+
+  const { data, error } = await db
+    .from(PREDICTIONS_TABLE)
+    .insert(insertPayload)
+    .select('*')
+    .single();
+
+  if (error) {
+    if (isDuplicateDrawModeError(error)) {
+      const { data: existing, error: fetchError } = await db
         .from(PREDICTIONS_TABLE)
         .select('*')
-        .eq('mode', TEST_MODE)
-        .eq('source_draw_no', sourceDrawNo)
-        .eq('status', 'created')
+        .eq('draw_no', insertPayload.draw_no)
+        .eq('mode', insertPayload.mode)
         .order('created_at', { ascending: false })
         .limit(1)
         .maybeSingle();
 
-      if (existingError) throw existingError;
-
-      const allowCreateNow = ALLOW_CREATE_WHEN_EXISTING || !existingPrediction;
-
-      if (allowCreateNow) {
-        const marketRows = await fetchMarketRows(db);
-        const market = buildMarketState(marketRows);
-        marketSnapshot = normalizeMarketSnapshot(
-          buildRecentMarketSignalSnapshot(marketRows, 'numbers')
-        );
-
-        const strategyCandidates = await fetchStrategyCandidates(db, marketSnapshot);
-        const groups = buildPredictionGroups(
-          strategyCandidates,
-          market,
-          marketSnapshot,
-          Date.now()
-        );
-
-        if (!groups.length) {
-          throw new Error('Failed to build prediction groups from strategy_pool');
-        }
-
-        const now = Date.now();
-        const payload = {
-          id: now,
-          mode: TEST_MODE,
-          status: 'created',
-          source_draw_no: sourceDrawNo,
-          target_periods: TARGET_PERIODS,
-          groups_json: groups,
-          market_snapshot_json: marketSnapshot,
-          created_at: new Date().toISOString()
-        };
-
-        const { data: inserted, error: insertError } = await db
-          .from(PREDICTIONS_TABLE)
-          .insert(payload)
-          .select('*')
-          .single();
-
-        if (insertError) {
-          if (isDuplicateDrawModeError(insertError)) {
-            const { data: existingAfterDup, error: dupReadError } = await db
-              .from(PREDICTIONS_TABLE)
-              .select('*')
-              .eq('mode', TEST_MODE)
-              .eq('source_draw_no', sourceDrawNo)
-              .eq('status', 'created')
-              .order('created_at', { ascending: false })
-              .limit(1)
-              .maybeSingle();
-
-            if (dupReadError) throw dupReadError;
-            activeCreatedPrediction = existingAfterDup || null;
-          } else {
-            throw insertError;
-          }
-        } else {
-          createdCount = 1;
-          activeCreatedPrediction = inserted;
-        }
+      if (fetchError) {
+        throw new Error(`prediction duplicate fetch failed: ${fetchError.message || fetchError}`);
       }
+
+      return {
+        created: false,
+        duplicate: true,
+        row: existing || null
+      };
     }
 
-    const compareAfterCreate = await runCompare(db);
-    pipeline.compare_after_create = compareAfterCreate;
+    throw new Error(`prediction insert failed: ${error.message || error}`);
+  }
 
-    const effectiveMarketSnapshot =
-      marketSnapshot ||
-      normalizeMarketSnapshot(
-        buildRecentMarketSignalSnapshot(await fetchMarketRows(db), 'numbers')
-      );
+  return {
+    created: true,
+    duplicate: false,
+    row: data || null
+  };
+}
 
-    const reaperResult = await runStrategyReaper(db, effectiveMarketSnapshot);
-    pipeline.reaper = reaperResult;
+async function runPredictionCreator(db, latestDrawNo = 0, marketSnapshot = {}) {
+  const targetDrawNo = latestDrawNo + 1;
 
-    const spawnerResult = await runStrategySpawner(db, latestDrawNo, effectiveMarketSnapshot);
-    pipeline.spawner = spawnerResult;
+  const { data: existingRows, error: existingError } = await db
+    .from(PREDICTIONS_TABLE)
+    .select('*')
+    .eq('draw_no', targetDrawNo)
+    .in('mode', COMPARE_MODES)
+    .order('created_at', { ascending: false })
+    .limit(MAX_CREATED_PREDICTIONS);
 
-    let finalActiveCreatedPrediction = activeCreatedPrediction;
+  if (existingError) {
+    throw new Error(`prediction existing scan failed: ${existingError.message || existingError}`);
+  }
 
-    if (finalActiveCreatedPrediction?.id) {
-      const { data: refreshedPrediction, error: refreshedError } = await db
-        .from(PREDICTIONS_TABLE)
-        .select('*')
-        .eq('id', finalActiveCreatedPrediction.id)
-        .maybeSingle();
+  const existingByMode = new Map();
+  for (const row of existingRows || []) {
+    const mode = normalizeMode(row?.mode);
+    if (!existingByMode.has(mode)) {
+      existingByMode.set(mode, row);
+    }
+  }
 
-      if (refreshedError) throw refreshedError;
-      finalActiveCreatedPrediction = refreshedPrediction || finalActiveCreatedPrediction;
+  const createdRows = [];
+  const skippedModes = [];
+
+  for (const mode of COMPARE_MODES) {
+    if (!ALLOW_CREATE_WHEN_EXISTING && existingByMode.has(mode)) {
+      skippedModes.push(mode);
+      continue;
     }
 
-    const comparedBefore = toNum(compareBeforeCreate?.processed, 0);
-    const comparedAfter = toNum(compareAfterCreate?.processed, 0);
+    if (existingByMode.has(mode)) {
+      skippedModes.push(mode);
+      continue;
+    }
 
-    const beforeByMode = compareBeforeCreate?.processed_by_mode || { test: 0, formal: 0 };
-    const afterByMode = compareAfterCreate?.processed_by_mode || { test: 0, formal: 0 };
+    const groups = await buildPredictionGroupsByMode(db, mode, latestDrawNo, marketSnapshot);
+    const totalCost = BET_GROUP_COUNT * TARGET_PERIODS * COST_PER_GROUP_PER_PERIOD;
 
-    const disabledKeys = [
-      ...(Array.isArray(compareBeforeCreate?.disabled_keys) ? compareBeforeCreate.disabled_keys : []),
-      ...(Array.isArray(compareAfterCreate?.disabled_keys) ? compareAfterCreate.disabled_keys : []),
-      ...(Array.isArray(reaperResult?.disabled_keys) ? reaperResult.disabled_keys : [])
-    ];
-
-    const createdRemaining = await countCreatedPredictions(db);
-    const activeStrategyCount = await countActiveStrategies(db);
-
-    const combatReadiness = buildCombatReadiness({
-      activeStrategyCount,
-      comparedCount: comparedBefore + comparedAfter,
-      reaperResult,
-      spawnerResult,
-      createdRemaining
+    const createResult = await createPredictionRow(db, {
+      draw_no: targetDrawNo,
+      mode,
+      groups,
+      group_count: BET_GROUP_COUNT,
+      target_periods: TARGET_PERIODS,
+      cost_per_group_per_period: COST_PER_GROUP_PER_PERIOD,
+      total_cost: totalCost
     });
+
+    if (createResult.row) {
+      createdRows.push(createResult.row);
+    }
+  }
+
+  return {
+    ok: true,
+    target_draw_no: targetDrawNo,
+    created_count: createdRows.length,
+    created_modes: createdRows.map((row) => normalizeMode(row?.mode)),
+    skipped_modes: skippedModes,
+    created_rows: createdRows
+  };
+}
+
+async function comparePredictionRow(db, predictionRow, drawRows = []) {
+  const rowId = predictionRow?.id;
+  const mode = normalizeMode(predictionRow?.mode);
+  const drawNo = toNum(predictionRow?.draw_no, 0);
+
+  const rawGroups = predictionRow?.groups ?? predictionRow?.prediction_groups ?? predictionRow?.numbers ?? [];
+  const groups = normalizePredictionGroups(
+    Array.isArray(rawGroups) ? rawGroups : safeArray(rawGroups)
+  );
+
+  const safeDrawRows = (Array.isArray(drawRows) ? drawRows : []).filter(
+    (row) => toNum(row?.draw_no, 0) === drawNo
+  );
+
+  if (!groups.length || !safeDrawRows.length) {
+    return {
+      ok: false,
+      mode,
+      prediction_id: rowId || null,
+      draw_no: drawNo,
+      skipped: true,
+      reason: !groups.length ? 'invalid_groups' : 'draw_not_found'
+    };
+  }
+
+  const comparePayload = buildComparePayload({
+    groups,
+    drawRows: safeDrawRows,
+    costPerGroupPerPeriod: toNum(predictionRow?.cost_per_group_per_period, COST_PER_GROUP_PER_PERIOD)
+  });
+
+  const compareResult = comparePayload?.compareResult || {
+    detail: [],
+    draw_detail: [],
+    strategy_detail: [],
+    total_hit: 0,
+    total_cost: 0,
+    total_reward: 0,
+    total_profit: 0,
+    roi: 0
+  };
+
+  await recordStrategyCompareResult(compareResult);
+
+  const nowIso = new Date().toISOString();
+  const updatePayload = {
+    compare_status: 'done',
+    compare_result: compareResult,
+    total_hit: toNum(compareResult?.total_hit, 0),
+    total_cost: toNum(compareResult?.total_cost, 0),
+    total_reward: toNum(compareResult?.total_reward, 0),
+    total_profit: toNum(compareResult?.total_profit, 0),
+    roi: round4(compareResult?.roi),
+    compared_at: nowIso,
+    updated_at: nowIso
+  };
+
+  const { error: updateError } = await db
+    .from(PREDICTIONS_TABLE)
+    .update(updatePayload)
+    .eq('id', rowId);
+
+  if (updateError) {
+    throw new Error(`prediction compare update failed: ${updateError.message || updateError}`);
+  }
+
+  return {
+    ok: true,
+    mode,
+    prediction_id: rowId || null,
+    draw_no: drawNo,
+    skipped: false,
+    total_hit: updatePayload.total_hit,
+    total_cost: updatePayload.total_cost,
+    total_reward: updatePayload.total_reward,
+    total_profit: updatePayload.total_profit,
+    roi: updatePayload.roi
+  };
+}
+
+async function runCompareByMode(db, mode, availableDrawRows = []) {
+  const latestDrawNo = Math.max(
+    0,
+    ...(Array.isArray(availableDrawRows) ? availableDrawRows : []).map((row) => toNum(row?.draw_no, 0))
+  );
+
+  const { data: predictionRows, error: predictionError } = await db
+    .from(PREDICTIONS_TABLE)
+    .select('*')
+    .eq('mode', normalizeMode(mode))
+    .lte('draw_no', latestDrawNo)
+    .or('compare_status.is.null,compare_status.eq.pending')
+    .order('draw_no', { ascending: true })
+    .limit(COMPARE_BATCH_LIMIT);
+
+  if (predictionError) {
+    throw new Error(`prediction compare scan failed: ${predictionError.message || predictionError}`);
+  }
+
+  if (!Array.isArray(predictionRows) || !predictionRows.length) {
+    return {
+      ok: true,
+      processed: 0,
+      waiting: 0,
+      mode: normalizeMode(mode),
+      results: []
+    };
+  }
+
+  const results = [];
+  let processed = 0;
+  let waiting = 0;
+
+  for (const row of predictionRows) {
+    const drawNo = toNum(row?.draw_no, 0);
+    const matchedDrawRows = availableDrawRows.filter((draw) => toNum(draw?.draw_no, 0) === drawNo);
+
+    if (!matchedDrawRows.length) {
+      waiting += 1;
+      continue;
+    }
+
+    const compareResult = await comparePredictionRow(db, row, matchedDrawRows);
+    results.push(compareResult);
+    if (!compareResult.skipped) processed += 1;
+  }
+
+  return {
+    ok: true,
+    processed,
+    waiting,
+    mode: normalizeMode(mode),
+    results
+  };
+}
+
+async function runCompareAllModes(db) {
+  const latestDrawRows = await getLatestDrawRows(db, COMPARE_BATCH_LIMIT);
+
+  const summary = {
+    ok: true,
+    processed: 0,
+    waiting: 0,
+    processed_by_mode: {},
+    waiting_by_mode: {},
+    total_candidates: 0,
+    compare_modes: [...COMPARE_MODES]
+  };
+
+  for (const mode of COMPARE_MODES) {
+    const result = await runCompareByMode(db, mode, latestDrawRows);
+    summary.processed += toNum(result.processed, 0);
+    summary.waiting += toNum(result.waiting, 0);
+    summary.processed_by_mode[mode] = toNum(result.processed, 0);
+    summary.waiting_by_mode[mode] = toNum(result.waiting, 0);
+    summary.total_candidates += (result.results || []).length + toNum(result.waiting, 0);
+  }
+
+  return summary;
+}
+
+async function runMarketSnapshot(db) {
+  try {
+    const rows = await getLatestDrawRows(db, MARKET_LOOKBACK_LIMIT);
+    const latestDrawNo = toNum(rows?.[0]?.draw_no, 0);
+
+    let marketSnapshot = {};
+    try {
+      const rawSnapshot = await buildRecentMarketSignalSnapshot(rows);
+      marketSnapshot = normalizeMarketSnapshot(rawSnapshot || {});
+    } catch {
+      marketSnapshot = normalizeMarketSnapshot({});
+    }
+
+    return {
+      ok: true,
+      latest_draw_no: latestDrawNo,
+      rows,
+      market_snapshot: marketSnapshot
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      latest_draw_no: 0,
+      rows: [],
+      market_snapshot: normalizeMarketSnapshot({}),
+      error: error?.message || String(error)
+    };
+  }
+}
+
+function toHttpMethod(req) {
+  return String(req?.method || 'GET').toUpperCase();
+}
+
+function allowWrite(method = 'GET') {
+  return method === 'GET' || method === 'POST';
+}
+
+export default async function handler(req, res) {
+  const method = toHttpMethod(req);
+
+  if (!allowWrite(method)) {
+    return res.status(405).json({
+      ok: false,
+      error: 'Method not allowed'
+    });
+  }
+
+  try {
+    const db = getSupabase();
+
+    const ensureResult = await ensureStrategyPoolStrategies();
+    const marketInfo = await runMarketSnapshot(db);
+
+    const compareBeforeCreate = await runCompareAllModes(db);
+
+    const catchup = {
+      ok: true
+    };
+
+    const sync = {
+      ok: true,
+      latest_draw_no: marketInfo.latest_draw_no,
+      active_count_before: await countActiveStrategies(db)
+    };
+
+    const reaper = await runStrategyReaper(
+      db,
+      marketInfo.market_snapshot || normalizeMarketSnapshot({})
+    );
+
+    const postReaperActiveCount = await countActiveStrategies(db);
+
+    const spawner = await runStrategySpawner(
+      db,
+      marketInfo.latest_draw_no,
+      marketInfo.market_snapshot || normalizeMarketSnapshot({})
+    );
+
+    const create = await runPredictionCreator(
+      db,
+      marketInfo.latest_draw_no,
+      marketInfo.market_snapshot || normalizeMarketSnapshot({})
+    );
+
+    const compareAfterCreate = await runCompareAllModes(db);
 
     return res.status(200).json({
       ok: true,
       compare_modes: [...COMPARE_MODES],
-      pipeline,
-      market_snapshot: effectiveMarketSnapshot,
-      compared_count: comparedBefore + comparedAfter,
-      compared_by_mode: {
-        test: toNum(beforeByMode?.test, 0) + toNum(afterByMode?.test, 0),
-        formal: toNum(beforeByMode?.formal, 0) + toNum(afterByMode?.formal, 0)
+      ensure: ensureResult,
+      pipeline: {
+        compare_before_create: compareBeforeCreate,
+        catchup,
+        sync,
+        reaper,
+        spawner,
+        create,
+        compare_after_create: compareAfterCreate
       },
-      created_count: createdCount,
-      created_by_mode: {
-        test: createdCount,
-        formal: 0
-      },
-      created_current_open_count: createdRemaining,
-      active_strategy_count: activeStrategyCount,
-      disabled_keys: [...new Set(disabledKeys)],
-      spawned_keys: Array.isArray(spawnerResult?.spawned_keys) ? spawnerResult.spawned_keys : [],
-      active_created_prediction: finalActiveCreatedPrediction,
-      reaper: reaperResult,
-      spawner: spawnerResult,
-      combat_readiness: combatReadiness,
-      pool_control: {
-        min_active_strategy: MIN_ACTIVE_STRATEGY,
+      meta: {
+        latest_draw_no: marketInfo.latest_draw_no,
+        active_count_after_reaper: postReaperActiveCount,
         target_active_strategy: TARGET_ACTIVE_STRATEGY,
         max_active_strategy: MAX_ACTIVE_STRATEGY,
-        max_spawn_per_run: MAX_SPAWN_PER_RUN,
-        soft_shrink_trigger: SOFT_SHRINK_TRIGGER,
-        hard_shrink_trigger: HARD_SHRINK_TRIGGER,
-        extreme_shrink_trigger: EXTREME_SHRINK_TRIGGER
-      },
-      train: {
-        ok: true,
-        skipped: createdCount === 0,
-        reason:
-          createdCount === 0
-            ? (
-                createdNowCount >= MAX_CREATED_PREDICTIONS
-                  ? 'created pool reached limit'
-                  : 'Prediction already exists'
-              )
-            : undefined,
-        existing: createdCount === 0 ? finalActiveCreatedPrediction : undefined
+        min_active_strategy: MIN_ACTIVE_STRATEGY,
+        bet_group_count: BET_GROUP_COUNT,
+        target_periods: TARGET_PERIODS,
+        cost_per_group_per_period: COST_PER_GROUP_PER_PERIOD
       }
     });
-  } catch (e) {
+  } catch (error) {
     return res.status(500).json({
       ok: false,
-      error: e?.message || 'auto-train failed'
+      error: error?.message || String(error)
     });
   }
 }
