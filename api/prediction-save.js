@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
-const API_VERSION = 'prediction-save-batch-v4-manual-selection';
+const API_VERSION = 'prediction-save-batch-v5-weighted-focus-b';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -558,6 +558,40 @@ function scoreGroupForMode(group, strategyMode, pools) {
   return score;
 }
 
+function scoreGroupForWeightedFocus(group, strategyMode, pools) {
+  const modeScore = scoreGroupForMode(group, strategyMode, pools);
+  const meta = group?.meta && typeof group.meta === 'object' ? group.meta : {};
+
+  const baseScore = toNum(meta.score, 0);
+  const strengthScore = toNum(meta.strength_score, 0);
+  const roi = toNum(meta.roi, 0);
+  const recent50Roi = toNum(meta.recent_50_roi, 0);
+  const avgHit = toNum(meta.avg_hit, 0);
+  const hit3Rate = toNum(meta.hit3_rate, 0);
+  const recent50Hit3Rate = toNum(meta.recent_50_hit3_rate, 0);
+  const hit4Count = toNum(meta.hit4, toNum(meta.hit4_count, 0));
+  const hit3Count = toNum(meta.hit3, toNum(meta.hit3_count, 0));
+  const totalRounds = toNum(meta.total_rounds, 0);
+  const selectionRank = toNum(meta.selection_rank, 0);
+
+  let score = 0;
+
+  score += modeScore;
+  score += baseScore * 0.01;
+  score += strengthScore * 0.001;
+  score += roi * 20;
+  score += recent50Roi * 18;
+  score += avgHit * 10;
+  score += hit3Rate * 100;
+  score += recent50Hit3Rate * 130;
+  score += hit3Count * 3;
+  score += hit4Count * 8;
+  score += Math.min(totalRounds, 30) * 0.15;
+  score -= selectionRank * 0.5;
+
+  return score;
+}
+
 function adaptNumsBySelection(baseNums, roleType, strategyMode, pools, seed = 0) {
   const nums = uniqueAsc(baseNums).slice(0, 4);
   const modePools = buildModePools(strategyMode, pools);
@@ -593,6 +627,53 @@ function adaptNumsBySelection(baseNums, roleType, strategyMode, pools, seed = 0)
   );
 }
 
+function buildWeightedFocusPlan(top1, top2) {
+  const top1Type = String(top1?.meta?.type || '').toLowerCase();
+  const top2Type = String(top2?.meta?.type || '').toLowerCase();
+
+  return [
+    {
+      sourceGroup: top1,
+      sourceRank: 1,
+      focusBucket: 'top1',
+      focusWeight: 3,
+      slotNo: 1,
+      roleType: top1Type === 'sniper' ? 'sniper' : 'aggressive',
+      tag: 'TOP1-1'
+    },
+    {
+      sourceGroup: top1,
+      sourceRank: 1,
+      focusBucket: 'top1',
+      focusWeight: 3,
+      slotNo: 2,
+      roleType: 'sniper',
+      tag: 'TOP1-2'
+    },
+    {
+      sourceGroup: top1,
+      sourceRank: 1,
+      focusBucket: 'top1',
+      focusWeight: 3,
+      slotNo: 3,
+      roleType: 'aggressive',
+      tag: 'TOP1-3'
+    },
+    {
+      sourceGroup: top2,
+      sourceRank: 2,
+      focusBucket: 'top2',
+      focusWeight: 1,
+      slotNo: 4,
+      roleType:
+        top2Type === 'safe' || top2Type === 'balanced' || top2Type === 'aggressive' || top2Type === 'sniper'
+          ? top2Type
+          : 'aggressive',
+      tag: 'TOP2-1'
+    }
+  ];
+}
+
 function reorderAndTransformGroups(rawGroups, selection, recentDraws, sourceDraw) {
   const pools = buildMarketPools(recentDraws);
   const normalized = rawGroups
@@ -604,62 +685,76 @@ function reorderAndTransformGroups(rawGroups, selection, recentDraws, sourceDraw
     throw new Error('最新 test prediction 沒有可用 groups_json');
   }
 
-  const riskOrder = getRiskOrder(selection.riskMode);
-  const riskRankMap = new Map(riskOrder.map((type, idx) => [type, idx]));
+  if (normalized.length < 2) {
+    throw new Error(`最新 test prediction 可用組數不足，目前僅有 ${normalized.length} 組`);
+  }
 
-  const sorted = normalized
-    .map((group, idx) => {
-      const type = String(group?.meta?.type || '').toLowerCase();
-      const riskRank = riskRankMap.has(type) ? riskRankMap.get(type) : 99;
-      const modeScore = scoreGroupForMode(group, selection.strategyMode, pools);
-
-      return {
-        ...group,
-        _originIdx: idx,
-        _riskRank: riskRank,
-        _modeScore: modeScore
-      };
-    })
+  const weightedSorted = normalized
+    .map((group, idx) => ({
+      ...group,
+      _originIdx: idx,
+      _focusScore: scoreGroupForWeightedFocus(group, selection.strategyMode, pools)
+    }))
     .sort((a, b) => {
-      if (a._riskRank !== b._riskRank) return a._riskRank - b._riskRank;
-      if (b._modeScore !== a._modeScore) return b._modeScore - a._modeScore;
+      if (b._focusScore !== a._focusScore) return b._focusScore - a._focusScore;
       return a._originIdx - b._originIdx;
-    })
-    .slice(0, GROUP_COUNT);
+    });
 
+  const top1 = weightedSorted[0];
+  const top2 = weightedSorted[1];
+
+  if (!top1 || !top2) {
+    throw new Error('集中火力模式至少需要 2 組可用策略');
+  }
+
+  const plan = buildWeightedFocusPlan(top1, top2);
   const result = [];
 
-  sorted.forEach((group, idx) => {
-    const roleType = String(group?.meta?.type || '').toLowerCase();
+  plan.forEach((item, idx) => {
+    const sourceGroup = item.sourceGroup;
+    const roleType = item.roleType;
+
     let nums = adaptNumsBySelection(
-      group.nums,
+      sourceGroup.nums,
       roleType,
       selection.strategyMode,
       pools,
-      selection.analysisPeriod + idx * 31
+      selection.analysisPeriod + (idx + 1) * 41 + item.sourceRank * 101
     );
 
-    nums = forceGroupDifference(nums, result, pools, selection.analysisPeriod + idx * 97);
+    nums = forceGroupDifference(
+      nums,
+      result,
+      pools,
+      selection.analysisPeriod + (idx + 1) * 131 + item.sourceRank * 211
+    );
 
     result.push({
-      ...group,
+      ...sourceGroup,
       nums,
-      label: `${roleLabelOf(roleType)}｜${group.meta?.strategy_name || group.label}`,
-      reason: `${strategyModeLabel(selection.strategyMode)} / ${roleLabelOf(roleType)} / 分析 ${selection.analysisPeriod} 期`,
+      label: `${item.tag}｜${roleLabelOf(roleType)}｜${sourceGroup.meta?.strategy_name || sourceGroup.label}`,
+      reason: `集中火力B / ${item.tag} / ${strategyModeLabel(selection.strategyMode)} / ${roleLabelOf(roleType)} / 分析 ${selection.analysisPeriod} 期`,
       meta: {
-        ...group.meta,
-        selection_rank: idx + 1,
+        ...sourceGroup.meta,
+        selection_rank: item.sourceRank,
+        source_selection_rank: item.sourceRank,
         requested_analysis_period: selection.analysisPeriod,
         requested_strategy_mode: selection.strategyMode,
         requested_risk_mode: selection.riskMode,
         formal_role_label: roleLabelOf(roleType),
-        formal_selection_applied: true
+        formal_selection_applied: true,
+        focus_mode: 'weighted_focus_b',
+        focus_bucket: item.focusBucket,
+        focus_weight: item.focusWeight,
+        focus_slot_no: item.slotNo,
+        focus_tag: item.tag,
+        decision: 'weighted_focus_top1x3_top2x1'
       }
     });
   });
 
   if (result.length !== GROUP_COUNT) {
-    throw new Error(`最新 test prediction 可用組數不足，目前僅有 ${result.length} 組`);
+    throw new Error(`集中火力模式建立失敗，目前僅產生 ${result.length} 組`);
   }
 
   return result;
@@ -883,7 +978,7 @@ export default async function handler(req, res) {
       trigger_source: triggerSource,
       manual_locked: true,
       target_periods: 1,
-      bet_type: 'single_period_top4_batch_locked_manual_only',
+      bet_type: 'single_period_weighted_focus_top1x3_top2x1_manual_only',
       cost_per_group: COST_PER_GROUP,
       group_count: GROUP_COUNT,
       formal_batch_limit: FORMAL_BATCH_LIMIT,
