@@ -1221,7 +1221,7 @@ export default function App() {
 
               <div style={styles.predictActionBox}>
                 <div style={styles.predictActionText}>
-                  目前邏輯：同一期最多三批，formal 會鎖定同一個 source_draw_no，直到 3 批滿為止。
+                  目前邏輯：只要偵測到新的可下注 source_draw_no，formal 批次會自動歸零；同一個 source_draw_no 最多三批。
                 </div>
                 <button
                   style={{
