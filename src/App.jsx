@@ -662,9 +662,9 @@ export default function App() {
       const recentRows = getRecentRows(recentRes);
       setRecent20(recentRows);
 
-      const normalizedPrediction = normalizePredictionLatest(predictionRes);
+     const normalizedPrediction = normalizePredictionLatest(predictionRes);
       setTrainingLatest(normalizedPrediction.trainingRow || null);
-      setFormalLatest(normalizedPrediction.formalRow || null);
+      setFormalLatest(normalizedPrediction.displayFormalRow || null);
       setLeaderboard(normalizedPrediction.leaderboard || []);
       setPredictionSummary({
         apiVersion: normalizedPrediction.apiVersion,
