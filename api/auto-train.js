@@ -14,6 +14,7 @@ const SUPABASE_KEY =
 
 const TEST_MODE = 'test';
 const FORMAL_MODE = 'formal';
+const FORMAL_CANDIDATE_MODE = 'formal_candidate';
 const COMPARE_MODES = [TEST_MODE, FORMAL_MODE];
 
 const BET_GROUP_COUNT = 4;
@@ -188,6 +189,112 @@ function normalizeGroups(groups = []) {
       };
     })
     .filter(Boolean);
+}
+
+
+function buildInstantFormalCandidateGroups(groups = []) {
+  const normalized = normalizeGroups(groups).slice(0, 12);
+  if (normalized.length < 2) return [];
+
+  const top1 = normalized[0];
+  const top2 = normalized[1];
+
+  const cloneGroup = (sourceGroup, slotTag, bucket, weight, slotNo, rank) => ({
+    ...sourceGroup,
+    label: `${slotTag}｜${sourceGroup.meta?.strategy_name || sourceGroup.label}`,
+    reason: `即戰候選 / ${slotTag}`,
+    meta: {
+      ...(sourceGroup.meta || {}),
+      selection_rank: rank,
+      source_selection_rank: rank,
+      instant_candidate: true,
+      instant_candidate_mode: 'weighted_focus_b',
+      focus_mode: 'weighted_focus_b',
+      focus_bucket: bucket,
+      focus_weight: weight,
+      focus_slot_no: slotNo,
+      focus_tag: slotTag,
+      decision: 'weighted_focus_top1x3_top2x1'
+    }
+  });
+
+  return [
+    cloneGroup(top1, 'TOP1-1', 'top1', 3, 1, 1),
+    cloneGroup(top1, 'TOP1-2', 'top1', 3, 2, 1),
+    cloneGroup(top1, 'TOP1-3', 'top1', 3, 3, 1),
+    cloneGroup(top2, 'TOP2-1', 'top2', 1, 4, 2)
+  ];
+}
+
+async function upsertFormalCandidateFromTest(db, predictionRow) {
+  if (!predictionRow || String(predictionRow.mode || '').toLowerCase() !== TEST_MODE) {
+    return null;
+  }
+
+  const sourceDrawNo = String(predictionRow.source_draw_no || '').trim();
+  if (!sourceDrawNo) return null;
+
+  const candidateGroups = buildInstantFormalCandidateGroups(predictionRow.groups_json || []);
+  if (candidateGroups.length !== 4) return null;
+
+  const nowIso = new Date().toISOString();
+  const payload = {
+    mode: FORMAL_CANDIDATE_MODE,
+    status: 'ready',
+    source_draw_no: sourceDrawNo,
+    target_periods: TARGET_PERIODS,
+    groups_json: candidateGroups,
+    compare_status: 'candidate',
+    compare_result: null,
+    compare_result_json: null,
+    hit_count: 0,
+    verdict: null,
+    latest_draw_numbers: predictionRow.latest_draw_numbers || null,
+    market_snapshot_json: predictionRow.market_snapshot_json || null,
+    created_at: nowIso
+  };
+
+  const { data: existing, error: existingError } = await db
+    .from(PREDICTIONS_TABLE)
+    .select('*')
+    .eq('mode', FORMAL_CANDIDATE_MODE)
+    .eq('source_draw_no', sourceDrawNo)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (existingError) throw existingError;
+
+  if (existing?.id) {
+    const { data: updated, error: updateError } = await db
+      .from(PREDICTIONS_TABLE)
+      .update({
+        status: 'ready',
+        groups_json: candidateGroups,
+        compare_status: 'candidate',
+        compare_result: null,
+        compare_result_json: null,
+        hit_count: 0,
+        verdict: null,
+        latest_draw_numbers: predictionRow.latest_draw_numbers || null,
+        market_snapshot_json: predictionRow.market_snapshot_json || null
+      })
+      .eq('id', existing.id)
+      .select('*')
+      .maybeSingle();
+
+    if (updateError) throw updateError;
+    return updated || existing;
+  }
+
+  const { data: inserted, error: insertError } = await db
+    .from(PREDICTIONS_TABLE)
+    .insert(payload)
+    .select('*')
+    .maybeSingle();
+
+  if (insertError) throw insertError;
+  return inserted || null;
 }
 
 function normalizeHitRate(raw) {
@@ -1855,9 +1962,19 @@ async function createLatestTestPrediction(db, latestDrawNo, marketSnapshot = {})
     throw insertError;
   }
 
+  const activeCreatedPrediction = inserted || null;
+  let activeFormalCandidate = null;
+
+  try {
+    activeFormalCandidate = await upsertFormalCandidateFromTest(db, activeCreatedPrediction);
+  } catch {
+    activeFormalCandidate = null;
+  }
+
   return {
     created_count: 1,
-    active_created_prediction: inserted || null,
+    active_created_prediction: activeCreatedPrediction,
+    active_formal_candidate: activeFormalCandidate,
     skipped: false,
     reason: ''
   };
@@ -2028,6 +2145,7 @@ export default async function handler(req, res) {
     const createResult = await createLatestTestPrediction(db, latestDrawNo, marketSnapshot);
     const createdCount = toNum(createResult?.created_count, 0);
     let activeCreatedPrediction = createResult?.active_created_prediction || null;
+    let activeFormalCandidate = createResult?.active_formal_candidate || null;
 
     const compareAfterCreate = await runCompare(db);
     pipeline.compare_after_create = compareAfterCreate;
@@ -2043,6 +2161,7 @@ export default async function handler(req, res) {
     pipeline.spawner = spawnerResult;
 
     let finalActiveCreatedPrediction = activeCreatedPrediction;
+    let finalActiveFormalCandidate = activeFormalCandidate;
 
     if (finalActiveCreatedPrediction?.id) {
       const { data: refreshedPrediction, error: refreshedError } = await db
@@ -2053,6 +2172,18 @@ export default async function handler(req, res) {
 
       if (refreshedError) throw refreshedError;
       finalActiveCreatedPrediction = refreshedPrediction || finalActiveCreatedPrediction;
+    }
+
+
+    if (finalActiveFormalCandidate?.id) {
+      const { data: refreshedCandidate, error: refreshedCandidateError } = await db
+        .from(PREDICTIONS_TABLE)
+        .select('*')
+        .eq('id', finalActiveFormalCandidate.id)
+        .maybeSingle();
+
+      if (refreshedCandidateError) throw refreshedCandidateError;
+      finalActiveFormalCandidate = refreshedCandidate || finalActiveFormalCandidate;
     }
 
     const comparedBefore = toNum(compareBeforeCreate?.processed, 0);
@@ -2098,6 +2229,7 @@ export default async function handler(req, res) {
       disabled_keys: [...new Set(disabledKeys)],
       spawned_keys: spawnerResult.spawned_keys || [],
       active_created_prediction: finalActiveCreatedPrediction,
+      active_formal_candidate: finalActiveFormalCandidate,
       combat_readiness: combatReadiness,
       pool_control: {
         min_active_strategy: MIN_ACTIVE_STRATEGY,
