@@ -311,16 +311,31 @@ function normalizePredictionLatest(data) {
     formal_batch_no: toNum(batch?.formal_batch_no, idx + 1)
   }));
 
+  const trainingRow =
+    data?.training_row ||
+    getPredictionLatestRow(data?.training || data?.ai_train || data, 'test') ||
+    null;
+
+  const formalRow =
+    data?.formal_row ||
+    getPredictionLatestRow(data?.formal || data, 'formal') ||
+    null;
+
+  const instantFormalRow =
+    data?.instant_formal ||
+    data?.instantFormal ||
+    data?.active_formal_candidate ||
+    getPredictionLatestRow(data?.instant_formal || data?.candidate || data, 'formal_candidate') ||
+    null;
+
+  const displayFormalRow = instantFormalRow || formalRow || null;
+
   return {
     apiVersion: data?.api_version || '--',
-    trainingRow:
-      data?.training_row ||
-      getPredictionLatestRow(data?.training || data?.ai_train || data, 'test') ||
-      null,
-    formalRow:
-      data?.formal_row ||
-      getPredictionLatestRow(data?.formal || data, 'formal') ||
-      null,
+    trainingRow,
+    formalRow,
+    instantFormalRow,
+    displayFormalRow,
     leaderboard: toArray(data?.leaderboard),
     summaryLabel: data?.summaryLabel || '--',
     summaryText: data?.summaryText || '--',
