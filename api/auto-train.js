@@ -1706,18 +1706,17 @@ async function runCompare(db) {
     const compareHistoryJson = [...existingHistory, historyEntry].slice(-20);
 
     const updatePayload = {
-      status: 'compared',
-      compare_status: 'done',
-      hit_count: toNum(payload.hitCount, 0),
-      compare_result: payload.compareResult,
-      compare_result_json: payload.compareResult,
-      verdict: payload.verdict || 'bad',
-      compared_at: comparedAt,
-      compared_draw_count: drawRows.length,
-      latest_draw_numbers: latestDrawNumbers,
-      compare_history_json: compareHistoryJson,
-      compared_history_json: compareHistoryJson
-    };
+  status: 'compared',
+  compare_status: 'done',
+  hit_count: toNum(payload.hitCount, 0),
+  compare_result: payload.compareResult,
+  compare_result_json: payload.compareResult,
+  verdict: payload.verdict || 'bad',
+  compared_at: comparedAt,
+  compared_draw_count: drawRows.length,
+  latest_draw_numbers: latestDrawNumbers,
+  compare_history_json: compareHistoryJson
+};
 
     const { error: updateError } = await db
       .from(PREDICTIONS_TABLE)
