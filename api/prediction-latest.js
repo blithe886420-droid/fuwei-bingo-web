@@ -279,7 +279,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const [trainingPrediction, formalPrediction, instantFormal, leaderboard, latestFormalSourceDrawNo] =
+    const [trainingPrediction, formalPrediction, instantFormalCandidate, leaderboard, latestFormalSourceDrawNo] =
       await Promise.all([
         getLatestPrediction(TEST_MODE),
         getLatestPrediction(FORMAL_MODE),
@@ -288,7 +288,16 @@ export default async function handler(req, res) {
         getLatestFormalSourceDrawNo()
       ]);
 
-    const rows = [trainingPrediction, formalPrediction].filter(Boolean);
+    const instantFormal =
+      instantFormalCandidate &&
+      trainingPrediction &&
+      toInt(instantFormalCandidate?.source_draw_no, 0) < toInt(trainingPrediction?.source_draw_no, 0)
+        ? trainingPrediction
+        : instantFormalCandidate;
+
+    const rows = [trainingPrediction, instantFormal, formalPrediction]
+      .filter(Boolean)
+      .filter((row, idx, arr) => arr.findIndex((x) => x?.id === row?.id && x?.mode === row?.mode) === idx);
     const decision = buildDecisionSummary(leaderboard);
 
     const latestFormalDrawNo =
@@ -332,7 +341,7 @@ export default async function handler(req, res) {
 
       training_row: trainingPrediction,
       formal_row: formalPrediction,
-      row: trainingPrediction || formalPrediction || null,
+      row: instantFormal || trainingPrediction || formalPrediction || null,
       rows,
 
       leaderboard,
