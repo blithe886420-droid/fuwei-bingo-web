@@ -1972,11 +1972,42 @@ async function createLatestTestPrediction(db, latestDrawNo, marketSnapshot = {})
   const strategyCandidates = await fetchStrategyCandidates(db, marketSnapshot);
 
   const groups = buildPredictionGroups(
-    strategyCandidates,
-    market,
-    marketSnapshot,
-    Date.now()
-  );
+  strategyCandidates,
+  market,
+  marketSnapshot,
+  Date.now()
+)
+  .slice()
+  .sort((a, b) => {
+    const scoreA = toNum(a?.meta?.decision_score, Number.NEGATIVE_INFINITY);
+    const scoreB = toNum(b?.meta?.decision_score, Number.NEGATIVE_INFINITY);
+
+    if (scoreB !== scoreA) return scoreB - scoreA;
+
+    const rankA = toNum(a?.meta?.selection_rank, 9999);
+    const rankB = toNum(b?.meta?.selection_rank, 9999);
+
+    if (rankA !== rankB) return rankA - rankB;
+
+    const rawScoreA = toNum(a?.meta?.score, Number.NEGATIVE_INFINITY);
+    const rawScoreB = toNum(b?.meta?.score, Number.NEGATIVE_INFINITY);
+
+    if (rawScoreB !== rawScoreA) return rawScoreB - rawScoreA;
+
+    const avgHitA = toNum(a?.meta?.avg_hit, Number.NEGATIVE_INFINITY);
+    const avgHitB = toNum(b?.meta?.avg_hit, Number.NEGATIVE_INFINITY);
+
+    if (avgHitB !== avgHitA) return avgHitB - avgHitA;
+
+    return String(a?.key || '').localeCompare(String(b?.key || ''));
+  })
+  .map((group, idx) => ({
+    ...group,
+    meta: {
+      ...(group?.meta || {}),
+      selection_rank: idx + 1
+    }
+  }));
 
   if (!groups.length) {
     throw new Error('Failed to build prediction groups from strategy_pool');
