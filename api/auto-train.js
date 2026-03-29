@@ -1000,10 +1000,10 @@ function evaluateStrategyDecision(poolRow = {}, statRow = {}, marketSnapshot = {
   weight += Math.max(0, score * 0.05);
   weight += avgHit * 18;
   weight += hitRate * 18;
-  weight += hit3Rate * 120;
+  weight += hit3Rate * 260;
   weight += hit4Rate * 180;
   weight += recent50HitRate * 20;
-  weight += recent50Hit3Rate * 160;
+  weight += recent50Hit3Rate * 420;
   weight += recent50Hit4Rate * 220;
   weight += Math.max(0, recent50Roi) * 70;
   weight += Math.min(totalRounds, 120) * 0.03;
