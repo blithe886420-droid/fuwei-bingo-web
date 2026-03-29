@@ -317,7 +317,11 @@ function buildInstantFormalCandidateGroups(groups = []) {
     2,
     2,
     1,
-    diversifyNums(top1.nums, 17, top2?.nums || [])
+    diversifyNums(
+  top1.nums,
+  Date.now() % 97,
+  [...(top2?.nums || []), ...(top3?.nums || [])]
+)
   );
   const group3 = cloneGroup(
     top2,
