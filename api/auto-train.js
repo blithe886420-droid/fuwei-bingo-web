@@ -1004,7 +1004,7 @@ function evaluateStrategyDecision(poolRow = {}, statRow = {}, marketSnapshot = {
   }
 
   if (roi < 0) {
-    weight += roi * 8;
+    weight += roi * 20;
   }
 
   weight = Math.round(Math.max(0, weight * marketFit.boost));
