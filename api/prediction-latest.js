@@ -14,6 +14,7 @@ const SUPABASE_KEY =
   process.env.SUPABASE_ANON_KEY;
 
 const PREDICTIONS_TABLE = 'bingo_predictions';
+const DRAWS_TABLE = 'bingo_draws';
 const STRATEGY_STATS_TABLE = 'strategy_stats';
 const STRATEGY_POOL_TABLE = 'strategy_pool';
 const FORMAL_BATCH_LIMIT = 3;
