@@ -1828,7 +1828,7 @@ function buildPredictionGroups(strategyCandidates = [], market = {}, marketSnaps
   const weak = rankedCandidates.filter((row) => row.decision === 'weak');
 
   const queues = [strong, usable, candidate, weak];
-  const overlapLimit = 2;
+  const overlapLimit = 1;
 
   for (const queue of queues) {
     for (const row of queue) {
