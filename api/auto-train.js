@@ -983,7 +983,7 @@ function evaluateStrategyDecision(poolRow = {}, statRow = {}, marketSnapshot = {
     weight = 1000;
   } else if (decision === 'usable') {
     weight = 220;
-  } else if (decision === 'candidate') {
+  } else if (decision === 'candidate' && totalRounds < 30) {
     weight = totalRounds < DECISION_CONFIG.minRoundsForTrust ? 60 : 12;
   } else if (decision === 'weak') {
     weight = 1;
