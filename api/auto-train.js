@@ -962,20 +962,26 @@ function evaluateStrategyDecision(poolRow = {}, statRow = {}, marketSnapshot = {
   ) {
     decision = 'weak';
   } else if (
+  (
     score >= DECISION_CONFIG.strongScoreFloor ||
     avgHit >= 2 ||
     hit3Rate >= 0.08 ||
     recent50Hit3Rate >= 0.08 ||
     recent50Roi > 0
-  ) {
-    decision = 'strong';
-  } else if (
+  ) &&
+  (hit3Rate > 0.05 || recent50Hit3Rate > 0.05)
+) {
+  decision = 'strong';
+} else if (
+  (
     score >= DECISION_CONFIG.usableScoreFloor ||
     avgHit >= DECISION_CONFIG.minAvgHitPreferred ||
     hitRate >= 0.2
-  ) {
-    decision = 'usable';
-  }
+  ) &&
+  (hit3Rate > 0.03 || recent50Hit3Rate > 0.03)
+) {
+  decision = 'usable';
+}
 
   let weight = 0;
 
