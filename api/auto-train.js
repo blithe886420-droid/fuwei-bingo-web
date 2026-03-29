@@ -1580,31 +1580,67 @@ async function spawnStrategiesIfNeeded(db, latestDrawNo = 0) {
     .slice()
     .sort((a, b) => String(a?.strategy_key || '').localeCompare(String(b?.strategy_key || '')));
 
-  const existingSet = new Set(sorted.map((row) => normalizeStrategyKey(row?.strategy_key)));
-  const insertRows = [];
-  const spawnedKeys = [];
+  const existingSet = new Set(
+    sorted.map((row) => normalizeStrategyKey(row?.strategy_key)).filter(Boolean)
+  );
+
   const needCount = Math.min(MAX_SPAWN_PER_RUN, TARGET_ACTIVE_STRATEGY - activeCount);
+  const spawnedKeys = [];
+  const skippedDuplicateKeys = [];
   const nowIso = new Date().toISOString();
 
-  for (let i = 0; i < needCount; i += 1) {
-    const sourceType = chooseSpawnSourceType(i, activeCount);
-    const parentA = sorted[i % Math.max(sorted.length, 1)] || { strategy_key: 'mix_balanced', generation: 1 };
-    const parentB = sorted[(i + 7) % Math.max(sorted.length, 1)] || { strategy_key: 'hot_repeat', generation: 1 };
+  if (!sorted.length) {
+    return {
+      ok: true,
+      active_count: activeCount,
+      target_active_strategy: TARGET_ACTIVE_STRATEGY,
+      max_active_strategy: MAX_ACTIVE_STRATEGY,
+      spawned_count: 0,
+      spawned_keys: [],
+      skipped_duplicate_keys: [],
+      skipped: true,
+      reason: 'no_active_strategy_source'
+    };
+  }
+
+  let attemptCursor = 0;
+  let createdCount = 0;
+  const maxAttempts = Math.max(needCount * 12, 24);
+
+  while (createdCount < needCount && attemptCursor < maxAttempts) {
+    const sourceType = chooseSpawnSourceType(attemptCursor, activeCount);
+    const parentA =
+      sorted[attemptCursor % Math.max(sorted.length, 1)] || {
+        strategy_key: 'mix_balanced',
+        generation: 1
+      };
+    const parentB =
+      sorted[(attemptCursor + 7) % Math.max(sorted.length, 1)] || {
+        strategy_key: 'hot_repeat',
+        generation: 1
+      };
 
     const strategyKey = buildChildStrategyKey(
       parentA?.strategy_key || '',
       parentB?.strategy_key || '',
       sourceType === 'evolved' ? 'mutation' : sourceType,
-      i + activeCount + 1
+      attemptCursor + activeCount + 1
     );
 
-    if (!strategyKey || existingSet.has(strategyKey)) continue;
+    attemptCursor += 1;
+
+    if (!strategyKey) {
+      continue;
+    }
+
+    if (existingSet.has(strategyKey)) {
+      skippedDuplicateKeys.push(strategyKey);
+      continue;
+    }
 
     const genes = inferGenesFromStrategyKey(strategyKey);
-    existingSet.add(strategyKey);
-    spawnedKeys.push(strategyKey);
 
-    insertRows.push({
+    const insertRow = {
       strategy_key: strategyKey,
       strategy_name: strategyLabel(strategyKey),
       gene_a: genes.gene_a,
@@ -1623,17 +1659,25 @@ async function spawnStrategiesIfNeeded(db, latestDrawNo = 0) {
       created_draw_no: toNum(latestDrawNo, 0),
       created_at: nowIso,
       updated_at: nowIso
-    });
-  }
+    };
 
-  if (insertRows.length > 0) {
     const { error: insertError } = await db
       .from(STRATEGY_POOL_TABLE)
-      .insert(insertRows);
+      .insert(insertRow);
 
     if (insertError) {
+      if (isDuplicateDrawModeError(insertError) || String(insertError?.code || '') === '23505') {
+        existingSet.add(strategyKey);
+        skippedDuplicateKeys.push(strategyKey);
+        continue;
+      }
+
       throw new Error(`strategy_pool spawn insert failed: ${insertError.message || insertError}`);
     }
+
+    existingSet.add(strategyKey);
+    spawnedKeys.push(strategyKey);
+    createdCount += 1;
   }
 
   return {
@@ -1641,10 +1685,18 @@ async function spawnStrategiesIfNeeded(db, latestDrawNo = 0) {
     active_count: activeCount,
     target_active_strategy: TARGET_ACTIVE_STRATEGY,
     max_active_strategy: MAX_ACTIVE_STRATEGY,
-    spawned_count: insertRows.length,
+    spawned_count: createdCount,
     spawned_keys: spawnedKeys,
-    skipped: insertRows.length === 0,
-    reason: insertRows.length === 0 ? 'no_new_spawn_key' : ''
+    skipped_duplicate_keys: [...new Set(skippedDuplicateKeys)],
+    skipped: createdCount === 0,
+    reason:
+      createdCount === 0
+        ? skippedDuplicateKeys.length > 0
+          ? 'duplicate_keys_skipped'
+          : 'no_new_spawn_key'
+        : attemptCursor >= maxAttempts && createdCount < needCount
+          ? 'partial_spawn_max_attempts_reached'
+          : ''
   };
 }
 
