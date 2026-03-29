@@ -1399,49 +1399,37 @@ export default function App() {
                 </div>
               </div>
 
-              <div style={styles.marketGrid2}>
-                <div style={styles.marketPanel}>
-                  <div style={styles.marketPanelTitle}>近期熱號（依目前分析期數）</div>
-                  <div style={styles.marketBallsWrap}>
-                    {hotNumbers.length ? (
-                      hotNumbers.map((item) => (
-                        <div key={item.num} style={styles.hotBallWrap}>
-                          <MarketBall n={item.num} />
-                          <div style={styles.hotBallCount}>{item.count}</div>
-                        </div>
-                      ))
-                    ) : (
-                      <div style={styles.emptyBox}>目前沒有熱號資料。</div>
-                    )}
-                  </div>
-                </div>
-
-                <div style={styles.marketPanel}>
-                  <div style={styles.marketPanelTitle}>連莊號</div>
-                  <div style={styles.marketBallsWrap}>
-                    {streakNumbers.length ? (
-                      streakNumbers.map((item) => (
-                        <StreakBall key={item.num} n={item.num} streak={item.streak} />
-                      ))
-                    ) : (
-                      <div style={styles.emptyBox}>目前沒有連莊號。</div>
-                    )}
-                  </div>
-                </div>
-              </div>
-
               <div style={styles.marketPanel}>
-                <div style={styles.marketPanelTitle}>分區分布</div>
-                <div style={styles.zoneGrid}>
-                  {zoneCounts.map((zone) => (
-                    <div key={zone.label} style={styles.zoneBox}>
-                      <div style={styles.zoneLabel}>{zone.label}</div>
-                      <div style={styles.zoneCount}>{zone.count}</div>
-                    </div>
-                  ))}
+                <div style={styles.marketPanelTitle}>熱門號分析</div>
+                <div style={styles.historyRows}>
+                  {[
+                    { label: '5期（短期爆發）', lookback: 5 },
+                    { label: '10期（趨勢延續）', lookback: 10 },
+                    { label: '20期（穩定底盤）', lookback: 20 }
+                  ].map((section) => {
+                    const hotItems = calcHotNumbers(recent20, section.lookback);
+                    return (
+                      <div key={section.label} style={styles.historyRow}>
+                        <div style={styles.historyMeta}>
+                          <span>{section.label}</span>
+                        </div>
+                        <div style={styles.marketBallsWrap}>
+                          {hotItems.length ? (
+                            hotItems.map((item) => (
+                              <div key={`${section.lookback}_${item.num}`} style={styles.hotBallWrap}>
+                                <MarketBall n={item.num} />
+                                <div style={styles.hotBallCount}>{item.count}</div>
+                              </div>
+                            ))
+                          ) : (
+                            <div style={styles.emptyBox}>目前沒有熱號資料。</div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
-
 
               <div style={styles.marketPanel}>
                 <div style={styles.marketPanelTitle}>近期連續號碼（連2／連3／連4）</div>
@@ -1490,8 +1478,8 @@ export default function App() {
               <div style={styles.marketPanel}>
                 <div style={styles.marketPanelTitle}>近期資料列</div>
                 <div style={styles.historyRows}>
-                  {recentRowsByPeriod.length ? (
-                    recentRowsByPeriod.map((row, idx) => {
+                  {recent20.slice(0, 5).length ? (
+                    recent20.slice(0, 5).map((row, idx) => {
                       const nums = parseNums(row?.numbers || row?.nums);
                       return (
                         <div key={`${row?.draw_no || idx}`} style={styles.historyRow}>
@@ -1509,38 +1497,6 @@ export default function App() {
                     })
                   ) : (
                     <div style={styles.emptyBox}>目前沒有近期資料列。</div>
-                  )}
-                </div>
-              </div>
-
-              <div style={styles.marketPanel}>
-                <div style={styles.marketPanelTitle}>排行榜摘要</div>
-                <div style={styles.groupGrid}>
-                  {leaderboard.length ? (
-                    leaderboard.slice(0, 6).map((row, idx) => (
-                      <div key={`${row?.strategy_key || idx}`} style={styles.groupCard}>
-                        <div style={styles.groupTitle}>
-                          第 {idx + 1} 名｜{fmtText(row?.strategy_key)}
-                        </div>
-                        <div style={styles.metaChipRow}>
-                          <MetaChip
-                            label="avg_hit"
-                            value={
-                              Number.isFinite(Number(row?.avg_hit))
-                                ? Number(row.avg_hit).toFixed(2)
-                                : '--'
-                            }
-                          />
-                          <MetaChip
-                            label="recent_50_roi"
-                            value={fmtPercent(row?.recent_50_roi)}
-                          />
-                          <MetaChip label="rounds" value={fmtText(row?.total_rounds)} />
-                        </div>
-                      </div>
-                    ))
-                  ) : (
-                    <div style={styles.emptyBox}>目前沒有 leaderboard 資料。</div>
                   )}
                 </div>
               </div>
