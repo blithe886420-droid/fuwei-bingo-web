@@ -305,31 +305,10 @@ async function getLatestFormalRow() {
 }
 
 async function resolveFormalSourceDraw(latestDraw) {
-  const latestFormal = await getLatestFormalRow();
-
-  if (!latestFormal?.source_draw_no) {
-    return {
-      sourceDrawNo: toNum(latestDraw?.draw_no, 0),
-      batchCount: 0,
-      nextBatchNo: 1,
-      usingExistingBatch: false
-    };
-  }
-
-  const existingRows = await getFormalRowsBySourceDrawNo(toNum(latestFormal.source_draw_no, 0));
-  const existingCount = existingRows.length;
-
-  if (existingCount > 0 && existingCount < FORMAL_BATCH_LIMIT) {
-    return {
-      sourceDrawNo: toNum(latestFormal.source_draw_no, 0),
-      batchCount: existingCount,
-      nextBatchNo: existingCount + 1,
-      usingExistingBatch: true
-    };
-  }
+  const latestSourceDrawNo = toNum(latestDraw?.draw_no, 0);
 
   return {
-    sourceDrawNo: toNum(latestDraw?.draw_no, 0),
+    sourceDrawNo: latestSourceDrawNo,
     batchCount: 0,
     nextBatchNo: 1,
     usingExistingBatch: false
@@ -341,8 +320,7 @@ async function getLatestTestPredictionUpToSourceDraw(sourceDrawNo) {
     .from(PREDICTIONS_TABLE)
     .select('*')
     .eq('mode', TEST_MODE)
-    .lte('source_draw_no', sourceDrawNo)
-    .order('source_draw_no', { ascending: false })
+    .eq('source_draw_no', sourceDrawNo)
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -356,34 +334,6 @@ async function getLatestAnyTestPrediction() {
     .from(PREDICTIONS_TABLE)
     .select('*')
     .eq('mode', TEST_MODE)
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (error) throw error;
-  return data || null;
-}
-
-async function getLatestFormalCandidateUpToSourceDraw(sourceDrawNo) {
-  const { data, error } = await supabase
-    .from(PREDICTIONS_TABLE)
-    .select('*')
-    .eq('mode', 'formal_candidate')
-    .lte('source_draw_no', sourceDrawNo)
-    .order('source_draw_no', { ascending: false })
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (error) throw error;
-  return data || null;
-}
-
-async function getLatestAnyFormalCandidate() {
-  const { data, error } = await supabase
-    .from(PREDICTIONS_TABLE)
-    .select('*')
-    .eq('mode', 'formal_candidate')
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -788,50 +738,8 @@ function reorderAndTransformGroups(rawGroups, selection, recentDraws, sourceDraw
   return result;
 }
 
-async function buildFormalGroups(sourceDraw, selection, options = {}) {
+async function buildFormalGroups(sourceDraw, selection) {
   const sourceDrawNo = toNum(sourceDraw?.draw_no, 0);
-  const preferInstantCandidate = Boolean(options?.preferInstantCandidate);
-
-  let candidatePrediction = null;
-  if (preferInstantCandidate) {
-    candidatePrediction = await getLatestFormalCandidateUpToSourceDraw(sourceDrawNo);
-    if (!candidatePrediction) {
-      candidatePrediction = await getLatestAnyFormalCandidate();
-    }
-  }
-
-  if (candidatePrediction) {
-    const candidateGroups = parseGroupsJson(candidatePrediction.groups_json)
-      .map((group, idx) => normalizeGroup(group, idx, sourceDraw))
-      .filter(Boolean)
-      .slice(0, GROUP_COUNT);
-
-    if (candidateGroups.length === GROUP_COUNT) {
-      const groups = candidateGroups.map((group, idx) => ({
-        ...group,
-        meta: {
-          ...(group.meta || {}),
-          selection_rank: idx + 1,
-          source_selection_rank: toNum(group?.meta?.source_selection_rank, idx + 1),
-          requested_analysis_period: selection.analysisPeriod,
-          requested_strategy_mode: selection.strategyMode,
-          requested_risk_mode: selection.riskMode,
-          formal_selection_applied: true,
-          decision: group?.meta?.decision || 'from_formal_candidate'
-        }
-      }));
-
-      return {
-        groups,
-        recentDrawCount: 0,
-        sourceTestPredictionId: null,
-        sourceTestDrawNo: toNum(candidatePrediction.source_draw_no, 0),
-        sourceFormalCandidateId: candidatePrediction.id || null,
-        sourceFormalCandidateDrawNo: toNum(candidatePrediction.source_draw_no, 0),
-        usedInstantCandidate: true
-      };
-    }
-  }
 
   let testPrediction = await getLatestTestPredictionUpToSourceDraw(sourceDrawNo);
   if (!testPrediction) {
@@ -854,14 +762,11 @@ async function buildFormalGroups(sourceDraw, selection, options = {}) {
     groups,
     recentDrawCount: recentDraws.length,
     sourceTestPredictionId: testPrediction.id || null,
-    sourceTestDrawNo: toNum(testPrediction.source_draw_no, 0),
-    sourceFormalCandidateId: null,
-    sourceFormalCandidateDrawNo: 0,
-    usedInstantCandidate: false
+    sourceTestDrawNo: toNum(testPrediction.source_draw_no, 0)
   };
 }
 
-async function createFormalPrediction(selection, options = {}) {
+async function createFormalPrediction(selection) {
   const latestDraw = await getLatestDraw();
 
   const batchInfo = await resolveFormalSourceDraw(latestDraw);
@@ -900,11 +805,8 @@ async function createFormalPrediction(selection, options = {}) {
     groups,
     recentDrawCount,
     sourceTestPredictionId,
-    sourceTestDrawNo,
-    sourceFormalCandidateId,
-    sourceFormalCandidateDrawNo,
-    usedInstantCandidate
-  } = await buildFormalGroups(sourceDraw, selection, options);
+    sourceTestDrawNo
+  } = await buildFormalGroups(sourceDraw, selection);
 
   const payload = {
     mode: FORMAL_MODE,
@@ -939,9 +841,6 @@ async function createFormalPrediction(selection, options = {}) {
     existing_count: existingRows.length,
     source_test_prediction_id: sourceTestPredictionId,
     source_test_draw_no: sourceTestDrawNo,
-    source_formal_candidate_id: sourceFormalCandidateId,
-    source_formal_candidate_draw_no: sourceFormalCandidateDrawNo,
-    used_instant_candidate: usedInstantCandidate,
     requested_selection: selection,
     recent_draw_count: recentDrawCount,
     prediction: {
@@ -1048,7 +947,7 @@ export default async function handler(req, res) {
       });
     }
 
-    const result = await createFormalPrediction(selection, { preferInstantCandidate: true });
+    const result = await createFormalPrediction(selection);
 
     return res.status(200).json({
       ok: true,
