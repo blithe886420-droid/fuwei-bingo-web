@@ -305,57 +305,116 @@ function normalizeAiPlayer(data) {
 }
 
 function normalizePredictionLatest(data) {
-  const formalBatches = toArray(data?.formal_batches);
-  const normalizedFormalBatches = formalBatches.map((batch, idx) => ({
-    ...batch,
-    formal_batch_no: toNum(batch?.formal_batch_no, idx + 1)
-  }));
+  const latest = data && typeof data === 'object' ? data : {};
 
-  const trainingRow =
-    data?.training_row ||
-    getPredictionLatestRow(data?.training || data?.ai_train || data, 'test') ||
-    null;
+  const trainingRow = normalizePredictionRow(
+    latest?.training?.row ||
+    latest?.trainingRow ||
+    latest?.latestTraining ||
+    null
+  );
 
-  const formalRow =
-    data?.formal_row ||
-    getPredictionLatestRow(data?.formal || data, 'formal') ||
-    null;
+  const formalRow = normalizePredictionRow(
+    latest?.display_formal_row ||
+    latest?.formal?.row ||
+    latest?.formalRow ||
+    latest?.latestFormal ||
+    null
+  );
 
-  const instantFormalRow =
-    data?.instant_formal ||
-    data?.instantFormal ||
-    data?.active_formal_candidate ||
-    getPredictionLatestRow(data?.instant_formal || data?.candidate || data, 'formal_candidate') ||
-    null;
+  const formalBatches = Array.isArray(latest?.formal_batches)
+    ? latest.formal_batches.map(normalizePredictionRow).filter(Boolean)
+    : Array.isArray(latest?.formalBatches)
+      ? latest.formalBatches.map(normalizePredictionRow).filter(Boolean)
+      : formalRow
+        ? [formalRow]
+        : [];
 
-  const displayFormalRow = instantFormalRow || trainingRow || formalRow || null;
+  const leaderboard = Array.isArray(latest?.leaderboard) ? latest.leaderboard : [];
+  const currentTopStrategies = Array.isArray(latest?.current_top_strategies)
+    ? latest.current_top_strategies
+    : Array.isArray(latest?.currentTopStrategies)
+      ? latest.currentTopStrategies
+      : [];
+
+  const marketStreakBuckets =
+    latest?.market_streak_buckets && typeof latest.market_streak_buckets === 'object'
+      ? latest.market_streak_buckets
+      : latest?.marketStreakBuckets && typeof latest.marketStreakBuckets === 'object'
+        ? latest.marketStreakBuckets
+        : {
+            streak2: [],
+            streak3: [],
+            streak4: []
+          };
+
+  const formalBatchLimit = toNum(
+    latest?.formal_batch_limit ?? latest?.formalBatchLimit,
+    3
+  );
+
+  const formalBatchCount = toNum(
+    latest?.formal_batch_count ?? latest?.formalBatchCount ?? formalBatches.length,
+    formalBatches.length
+  );
+
+  const formalRemainingBatchCount = toNum(
+    latest?.formal_remaining_batch_count ?? latest?.formalRemainingBatchCount,
+    Math.max(0, formalBatchLimit - formalBatchCount)
+  );
+
+  const formalSourceDrawNo = toNum(
+    latest?.formal_source_draw_no ?? latest?.formalSourceDrawNo ?? formalRow?.source_draw_no,
+    formalRow?.source_draw_no || 0
+  );
+
+  const summaryLabel =
+    latest?.summary_label ??
+    latest?.summaryLabel ??
+    '暫無資料';
+
+  const summaryText =
+    latest?.summary_text ??
+    latest?.summaryText ??
+    '';
+
+  const readyForFormal = Boolean(
+    latest?.ready_for_formal ??
+    latest?.readyForFormal ??
+    false
+  );
+
+  const adviceLevel =
+    latest?.advice_level ??
+    latest?.adviceLevel ??
+    'watch';
+
+  const assistantMode =
+    latest?.assistant_mode ??
+    latest?.assistantMode ??
+    'decision_support';
 
   return {
-    apiVersion: data?.api_version || '--',
+    raw: latest,
+
     trainingRow,
     formalRow,
-    instantFormalRow,
-    displayFormalRow,
-    leaderboard: toArray(data?.leaderboard),
-    summaryLabel: data?.summaryLabel || '--',
-    summaryText: data?.summaryText || '--',
-    assistantMode: data?.assistantMode || 'decision_support',
-    readyForFormal: Boolean(data?.readyForFormal),
-    adviceLevel: data?.adviceLevel || 'watch',
-    decisionPhase: data?.decisionPhase || 'watch_only',
-    currentTopStrategies: toArray(data?.currentTopStrategies),
-    formalBatchLimit: toNum(data?.formal_batch_limit, FORMAL_BATCH_LIMIT),
-    formalBatchCount: toNum(data?.formal_batch_count, 0),
-    formalRemainingBatchCount: toNum(data?.formal_remaining_batch_count, FORMAL_BATCH_LIMIT),
-    formalSourceDrawNo: data?.formal_source_draw_no || null,
-    formalBatches: normalizedFormalBatches,
-    marketStreakBuckets: {
-      streak2: toArray(data?.market_streak_buckets?.streak2),
-      streak3: toArray(data?.market_streak_buckets?.streak3),
-      streak4: toArray(data?.market_streak_buckets?.streak4),
-      lookback: toNum(data?.market_streak_buckets?.lookback, 0),
-      latestDrawNo: data?.market_streak_buckets?.latest_draw_no || null
-    }
+    formalBatches,
+
+    leaderboard,
+    currentTopStrategies,
+    marketStreakBuckets,
+
+    summaryLabel,
+    summaryText,
+    readyForFormal,
+    adviceLevel,
+    assistantMode,
+
+    formalBatchLimit,
+    formalBatchCount,
+    formalRemainingBatchCount,
+    formalSourceDrawNo
   };
 }
 
