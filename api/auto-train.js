@@ -1027,15 +1027,15 @@ function evaluateStrategyDecision(poolRow = {}, statRow = {}, marketSnapshot = {
     marketBoost: marketFit.boost,
     marketReason: marketFit.reason,
     decisionScore:
-      score * 0.45 * marketFit.boost +
-      avgHit * 16 +
-      roi * 18 +
-      hit3Rate * 280 +
-      hit4Rate * 420 +
-      recent50Hit3Rate * 360 +
-      recent50Hit4Rate * 520 +
-      recent50Roi * 120 +
-      totalRounds * 0.08
+  score * 0.35 * marketFit.boost +
+  avgHit * 10 +
+  roi * 25 +
+  hit3Rate * 420 +
+  hit4Rate * 650 +
+  recent50Hit3Rate * 520 +
+  recent50Hit4Rate * 720 +
+  recent50Roi * 220 +
+  totalRounds * 0.05
   };
 }
 
