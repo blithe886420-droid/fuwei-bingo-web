@@ -1034,9 +1034,9 @@ function evaluateStrategyDecision(poolRow = {}, statRow = {}, marketSnapshot = {
   score * 0.35 * marketFit.boost +
   avgHit * 4 +
   roi * 40 +
-  hit3Rate * 650 +
+  hit3Rate * 900 +
   hit4Rate * 650 +
-  recent50Hit3Rate * 750 +
+  recent50Hit3Rate * 1100 +
   recent50Hit4Rate * 720 +
   recent50Roi * 220 +
   totalRounds * 0.05
