@@ -1828,15 +1828,41 @@ function buildPredictionGroups(strategyCandidates = [], market = {}, marketSnaps
   const weak = rankedCandidates.filter((row) => row.decision === 'weak');
 
   const queues = [strong, usable, candidate, weak];
+  const overlapLimit = 2;
 
   for (const queue of queues) {
     for (const row of queue) {
       if (selected.length >= BET_GROUP_COUNT) break;
+
       const key = String(row?.strategy_key || '').trim();
       if (!key || usedKeys.has(key)) continue;
+
+      const candidateNums = buildStrategyNums(row.strategy_key, market, seedBase + selected.length + 11);
+
+      const isOverlapTooHigh = selected.some((prev, prevIdx) => {
+        const prevNums = Array.isArray(prev.__preview_nums)
+          ? prev.__preview_nums
+          : buildStrategyNums(prev.strategy_key, market, seedBase + prevIdx + 11);
+
+        const prevSet = new Set(prevNums);
+        let overlap = 0;
+
+        for (const n of candidateNums) {
+          if (prevSet.has(n)) overlap++;
+        }
+
+        return overlap >= overlapLimit;
+      });
+
+      if (isOverlapTooHigh) continue;
+
       usedKeys.add(key);
-      selected.push(row);
+      selected.push({
+        ...row,
+        __preview_nums: candidateNums
+      });
     }
+
     if (selected.length >= BET_GROUP_COUNT) break;
   }
 
@@ -1846,7 +1872,9 @@ function buildPredictionGroups(strategyCandidates = [], market = {}, marketSnaps
     .map((row, idx) => ({
       key: String(row.strategy_key),
       label: String(row.strategy_name || strategyLabel(row.strategy_key)),
-      nums: buildStrategyNums(row.strategy_key, market, seedBase + idx + 11),
+      nums: Array.isArray(row.__preview_nums)
+        ? row.__preview_nums
+        : buildStrategyNums(row.strategy_key, market, seedBase + idx + 11),
       meta: {
         strategy_key: String(row.strategy_key),
         strategy_name: String(row.strategy_name || strategyLabel(row.strategy_key)),
