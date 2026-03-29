@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
-const API_VERSION = 'prediction-save-batch-v5-weighted-focus-b';
+const API_VERSION = 'prediction-save-market-role-v6';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -18,6 +18,8 @@ const PREDICTIONS_TABLE = 'bingo_predictions';
 
 const TEST_MODE = 'test';
 const FORMAL_MODE = 'formal';
+const FORMAL_CANDIDATE_MODE = 'formal_candidate';
+
 const COST_PER_GROUP = 25;
 const FORMAL_BATCH_LIMIT = 3;
 const GROUP_COUNT = 4;
@@ -45,10 +47,8 @@ function toBool(value, fallback = false) {
 
   if (typeof value === 'string') {
     const v = value.trim().toLowerCase();
-    if (v === 'true') return true;
-    if (v === 'false') return false;
-    if (v === '1') return true;
-    if (v === '0') return false;
+    if (v === 'true' || v === '1') return true;
+    if (v === 'false' || v === '0') return false;
   }
 
   if (typeof value === 'number') {
@@ -56,6 +56,11 @@ function toBool(value, fallback = false) {
   }
 
   return fallback;
+}
+
+function round4(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Number(n.toFixed(4)) : 0;
 }
 
 function uniqueAsc(nums = []) {
@@ -79,11 +84,11 @@ function parseNums(value) {
   if (value && typeof value === 'object') {
     return parseNums(
       value.numbers ||
-      value.draw_numbers ||
-      value.result_numbers ||
-      value.open_numbers ||
-      value.nums ||
-      []
+        value.draw_numbers ||
+        value.result_numbers ||
+        value.open_numbers ||
+        value.nums ||
+        []
     );
   }
 
@@ -117,7 +122,9 @@ function normalizeGroup(group, idx = 0, sourceDraw = null) {
       ? group.nums
       : Array.isArray(group.numbers)
         ? group.numbers
-        : []
+        : Array.isArray(group.values)
+          ? group.values
+          : []
   ).slice(0, 4);
 
   if (nums.length !== 4) return null;
@@ -141,13 +148,20 @@ function normalizeGroup(group, idx = 0, sourceDraw = null) {
       ...sourceMeta,
       strategy_key: strategyKey,
       strategy_name: strategyName,
-      selection_rank: idx + 1,
+      selection_rank: toNum(sourceMeta.selection_rank, idx + 1),
       source_draw_no: toNum(sourceDraw?.draw_no, 0),
       source_draw_time: sourceDraw?.draw_time || null,
       bet_amount: COST_PER_GROUP,
-      decision: 'from_latest_test_prediction'
+      decision: sourceMeta.decision || 'from_latest_test_prediction'
     }
   };
+}
+
+function normalizeGroups(groups = [], sourceDraw = null) {
+  return (Array.isArray(groups) ? groups : [])
+    .map((group, idx) => normalizeGroup(group, idx, sourceDraw))
+    .filter(Boolean)
+    .slice(0, 12);
 }
 
 function getBody(req) {
@@ -342,12 +356,39 @@ async function getLatestAnyTestPrediction() {
   return data || null;
 }
 
-function buildMarketPools(drawRows = []) {
+async function getLatestFormalCandidateUpToSourceDraw(sourceDrawNo) {
+  const { data, error } = await supabase
+    .from(PREDICTIONS_TABLE)
+    .select('*')
+    .eq('mode', FORMAL_CANDIDATE_MODE)
+    .eq('source_draw_no', sourceDrawNo)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data || null;
+}
+
+function buildHotWindowMap(hotWindow = {}) {
+  if (hotWindow && typeof hotWindow === 'object' && hotWindow.map && typeof hotWindow.map === 'object') {
+    return hotWindow.map;
+  }
+
+  const items = Array.isArray(hotWindow?.items) ? hotWindow.items : [];
+  return Object.fromEntries(
+    items
+      .map((item) => [String(toNum(item?.num, 0)), toNum(item?.count, 0)])
+      .filter(([key]) => key !== '0')
+  );
+}
+
+function buildMarketPools(drawRows = [], marketSnapshot = {}) {
   const rows = Array.isArray(drawRows) ? drawRows : [];
-  const freqMap = new Map();
-  const lastSeen = new Map();
   const allNums = Array.from({ length: 80 }, (_, i) => i + 1);
 
+  const freqMap = new Map();
+  const lastSeen = new Map();
   allNums.forEach((n) => {
     freqMap.set(n, 0);
   });
@@ -382,6 +423,47 @@ function buildMarketPools(drawRows = []) {
   const odd = allNums.filter((n) => n % 2 === 1);
   const even = allNums.filter((n) => n % 2 === 0);
 
+  const hot5Numbers = uniqueAsc(
+    marketSnapshot?.hot_windows?.hot_5?.numbers || marketSnapshot?.hot_5_numbers || []
+  );
+  const hot10Numbers = uniqueAsc(
+    marketSnapshot?.hot_windows?.hot_10?.numbers || marketSnapshot?.hot_10_numbers || []
+  );
+  const hot20Numbers = uniqueAsc(
+    marketSnapshot?.hot_windows?.hot_20?.numbers || marketSnapshot?.hot_20_numbers || []
+  );
+
+  const streak2 = uniqueAsc(marketSnapshot?.streak2 || marketSnapshot?.streaks?.streak2 || []);
+  const streak3 = uniqueAsc(marketSnapshot?.streak3 || marketSnapshot?.streaks?.streak3 || []);
+  const streak4 = uniqueAsc(marketSnapshot?.streak4 || marketSnapshot?.streaks?.streak4 || []);
+
+  const attack = uniqueAsc([
+    ...(marketSnapshot?.decision_basis?.attack_core_numbers || []),
+    ...streak4,
+    ...streak3,
+    ...hot5Numbers.slice(0, 12),
+    ...hot10Numbers.slice(0, 8)
+  ]);
+
+  const extend = uniqueAsc([
+    ...(marketSnapshot?.decision_basis?.extend_numbers || []),
+    ...streak2,
+    ...hot10Numbers.slice(0, 14),
+    ...hot20Numbers.slice(0, 10)
+  ]);
+
+  const guard = uniqueAsc([
+    ...(marketSnapshot?.decision_basis?.guard_numbers || []),
+    ...hot20Numbers.slice(0, 20),
+    ...warm.slice(0, 16)
+  ]);
+
+  const recent = uniqueAsc([
+    ...(marketSnapshot?.decision_basis?.recent_focus_numbers || []),
+    ...parseNums(rows[0]?.numbers || []),
+    ...hot5Numbers.slice(0, 10)
+  ]);
+
   return {
     hot,
     cold,
@@ -389,6 +471,16 @@ function buildMarketPools(drawRows = []) {
     gap,
     odd,
     even,
+    attack,
+    extend,
+    guard,
+    recent,
+    hot5: hot5Numbers,
+    hot10: hot10Numbers,
+    hot20: hot20Numbers,
+    streak2,
+    streak3,
+    streak4,
     all: allNums
   };
 }
@@ -455,7 +547,16 @@ function mutateOne(nums = [], pools = [], seed = 0) {
 
 function forceGroupDifference(nums = [], existingGroups = [], pools = {}, seed = 0) {
   let result = uniqueAsc(nums).slice(0, 4);
-  const poolOrder = [pools.hot, pools.cold, pools.gap, pools.warm, pools.all];
+  const poolOrder = [
+    pools.attack,
+    pools.extend,
+    pools.guard,
+    pools.recent,
+    pools.hot,
+    pools.gap,
+    pools.warm,
+    pools.all
+  ];
 
   for (let round = 0; round < 10; round += 1) {
     let changed = false;
@@ -477,319 +578,401 @@ function forceGroupDifference(nums = [], existingGroups = [], pools = {}, seed =
 
 function getRiskOrder(riskMode = 'balanced') {
   if (riskMode === 'safe') {
-    return ['safe', 'balanced', 'aggressive', 'sniper'];
+    return ['guard', 'extend', 'attack', 'recent'];
   }
   if (riskMode === 'balanced') {
-    return ['balanced', 'safe', 'aggressive', 'sniper'];
+    return ['attack', 'extend', 'guard', 'recent'];
   }
   if (riskMode === 'aggressive') {
-    return ['aggressive', 'balanced', 'sniper', 'safe'];
+    return ['attack', 'attack', 'extend', 'recent'];
   }
-  return ['sniper', 'aggressive', 'balanced', 'safe'];
+  return ['attack', 'recent', 'extend', 'guard'];
 }
 
 function buildModePools(strategyMode, pools) {
   if (strategyMode === 'hot') {
-    return [pools.hot, pools.warm, pools.gap, pools.all];
+    return [pools.attack, pools.hot5, pools.hot10, pools.hot, pools.all];
   }
   if (strategyMode === 'cold') {
-    return [pools.cold, pools.gap, pools.warm, pools.all];
+    return [pools.guard, pools.cold, pools.gap, pools.warm, pools.all];
   }
   if (strategyMode === 'burst') {
-    return [pools.gap, pools.cold, pools.hot, pools.all];
+    return [pools.attack, pools.extend, pools.gap, pools.recent, pools.all];
   }
-  return [pools.hot, pools.cold, pools.warm, pools.all];
+  return [pools.attack, pools.extend, pools.guard, pools.hot, pools.all];
 }
 
-function scoreGroupForMode(group, strategyMode, pools) {
+function inferRoleFromGroup(group = {}) {
+  const key = String(group?.meta?.strategy_key || group?.key || '').toLowerCase();
+  const label = String(group?.label || '').toLowerCase();
+  const preferredRole = String(group?.meta?.preferred_role || '').toLowerCase();
+  const focusBucket = String(group?.meta?.focus_bucket || '').toLowerCase();
+  const marketReason = String(group?.meta?.market_reason || '').toLowerCase();
+
+  if (preferredRole) return preferredRole;
+  if (label.startsWith('attack｜')) return 'attack';
+  if (label.startsWith('extend｜')) return 'extend';
+  if (label.startsWith('guard｜')) return 'guard';
+  if (label.startsWith('recent｜')) return 'recent';
+
+  if (focusBucket === 'top1') return 'attack';
+  if (focusBucket === 'top2') return 'extend';
+  if (focusBucket === 'top3') return 'guard';
+
+  if (marketReason.includes('streak3') || marketReason.includes('attack_core')) return 'attack';
+  if (marketReason.includes('extend')) return 'extend';
+  if (marketReason.includes('guard')) return 'guard';
+  if (marketReason.includes('recent')) return 'recent';
+
+  if (key.includes('repeat') || key.includes('hot')) return 'attack';
+  if (key.includes('gap') || key.includes('chase') || key.includes('jump')) return 'extend';
+  if (key.includes('guard') || key.includes('balance') || key.includes('mix')) return 'guard';
+  if (key.includes('tail') || key.includes('rotation') || key.includes('split')) return 'recent';
+
+  return 'mix';
+}
+
+function getRoleSeedPools(role = 'mix', pools = {}) {
+  if (role === 'attack') {
+    return [pools.attack, pools.hot5, pools.hot10, pools.recent, pools.all];
+  }
+  if (role === 'extend') {
+    return [pools.extend, pools.hot10, pools.hot20, pools.guard, pools.all];
+  }
+  if (role === 'guard') {
+    return [pools.guard, pools.hot20, pools.warm, pools.cold, pools.all];
+  }
+  if (role === 'recent') {
+    return [pools.recent, pools.attack, pools.hot5, pools.extend, pools.all];
+  }
+  return [pools.hot, pools.extend, pools.guard, pools.all];
+}
+
+function buildKeepPoolByRole(role = 'mix', pools = {}) {
+  if (role === 'attack') return uniqueAsc([...pools.attack, ...pools.hot5, ...pools.hot10]);
+  if (role === 'extend') return uniqueAsc([...pools.extend, ...pools.hot10, ...pools.guard]);
+  if (role === 'guard') return uniqueAsc([...pools.guard, ...pools.hot20, ...pools.warm]);
+  if (role === 'recent') return uniqueAsc([...pools.recent, ...pools.hot5, ...pools.attack]);
+  return uniqueAsc([...pools.hot, ...pools.extend, ...pools.guard]);
+}
+
+function scoreGroupForMode(group, role, strategyMode, riskMode, pools) {
   const nums = uniqueAsc(group?.nums || []);
   const key = String(group?.meta?.strategy_key || group?.key || '').toLowerCase();
-  const type = String(group?.meta?.type || '').toLowerCase();
+  const groupRole = inferRoleFromGroup(group);
 
+  const attackSet = new Set(pools.attack.slice(0, 18));
+  const extendSet = new Set(pools.extend.slice(0, 18));
+  const guardSet = new Set(pools.guard.slice(0, 18));
+  const recentSet = new Set(pools.recent.slice(0, 18));
   const hotSet = new Set(pools.hot.slice(0, 20));
   const coldSet = new Set(pools.cold.slice(0, 20));
   const gapSet = new Set(pools.gap.slice(0, 20));
 
+  const attackCount = nums.filter((n) => attackSet.has(n)).length;
+  const extendCount = nums.filter((n) => extendSet.has(n)).length;
+  const guardCount = nums.filter((n) => guardSet.has(n)).length;
+  const recentCount = nums.filter((n) => recentSet.has(n)).length;
   const hotCount = nums.filter((n) => hotSet.has(n)).length;
   const coldCount = nums.filter((n) => coldSet.has(n)).length;
   const gapCount = nums.filter((n) => gapSet.has(n)).length;
 
   let score = 0;
 
+  score += toNum(group?.meta?.decision_score, 0);
+  score += toNum(group?.meta?.recent_50_hit3_rate, 0) * 300;
+  score += toNum(group?.meta?.hit3_rate, 0) * 220;
+  score += toNum(group?.meta?.market_boost, 1) * 30;
+
+  if (groupRole === role) score += 90;
+  if (role === 'attack') score += attackCount * 20 + hotCount * 5;
+  if (role === 'extend') score += extendCount * 18 + hotCount * 4 + gapCount * 3;
+  if (role === 'guard') score += guardCount * 18 + coldCount * 2;
+  if (role === 'recent') score += recentCount * 18 + hotCount * 4;
+
   if (strategyMode === 'hot') {
-    score += hotCount * 10;
-    if (key.includes('hot') || key.includes('repeat')) score += 6;
+    score += hotCount * 12;
+    if (key.includes('hot') || key.includes('repeat')) score += 20;
   } else if (strategyMode === 'cold') {
-    score += coldCount * 10;
-    if (key.includes('cold') || key.includes('gap') || key.includes('guard')) score += 6;
+    score += coldCount * 12 + gapCount * 6;
+    if (key.includes('cold') || key.includes('gap') || key.includes('guard')) score += 20;
   } else if (strategyMode === 'burst') {
-    score += gapCount * 7 + coldCount * 4 + hotCount * 2;
-    if (key.includes('tail') || key.includes('zone') || key.includes('cluster')) score += 6;
-    if (type === 'sniper' || type === 'aggressive') score += 4;
+    score += attackCount * 8 + gapCount * 10 + recentCount * 6;
+    if (key.includes('gap') || key.includes('tail') || key.includes('zone')) score += 18;
   } else {
-    score += Math.min(hotCount, 2) * 5 + Math.min(coldCount, 2) * 5;
-    if (key.includes('mix') || key.includes('balanced')) score += 6;
-    if (type === 'balanced') score += 4;
+    score += attackCount * 6 + extendCount * 6 + guardCount * 6;
   }
 
-  score += toNum(group?.meta?.selection_rank, 0) * -0.5;
-  return score;
-}
-
-function scoreGroupForWeightedFocus(group, strategyMode, pools) {
-  const modeScore = scoreGroupForMode(group, strategyMode, pools);
-  const meta = group?.meta && typeof group.meta === 'object' ? group.meta : {};
-
-  const baseScore = toNum(meta.score, 0);
-  const strengthScore = toNum(meta.strength_score, 0);
-  const roi = toNum(meta.roi, 0);
-  const recent50Roi = toNum(meta.recent_50_roi, 0);
-  const avgHit = toNum(meta.avg_hit, 0);
-  const hit3Rate = toNum(meta.hit3_rate, 0);
-  const recent50Hit3Rate = toNum(meta.recent_50_hit3_rate, 0);
-  const hit4Count = toNum(meta.hit4, toNum(meta.hit4_count, 0));
-  const hit3Count = toNum(meta.hit3, toNum(meta.hit3_count, 0));
-  const totalRounds = toNum(meta.total_rounds, 0);
-  const selectionRank = toNum(meta.selection_rank, 0);
-
-  let score = 0;
-
-  score += modeScore;
-  score += baseScore * 0.01;
-  score += strengthScore * 0.001;
-  score += roi * 20;
-  score += recent50Roi * 18;
-  score += avgHit * 10;
-  score += hit3Rate * 100;
-  score += recent50Hit3Rate * 130;
-  score += hit3Count * 3;
-  score += hit4Count * 8;
-  score += Math.min(totalRounds, 30) * 0.15;
-  score -= selectionRank * 0.5;
+  if (riskMode === 'safe' && (role === 'guard' || role === 'extend')) score += 10;
+  if (riskMode === 'aggressive' && role === 'attack') score += 10;
+  if (riskMode === 'sniper' && (role === 'attack' || role === 'recent')) score += 10;
 
   return score;
 }
 
-function adaptNumsBySelection(baseNums, roleType, strategyMode, pools, seed = 0) {
-  const nums = uniqueAsc(baseNums).slice(0, 4);
-  const modePools = buildModePools(strategyMode, pools);
+function pickKeepNumsByRole(sourceNums = [], role = 'mix', pools = {}) {
+  const nums = uniqueAsc(sourceNums);
+  const keepPool = new Set(buildKeepPoolByRole(role, pools));
 
-  if (roleType === 'safe') {
-    return fillToFour(
-      [...nums.slice(0, 3), ...modePools[0].slice(0, 2)],
-      [modePools[0], modePools[1], pools.warm, pools.all],
-      seed + 11
-    );
+  const kept = nums.filter((n) => keepPool.has(n));
+  const need = role === 'attack' ? 2 : 2;
+
+  if (kept.length >= need) {
+    return kept.slice(0, need);
   }
 
-  if (roleType === 'balanced') {
-    return fillToFour(
-      [...nums.slice(0, 2), modePools[0][0], modePools[1][0]],
-      [modePools[0], modePools[1], pools.warm, pools.all],
-      seed + 23
-    );
-  }
-
-  if (roleType === 'aggressive') {
-    return fillToFour(
-      [modePools[0][0], modePools[0][1], ...nums.slice(0, 1), modePools[1][0]],
-      [modePools[0], modePools[1], pools.gap, pools.all],
-      seed + 37
-    );
-  }
-
-  return fillToFour(
-    [modePools[0][0], modePools[0][1], modePools[1][0], modePools[2][0]],
-    [modePools[0], modePools[1], modePools[2], pools.all],
-    seed + 49
-  );
+  return nums.slice(0, Math.min(need, nums.length));
 }
 
-function buildWeightedFocusPlan(top1, top2) {
-  const top1Type = String(top1?.meta?.type || '').toLowerCase();
-  const top2Type = String(top2?.meta?.type || '').toLowerCase();
+function buildVariantFromSourceGroup(sourceGroup, slotRole, slotNo, pools, existingGroups = [], selection = {}) {
+  const sourceNums = uniqueAsc(sourceGroup?.nums || []);
+  const keepNums = pickKeepNumsByRole(sourceNums, slotRole, pools);
 
-  return [
-    {
-      sourceGroup: top1,
-      sourceRank: 1,
-      focusBucket: 'top1',
-      focusWeight: 3,
-      slotNo: 1,
-      roleType: top1Type === 'sniper' ? 'sniper' : 'aggressive',
-      tag: 'TOP1-1'
-    },
-    {
-      sourceGroup: top1,
-      sourceRank: 1,
-      focusBucket: 'top1',
-      focusWeight: 3,
-      slotNo: 2,
-      roleType: 'sniper',
-      tag: 'TOP1-2'
-    },
-    {
-      sourceGroup: top1,
-      sourceRank: 1,
-      focusBucket: 'top1',
-      focusWeight: 3,
-      slotNo: 3,
-      roleType: 'aggressive',
-      tag: 'TOP1-3'
-    },
-    {
-      sourceGroup: top2,
-      sourceRank: 2,
-      focusBucket: 'top2',
-      focusWeight: 1,
-      slotNo: 4,
-      roleType:
-        top2Type === 'safe' || top2Type === 'balanced' || top2Type === 'aggressive' || top2Type === 'sniper'
-          ? top2Type
-          : 'aggressive',
-      tag: 'TOP2-1'
-    }
-  ];
+  const fallbackPools = getRoleSeedPools(slotRole, pools);
+  const seedBase =
+    slotNo * 101 +
+    toNum(sourceGroup?.meta?.selection_rank, slotNo) * 17 +
+    selection.analysisPeriod * 3;
+
+  let result = fillToFour(keepNums, fallbackPools, seedBase);
+
+  if (slotRole === 'attack' && selection.riskMode === 'aggressive') {
+    result = fillToFour(
+      uniqueAsc([...result.slice(0, 2), ...pools.attack.slice(0, 4)]),
+      fallbackPools,
+      seedBase + 19
+    );
+  }
+
+  if (slotRole === 'guard' && selection.riskMode === 'safe') {
+    result = fillToFour(
+      uniqueAsc([...keepNums, ...pools.guard.slice(0, 4)]),
+      fallbackPools,
+      seedBase + 23
+    );
+  }
+
+  if (selection.strategyMode === 'cold') {
+    result = fillToFour(
+      uniqueAsc([...result.slice(0, 2), ...pools.cold.slice(0, 4)]),
+      [pools.guard, pools.cold, pools.gap, pools.all],
+      seedBase + 29
+    );
+  }
+
+  if (selection.strategyMode === 'burst') {
+    result = fillToFour(
+      uniqueAsc([...result.slice(0, 2), ...pools.attack.slice(0, 3), ...pools.recent.slice(0, 3)]),
+      [pools.attack, pools.extend, pools.recent, pools.hot, pools.all],
+      seedBase + 31
+    );
+  }
+
+  result = forceGroupDifference(result, existingGroups, pools, seedBase + 41);
+  return uniqueAsc(result).slice(0, 4);
 }
 
-function reorderAndTransformGroups(rawGroups, selection, recentDraws, sourceDraw) {
-  const pools = buildMarketPools(recentDraws);
-  const normalized = rawGroups
-    .map((group, idx) => normalizeGroup(group, idx, sourceDraw))
-    .filter(Boolean)
-    .slice(0, 12);
+function buildFormalLabel(slotRole, slotNo, sourceGroup) {
+  const roleText =
+    slotRole === 'attack'
+      ? 'ATTACK'
+      : slotRole === 'extend'
+        ? 'EXTEND'
+        : slotRole === 'guard'
+          ? 'GUARD'
+          : slotRole === 'recent'
+            ? 'RECENT'
+            : 'MIX';
 
-  if (!normalized.length) {
-    throw new Error('最新 test prediction 沒有可用 groups_json');
-  }
+  const name =
+    sourceGroup?.meta?.strategy_name ||
+    sourceGroup?.label ||
+    sourceGroup?.key ||
+    `Group ${slotNo}`;
 
-  if (normalized.length < 2) {
-    throw new Error(`最新 test prediction 可用組數不足，目前僅有 ${normalized.length} 組`);
-  }
+  return `${roleText}-${slotNo}｜${name}`;
+}
 
-  const weightedSorted = normalized
-    .map((group, idx) => ({
-      ...group,
-      _originIdx: idx,
-      _focusScore: scoreGroupForWeightedFocus(group, selection.strategyMode, pools)
+function buildFormalMeta(sourceGroup, slotRole, slotNo, sourceRow, selection) {
+  const sourceMeta = sourceGroup?.meta && typeof sourceGroup.meta === 'object' ? sourceGroup.meta : {};
+
+  return {
+    ...sourceMeta,
+    strategy_key: String(sourceMeta.strategy_key || sourceGroup?.key || `group_${slotNo}`),
+    strategy_name: String(
+      sourceMeta.strategy_name || sourceGroup?.label || sourceGroup?.key || `第${slotNo}組`
+    ),
+    preferred_role: slotRole,
+    role_slot_no: slotNo,
+    requested_strategy_mode: selection.strategyMode,
+    requested_risk_mode: selection.riskMode,
+    requested_analysis_period: selection.analysisPeriod,
+    source_prediction_id: sourceRow?.id || null,
+    source_prediction_mode: sourceRow?.mode || TEST_MODE,
+    source_selection_rank: toNum(sourceMeta.selection_rank, slotNo),
+    bet_amount: COST_PER_GROUP,
+    decision: 'market_role_formal_v6'
+  };
+}
+
+function chooseRoleOrderedGroups(sourceGroups = [], selection = {}, pools = {}) {
+  const roles = getRiskOrder(selection.riskMode);
+  const ranked = sourceGroups
+    .map((group) => ({
+      group,
+      inferredRole: inferRoleFromGroup(group)
     }))
     .sort((a, b) => {
-      if (b._focusScore !== a._focusScore) return b._focusScore - a._focusScore;
-      return a._originIdx - b._originIdx;
+      const scoreA = scoreGroupForMode(a.group, roles[0], selection.strategyMode, selection.riskMode, pools);
+      const scoreB = scoreGroupForMode(b.group, roles[0], selection.strategyMode, selection.riskMode, pools);
+      return scoreB - scoreA;
     });
 
-  const top1 = weightedSorted[0];
-  const top2 = weightedSorted[1];
+  const usedIndexes = new Set();
+  const picked = [];
 
-  if (!top1 || !top2) {
-    throw new Error('集中火力模式至少需要 2 組可用策略');
-  }
+  for (let i = 0; i < roles.length; i += 1) {
+    const role = roles[i];
+    let bestIdx = -1;
+    let bestScore = Number.NEGATIVE_INFINITY;
 
-  const plan = buildWeightedFocusPlan(top1, top2);
-  const result = [];
+    for (let j = 0; j < ranked.length; j += 1) {
+      if (usedIndexes.has(j)) continue;
+      const row = ranked[j];
+      const score = scoreGroupForMode(row.group, role, selection.strategyMode, selection.riskMode, pools);
 
-  plan.forEach((item, idx) => {
-    const sourceGroup = item.sourceGroup;
-    const roleType = item.roleType;
-
-    let nums = adaptNumsBySelection(
-      sourceGroup.nums,
-      roleType,
-      selection.strategyMode,
-      pools,
-      selection.analysisPeriod + (idx + 1) * 41 + item.sourceRank * 101
-    );
-
-    nums = forceGroupDifference(
-      nums,
-      result,
-      pools,
-      selection.analysisPeriod + (idx + 1) * 131 + item.sourceRank * 211
-    );
-
-    result.push({
-      ...sourceGroup,
-      nums,
-      label: `${item.tag}｜${roleLabelOf(roleType)}｜${sourceGroup.meta?.strategy_name || sourceGroup.label}`,
-      reason: `集中火力B / ${item.tag} / ${strategyModeLabel(selection.strategyMode)} / ${roleLabelOf(roleType)} / 分析 ${selection.analysisPeriod} 期`,
-      meta: {
-        ...sourceGroup.meta,
-        selection_rank: item.sourceRank,
-        source_selection_rank: item.sourceRank,
-        requested_analysis_period: selection.analysisPeriod,
-        requested_strategy_mode: selection.strategyMode,
-        requested_risk_mode: selection.riskMode,
-        formal_role_label: roleLabelOf(roleType),
-        formal_selection_applied: true,
-        focus_mode: 'weighted_focus_b',
-        focus_bucket: item.focusBucket,
-        focus_weight: item.focusWeight,
-        focus_slot_no: item.slotNo,
-        focus_tag: item.tag,
-        decision: 'weighted_focus_top1x3_top2x1'
+      if (score > bestScore) {
+        bestScore = score;
+        bestIdx = j;
       }
-    });
-  });
+    }
 
-  if (result.length !== GROUP_COUNT) {
-    throw new Error(`集中火力模式建立失敗，目前僅產生 ${result.length} 組`);
+    if (bestIdx >= 0) {
+      usedIndexes.add(bestIdx);
+      picked.push({
+        role,
+        group: ranked[bestIdx].group
+      });
+    }
   }
 
-  return result;
+  if (picked.length < GROUP_COUNT) {
+    for (let j = 0; j < ranked.length && picked.length < GROUP_COUNT; j += 1) {
+      if (usedIndexes.has(j)) continue;
+      usedIndexes.add(j);
+      picked.push({
+        role: roles[picked.length] || 'mix',
+        group: ranked[j].group
+      });
+    }
+  }
+
+  return picked.slice(0, GROUP_COUNT);
 }
 
 async function buildFormalGroups(sourceDraw, selection) {
   const sourceDrawNo = toNum(sourceDraw?.draw_no, 0);
-
-  let testPrediction = await getLatestTestPredictionUpToSourceDraw(sourceDrawNo);
-  if (!testPrediction) {
-    testPrediction = await getLatestAnyTestPrediction();
-  }
-
-  if (!testPrediction) {
-    throw new Error('找不到可用的 test prediction，請先建立 test prediction');
-  }
-
-  const rawGroups = parseGroupsJson(testPrediction.groups_json);
-  if (!rawGroups.length) {
-    throw new Error('最新 test prediction 沒有可用 groups_json');
-  }
-
   const recentDraws = await getRecentDraws(selection.analysisPeriod);
-  const groups = reorderAndTransformGroups(rawGroups, selection, recentDraws, sourceDraw);
+
+  const latestSameSourceTest = sourceDrawNo
+    ? await getLatestTestPredictionUpToSourceDraw(sourceDrawNo)
+    : null;
+
+  const latestSameSourceCandidate = sourceDrawNo
+    ? await getLatestFormalCandidateUpToSourceDraw(sourceDrawNo)
+    : null;
+
+  const fallbackTest = latestSameSourceTest ? null : await getLatestAnyTestPrediction();
+
+  const sourcePrediction =
+    latestSameSourceTest ||
+    fallbackTest ||
+    latestSameSourceCandidate ||
+    null;
+
+  if (!sourcePrediction?.id) {
+    throw new Error('找不到可用的 test prediction，請先讓 auto-train 建立最新 test prediction');
+  }
+
+  const sourceGroups = normalizeGroups(
+    parseGroupsJson(sourcePrediction.groups_json),
+    sourceDraw
+  );
+
+  if (!sourceGroups.length) {
+    throw new Error('最新 test prediction 沒有可用四碼群組');
+  }
+
+  const marketSnapshot =
+    sourcePrediction?.market_snapshot_json && typeof sourcePrediction.market_snapshot_json === 'object'
+      ? sourcePrediction.market_snapshot_json
+      : {};
+
+  const pools = buildMarketPools(recentDraws, marketSnapshot);
+  const roleOrdered = chooseRoleOrderedGroups(sourceGroups, selection, pools);
+
+  const groups = [];
+  for (let i = 0; i < roleOrdered.length && groups.length < GROUP_COUNT; i += 1) {
+    const slot = roleOrdered[i];
+    const slotRole = slot?.role || 'mix';
+    const sourceGroup = slot?.group;
+
+    if (!sourceGroup) continue;
+
+    const nums = buildVariantFromSourceGroup(
+      sourceGroup,
+      slotRole,
+      groups.length + 1,
+      pools,
+      groups,
+      selection
+    );
+
+    if (nums.length !== 4) continue;
+
+    groups.push({
+      key: `${sourceGroup.key}_${slotRole}_${groups.length + 1}`,
+      label: buildFormalLabel(slotRole, groups.length + 1, sourceGroup),
+      nums,
+      reason: `正式下注分工：${slotRole.toUpperCase()} / ${strategyModeLabel(selection.strategyMode)} / ${roleLabelOf(selection.riskMode)}`,
+      meta: buildFormalMeta(sourceGroup, slotRole, groups.length + 1, sourcePrediction, selection)
+    });
+  }
+
+  const finalGroups = normalizeGroups(groups, sourceDraw).slice(0, GROUP_COUNT);
+
+  if (finalGroups.length !== GROUP_COUNT) {
+    throw new Error('正式下注分工四組建立失敗');
+  }
 
   return {
-    groups,
+    groups: finalGroups,
     recentDrawCount: recentDraws.length,
-    sourceTestPredictionId: testPrediction.id || null,
-    sourceTestDrawNo: toNum(testPrediction.source_draw_no, 0)
+    sourcePredictionId: sourcePrediction.id,
+    sourcePredictionMode: sourcePrediction.mode || TEST_MODE,
+    sourcePredictionDrawNo: toNum(sourcePrediction.source_draw_no, 0),
+    marketSnapshot
   };
 }
 
 async function createFormalPrediction(selection) {
   const latestDraw = await getLatestDraw();
-
-  const batchInfo = await resolveFormalSourceDraw(latestDraw);
-  const sourceDrawNo = batchInfo.sourceDrawNo;
+  const sourceResolved = await resolveFormalSourceDraw(latestDraw);
+  const sourceDrawNo = toNum(sourceResolved?.sourceDrawNo, 0);
 
   if (!sourceDrawNo) {
-    throw new Error('無法判斷正式下注來源期數');
+    throw new Error('找不到可用 source_draw_no');
   }
 
-  const sourceDraw = {
-    draw_no: sourceDrawNo,
-    draw_time:
-      sourceDrawNo === toNum(latestDraw?.draw_no, 0)
-        ? latestDraw?.draw_time || null
-        : null
-  };
-
   const existingRows = await getFormalRowsBySourceDrawNo(sourceDrawNo);
+
   if (existingRows.length >= FORMAL_BATCH_LIMIT) {
     return {
       ok: true,
       skipped: true,
-      reason: `本期正式下注已達上限 ${FORMAL_BATCH_LIMIT} 次`,
+      reason: '本期 formal 批次已達上限',
+      latest_draw_no: toNum(latestDraw?.draw_no, 0),
+      latest_draw_time: latestDraw?.draw_time || null,
       source_draw_no: sourceDrawNo,
       formal_batch_no: existingRows.length,
       formal_batch_limit: FORMAL_BATCH_LIMIT,
@@ -804,9 +987,11 @@ async function createFormalPrediction(selection) {
   const {
     groups,
     recentDrawCount,
-    sourceTestPredictionId,
-    sourceTestDrawNo
-  } = await buildFormalGroups(sourceDraw, selection);
+    sourcePredictionId,
+    sourcePredictionMode,
+    sourcePredictionDrawNo,
+    marketSnapshot
+  } = await buildFormalGroups(latestDraw, selection);
 
   const payload = {
     mode: FORMAL_MODE,
@@ -816,8 +1001,11 @@ async function createFormalPrediction(selection) {
     groups_json: groups,
     compare_status: 'pending',
     compare_result: null,
+    compare_result_json: null,
     hit_count: 0,
     verdict: null,
+    latest_draw_numbers: parseNums(latestDraw?.numbers).join(','),
+    market_snapshot_json: marketSnapshot,
     created_at: new Date().toISOString()
   };
 
@@ -839,8 +1027,9 @@ async function createFormalPrediction(selection) {
     formal_batch_no: nextBatchNo,
     formal_batch_limit: FORMAL_BATCH_LIMIT,
     existing_count: existingRows.length,
-    source_test_prediction_id: sourceTestPredictionId,
-    source_test_draw_no: sourceTestDrawNo,
+    source_prediction_id: sourcePredictionId,
+    source_prediction_mode: sourcePredictionMode,
+    source_prediction_draw_no: sourcePredictionDrawNo,
     requested_selection: selection,
     recent_draw_count: recentDrawCount,
     prediction: {
@@ -860,7 +1049,7 @@ async function getExistingTestResponse(latestDraw) {
 
   const { data: existing, error } = await supabase
     .from(PREDICTIONS_TABLE)
-    .select('id, created_at, groups_json, source_draw_no, target_periods, status')
+    .select('id, created_at, groups_json, source_draw_no, target_periods, status, market_snapshot_json')
     .eq('mode', TEST_MODE)
     .eq('source_draw_no', sourceDrawNo)
     .order('created_at', { ascending: false })
@@ -882,7 +1071,8 @@ async function getExistingTestResponse(latestDraw) {
         source_draw_no: sourceDrawNo,
         target_periods: toNum(existing.target_periods, 1),
         group_count: parseGroupsJson(existing.groups_json).length,
-        groups: parseGroupsJson(existing.groups_json)
+        groups: parseGroupsJson(existing.groups_json),
+        market_snapshot_json: existing.market_snapshot_json || null
       }
     };
   }
@@ -954,19 +1144,17 @@ export default async function handler(req, res) {
       api_version: API_VERSION,
       mode: FORMAL_MODE,
       trigger_source: triggerSource,
-      manual_locked: true,
-      target_periods: 1,
-      bet_type: 'single_period_weighted_focus_top1x3_top2x1_manual_only',
       cost_per_group: COST_PER_GROUP,
       group_count: GROUP_COUNT,
       formal_batch_limit: FORMAL_BATCH_LIMIT,
+      requested_selection: selection,
       ...result
     });
   } catch (error) {
     return res.status(500).json({
       ok: false,
       api_version: API_VERSION,
-      error: error?.message || 'prediction-save failed'
+      error: error?.message || 'Unknown error'
     });
   }
 }
