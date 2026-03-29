@@ -348,7 +348,14 @@ function normalizePredictionLatest(data) {
     formalBatchCount: toNum(data?.formal_batch_count, 0),
     formalRemainingBatchCount: toNum(data?.formal_remaining_batch_count, FORMAL_BATCH_LIMIT),
     formalSourceDrawNo: data?.formal_source_draw_no || null,
-    formalBatches: normalizedFormalBatches
+    formalBatches: normalizedFormalBatches,
+    marketStreakBuckets: {
+      streak2: toArray(data?.market_streak_buckets?.streak2),
+      streak3: toArray(data?.market_streak_buckets?.streak3),
+      streak4: toArray(data?.market_streak_buckets?.streak4),
+      lookback: toNum(data?.market_streak_buckets?.lookback, 0),
+      latestDrawNo: data?.market_streak_buckets?.latest_draw_no || null
+    }
   };
 }
 
@@ -624,7 +631,14 @@ export default function App() {
     formalBatchCount: 0,
     formalRemainingBatchCount: FORMAL_BATCH_LIMIT,
     formalSourceDrawNo: null,
-    formalBatches: []
+    formalBatches: [],
+    marketStreakBuckets: {
+      streak2: [],
+      streak3: [],
+      streak4: [],
+      lookback: 0,
+      latestDrawNo: null
+    }
   });
   const [aiPlayer, setAiPlayer] = useState(normalizeAiPlayer({}));
   const [lastAutoTrainResult, setLastAutoTrainResult] = useState(null);
@@ -676,7 +690,8 @@ export default function App() {
         formalBatchCount: normalizedPrediction.formalBatchCount,
         formalRemainingBatchCount: normalizedPrediction.formalRemainingBatchCount,
         formalSourceDrawNo: normalizedPrediction.formalSourceDrawNo,
-        formalBatches: normalizedPrediction.formalBatches
+        formalBatches: normalizedPrediction.formalBatches,
+        marketStreakBuckets: normalizedPrediction.marketStreakBuckets
       });
 
       setAiPlayer(normalizeAiPlayer(aiPlayerRes));
@@ -922,6 +937,18 @@ export default function App() {
   const hotNumbers = useMemo(() => calcHotNumbers(recentRowsByPeriod, Math.min(analysisPeriod, 10)), [recentRowsByPeriod, analysisPeriod]);
   const streakNumbers = useMemo(() => calcCurrentStreakNumbers(recentRowsByPeriod, Math.min(analysisPeriod, 5)), [recentRowsByPeriod, analysisPeriod]);
   const zoneCounts = useMemo(() => calcZoneCounts(latestNumbers), [latestNumbers]);
+  const streak2Buckets = useMemo(
+    () => toArray(predictionSummary?.marketStreakBuckets?.streak2),
+    [predictionSummary]
+  );
+  const streak3Buckets = useMemo(
+    () => toArray(predictionSummary?.marketStreakBuckets?.streak3),
+    [predictionSummary]
+  );
+  const streak4Buckets = useMemo(
+    () => toArray(predictionSummary?.marketStreakBuckets?.streak4),
+    [predictionSummary]
+  );
 
   const lastCycleSummary = useMemo(() => buildLoopStatusText(lastAutoTrainResult), [lastAutoTrainResult]);
 
@@ -1412,6 +1439,51 @@ export default function App() {
                       <div style={styles.zoneCount}>{zone.count}</div>
                     </div>
                   ))}
+                </div>
+              </div>
+
+
+              <div style={styles.marketPanel}>
+                <div style={styles.marketPanelTitle}>近期連續號碼（連2／連3／連4）</div>
+                <div style={styles.marketGrid3}>
+                  <div style={styles.zoneBox}>
+                    <div style={styles.zoneLabel}>連4+</div>
+                    <div style={styles.marketBallsWrap}>
+                      {streak4Buckets.length ? (
+                        streak4Buckets.map((item) => (
+                          <StreakBall key={`streak4_${item.num}`} n={item.num} streak={item.streak} />
+                        ))
+                      ) : (
+                        <div style={styles.emptyBox}>目前沒有連4以上號碼。</div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div style={styles.zoneBox}>
+                    <div style={styles.zoneLabel}>連3</div>
+                    <div style={styles.marketBallsWrap}>
+                      {streak3Buckets.length ? (
+                        streak3Buckets.map((item) => (
+                          <StreakBall key={`streak3_${item.num}`} n={item.num} streak={item.streak} />
+                        ))
+                      ) : (
+                        <div style={styles.emptyBox}>目前沒有連3號碼。</div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div style={styles.zoneBox}>
+                    <div style={styles.zoneLabel}>連2</div>
+                    <div style={styles.marketBallsWrap}>
+                      {streak2Buckets.length ? (
+                        streak2Buckets.map((item) => (
+                          <StreakBall key={`streak2_${item.num}`} n={item.num} streak={item.streak} />
+                        ))
+                      ) : (
+                        <div style={styles.emptyBox}>目前沒有連2號碼。</div>
+                      )}
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -1922,6 +1994,11 @@ const styles = {
     display: 'grid',
     gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
     gap: 16
+  },
+  marketGrid3: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+    gap: 12
   },
   marketBallsWrap: {
     display: 'flex',
