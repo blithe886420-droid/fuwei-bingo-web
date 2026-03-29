@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
-const API_VERSION = 'prediction-latest-batch-v5-instant-ready';
+const API_VERSION = 'prediction-latest-market-role-v6';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -17,6 +17,7 @@ const PREDICTIONS_TABLE = 'bingo_predictions';
 const DRAWS_TABLE = 'bingo_draws';
 const STRATEGY_STATS_TABLE = 'strategy_stats';
 const STRATEGY_POOL_TABLE = 'strategy_pool';
+
 const FORMAL_BATCH_LIMIT = 3;
 const TEST_MODE = 'test';
 const FORMAL_MODE = 'formal';
@@ -32,7 +33,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
 
 function toInt(value, fallback = 0) {
   const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
+  return Number.isFinite(n) ? Math.trunc(n) : fallback;
 }
 
 function toNum(value, fallback = 0) {
@@ -46,9 +47,37 @@ function round4(value) {
 }
 
 function uniqueAsc(nums = []) {
-  return [...new Set((Array.isArray(nums) ? nums : []).map((n) => Number(n)).filter(Number.isFinite))].sort(
-    (a, b) => a - b
-  );
+  return [...new Set((Array.isArray(nums) ? nums : []).map((n) => Number(n)).filter(Number.isFinite))]
+    .filter((n) => n >= 1 && n <= 80)
+    .sort((a, b) => a - b);
+}
+
+function parseDrawNumbers(value) {
+  if (Array.isArray(value)) {
+    return uniqueAsc(value);
+  }
+
+  if (typeof value === 'string') {
+    return uniqueAsc(
+      value
+        .replace(/[{}[\]]/g, ' ')
+        .split(/[,\s|/]+/)
+        .map(Number)
+    );
+  }
+
+  if (value && typeof value === 'object') {
+    return parseDrawNumbers(
+      value.numbers ||
+      value.draw_numbers ||
+      value.result_numbers ||
+      value.open_numbers ||
+      value.nums ||
+      []
+    );
+  }
+
+  return [];
 }
 
 function normalizeGroups(groups) {
@@ -76,17 +105,21 @@ function normalizeGroups(groups) {
           ? g.nums
           : Array.isArray(g.numbers)
             ? g.numbers
-            : []
+            : Array.isArray(g.values)
+              ? g.values
+              : []
       ).slice(0, 4);
 
       if (nums.length !== 4) return null;
 
+      const meta = g.meta && typeof g.meta === 'object' ? g.meta : {};
+
       return {
-        key: g.key || `group_${idx + 1}`,
-        label: g.label || g.name || g.strategy_name || `第${idx + 1}組`,
+        key: g.key || meta.strategy_key || `group_${idx + 1}`,
+        label: g.label || g.name || meta.strategy_name || `第${idx + 1}組`,
         nums,
-        reason: g.reason || '',
-        meta: g.meta || {}
+        reason: g.reason || meta.strategy_name || '',
+        meta
       };
     })
     .filter(Boolean)
@@ -112,31 +145,28 @@ function parseGroupsJson(value) {
 }
 
 function normalizePredictionRow(row) {
-  if (!row) return null;
+  if (!row || typeof row !== 'object') return null;
 
-  const mode = String(row.mode || '').toLowerCase();
-  const sourceDrawNo = toInt(row.source_draw_no, 0);
-  const targetPeriods = toInt(row.target_periods, 1);
-  const groups = parseGroupsJson(row.groups_json);
+  const groups = parseGroupsJson(
+    row.groups_json ||
+    row.groups ||
+    row.prediction_groups ||
+    row.strategies ||
+    []
+  );
 
   return {
-    id: row.id,
-    mode,
-    status: row.status || 'created',
-    created_at: row.created_at || null,
-    source_draw_no: sourceDrawNo,
-    target_periods: targetPeriods,
-    sourceDrawNo,
-    targetPeriods,
-    targetDrawNo: sourceDrawNo ? sourceDrawNo + targetPeriods : 0,
+    ...row,
+    mode: String(row.mode || '').trim().toLowerCase(),
+    status: String(row.status || '').trim().toLowerCase() || 'created',
+    source_draw_no: toInt(row.source_draw_no, 0),
+    target_periods: toInt(row.target_periods, 1),
+    hit_count: toInt(row.hit_count, 0),
+    compare_status: row.compare_status || null,
+    verdict: row.verdict || null,
     groups_json: groups,
     groups,
     prediction_groups: groups,
-    compare_result: row.compare_result || null,
-    compare_status: row.compare_status || null,
-    compared_at: row.compared_at || null,
-    verdict: row.verdict || null,
-    hit_count: toInt(row.hit_count, 0),
     group_count: groups.length
   };
 }
@@ -144,11 +174,17 @@ function normalizePredictionRow(row) {
 function normalizeLeaderboardRow(row, poolRow = null) {
   if (!row || !row.strategy_key) return null;
 
-  const pool = poolRow && typeof poolRow === 'object' ? poolRow : {};
-
   return {
     strategy_key: String(row.strategy_key || ''),
-    strategy_name: pool.strategy_name || row.strategy_name || row.strategy_key,
+    strategy_name:
+      poolRow?.strategy_name ||
+      String(row.strategy_key || '')
+        .split('_')
+        .filter(Boolean)
+        .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+        .join(' '),
+    status: poolRow?.status || 'active',
+    protected_rank: Boolean(poolRow?.protected_rank),
     avg_hit: round4(row.avg_hit),
     roi: round4(row.roi),
     recent_50_roi: round4(row.recent_50_roi),
@@ -156,14 +192,11 @@ function normalizeLeaderboardRow(row, poolRow = null) {
     hit2: toInt(row.hit2, 0),
     hit3: toInt(row.hit3, 0),
     hit4: toInt(row.hit4, 0),
-    strategy_score: round4(row.score ?? row.strategy_score ?? 0),
-    score: round4(row.score ?? row.strategy_score ?? 0),
-    status: pool.status || 'active',
-    protected_rank: Boolean(pool.protected_rank)
+    score: round4(row.score)
   };
 }
 
-async function getLatestPrediction(mode) {
+async function getLatestRowByMode(mode) {
   const { data, error } = await supabase
     .from(PREDICTIONS_TABLE)
     .select('*')
@@ -177,19 +210,14 @@ async function getLatestPrediction(mode) {
 }
 
 async function getLatestFormalSourceDrawNo() {
-  const { data, error } = await supabase
-    .from(PREDICTIONS_TABLE)
-    .select('source_draw_no')
-    .eq('mode', FORMAL_MODE)
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  const latestFormal = await getLatestRowByMode(FORMAL_MODE);
+  if (latestFormal?.source_draw_no) return latestFormal.source_draw_no;
 
-  if (error) throw error;
-  return toInt(data?.source_draw_no, 0);
+  const latestTest = await getLatestRowByMode(TEST_MODE);
+  return latestTest?.source_draw_no || 0;
 }
 
-async function getFormalBatchRows(sourceDrawNo) {
+async function getFormalRowsBySourceDrawNo(sourceDrawNo) {
   if (!sourceDrawNo) return [];
 
   const { data, error } = await supabase
@@ -244,7 +272,6 @@ async function getStrategyLeaderboard(limit = 50) {
     .slice(0, limit);
 }
 
-
 async function getRecentDrawRows(limit = 20) {
   const safeLimit = Math.max(5, Math.min(50, toInt(limit, 20)));
 
@@ -256,23 +283,6 @@ async function getRecentDrawRows(limit = 20) {
 
   if (error) throw error;
   return Array.isArray(data) ? data : [];
-}
-
-function parseDrawNumbers(value) {
-  if (Array.isArray(value)) {
-    return uniqueAsc(value).filter((n) => n >= 1 && n <= 80);
-  }
-
-  if (typeof value === 'string') {
-    return uniqueAsc(
-      value
-        .replace(/[{}[\]]/g, ' ')
-        .split(/[,\s|/]+/)
-        .map(Number)
-    ).filter((n) => n >= 1 && n <= 80);
-  }
-
-  return [];
 }
 
 function buildMarketStreakBuckets(drawRows = []) {
@@ -288,6 +298,7 @@ function buildMarketStreakBuckets(drawRows = []) {
     return {
       lookback: 0,
       latest_draw_no: null,
+      latest_draw_time: null,
       streak2: [],
       streak3: [],
       streak4: []
@@ -322,36 +333,100 @@ function buildMarketStreakBuckets(drawRows = []) {
   return {
     lookback: rows.length,
     latest_draw_no: rows[0]?.draw_no || null,
+    latest_draw_time: rows[0]?.draw_time || null,
     streak2: toItems(2, 2),
     streak3: toItems(3, 3),
     streak4: toItems(4, Infinity)
   };
 }
 
-function buildDecisionSummary(leaderboard = []) {
+function buildCurrentTopStrategies(leaderboard = []) {
+  return leaderboard.slice(0, 4).map((row, idx) => ({
+    rank: idx + 1,
+    strategyKey: row.strategy_key,
+    strategyName: row.strategy_name,
+    avgHit: row.avg_hit,
+    roi: row.roi,
+    recent50Roi: row.recent_50_roi,
+    score: row.score
+  }));
+}
+
+function buildDecisionSummary(leaderboard = [], formalBatchCount = 0, formalSourceDrawNo = null) {
   const topFour = leaderboard.slice(0, 4);
   const topOne = topFour[0] || null;
+  const currentTopStrategies = buildCurrentTopStrategies(leaderboard);
 
   if (!topOne) {
     return {
       assistantMode: 'manual_control',
-      readyForFormal: true,
-      adviceLevel: 'manual',
-      decisionPhase: 'manual_control',
-      summaryLabel: '自行決定',
-      summaryText: '目前策略資料不足，但正式下注改由你手動決定；請自行評估是否進場。',
-      currentTopStrategies: []
+      readyForFormal: false,
+      adviceLevel: 'watch',
+      summaryLabel: '暫無資料',
+      summaryText: '目前尚未取得有效的策略排行資料。',
+      currentTopStrategies,
+      formalBatchCount,
+      formalRemainingBatchCount: Math.max(0, FORMAL_BATCH_LIMIT - formalBatchCount),
+      formalSourceDrawNo
     };
   }
 
+  let summaryLabel = '可小試';
+  let summaryText = '目前前段策略已有一定穩定度，可用小額方式觀察分工組合表現。';
+  let readyForFormal = true;
+  let adviceLevel = 'watch';
+
+  if (topOne.avg_hit >= 2.0 && topOne.recent_50_roi > 0) {
+    summaryLabel = '可正式下注';
+    summaryText = '目前前段策略表現偏強，可採固定四組分工觀察中三突破。';
+    adviceLevel = 'ready';
+  } else if (topOne.avg_hit >= 1.5) {
+    summaryLabel = '可小試';
+    summaryText = '目前前段策略已有一定穩定度，可用小額方式觀察分工組合表現。';
+    adviceLevel = 'near_ready';
+  } else {
+    summaryLabel = '暫不建議';
+    summaryText = '目前前段策略穩定度仍不足，建議先以訓練與觀察為主。';
+    readyForFormal = false;
+    adviceLevel = 'watch';
+  }
+
+  if (formalBatchCount >= FORMAL_BATCH_LIMIT) {
+    summaryText = '本期 formal 批次已達上限，等待下一期再重新建立正式下注組合。';
+  }
+
   return {
-    assistantMode: 'manual_control',
-    readyForFormal: true,
-    adviceLevel: 'manual',
-    decisionPhase: 'manual_control',
-    summaryLabel: '自行決定',
-    summaryText: 'AI 仍提供排行與分析，但正式下注是否進場，改由你手動決定。',
-    currentTopStrategies: topFour
+    assistantMode: 'decision_support',
+    readyForFormal,
+    adviceLevel,
+    summaryLabel,
+    summaryText,
+    currentTopStrategies,
+    formalBatchCount,
+    formalRemainingBatchCount: Math.max(0, FORMAL_BATCH_LIMIT - formalBatchCount),
+    formalSourceDrawNo
+  };
+}
+
+function buildFormalDisplayRow(formalBatches = []) {
+  if (!Array.isArray(formalBatches) || !formalBatches.length) return null;
+  return formalBatches[formalBatches.length - 1];
+}
+
+function buildLatestRowsPayload(trainingRow, formalRow, formalCandidateRow) {
+  return {
+    training: {
+      row: trainingRow || null,
+      rows: trainingRow ? [trainingRow] : []
+    },
+    formal: {
+      row: formalRow || null,
+      rows: formalRow ? [formalRow] : []
+    },
+    formal_candidate: {
+      row: formalCandidateRow || null,
+      rows: formalCandidateRow ? [formalCandidateRow] : []
+    }
   };
 }
 
@@ -359,106 +434,73 @@ export default async function handler(req, res) {
   if (req.method !== 'GET') {
     return res.status(405).json({
       ok: false,
+      api_version: API_VERSION,
       error: 'Method not allowed'
     });
   }
 
   try {
-    const [
-      trainingPrediction,
-      formalPrediction,
-      instantFormalCandidate,
-      leaderboard,
-      latestFormalSourceDrawNo,
-      recentDrawRows
-    ] = await Promise.all([
-      getLatestPrediction(TEST_MODE),
-      getLatestPrediction(FORMAL_MODE),
-      getLatestPrediction(FORMAL_CANDIDATE_MODE),
+    const [trainingRow, latestFormalRow, formalCandidateRow, leaderboard, recentDrawRows] = await Promise.all([
+      getLatestRowByMode(TEST_MODE),
+      getLatestRowByMode(FORMAL_MODE),
+      getLatestRowByMode(FORMAL_CANDIDATE_MODE),
       getStrategyLeaderboard(50),
-      getLatestFormalSourceDrawNo(),
       getRecentDrawRows(20)
     ]);
 
-    const instantFormal =
-      instantFormalCandidate &&
-      trainingPrediction &&
-      toInt(instantFormalCandidate?.source_draw_no, 0) < toInt(trainingPrediction?.source_draw_no, 0)
-        ? trainingPrediction
-        : instantFormalCandidate;
+    const formalSourceDrawNo =
+      toInt(latestFormalRow?.source_draw_no, 0) ||
+      await getLatestFormalSourceDrawNo();
 
-    const rows = [trainingPrediction, instantFormal, formalPrediction]
-      .filter(Boolean)
-      .filter((row, idx, arr) => arr.findIndex((x) => x?.id === row?.id && x?.mode === row?.mode) === idx);
-    const decision = buildDecisionSummary(leaderboard);
+    const formalBatches = await getFormalRowsBySourceDrawNo(formalSourceDrawNo);
+    const displayFormalRow = buildFormalDisplayRow(formalBatches) || latestFormalRow || null;
+    const marketStreakBuckets = buildMarketStreakBuckets(recentDrawRows);
+    const decisionSummary = buildDecisionSummary(
+      leaderboard,
+      formalBatches.length,
+      formalSourceDrawNo || null
+    );
 
-    const latestFormalDrawNo =
-      latestFormalSourceDrawNo ||
-      formalPrediction?.source_draw_no ||
-      0;
-
-    const latestTrainingDrawNo = toInt(trainingPrediction?.source_draw_no, 0);
-    let formalSourceDrawNo = latestFormalDrawNo;
-
-    if (latestTrainingDrawNo > 0) {
-      if (!formalSourceDrawNo || latestTrainingDrawNo > formalSourceDrawNo) {
-        formalSourceDrawNo = latestTrainingDrawNo;
-      }
-    }
-
-    let formalBatchRows = await getFormalBatchRows(formalSourceDrawNo);
-    let formalBatchCount = formalBatchRows.length;
-    const formalRemainingBatchCount = Math.max(0, FORMAL_BATCH_LIMIT - formalBatchCount);
+    const latestRowsPayload = buildLatestRowsPayload(
+      trainingRow,
+      displayFormalRow,
+      formalCandidateRow
+    );
 
     return res.status(200).json({
       ok: true,
       api_version: API_VERSION,
 
-      training: {
-        row: trainingPrediction,
-        rows: trainingPrediction ? [trainingPrediction] : []
-      },
+      ...latestRowsPayload,
 
-      formal: {
-        row: formalPrediction,
-        rows: formalPrediction ? [formalPrediction] : []
-      },
-
-      instant_formal: instantFormal,
-
-      ai_train: {
-        row: trainingPrediction,
-        rows: trainingPrediction ? [trainingPrediction] : []
-      },
-
-      training_row: trainingPrediction,
-      formal_row: formalPrediction,
-      row: instantFormal || trainingPrediction || formalPrediction || null,
-      rows,
+      display_formal_row: displayFormalRow || null,
+      formal_batches: formalBatches,
 
       leaderboard,
-      leaderboard_source: 'strategy_stats+strategy_pool',
+      current_top_strategies: decisionSummary.currentTopStrategies,
 
-      assistantMode: decision.assistantMode,
-      readyForFormal: decision.readyForFormal,
-      adviceLevel: decision.adviceLevel,
-      decisionPhase: decision.decisionPhase,
-      summaryLabel: decision.summaryLabel,
-      summaryText: decision.summaryText,
-      currentTopStrategies: decision.currentTopStrategies,
+      assistant_mode: decisionSummary.assistantMode,
+      ready_for_formal: decisionSummary.readyForFormal,
+      advice_level: decisionSummary.adviceLevel,
+
+      summary_label: decisionSummary.summaryLabel,
+      summary_text: decisionSummary.summaryText,
 
       formal_batch_limit: FORMAL_BATCH_LIMIT,
-      formal_batch_count: formalBatchCount,
-      formal_remaining_batch_count: formalRemainingBatchCount,
+      formal_batch_count: formalBatches.length,
+      formal_remaining_batch_count: Math.max(0, FORMAL_BATCH_LIMIT - formalBatches.length),
       formal_source_draw_no: formalSourceDrawNo || null,
-      formal_batches: formalBatchRows,
-      market_streak_buckets: buildMarketStreakBuckets(recentDrawRows)
+
+      market_streak_buckets: marketStreakBuckets,
+      recent_draw_rows: recentDrawRows,
+
+      auto_train_result: null
     });
   } catch (error) {
     return res.status(500).json({
       ok: false,
       api_version: API_VERSION,
-      error: error?.message || 'prediction-latest failed'
+      error: error?.message || 'Unknown error'
     });
   }
 }
