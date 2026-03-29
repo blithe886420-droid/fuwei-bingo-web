@@ -969,7 +969,7 @@ function evaluateStrategyDecision(poolRow = {}, statRow = {}, marketSnapshot = {
     recent50Hit3Rate >= 0.08 ||
     recent50Roi > 0
   ) &&
-  (hit3Rate > 0.05 || recent50Hit3Rate > 0.05)
+  (hit3Rate > 0.02 || recent50Hit3Rate > 0.02)
 ) {
   decision = 'strong';
 } else if (
@@ -978,7 +978,7 @@ function evaluateStrategyDecision(poolRow = {}, statRow = {}, marketSnapshot = {
     avgHit >= DECISION_CONFIG.minAvgHitPreferred ||
     hitRate >= 0.2
   ) &&
-  (hit3Rate > 0.03 || recent50Hit3Rate > 0.03)
+  (hit3Rate > 0.015 || recent50Hit3Rate > 0.015)
 ) {
   decision = 'usable';
 }
