@@ -938,13 +938,23 @@ function evaluateStrategyDecision(poolRow = {}, statRow = {}, marketSnapshot = {
   const avgHit = toNum(statRow?.avg_hit, 0);
   const roi = toNum(statRow?.roi, 0);
   const score = toNum(statRow?.score, 0);
+
+  const hit2 = toNum(statRow?.hit2, 0);
+  const hit3 = toNum(statRow?.hit3, 0);
+  const hit4 = toNum(statRow?.hit4, 0);
+
   const hitRate = normalizeHitRate(statRow?.hit_rate);
+  const hit2Rate = totalRounds > 0
+    ? normalizeHitRate(statRow?.hit2_rate ?? (hit2 / totalRounds))
+    : 0;
   const hit3Rate = normalizeHitRate(statRow?.hit3_rate);
   const hit4Rate = normalizeHitRate(statRow?.hit4_rate);
+
   const recent50HitRate = normalizeHitRate(statRow?.recent_50_hit_rate);
   const recent50Hit3Rate = normalizeHitRate(statRow?.recent_50_hit3_rate);
   const recent50Hit4Rate = normalizeHitRate(statRow?.recent_50_hit4_rate);
   const recent50Roi = toNum(statRow?.recent_50_roi, 0);
+
   const generation = Math.max(1, toNum(poolRow?.generation, 1));
   const marketFit = getStrategyMarketBoost(poolRow?.strategy_key, marketSnapshot);
 
@@ -962,51 +972,59 @@ function evaluateStrategyDecision(poolRow = {}, statRow = {}, marketSnapshot = {
   ) {
     decision = 'weak';
   } else if (
-  (
-    score >= DECISION_CONFIG.strongScoreFloor ||
-    avgHit >= 1.6 ||
-    hit3Rate >= 0.03 ||
-    recent50Hit3Rate >= 0.03 ||
-    recent50Roi > 0 ||
-    hit2Rate >= 0.4
-  ) &&
-  (hit3Rate > 0.02 || recent50Hit3Rate > 0.02)
-) {
-  decision = 'strong';
-} else if (
-  (
-    score >= DECISION_CONFIG.usableScoreFloor ||
-    avgHit >= DECISION_CONFIG.minAvgHitPreferred ||
-    hitRate >= 0.2
-  ) &&
-  (hit3Rate > 0.015 || recent50Hit3Rate > 0.015)
-) {
-  decision = 'usable';
-}
+    totalRounds >= DECISION_CONFIG.minRoundsForTrust &&
+    (
+      recent50Hit3Rate >= 0.02 ||
+      hit3Rate >= 0.02 ||
+      (recent50Roi > 0 && hit2Rate >= 0.12) ||
+      (roi > 0.2 && avgHit >= 1.4) ||
+      (score >= DECISION_CONFIG.strongScoreFloor && hit2Rate >= 0.12)
+    )
+  ) {
+    decision = 'strong';
+  } else if (
+    (
+      score >= DECISION_CONFIG.usableScoreFloor ||
+      avgHit >= DECISION_CONFIG.minAvgHitPreferred ||
+      hitRate >= 0.2 ||
+      hit2Rate >= 0.1 ||
+      roi > 0
+    ) &&
+    (
+      recent50Hit3Rate >= 0.01 ||
+      hit3Rate >= 0.01 ||
+      hit2Rate >= 0.1 ||
+      avgHit >= 1.25
+    )
+  ) {
+    decision = 'usable';
+  }
 
-let weight = 0;
+  let weight = 0;
 
-if (decision === 'strong' && (hit3Rate > 0.02 || recent50Hit3Rate > 0.02)) {
-  weight = 1000;
-} else if (decision === 'usable' && (hit3Rate > 0.015 || recent50Hit3Rate > 0.015)) {
-  weight = 220;
-} else if (decision === 'candidate' && totalRounds < 30) {
-  weight = totalRounds < DECISION_CONFIG.minRoundsForTrust ? 60 : 12;
-} else if (decision === 'weak') {
-  weight = 1;
-} else {
-  weight = 0;
-}
+  if (decision === 'strong') {
+    weight = 1000;
+  } else if (decision === 'usable') {
+    weight = 260;
+  } else if (decision === 'candidate' && totalRounds < 30) {
+    weight = totalRounds < DECISION_CONFIG.minRoundsForTrust ? 60 : 15;
+  } else if (decision === 'weak') {
+    weight = 1;
+  } else {
+    weight = 0;
+  }
 
   weight += Math.max(0, score * 0.05);
-  weight += avgHit * 18;
-  weight += hitRate * 18;
-  weight += hit3Rate * 260;
-  weight += hit4Rate * 180;
-  weight += recent50HitRate * 20;
-  weight += recent50Hit3Rate * 420;
-  weight += recent50Hit4Rate * 220;
-  weight += Math.max(0, recent50Roi) * 70;
+  weight += avgHit * 12;
+  weight += hitRate * 12;
+  weight += hit2Rate * 45;
+  weight += hit3Rate * 220;
+  weight += hit4Rate * 260;
+  weight += recent50HitRate * 12;
+  weight += recent50Hit3Rate * 320;
+  weight += recent50Hit4Rate * 360;
+  weight += Math.max(0, roi) * 50;
+  weight += Math.max(0, recent50Roi) * 90;
   weight += Math.min(totalRounds, 120) * 0.03;
   weight += generation * 0.25;
 
@@ -1015,10 +1033,35 @@ if (decision === 'strong' && (hit3Rate > 0.02 || recent50Hit3Rate > 0.02)) {
   }
 
   if (roi < 0) {
-    weight += roi * 20;
+    weight += roi * 12;
   }
 
   weight = Math.round(Math.max(0, weight * marketFit.boost));
+
+  const decisionBase =
+    decision === 'strong'
+      ? 600
+      : decision === 'usable'
+        ? 260
+        : decision === 'candidate'
+          ? 80
+          : decision === 'weak'
+            ? 5
+            : 0;
+
+  const decisionScore =
+    decisionBase +
+    score * 0.22 * marketFit.boost +
+    avgHit * 10 +
+    hit2Rate * 70 +
+    hit3Rate * 520 +
+    hit4Rate * 700 +
+    recent50Hit3Rate * 680 +
+    recent50Hit4Rate * 860 +
+    Math.max(0, roi) * 120 +
+    Math.max(0, recent50Roi) * 180 +
+    Math.min(totalRounds, 120) * 0.04 +
+    Math.max(0, marketFit.boost - 1) * 40;
 
   return {
     decision,
@@ -1037,19 +1080,9 @@ if (decision === 'strong' && (hit3Rate > 0.02 || recent50Hit3Rate > 0.02)) {
     generation,
     marketBoost: marketFit.boost,
     marketReason: marketFit.reason,
-    decisionScore:
-  score * 0.35 * marketFit.boost +
-  avgHit * 4 +
-  roi * 40 +
-  hit3Rate * 1400 +
-  hit4Rate * 650 +
-  recent50Hit3Rate * 1800 +
-  recent50Hit4Rate * 720 +
-  recent50Roi * 220 +
-  totalRounds * 0.05
+    decisionScore
   };
 }
-
 function byPowerDesc(a, b) {
   return (
     toNum(b.decision_score, 0) - toNum(a.decision_score, 0) ||
