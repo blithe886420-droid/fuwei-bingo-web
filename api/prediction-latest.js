@@ -69,11 +69,11 @@ function parseDrawNumbers(value) {
   if (value && typeof value === 'object') {
     return parseDrawNumbers(
       value.numbers ||
-      value.draw_numbers ||
-      value.result_numbers ||
-      value.open_numbers ||
-      value.nums ||
-      []
+        value.draw_numbers ||
+        value.result_numbers ||
+        value.open_numbers ||
+        value.nums ||
+        []
     );
   }
 
@@ -149,10 +149,10 @@ function normalizePredictionRow(row) {
 
   const groups = parseGroupsJson(
     row.groups_json ||
-    row.groups ||
-    row.prediction_groups ||
-    row.strategies ||
-    []
+      row.groups ||
+      row.prediction_groups ||
+      row.strategies ||
+      []
   );
 
   return {
@@ -420,6 +420,11 @@ function buildDecisionSummary(leaderboard = [], formalBatchCount = 0, formalSour
     formalRemainingBatchCount: Math.max(0, FORMAL_BATCH_LIMIT - formalBatchCount),
     formalSourceDrawNo
   };
+}
+
+function buildFormalDisplayRow(formalBatches = []) {
+  if (!Array.isArray(formalBatches) || !formalBatches.length) return null;
+  return formalBatches[formalBatches.length - 1];
 }
 
 function buildLatestRowsPayload(trainingRow, formalRow, formalCandidateRow) {
