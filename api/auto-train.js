@@ -299,7 +299,8 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
   if (candidateGroups.length !== 4) return null;
 
   const nowIso = new Date().toISOString();
-  const payload = {
+
+  const candidatePayload = {
     mode: FORMAL_CANDIDATE_MODE,
     status: 'ready',
     source_draw_no: sourceDrawNo,
@@ -315,7 +316,7 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
     created_at: nowIso
   };
 
-  const { data: existing, error: existingError } = await db
+  const { data: existingCandidate, error: existingCandidateError } = await db
     .from(PREDICTIONS_TABLE)
     .select('*')
     .eq('mode', FORMAL_CANDIDATE_MODE)
@@ -324,10 +325,12 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
     .limit(1)
     .maybeSingle();
 
-  if (existingError) throw existingError;
+  if (existingCandidateError) throw existingCandidateError;
 
-  if (existing?.id) {
-    const { data: updated, error: updateError } = await db
+  let candidateRow = null;
+
+  if (existingCandidate?.id) {
+    const { data: updatedCandidate, error: updateCandidateError } = await db
       .from(PREDICTIONS_TABLE)
       .update({
         status: 'ready',
@@ -340,22 +343,76 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
         latest_draw_numbers: predictionRow.latest_draw_numbers || null,
         market_snapshot_json: predictionRow.market_snapshot_json || null
       })
-      .eq('id', existing.id)
+      .eq('id', existingCandidate.id)
       .select('*')
       .maybeSingle();
 
-    if (updateError) throw updateError;
-    return updated || existing;
+    if (updateCandidateError) throw updateCandidateError;
+    candidateRow = updatedCandidate || existingCandidate;
+  } else {
+    const { data: insertedCandidate, error: insertCandidateError } = await db
+      .from(PREDICTIONS_TABLE)
+      .insert(candidatePayload)
+      .select('*')
+      .maybeSingle();
+
+    if (insertCandidateError) throw insertCandidateError;
+    candidateRow = insertedCandidate || null;
   }
 
-  const { data: inserted, error: insertError } = await db
+  const formalPayload = {
+    mode: FORMAL_MODE,
+    status: 'created',
+    source_draw_no: sourceDrawNo,
+    target_periods: TARGET_PERIODS,
+    groups_json: candidateGroups,
+    compare_status: 'pending',
+    compare_result: null,
+    compare_result_json: null,
+    hit_count: 0,
+    verdict: null,
+    latest_draw_numbers: predictionRow.latest_draw_numbers || null,
+    market_snapshot_json: predictionRow.market_snapshot_json || null,
+    created_at: nowIso
+  };
+
+  const { data: existingFormal, error: existingFormalError } = await db
     .from(PREDICTIONS_TABLE)
-    .insert(payload)
     .select('*')
+    .eq('mode', FORMAL_MODE)
+    .eq('source_draw_no', sourceDrawNo)
+    .order('created_at', { ascending: false })
+    .limit(1)
     .maybeSingle();
 
-  if (insertError) throw insertError;
-  return inserted || null;
+  if (existingFormalError) throw existingFormalError;
+
+  if (existingFormal?.id) {
+    const { error: updateFormalError } = await db
+      .from(PREDICTIONS_TABLE)
+      .update({
+        status: 'created',
+        groups_json: candidateGroups,
+        compare_status: 'pending',
+        compare_result: null,
+        compare_result_json: null,
+        hit_count: 0,
+        verdict: null,
+        latest_draw_numbers: predictionRow.latest_draw_numbers || null,
+        market_snapshot_json: predictionRow.market_snapshot_json || null
+      })
+      .eq('id', existingFormal.id);
+
+    if (updateFormalError) throw updateFormalError;
+  } else {
+    const { error: insertFormalError } = await db
+      .from(PREDICTIONS_TABLE)
+      .insert(formalPayload);
+
+    if (insertFormalError) throw insertFormalError;
+  }
+
+  return candidateRow;
 }
 
 function normalizeHitRate(raw) {
