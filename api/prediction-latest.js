@@ -357,13 +357,19 @@ function buildDecisionSummary(leaderboard = [], formalBatchCount = 0, formalSour
   const topOne = topFour[0] || null;
   const currentTopStrategies = buildCurrentTopStrategies(leaderboard);
 
+  const hasFormalSourceDraw = toInt(formalSourceDrawNo, 0) > 0;
+  const underBatchLimit = toInt(formalBatchCount, 0) < FORMAL_BATCH_LIMIT;
+  const canPressFormal = hasFormalSourceDraw && underBatchLimit;
+
   if (!topOne) {
     return {
-      assistantMode: 'manual_control',
-      readyForFormal: false,
-      adviceLevel: 'watch',
-      summaryLabel: '暫無資料',
-      summaryText: '目前尚未取得有效的策略排行資料。',
+      assistantMode: 'decision_support',
+      readyForFormal: canPressFormal,
+      adviceLevel: canPressFormal ? 'ready' : 'watch',
+      summaryLabel: canPressFormal ? '可正式下注' : '暫無資料',
+      summaryText: canPressFormal
+        ? '目前已取得可下注期別，且 formal 批次尚未達上限，可手動建立正式下注組合。'
+        : '目前尚未取得有效的策略排行資料。',
       currentTopStrategies,
       formalBatchCount,
       formalRemainingBatchCount: Math.max(0, FORMAL_BATCH_LIMIT - formalBatchCount),
@@ -373,26 +379,34 @@ function buildDecisionSummary(leaderboard = [], formalBatchCount = 0, formalSour
 
   let summaryLabel = '可小試';
   let summaryText = '目前前段策略已有一定穩定度，可用小額方式觀察分工組合表現。';
-  let readyForFormal = true;
+  let readyForFormal = false;
   let adviceLevel = 'watch';
 
-  if (topOne.avg_hit >= 2.0 && topOne.recent_50_roi > 0) {
+  if (canPressFormal) {
+    summaryLabel = '可正式下注';
+    summaryText = '目前已取得可下注期別，且 formal 批次尚未達上限，可手動建立正式下注組合。';
+    readyForFormal = true;
+    adviceLevel = 'ready';
+  } else if (formalBatchCount >= FORMAL_BATCH_LIMIT) {
+    summaryLabel = '本期已滿';
+    summaryText = '本期 formal 批次已達上限，等待下一期再重新建立正式下注組合。';
+    readyForFormal = false;
+    adviceLevel = 'watch';
+  } else if (topOne.avg_hit >= 2.0 && topOne.recent_50_roi > 0) {
     summaryLabel = '可正式下注';
     summaryText = '目前前段策略表現偏強，可採固定四組分工觀察中三突破。';
+    readyForFormal = true;
     adviceLevel = 'ready';
   } else if (topOne.avg_hit >= 1.5) {
     summaryLabel = '可小試';
     summaryText = '目前前段策略已有一定穩定度，可用小額方式觀察分工組合表現。';
+    readyForFormal = false;
     adviceLevel = 'near_ready';
   } else {
-    summaryLabel = '暫不建議';
+    summaryLabel = '暫不建議正式下注';
     summaryText = '目前前段策略穩定度仍不足，建議先以訓練與觀察為主。';
     readyForFormal = false;
     adviceLevel = 'watch';
-  }
-
-  if (formalBatchCount >= FORMAL_BATCH_LIMIT) {
-    summaryText = '本期 formal 批次已達上限，等待下一期再重新建立正式下注組合。';
   }
 
   return {
@@ -406,11 +420,6 @@ function buildDecisionSummary(leaderboard = [], formalBatchCount = 0, formalSour
     formalRemainingBatchCount: Math.max(0, FORMAL_BATCH_LIMIT - formalBatchCount),
     formalSourceDrawNo
   };
-}
-
-function buildFormalDisplayRow(formalBatches = []) {
-  if (!Array.isArray(formalBatches) || !formalBatches.length) return null;
-  return formalBatches[formalBatches.length - 1];
 }
 
 function buildLatestRowsPayload(trainingRow, formalRow, formalCandidateRow) {
