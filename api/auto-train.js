@@ -230,27 +230,25 @@ function buildInstantFormalCandidateGroups(groups = []) {
   const normalized = normalizeGroups(groups)
     .slice(0, 12)
     .sort((a, b) => {
-      const scoreA =
-        toNum(a?.meta?.decision_score, Number.NEGATIVE_INFINITY);
-      const scoreB =
-        toNum(b?.meta?.decision_score, Number.NEGATIVE_INFINITY);
+      const scoreA = toNum(a?.meta?.decision_score, Number.NEGATIVE_INFINITY);
+      const scoreB = toNum(b?.meta?.decision_score, Number.NEGATIVE_INFINITY);
 
       if (scoreB !== scoreA) return scoreB - scoreA;
+
+      const hit3A = toNum(a?.meta?.recent_50_hit3_rate, toNum(a?.meta?.hit3_rate, 0));
+      const hit3B = toNum(b?.meta?.recent_50_hit3_rate, toNum(b?.meta?.hit3_rate, 0));
+
+      if (hit3B !== hit3A) return hit3B - hit3A;
+
+      const roiA = toNum(a?.meta?.recent_50_roi, toNum(a?.meta?.roi, Number.NEGATIVE_INFINITY));
+      const roiB = toNum(b?.meta?.recent_50_roi, toNum(b?.meta?.roi, Number.NEGATIVE_INFINITY));
+
+      if (roiB !== roiA) return roiB - roiA;
 
       const rankA = toNum(a?.meta?.selection_rank, 9999);
       const rankB = toNum(b?.meta?.selection_rank, 9999);
 
       if (rankA !== rankB) return rankA - rankB;
-
-      const rawScoreA = toNum(a?.meta?.score, Number.NEGATIVE_INFINITY);
-      const rawScoreB = toNum(b?.meta?.score, Number.NEGATIVE_INFINITY);
-
-      if (rawScoreB !== rawScoreA) return rawScoreB - rawScoreA;
-
-      const avgHitA = toNum(a?.meta?.avg_hit, Number.NEGATIVE_INFINITY);
-      const avgHitB = toNum(b?.meta?.avg_hit, Number.NEGATIVE_INFINITY);
-
-      if (avgHitB !== avgHitA) return avgHitB - avgHitA;
 
       return String(a?.key || '').localeCompare(String(b?.key || ''));
     });
@@ -259,9 +257,41 @@ function buildInstantFormalCandidateGroups(groups = []) {
 
   const top1 = normalized[0];
   const top2 = normalized[1];
+  const top3 = normalized[2] || null;
 
-  const cloneGroup = (sourceGroup, slotTag, bucket, weight, slotNo, rank) => ({
+  const diversifyNums = (sourceNums = [], salt = 0, avoidNums = []) => {
+    const picked = uniqueSorted(sourceNums).slice(0, 4);
+    const avoid = new Set(uniqueSorted(avoidNums));
+    const result = [];
+    const used = new Set();
+
+    for (const n of picked) {
+      if (!used.has(n) && result.length < 2) {
+        used.add(n);
+        result.push(n);
+      }
+    }
+
+    const fallbackPool = Array.from({ length: 80 }, (_, i) => i + 1)
+      .filter((n) => !used.has(n))
+      .filter((n) => !avoid.has(n));
+
+    let cursor = 0;
+    while (result.length < 4 && cursor < fallbackPool.length) {
+      const index = Math.abs(salt + cursor * 11) % fallbackPool.length;
+      const value = fallbackPool[index];
+      cursor += 1;
+      if (used.has(value)) continue;
+      used.add(value);
+      result.push(value);
+    }
+
+    return uniqueSorted(result).slice(0, 4);
+  };
+
+  const cloneGroup = (sourceGroup, slotTag, bucket, weight, slotNo, rank, customNums = null) => ({
     ...sourceGroup,
+    nums: Array.isArray(customNums) ? uniqueSorted(customNums).slice(0, 4) : sourceGroup.nums,
     label: `${slotTag}｜${sourceGroup.meta?.strategy_name || sourceGroup.label}`,
     reason: `即戰候選 / ${slotTag}`,
     meta: {
@@ -275,18 +305,51 @@ function buildInstantFormalCandidateGroups(groups = []) {
       focus_weight: weight,
       focus_slot_no: slotNo,
       focus_tag: slotTag,
-      decision: 'weighted_focus_top1x3_top2x1'
+      decision: 'weighted_focus_top1x2_top2x1_top3x1'
     }
   });
 
-  return [
-    cloneGroup(top1, 'TOP1-1', 'top1', 3, 1, 1),
-    cloneGroup(top1, 'TOP1-2', 'top1', 3, 2, 1),
-    cloneGroup(top1, 'TOP1-3', 'top1', 3, 3, 1),
-    cloneGroup(top2, 'TOP2-1', 'top2', 1, 4, 2)
-  ];
-}
+  const group1 = cloneGroup(top1, 'TOP1-1', 'top1', 2, 1, 1, top1.nums);
+  const group2 = cloneGroup(
+    top1,
+    'TOP1-2',
+    'top1',
+    2,
+    2,
+    1,
+    diversifyNums(top1.nums, 17, top2?.nums || [])
+  );
+  const group3 = cloneGroup(
+    top2,
+    'TOP2-1',
+    'top2',
+    1,
+    3,
+    2,
+    top2.nums
+  );
+  const group4 = top3
+    ? cloneGroup(
+        top3,
+        'TOP3-1',
+        'top3',
+        1,
+        4,
+        3,
+        top3.nums
+      )
+    : cloneGroup(
+        top2,
+        'TOP2-2',
+        'top2',
+        1,
+        4,
+        2,
+        diversifyNums(top2.nums, 29, top1.nums)
+      );
 
+  return [group1, group2, group3, group4];
+}
 async function upsertFormalCandidateFromTest(db, predictionRow) {
   if (!predictionRow || String(predictionRow.mode || '').toLowerCase() !== TEST_MODE) {
     return null;
@@ -872,7 +935,11 @@ function evaluateStrategyDecision(poolRow = {}, statRow = {}, marketSnapshot = {
   const roi = toNum(statRow?.roi, 0);
   const score = toNum(statRow?.score, 0);
   const hitRate = normalizeHitRate(statRow?.hit_rate);
+  const hit3Rate = normalizeHitRate(statRow?.hit3_rate);
+  const hit4Rate = normalizeHitRate(statRow?.hit4_rate);
   const recent50HitRate = normalizeHitRate(statRow?.recent_50_hit_rate);
+  const recent50Hit3Rate = normalizeHitRate(statRow?.recent_50_hit3_rate);
+  const recent50Hit4Rate = normalizeHitRate(statRow?.recent_50_hit4_rate);
   const recent50Roi = toNum(statRow?.recent_50_roi, 0);
   const generation = Math.max(1, toNum(poolRow?.generation, 1));
   const marketFit = getStrategyMarketBoost(poolRow?.strategy_key, marketSnapshot);
@@ -893,7 +960,8 @@ function evaluateStrategyDecision(poolRow = {}, statRow = {}, marketSnapshot = {
   } else if (
     score >= DECISION_CONFIG.strongScoreFloor ||
     avgHit >= 2 ||
-    recent50HitRate >= 0.35 ||
+    hit3Rate >= 0.08 ||
+    recent50Hit3Rate >= 0.08 ||
     recent50Roi > 0
   ) {
     decision = 'strong';
@@ -919,20 +987,24 @@ function evaluateStrategyDecision(poolRow = {}, statRow = {}, marketSnapshot = {
     weight = 0;
   }
 
-  weight += Math.max(0, score * 0.08);
-  weight += avgHit * 25;
-  weight += hitRate * 35;
-  weight += recent50HitRate * 55;
-  weight += Math.max(0, recent50Roi) * 25;
-  weight += Math.min(totalRounds, 120) * 0.05;
-  weight += generation * 0.4;
+  weight += Math.max(0, score * 0.05);
+  weight += avgHit * 18;
+  weight += hitRate * 18;
+  weight += hit3Rate * 120;
+  weight += hit4Rate * 180;
+  weight += recent50HitRate * 20;
+  weight += recent50Hit3Rate * 160;
+  weight += recent50Hit4Rate * 220;
+  weight += Math.max(0, recent50Roi) * 70;
+  weight += Math.min(totalRounds, 120) * 0.03;
+  weight += generation * 0.25;
 
   if (String(poolRow?.protected_rank) === 'true' || poolRow?.protected_rank === true) {
     weight += 20;
   }
 
   if (roi < 0) {
-    weight += roi * 12;
+    weight += roi * 8;
   }
 
   weight = Math.round(Math.max(0, weight * marketFit.boost));
@@ -945,17 +1017,25 @@ function evaluateStrategyDecision(poolRow = {}, statRow = {}, marketSnapshot = {
     roi,
     score,
     hitRate,
+    hit3Rate,
+    hit4Rate,
     recent50HitRate,
+    recent50Hit3Rate,
+    recent50Hit4Rate,
     recent50Roi,
     generation,
     marketBoost: marketFit.boost,
     marketReason: marketFit.reason,
     decisionScore:
-      score * marketFit.boost +
-      avgHit * 26 +
-      recent50Roi * 22 +
-      recent50HitRate * 30 +
-      totalRounds * 0.12
+      score * 0.45 * marketFit.boost +
+      avgHit * 16 +
+      roi * 18 +
+      hit3Rate * 280 +
+      hit4Rate * 420 +
+      recent50Hit3Rate * 360 +
+      recent50Hit4Rate * 520 +
+      recent50Roi * 120 +
+      totalRounds * 0.08
   };
 }
 
