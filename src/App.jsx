@@ -90,7 +90,23 @@ function parseNums(input) {
 
   return [];
 }
+function normalizePredictionRow(row) {
+  if (!row || typeof row !== 'object') return null;
 
+  return {
+    ...row,
+    source_draw_no: toNum(row?.source_draw_no, 0),
+    target_periods: toNum(row?.target_periods, 1),
+    hit_count: toNum(row?.hit_count, 0),
+    groups_json: normalizeGroups(
+      row?.groups_json ||
+      row?.groups ||
+      row?.prediction_groups ||
+      row?.strategies ||
+      []
+    )
+  };
+}
 function normalizeGroups(rawGroups) {
   const groups = Array.isArray(rawGroups) ? rawGroups : [];
 
