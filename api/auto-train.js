@@ -964,10 +964,11 @@ function evaluateStrategyDecision(poolRow = {}, statRow = {}, marketSnapshot = {
   } else if (
   (
     score >= DECISION_CONFIG.strongScoreFloor ||
-    avgHit >= 2 ||
-    hit3Rate >= 0.08 ||
-    recent50Hit3Rate >= 0.08 ||
-    recent50Roi > 0
+    avgHit >= 1.6 ||
+    hit3Rate >= 0.03 ||
+    recent50Hit3Rate >= 0.03 ||
+    recent50Roi > 0 ||
+    hit2Rate >= 0.4
   ) &&
   (hit3Rate > 0.02 || recent50Hit3Rate > 0.02)
 ) {
@@ -983,19 +984,19 @@ function evaluateStrategyDecision(poolRow = {}, statRow = {}, marketSnapshot = {
   decision = 'usable';
 }
 
-  let weight = 0;
+let weight = 0;
 
-  if (decision === 'strong' && hit3Rate > 0.05) {
-    weight = 1000;
-  } else if (decision === 'usable' && hit3Rate > 0.03) {
-    weight = 220;
-  } else if (decision === 'candidate' && totalRounds < 30) {
-    weight = totalRounds < DECISION_CONFIG.minRoundsForTrust ? 60 : 12;
-  } else if (decision === 'weak') {
-    weight = 1;
-  } else {
-    weight = 0;
-  }
+if (decision === 'strong' && (hit3Rate > 0.02 || recent50Hit3Rate > 0.02)) {
+  weight = 1000;
+} else if (decision === 'usable' && (hit3Rate > 0.015 || recent50Hit3Rate > 0.015)) {
+  weight = 220;
+} else if (decision === 'candidate' && totalRounds < 30) {
+  weight = totalRounds < DECISION_CONFIG.minRoundsForTrust ? 60 : 12;
+} else if (decision === 'weak') {
+  weight = 1;
+} else {
+  weight = 0;
+}
 
   weight += Math.max(0, score * 0.05);
   weight += avgHit * 18;
