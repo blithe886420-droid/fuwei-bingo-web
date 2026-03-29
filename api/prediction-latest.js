@@ -244,6 +244,90 @@ async function getStrategyLeaderboard(limit = 50) {
     .slice(0, limit);
 }
 
+
+async function getRecentDrawRows(limit = 20) {
+  const safeLimit = Math.max(5, Math.min(50, toInt(limit, 20)));
+
+  const { data, error } = await supabase
+    .from(DRAWS_TABLE)
+    .select('draw_no, draw_time, numbers')
+    .order('draw_no', { ascending: false })
+    .limit(safeLimit);
+
+  if (error) throw error;
+  return Array.isArray(data) ? data : [];
+}
+
+function parseDrawNumbers(value) {
+  if (Array.isArray(value)) {
+    return uniqueAsc(value).filter((n) => n >= 1 && n <= 80);
+  }
+
+  if (typeof value === 'string') {
+    return uniqueAsc(
+      value
+        .replace(/[{}[\]]/g, ' ')
+        .split(/[,\s|/]+/)
+        .map(Number)
+    ).filter((n) => n >= 1 && n <= 80);
+  }
+
+  return [];
+}
+
+function buildMarketStreakBuckets(drawRows = []) {
+  const rows = (Array.isArray(drawRows) ? drawRows : [])
+    .map((row) => ({
+      draw_no: toInt(row?.draw_no, 0),
+      draw_time: row?.draw_time || null,
+      numbers: parseDrawNumbers(row?.numbers)
+    }))
+    .filter((row) => row.draw_no > 0);
+
+  if (!rows.length) {
+    return {
+      lookback: 0,
+      latest_draw_no: null,
+      streak2: [],
+      streak3: [],
+      streak4: []
+    };
+  }
+
+  const streakMap = new Map();
+
+  for (let num = 1; num <= 80; num += 1) {
+    let streak = 0;
+
+    for (let i = 0; i < rows.length; i += 1) {
+      const nums = rows[i]?.numbers || [];
+      if (nums.includes(num)) {
+        streak += 1;
+      } else {
+        break;
+      }
+    }
+
+    if (streak >= 2) {
+      streakMap.set(num, streak);
+    }
+  }
+
+  const toItems = (min, max = Infinity) =>
+    [...streakMap.entries()]
+      .filter(([, streak]) => streak >= min && streak <= max)
+      .sort((a, b) => b[1] - a[1] || a[0] - b[0])
+      .map(([num, streak]) => ({ num, streak }));
+
+  return {
+    lookback: rows.length,
+    latest_draw_no: rows[0]?.draw_no || null,
+    streak2: toItems(2, 2),
+    streak3: toItems(3, 3),
+    streak4: toItems(4, Infinity)
+  };
+}
+
 function buildDecisionSummary(leaderboard = []) {
   const topFour = leaderboard.slice(0, 4);
   const topOne = topFour[0] || null;
@@ -280,14 +364,21 @@ export default async function handler(req, res) {
   }
 
   try {
-    const [trainingPrediction, formalPrediction, instantFormalCandidate, leaderboard, latestFormalSourceDrawNo] =
-      await Promise.all([
-        getLatestPrediction(TEST_MODE),
-        getLatestPrediction(FORMAL_MODE),
-        getLatestPrediction(FORMAL_CANDIDATE_MODE),
-        getStrategyLeaderboard(50),
-        getLatestFormalSourceDrawNo()
-      ]);
+    const [
+      trainingPrediction,
+      formalPrediction,
+      instantFormalCandidate,
+      leaderboard,
+      latestFormalSourceDrawNo,
+      recentDrawRows
+    ] = await Promise.all([
+      getLatestPrediction(TEST_MODE),
+      getLatestPrediction(FORMAL_MODE),
+      getLatestPrediction(FORMAL_CANDIDATE_MODE),
+      getStrategyLeaderboard(50),
+      getLatestFormalSourceDrawNo(),
+      getRecentDrawRows(20)
+    ]);
 
     const instantFormal =
       instantFormalCandidate &&
@@ -360,7 +451,8 @@ export default async function handler(req, res) {
       formal_batch_count: formalBatchCount,
       formal_remaining_batch_count: formalRemainingBatchCount,
       formal_source_draw_no: formalSourceDrawNo || null,
-      formal_batches: formalBatchRows
+      formal_batches: formalBatchRows,
+      market_streak_buckets: buildMarketStreakBuckets(recentDrawRows)
     });
   } catch (error) {
     return res.status(500).json({
