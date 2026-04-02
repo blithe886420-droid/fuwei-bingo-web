@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
-const API_VERSION = 'prediction-save-market-role-v10-roi-hit-gate-fixed';
+const API_VERSION = 'prediction-save-market-role-v10.1-tier-gate';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -47,17 +47,6 @@ function toInt(value, fallback = 0) {
   return Number.isFinite(n) ? Math.trunc(n) : fallback;
 }
 
-function toBool(value, fallback = false) {
-  if (typeof value === 'boolean') return value;
-  if (typeof value === 'string') {
-    const v = value.trim().toLowerCase();
-    if (v === 'true' || v === '1') return true;
-    if (v === 'false' || v === '0') return false;
-  }
-  if (typeof value === 'number') return value !== 0;
-  return fallback;
-}
-
 function round4(value) {
   const n = Number(value);
   return Number.isFinite(n) ? Number(n.toFixed(4)) : 0;
@@ -90,11 +79,11 @@ function parseNums(value) {
   if (value && typeof value === 'object') {
     return parseNums(
       value.numbers ||
-      value.draw_numbers ||
-      value.result_numbers ||
-      value.open_numbers ||
-      value.nums ||
-      []
+        value.draw_numbers ||
+        value.result_numbers ||
+        value.open_numbers ||
+        value.nums ||
+        []
     );
   }
 
@@ -439,8 +428,8 @@ function buildPhaseContext(sourcePrediction = null, lastComparedPrediction = nul
   const confidenceScore = clamp(
     toNum(
       sourcePrediction?.confidence_score ||
-      sourcePrediction?.meta?.confidence_score ||
-      sourcePrediction?.market_signal_json?.confidence_score,
+        sourcePrediction?.meta?.confidence_score ||
+        sourcePrediction?.market_signal_json?.confidence_score,
       45
     ),
     0,
@@ -462,9 +451,7 @@ function buildMarketPools(drawRows = [], marketSnapshot = {}) {
   const freqMap = new Map();
   const lastSeen = new Map();
 
-  allNums.forEach((n) => {
-    freqMap.set(n, 0);
-  });
+  allNums.forEach((n) => freqMap.set(n, 0));
 
   rows.forEach((row, idx) => {
     const nums = parseNums(row?.numbers);
@@ -491,8 +478,6 @@ function buildMarketPools(drawRows = [], marketSnapshot = {}) {
     });
 
   const warm = hot.slice(10).concat(hot.slice(0, 10));
-  const odd = allNums.filter((n) => n % 2 === 1);
-  const even = allNums.filter((n) => n % 2 === 0);
 
   const hot5Numbers = uniqueAsc(
     marketSnapshot?.hot_windows?.hot_5?.numbers || marketSnapshot?.hot_5_numbers || []
@@ -553,8 +538,6 @@ function buildMarketPools(drawRows = [], marketSnapshot = {}) {
     cold,
     warm,
     gap,
-    odd,
-    even,
     attack,
     extend,
     guard,
@@ -566,8 +549,7 @@ function buildMarketPools(drawRows = [], marketSnapshot = {}) {
     streak3,
     streak4,
     all: allNums,
-    qualityAll,
-    freqMap
+    qualityAll
   };
 }
 
@@ -709,8 +691,7 @@ function fillToFour(base = [], fallbackPools = [], seed = 0, pools = {}, role = 
     selected.add(picked);
   }
 
-  const finalNums = uniqueAsc([...selected]).slice(0, 4);
-  return finalNums;
+  return uniqueAsc([...selected]).slice(0, 4);
 }
 
 function countOverlap(a = [], b = []) {
@@ -725,7 +706,7 @@ function forceGroupDifference(nums = [], existingGroups = [], pools = {}, seed =
     pools.extend,
     pools.guard,
     pools.recent,
-    pools.hot,
+    pools.hot10 || pools.hot,
     pools.gap,
     pools.warm,
     pools.qualityAll,
@@ -735,7 +716,6 @@ function forceGroupDifference(nums = [], existingGroups = [], pools = {}, seed =
   for (let round = 0; round < 8; round += 1) {
     const overlapTooHigh = existingGroups.some((group) => countOverlap(result, group?.nums || []) >= 3);
     if (!overlapTooHigh) break;
-
     const keep = result.slice(0, 2);
     result = fillToFour(keep, backupPools, seed + round * 17 + 3, pools, role, selection, phaseContext);
   }
@@ -847,24 +827,16 @@ function pickKeepNumsByRole(sourceNums = [], role = 'mix', pools = {}, phaseCont
   const nums = uniqueAsc(sourceNums);
   const keepPool = new Set(buildKeepPoolByRole(role, pools, phaseContext));
   const need = getKeepNeedByRole(role, phaseContext);
-
   const kept = nums.filter((n) => keepPool.has(n));
   if (kept.length >= need) return kept.slice(0, need);
-
-  return uniqueAsc([
-    ...kept,
-    ...nums.slice(0, need)
-  ]).slice(0, need);
+  return uniqueAsc([...kept, ...nums.slice(0, need)]).slice(0, need);
 }
 
 function getBlendedRoi(group = {}) {
   const meta = group?.meta && typeof group.meta === 'object' ? group.meta : {};
   const recent50 = toNum(meta.recent_50_roi, NaN);
   const baseRoi = toNum(meta.roi, 0);
-
-  if (Number.isFinite(recent50)) {
-    return round4(recent50 * 0.7 + baseRoi * 0.3);
-  }
+  if (Number.isFinite(recent50)) return round4(recent50 * 0.7 + baseRoi * 0.3);
   return round4(baseRoi);
 }
 
@@ -872,63 +844,98 @@ function getBlendedHit3Rate(group = {}) {
   const meta = group?.meta && typeof group.meta === 'object' ? group.meta : {};
   const recent50 = toNum(meta.recent_50_hit3_rate, NaN);
   const base = toNum(meta.hit3_rate, 0);
-
-  if (Number.isFinite(recent50)) {
-    return round4(recent50 * 0.7 + base * 0.3);
-  }
+  if (Number.isFinite(recent50)) return round4(recent50 * 0.7 + base * 0.3);
   return round4(base);
 }
 
 function getDecisionScoreFloor(role = 'mix', selection = {}, phaseContext = null) {
   let floor = 90;
-
   if (role === 'attack') floor = 130;
   if (role === 'extend') floor = 150;
   if (role === 'guard') floor = 85;
   if (role === 'recent') floor = 95;
-
   if (selection.riskMode === 'safe') floor += 10;
   if (selection.riskMode === 'aggressive' && role === 'attack') floor -= 5;
   if (phaseContext?.marketPhase === 'continuation' && role === 'attack') floor -= 10;
   if (phaseContext?.marketPhase === 'rotation' && role === 'attack') floor += 10;
-
   return floor;
 }
 
 function getRecentRoiFloor(role = 'mix', selection = {}, phaseContext = null) {
   let floor = -0.15;
-  if (role === 'attack') floor = -0.1;
-  if (role === 'extend') floor = -0.2;
-  if (role === 'guard') floor = -0.25;
-  if (role === 'recent') floor = -0.2;
-
+  if (role === 'attack') floor = -0.12;
+  if (role === 'extend') floor = -0.24;
+  if (role === 'guard') floor = -0.35;
+  if (role === 'recent') floor = -0.28;
   if (selection.riskMode === 'safe') floor += 0.05;
-  if (phaseContext?.lastHitLevel === 'bad') floor += 0.05;
-
+  if (phaseContext?.lastHitLevel === 'bad') floor += 0.04;
   return round4(floor);
 }
 
 function getHit3RateFloor(role = 'mix', selection = {}, phaseContext = null) {
   let floor = 0.01;
   if (role === 'attack') floor = 0.012;
-  if (role === 'extend') floor = 0.01;
+  if (role === 'extend') floor = 0.008;
   if (role === 'guard') floor = 0;
-  if (role === 'recent') floor = 0.01;
-
+  if (role === 'recent') floor = 0.004;
   if (selection.strategyMode === 'hot') floor += 0.002;
   if (phaseContext?.marketPhase === 'continuation' && role === 'attack') floor -= 0.002;
-
   return round4(Math.max(0, floor));
 }
 
 function getStabilityFloor(role = 'mix', selection = {}, phaseContext = null) {
-  let floor = 2;
+  let floor = 1;
   if (role === 'attack') floor = 1;
-  if (role === 'extend') floor = 2;
+  if (role === 'extend') floor = 1;
   if (role === 'guard') floor = 0;
-  if (role === 'recent') floor = 1;
+  if (role === 'recent') floor = 0;
   if (selection.riskMode === 'safe') floor += 1;
   return floor;
+}
+
+function getTierThresholds(role = 'mix', selection = {}, phaseContext = null) {
+  const decisionGate = getDecisionScoreFloor(role, selection, phaseContext);
+  const roiGate = getRecentRoiFloor(role, selection, phaseContext);
+  const hit3Gate = getHit3RateFloor(role, selection, phaseContext);
+  const stabilityGate = getStabilityFloor(role, selection, phaseContext);
+
+  return {
+    decisionGate,
+    roiGate,
+    hit3Gate,
+    stabilityGate,
+    decisionGateB: round4(decisionGate * 0.72),
+    roiGateB: round4(roiGate - 0.12),
+    hit3GateB: round4(Math.max(0, hit3Gate - 0.008)),
+    stabilityGateB: Math.max(0, stabilityGate - 1)
+  };
+}
+
+function getCandidateTier(sourceGroup, score, role, selection, phaseContext) {
+  const meta = sourceGroup?.meta && typeof sourceGroup.meta === 'object' ? sourceGroup.meta : {};
+  const blendedRoi = getBlendedRoi(sourceGroup);
+  const blendedHit3Rate = getBlendedHit3Rate(sourceGroup);
+  const totalRounds = toNum(meta.total_rounds, 0);
+  const t = getTierThresholds(role, selection, phaseContext);
+
+  const passA =
+    Number.isFinite(score) &&
+    score >= t.decisionGate &&
+    blendedRoi >= t.roiGate &&
+    blendedHit3Rate >= t.hit3Gate &&
+    (role === 'attack' || totalRounds >= t.stabilityGate);
+
+  if (passA) return 'A';
+
+  const passB =
+    Number.isFinite(score) &&
+    score >= t.decisionGateB &&
+    blendedRoi >= t.roiGateB &&
+    blendedHit3Rate >= t.hit3GateB &&
+    (role === 'attack' || totalRounds >= t.stabilityGateB);
+
+  if (passB) return 'B';
+  return 'C';
 }
 
 function evaluateFormalCandidateScore(sourceGroup, nums, role, selection, pools, phaseContext, existingGroups = []) {
@@ -1005,25 +1012,6 @@ function scoreGroupForMode(group, role, strategyMode, riskMode, pools, phaseCont
   return round4(score);
 }
 
-function passesDecisionGate(sourceGroup, score, role, selection, phaseContext) {
-  const meta = sourceGroup?.meta && typeof sourceGroup.meta === 'object' ? sourceGroup.meta : {};
-  const decisionGate = getDecisionScoreFloor(role, selection, phaseContext);
-  const roiGate = getRecentRoiFloor(role, selection, phaseContext);
-  const hit3Gate = getHit3RateFloor(role, selection, phaseContext);
-  const stabilityGate = getStabilityFloor(role, selection, phaseContext);
-
-  const blendedRoi = getBlendedRoi(sourceGroup);
-  const blendedHit3Rate = getBlendedHit3Rate(sourceGroup);
-  const totalRounds = toNum(meta.total_rounds, 0);
-
-  if (!Number.isFinite(score) || score < decisionGate) return false;
-  if (blendedRoi < roiGate) return false;
-  if (blendedHit3Rate < hit3Gate) return false;
-  if (totalRounds < stabilityGate && role !== 'attack') return false;
-
-  return true;
-}
-
 function chooseRoleOrderedGroups(sourceGroups = [], selection = {}, pools = {}, phaseContext = null) {
   const roles = getRiskOrder(selection.riskMode, phaseContext);
   const ranked = sourceGroups
@@ -1044,6 +1032,7 @@ function chooseRoleOrderedGroups(sourceGroups = [], selection = {}, pools = {}, 
     const role = roles[i];
     let bestIdx = -1;
     let bestScore = Number.NEGATIVE_INFINITY;
+    let bestTier = 'C';
 
     for (let j = 0; j < ranked.length; j += 1) {
       if (usedIndexes.has(j)) continue;
@@ -1056,12 +1045,14 @@ function chooseRoleOrderedGroups(sourceGroups = [], selection = {}, pools = {}, 
         pools,
         phaseContext
       );
+      const tier = getCandidateTier(rankedRow.group, score, role, selection, phaseContext);
+      if (tier === 'C') continue;
 
-      if (!passesDecisionGate(rankedRow.group, score, role, selection, phaseContext)) continue;
-
-      if (score > bestScore) {
-        bestScore = score;
+      const bonus = tier === 'A' ? 100000 : 0;
+      if (score + bonus > bestScore) {
+        bestScore = score + bonus;
         bestIdx = j;
+        bestTier = tier;
       }
     }
 
@@ -1070,7 +1061,8 @@ function chooseRoleOrderedGroups(sourceGroups = [], selection = {}, pools = {}, 
       picked.push({
         role,
         group: ranked[bestIdx].group,
-        role_decision_score: bestScore
+        role_decision_score: bestScore,
+        tier: bestTier
       });
     }
   }
@@ -1089,14 +1081,16 @@ function chooseRoleOrderedGroups(sourceGroups = [], selection = {}, pools = {}, 
         pools,
         phaseContext
       );
+      const tier = getCandidateTier(rankedRow.group, score, role, selection, phaseContext);
 
-      if (!passesDecisionGate(rankedRow.group, score, role, selection, phaseContext)) continue;
+      if (tier === 'C') continue;
 
       usedIndexes.add(j);
       picked.push({
         role,
         group: rankedRow.group,
-        role_decision_score: score
+        role_decision_score: score,
+        tier
       });
     }
   }
@@ -1131,7 +1125,8 @@ function buildVariantFromSourceGroup(sourceGroup, slotRole, slotNo, pools, exist
         existingGroups
       ) + extraScore;
 
-    if (!passesDecisionGate(sourceGroup, score, slotRole, selection, phaseContext)) return;
+    const tier = getCandidateTier(sourceGroup, score, slotRole, selection, phaseContext);
+    if (tier === 'C') return;
 
     const key = safeNums.join(',');
     const prev = candidateMap.get(key);
@@ -1140,7 +1135,8 @@ function buildVariantFromSourceGroup(sourceGroup, slotRole, slotNo, pools, exist
         nums: safeNums,
         score,
         tag,
-        sourceGroup
+        sourceGroup,
+        tier
       });
     }
   };
@@ -1269,7 +1265,7 @@ function buildVariantFromSourceGroup(sourceGroup, slotRole, slotNo, pools, exist
     );
   }
 
-  let ranked = [...candidateMap.values()]
+  const ranked = [...candidateMap.values()]
     .map((candidateRow) => {
       const adjustedNums = forceGroupDifference(
         candidateRow.nums,
@@ -1294,25 +1290,29 @@ function buildVariantFromSourceGroup(sourceGroup, slotRole, slotNo, pools, exist
       return {
         ...candidateRow,
         nums: adjustedNums,
-        score: nextScore
+        score: nextScore,
+        tier: getCandidateTier(candidateRow.sourceGroup, nextScore, slotRole, selection, phaseContext)
       };
     })
-    .filter((candidateRow) =>
-      passesDecisionGate(
-        candidateRow.sourceGroup,
-        candidateRow.score,
-        slotRole,
-        selection,
-        phaseContext
-      )
-    )
-    .sort((a, b) => b.score - a.score);
+    .filter((candidateRow) => candidateRow.tier !== 'C')
+    .sort((a, b) => {
+      const tierBonusA = candidateRowTierBonus(a.tier);
+      const tierBonusB = candidateRowTierBonus(b.tier);
+      return b.score + tierBonusB - (a.score + tierBonusA);
+    });
 
-  if (!ranked.length) {
-    return [];
-  }
+  if (!ranked.length) return [];
+
+  const bestA = ranked.find((row) => row.tier === 'A');
+  if (bestA) return uniqueAsc(bestA.nums).slice(0, 4);
 
   return uniqueAsc(ranked[0].nums).slice(0, 4);
+}
+
+function candidateRowTierBonus(tier = 'C') {
+  if (tier === 'A') return 100000;
+  if (tier === 'B') return 1000;
+  return 0;
 }
 
 function buildFormalLabel(slotRole, slotNo, sourceGroup) {
@@ -1355,13 +1355,13 @@ function buildFormalMeta(sourceGroup, slotRole, slotNo, sourceRow, selection, ph
     source_prediction_mode: sourceRow?.mode || TEST_MODE,
     source_selection_rank: toNum(sourceMeta.selection_rank, slotNo),
     bet_amount: COST_PER_GROUP,
-    decision: 'market_role_formal_v10_roi_hit_gate',
+    decision: 'market_role_formal_v10_1_tier_gate',
     market_phase: phaseContext?.marketPhase || 'rotation',
     last_hit_level: phaseContext?.lastHitLevel || 'neutral',
     confidence_score: toNum(phaseContext?.confidenceScore, 0),
     weight_profile: weightProfile,
     role_weight: roleWeightOf(slotRole, weightProfile),
-    quality_engine: 'v3'
+    quality_engine: 'v10.1-tier'
   };
 }
 
@@ -1379,11 +1379,7 @@ async function buildFormalGroups(sourceDraw, selection) {
 
   const fallbackTest = latestSameSourceTest ? null : await getLatestAnyTestPrediction();
 
-  const sourcePrediction =
-    latestSameSourceTest ||
-    fallbackTest ||
-    latestSameSourceCandidate ||
-    null;
+  const sourcePrediction = latestSameSourceTest || fallbackTest || latestSameSourceCandidate || null;
 
   if (!sourcePrediction?.id) {
     throw new Error('找不到可用的 test prediction，請先讓 auto-train 建立最新 test prediction');
@@ -1406,6 +1402,7 @@ async function buildFormalGroups(sourceDraw, selection) {
 
   const groups = [];
   const usedKeys = new Set();
+  let tierACount = 0;
 
   const tryAddSlot = (sourceGroup, slotRole) => {
     const nums = buildVariantFromSourceGroup(
@@ -1430,11 +1427,14 @@ async function buildFormalGroups(sourceDraw, selection) {
       groups
     );
 
-    if (!passesDecisionGate(sourceGroup, candidateScore, slotRole, selection, phaseContext)) return false;
+    const tier = getCandidateTier(sourceGroup, candidateScore, slotRole, selection, phaseContext);
+    if (tier === 'C') return false;
 
     const safeKey = `${sourceGroup.key}_${slotRole}`;
     const overlapTooHigh = groups.some((g) => countOverlap(nums, g?.nums || []) >= 3);
     if (usedKeys.has(safeKey) || overlapTooHigh) return false;
+
+    if (tier === 'A') tierACount += 1;
 
     groups.push({
       key: `${sourceGroup.key}_${slotRole}_${groups.length + 1}`,
@@ -1448,7 +1448,8 @@ async function buildFormalGroups(sourceDraw, selection) {
         roi_gate: getRecentRoiFloor(slotRole, selection, phaseContext),
         hit3_gate: getHit3RateFloor(slotRole, selection, phaseContext),
         blended_roi: getBlendedRoi(sourceGroup),
-        blended_hit3_rate: getBlendedHit3Rate(sourceGroup)
+        blended_hit3_rate: getBlendedHit3Rate(sourceGroup),
+        tier
       }
     });
 
@@ -1476,19 +1477,18 @@ async function buildFormalGroups(sourceDraw, selection) {
           pools,
           phaseContext
         );
-
-        if (!passesDecisionGate(sourceGroup, baseScore, role, selection, phaseContext)) continue;
-
-        fallbackMatrix.push({
-          sourceGroup,
-          role,
-          baseScore
-        });
+        const tier = getCandidateTier(sourceGroup, baseScore, role, selection, phaseContext);
+        if (tier === 'C') continue;
+        fallbackMatrix.push({ sourceGroup, role, baseScore, tier });
       }
     }
 
     fallbackMatrix
-      .sort((a, b) => b.baseScore - a.baseScore)
+      .sort((a, b) => {
+        const bonusA = candidateRowTierBonus(a.tier);
+        const bonusB = candidateRowTierBonus(b.tier);
+        return b.baseScore + bonusB - (a.baseScore + bonusA);
+      })
       .forEach((matrixRow) => {
         if (groups.length >= GROUP_COUNT) return;
         tryAddSlot(matrixRow.sourceGroup, matrixRow.role);
@@ -1496,15 +1496,32 @@ async function buildFormalGroups(sourceDraw, selection) {
   }
 
   const finalGroups = normalizeGroups(groups, sourceDraw)
-    .filter((group) => {
+    .map((group) => {
       const role = inferRoleFromGroup(group);
       const score = evaluateFormalCandidateScore(group, group?.nums || [], role, selection, pools, phaseContext, []);
-      return passesDecisionGate(group, score, role, selection, phaseContext);
+      const tier = getCandidateTier(group, score, role, selection, phaseContext);
+      return {
+        ...group,
+        meta: {
+          ...(group.meta || {}),
+          decision_score: round4(score),
+          blended_roi: getBlendedRoi(group),
+          blended_hit3_rate: getBlendedHit3Rate(group),
+          tier
+        }
+      };
     })
+    .filter((group) => String(group?.meta?.tier || 'C') !== 'C')
     .slice(0, GROUP_COUNT);
 
+  const finalTierACount = finalGroups.filter((g) => String(g?.meta?.tier || '') === 'A').length;
+
   if (finalGroups.length !== GROUP_COUNT) {
-    throw new Error('正式下注分工四組建立失敗：通過品質門檻的組數不足，已停止補入弱組');
+    throw new Error('正式下注分工四組建立失敗：A/B 級可用組數不足 4 組');
+  }
+
+  if (finalTierACount < 2) {
+    throw new Error('正式下注分工四組建立失敗：A 級策略不足 2 組，已停止出單');
   }
 
   return {
