@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
-const API_VERSION = 'prediction-save-market-role-v9-quality-gate';
+const API_VERSION = 'prediction-save-market-role-v10-roi-hit-gate';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -1114,6 +1114,97 @@ function getDecisionScoreFloor(role = 'mix', selection = {}, phaseContext = null
   return base;
 }
 
+function getRecentRoiFloor(role = 'mix', selection = {}, phaseContext = null) {
+  const marketPhase = String(phaseContext?.marketPhase || '').toLowerCase();
+  const riskMode = String(selection?.riskMode || 'balanced').toLowerCase();
+
+  let floor = -0.28;
+  if (role === 'attack') floor = -0.18;
+  else if (role === 'extend') floor = -0.25;
+  else if (role === 'guard') floor = -0.20;
+  else if (role === 'recent') floor = -0.16;
+
+  if (marketPhase === 'rotation' && (role === 'guard' || role === 'extend')) floor -= 0.03;
+  if (marketPhase === 'continuation' && role === 'attack') floor -= 0.03;
+
+  if (riskMode === 'safe' && role === 'guard') floor -= 0.05;
+  if (riskMode === 'aggressive' && (role === 'attack' || role === 'recent')) floor += 0.03;
+  if (riskMode === 'sniper' && role === 'recent') floor += 0.02;
+
+  return round4(floor);
+}
+
+function getHit3RateFloor(role = 'mix', selection = {}, phaseContext = null) {
+  const riskMode = String(selection?.riskMode || 'balanced').toLowerCase();
+
+  let floor = 0.008;
+  if (role === 'attack') floor = 0.015;
+  else if (role === 'extend') floor = 0.010;
+  else if (role === 'guard') floor = 0.004;
+  else if (role === 'recent') floor = 0.012;
+
+  if (riskMode === 'aggressive' && role === 'attack') floor += 0.002;
+  if (riskMode === 'safe' && role === 'guard') floor -= 0.002;
+
+  return round4(Math.max(0, floor));
+}
+
+function getMinRoundsForStrictFilter(role = 'mix') {
+  if (role === 'attack') return 8;
+  if (role === 'recent') return 8;
+  if (role === 'extend') return 10;
+  if (role === 'guard') return 6;
+  return 8;
+}
+
+function getMetaMetric(group = {}, key = '', fallback = 0) {
+  return toNum(group?.meta?.[key], fallback);
+}
+
+function getBlendedRoi(group = {}) {
+  const lifetimeRoi = getMetaMetric(group, 'roi', 0);
+  const recent50Roi = getMetaMetric(group, 'recent_50_roi', lifetimeRoi);
+  return round4(recent50Roi * 0.7 + lifetimeRoi * 0.3);
+}
+
+function getBlendedHit3Rate(group = {}) {
+  const recent = getMetaMetric(group, 'recent_50_hit3_rate', 0);
+  const lifetime = getMetaMetric(group, 'hit3_rate', 0);
+  return round4(recent * 0.7 + lifetime * 0.3);
+}
+
+function passesRoiGate(group = {}, role = 'mix', selection = {}, phaseContext = null) {
+  const totalRounds = getMetaMetric(group, 'total_rounds', 0);
+  const floor = getRecentRoiFloor(role, selection, phaseContext);
+
+  if (totalRounds < getMinRoundsForStrictFilter(role)) return true;
+
+  const blendedRoi = getBlendedRoi(group);
+  return blendedRoi >= floor;
+}
+
+function passesHit3Gate(group = {}, role = 'mix', selection = {}, phaseContext = null) {
+  const totalRounds = getMetaMetric(group, 'total_rounds', 0);
+  const floor = getHit3RateFloor(role, selection, phaseContext);
+
+  if (totalRounds < getMinRoundsForStrictFilter(role)) return true;
+
+  const blendedHit3Rate = getBlendedHit3Rate(group);
+  return blendedHit3Rate >= floor;
+}
+
+function passesStabilityGate(group = {}, role = 'mix') {
+  const totalRounds = getMetaMetric(group, 'total_rounds', 0);
+  const recent50HitRate = getMetaMetric(group, 'recent_50_hit_rate', getMetaMetric(group, 'hit2_rate', 0));
+  const roi = getMetaMetric(group, 'roi', 0);
+  const recent50Roi = getMetaMetric(group, 'recent_50_roi', roi);
+
+  if (totalRounds < 12) return true;
+  if (recent50HitRate >= 0.22) return true;
+
+  return !(roi < -0.25 && recent50Roi < -0.25 && (role === 'attack' || role === 'recent'));
+}
+
 function evaluateFormalCandidateScore(group = {}, nums = [], role = 'mix', selection = {}, pools = {}, phaseContext = null, existingGroups = []) {
   const safeNums = uniqueAsc(nums).slice(0, 4);
   if (safeNums.length !== 4) return Number.NEGATIVE_INFINITY;
@@ -1142,8 +1233,12 @@ function evaluateFormalCandidateScore(group = {}, nums = [], role = 'mix', selec
   );
 }
 
-function passesDecisionGate(score = Number.NEGATIVE_INFINITY, role = 'mix', selection = {}, phaseContext = null) {
-  return score >= getDecisionScoreFloor(role, selection, phaseContext);
+function passesDecisionGate(group = {}, score = Number.NEGATIVE_INFINITY, role = 'mix', selection = {}, phaseContext = null) {
+  if (score < getDecisionScoreFloor(role, selection, phaseContext)) return false;
+  if (!passesRoiGate(group, role, selection, phaseContext)) return false;
+  if (!passesHit3Gate(group, role, selection, phaseContext)) return false;
+  if (!passesStabilityGate(group, role)) return false;
+  return true;
 }
 
 function chooseRoleOrderedGroups(sourceGroups = [], selection = {}, pools = {}, phaseContext = null) {
@@ -1172,7 +1267,7 @@ function chooseRoleOrderedGroups(sourceGroups = [], selection = {}, pools = {}, 
       const row = ranked[j];
       const score = scoreGroupForMode(row.group, role, selection.strategyMode, selection.riskMode, pools, phaseContext);
 
-      if (!passesDecisionGate(score, role, selection, phaseContext)) continue;
+      if (!passesDecisionGate(row.group, score, role, selection, phaseContext)) continue;
 
       if (score > bestScore) {
         bestScore = score;
@@ -1197,7 +1292,7 @@ function chooseRoleOrderedGroups(sourceGroups = [], selection = {}, pools = {}, 
       const role = roles[picked.length] || 'mix';
       const score = scoreGroupForMode(ranked[j].group, role, selection.strategyMode, selection.riskMode, pools, phaseContext);
 
-      if (!passesDecisionGate(score, role, selection, phaseContext)) continue;
+      if (!passesDecisionGate(row.group, score, role, selection, phaseContext)) continue;
 
       usedIndexes.add(j);
       picked.push({
@@ -1239,7 +1334,7 @@ function buildVariantFromSourceGroup(sourceGroup, slotRole, slotNo, pools, exist
         existingGroups
       ) + extraScore;
 
-    if (!passesDecisionGate(score, slotRole, selection, phaseContext)) return;
+    if (!passesDecisionGate(sourceGroup, score, slotRole, selection, phaseContext)) return;
 
     const key = safeNums.join(',');
     const prev = candidateMap.get(key);
@@ -1424,7 +1519,7 @@ function buildVariantFromSourceGroup(sourceGroup, slotRole, slotNo, pools, exist
         score
       };
     })
-    .filter((row) => passesDecisionGate(row.score, slotRole, selection, phaseContext))
+    .filter((row) => passesDecisionGate(sourceGroup, row.score, slotRole, selection, phaseContext))
     .sort((a, b) => b.score - a.score);
 
   if (!ranked.length) {
@@ -1556,7 +1651,7 @@ async function buildFormalGroups(sourceDraw, selection) {
       groups
     );
 
-    if (!passesDecisionGate(candidateScore, slotRole, selection, phaseContext)) return false;
+    if (!passesDecisionGate(sourceGroup, candidateScore, slotRole, selection, phaseContext)) return false;
 
     const safeKey = `${sourceGroup.key}_${slotRole}`;
     const overlapTooHigh = groups.some((g) => countOverlap(nums, g?.nums || []) >= 3);
@@ -1570,7 +1665,11 @@ async function buildFormalGroups(sourceDraw, selection) {
       meta: {
         ...buildFormalMeta(sourceGroup, slotRole, groups.length + 1, sourcePrediction, selection, phaseContext),
         decision_score: round4(candidateScore),
-        decision_gate: getDecisionScoreFloor(slotRole, selection, phaseContext)
+        decision_gate: getDecisionScoreFloor(slotRole, selection, phaseContext),
+        roi_gate: getRecentRoiFloor(slotRole, selection, phaseContext),
+        hit3_gate: getHit3RateFloor(slotRole, selection, phaseContext),
+        blended_roi: getBlendedRoi(sourceGroup),
+        blended_hit3_rate: getBlendedHit3Rate(sourceGroup)
       }
     });
 
@@ -1599,7 +1698,7 @@ async function buildFormalGroups(sourceDraw, selection) {
           phaseContext
         );
 
-        if (!passesDecisionGate(baseScore, role, selection, phaseContext)) continue;
+        if (!passesDecisionGate(sourceGroup, baseScore, role, selection, phaseContext)) continue;
 
         fallbackMatrix.push({
           sourceGroup,
@@ -1621,7 +1720,7 @@ async function buildFormalGroups(sourceDraw, selection) {
     .filter((group) => {
       const role = inferRoleFromGroup(group);
       const score = evaluateFormalCandidateScore(group, group?.nums || [], role, selection, pools, phaseContext, []);
-      return passesDecisionGate(score, role, selection, phaseContext);
+      return passesDecisionGate(group, score, role, selection, phaseContext);
     })
     .slice(0, GROUP_COUNT);
 
