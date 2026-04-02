@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
-const API_VERSION = 'prediction-save-market-role-v10.1-tier-gate';
+const API_VERSION = 'prediction-save-market-role-v10.2-strategy-spread';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -23,6 +23,7 @@ const FORMAL_CANDIDATE_MODE = 'formal_candidate';
 const COST_PER_GROUP = 25;
 const FORMAL_BATCH_LIMIT = 3;
 const GROUP_COUNT = 4;
+const MAX_GROUPS_PER_STRATEGY = 2;
 
 const DEFAULT_ANALYSIS_PERIOD = 20;
 const ALLOWED_ANALYSIS_PERIODS = new Set([5, 10, 20, 50]);
@@ -450,7 +451,6 @@ function buildMarketPools(drawRows = [], marketSnapshot = {}) {
 
   const freqMap = new Map();
   const lastSeen = new Map();
-
   allNums.forEach((n) => freqMap.set(n, 0));
 
   rows.forEach((row, idx) => {
@@ -573,7 +573,6 @@ function countConsecutivePairs(nums = []) {
 function buildGroupQualityReport(nums = [], pools = {}) {
   const arr = uniqueAsc(nums).slice(0, 4);
   const oddCount = arr.filter((n) => n % 2 === 1).length;
-  const evenCount = arr.length - oddCount;
   const sum = arr.reduce((acc, n) => acc + n, 0);
   const span = arr.length ? arr[arr.length - 1] - arr[0] : 0;
   const tailKinds = new Set(arr.map((n) => n % 10)).size;
@@ -588,7 +587,6 @@ function buildGroupQualityReport(nums = [], pools = {}) {
   return {
     nums: arr,
     oddCount,
-    evenCount,
     sum,
     span,
     tailKinds,
@@ -938,6 +936,16 @@ function getCandidateTier(sourceGroup, score, role, selection, phaseContext) {
   return 'C';
 }
 
+function candidateTierBonus(tier = 'C') {
+  if (tier === 'A') return 100000;
+  if (tier === 'B') return 1000;
+  return 0;
+}
+
+function getStrategyKey(group = {}) {
+  return String(group?.meta?.strategy_key || group?.key || '').trim();
+}
+
 function evaluateFormalCandidateScore(sourceGroup, nums, role, selection, pools, phaseContext, existingGroups = []) {
   const meta = sourceGroup?.meta && typeof sourceGroup.meta === 'object' ? sourceGroup.meta : {};
   const report = buildGroupQualityReport(nums, pools);
@@ -1027,6 +1035,7 @@ function chooseRoleOrderedGroups(sourceGroups = [], selection = {}, pools = {}, 
 
   const usedIndexes = new Set();
   const picked = [];
+  const strategyUseCount = new Map();
 
   for (let i = 0; i < roles.length; i += 1) {
     const role = roles[i];
@@ -1036,7 +1045,12 @@ function chooseRoleOrderedGroups(sourceGroups = [], selection = {}, pools = {}, 
 
     for (let j = 0; j < ranked.length; j += 1) {
       if (usedIndexes.has(j)) continue;
+
       const rankedRow = ranked[j];
+      const strategyKey = getStrategyKey(rankedRow.group);
+      const usedCount = toInt(strategyUseCount.get(strategyKey), 0);
+      if (strategyKey && usedCount >= MAX_GROUPS_PER_STRATEGY) continue;
+
       const score = scoreGroupForMode(
         rankedRow.group,
         role,
@@ -1048,7 +1062,7 @@ function chooseRoleOrderedGroups(sourceGroups = [], selection = {}, pools = {}, 
       const tier = getCandidateTier(rankedRow.group, score, role, selection, phaseContext);
       if (tier === 'C') continue;
 
-      const bonus = tier === 'A' ? 100000 : 0;
+      const bonus = candidateTierBonus(tier) - usedCount * 1500;
       if (score + bonus > bestScore) {
         bestScore = score + bonus;
         bestIdx = j;
@@ -1058,9 +1072,16 @@ function chooseRoleOrderedGroups(sourceGroups = [], selection = {}, pools = {}, 
 
     if (bestIdx >= 0) {
       usedIndexes.add(bestIdx);
+
+      const chosenGroup = ranked[bestIdx].group;
+      const strategyKey = getStrategyKey(chosenGroup);
+      if (strategyKey) {
+        strategyUseCount.set(strategyKey, toInt(strategyUseCount.get(strategyKey), 0) + 1);
+      }
+
       picked.push({
         role,
-        group: ranked[bestIdx].group,
+        group: chosenGroup,
         role_decision_score: bestScore,
         tier: bestTier
       });
@@ -1073,6 +1094,10 @@ function chooseRoleOrderedGroups(sourceGroups = [], selection = {}, pools = {}, 
 
       const role = roles[picked.length] || 'mix';
       const rankedRow = ranked[j];
+      const strategyKey = getStrategyKey(rankedRow.group);
+      const usedCount = toInt(strategyUseCount.get(strategyKey), 0);
+      if (strategyKey && usedCount >= MAX_GROUPS_PER_STRATEGY) continue;
+
       const score = scoreGroupForMode(
         rankedRow.group,
         role,
@@ -1082,10 +1107,13 @@ function chooseRoleOrderedGroups(sourceGroups = [], selection = {}, pools = {}, 
         phaseContext
       );
       const tier = getCandidateTier(rankedRow.group, score, role, selection, phaseContext);
-
       if (tier === 'C') continue;
 
       usedIndexes.add(j);
+      if (strategyKey) {
+        strategyUseCount.set(strategyKey, usedCount + 1);
+      }
+
       picked.push({
         role,
         group: rankedRow.group,
@@ -1296,9 +1324,9 @@ function buildVariantFromSourceGroup(sourceGroup, slotRole, slotNo, pools, exist
     })
     .filter((candidateRow) => candidateRow.tier !== 'C')
     .sort((a, b) => {
-      const tierBonusA = candidateRowTierBonus(a.tier);
-      const tierBonusB = candidateRowTierBonus(b.tier);
-      return b.score + tierBonusB - (a.score + tierBonusA);
+      const bonusA = candidateTierBonus(a.tier);
+      const bonusB = candidateTierBonus(b.tier);
+      return b.score + bonusB - (a.score + bonusA);
     });
 
   if (!ranked.length) return [];
@@ -1307,12 +1335,6 @@ function buildVariantFromSourceGroup(sourceGroup, slotRole, slotNo, pools, exist
   if (bestA) return uniqueAsc(bestA.nums).slice(0, 4);
 
   return uniqueAsc(ranked[0].nums).slice(0, 4);
-}
-
-function candidateRowTierBonus(tier = 'C') {
-  if (tier === 'A') return 100000;
-  if (tier === 'B') return 1000;
-  return 0;
 }
 
 function buildFormalLabel(slotRole, slotNo, sourceGroup) {
@@ -1355,13 +1377,14 @@ function buildFormalMeta(sourceGroup, slotRole, slotNo, sourceRow, selection, ph
     source_prediction_mode: sourceRow?.mode || TEST_MODE,
     source_selection_rank: toNum(sourceMeta.selection_rank, slotNo),
     bet_amount: COST_PER_GROUP,
-    decision: 'market_role_formal_v10_1_tier_gate',
+    decision: 'market_role_formal_v10_2_strategy_spread',
     market_phase: phaseContext?.marketPhase || 'rotation',
     last_hit_level: phaseContext?.lastHitLevel || 'neutral',
     confidence_score: toNum(phaseContext?.confidenceScore, 0),
     weight_profile: weightProfile,
     role_weight: roleWeightOf(slotRole, weightProfile),
-    quality_engine: 'v10.1-tier'
+    quality_engine: 'v10.2-spread',
+    strategy_spread_limit: MAX_GROUPS_PER_STRATEGY
   };
 }
 
@@ -1402,9 +1425,16 @@ async function buildFormalGroups(sourceDraw, selection) {
 
   const groups = [];
   const usedKeys = new Set();
-  let tierACount = 0;
+  const strategyUseCount = new Map();
 
   const tryAddSlot = (sourceGroup, slotRole) => {
+    const strategyKey = getStrategyKey(sourceGroup);
+    const currentStrategyCount = toInt(strategyUseCount.get(strategyKey), 0);
+
+    if (strategyKey && currentStrategyCount >= MAX_GROUPS_PER_STRATEGY) {
+      return false;
+    }
+
     const nums = buildVariantFromSourceGroup(
       sourceGroup,
       slotRole,
@@ -1434,8 +1464,6 @@ async function buildFormalGroups(sourceDraw, selection) {
     const overlapTooHigh = groups.some((g) => countOverlap(nums, g?.nums || []) >= 3);
     if (usedKeys.has(safeKey) || overlapTooHigh) return false;
 
-    if (tier === 'A') tierACount += 1;
-
     groups.push({
       key: `${sourceGroup.key}_${slotRole}_${groups.length + 1}`,
       label: buildFormalLabel(slotRole, groups.length + 1, sourceGroup),
@@ -1454,6 +1482,10 @@ async function buildFormalGroups(sourceDraw, selection) {
     });
 
     usedKeys.add(safeKey);
+    if (strategyKey) {
+      strategyUseCount.set(strategyKey, currentStrategyCount + 1);
+    }
+
     return true;
   };
 
@@ -1468,6 +1500,10 @@ async function buildFormalGroups(sourceDraw, selection) {
     const fallbackMatrix = [];
 
     for (const sourceGroup of sourceGroups) {
+      const strategyKey = getStrategyKey(sourceGroup);
+      const currentStrategyCount = toInt(strategyUseCount.get(strategyKey), 0);
+      if (strategyKey && currentStrategyCount >= MAX_GROUPS_PER_STRATEGY) continue;
+
       for (const role of fallbackRoles) {
         const baseScore = scoreGroupForMode(
           sourceGroup,
@@ -1479,14 +1515,24 @@ async function buildFormalGroups(sourceDraw, selection) {
         );
         const tier = getCandidateTier(sourceGroup, baseScore, role, selection, phaseContext);
         if (tier === 'C') continue;
-        fallbackMatrix.push({ sourceGroup, role, baseScore, tier });
+
+        fallbackMatrix.push({
+          sourceGroup,
+          role,
+          baseScore,
+          tier,
+          strategyKey,
+          currentStrategyCount
+        });
       }
     }
 
     fallbackMatrix
       .sort((a, b) => {
-        const bonusA = candidateRowTierBonus(a.tier);
-        const bonusB = candidateRowTierBonus(b.tier);
+        const spreadPenaltyA = a.currentStrategyCount * 1500;
+        const spreadPenaltyB = b.currentStrategyCount * 1500;
+        const bonusA = candidateTierBonus(a.tier) - spreadPenaltyA;
+        const bonusB = candidateTierBonus(b.tier) - spreadPenaltyB;
         return b.baseScore + bonusB - (a.baseScore + bonusA);
       })
       .forEach((matrixRow) => {
@@ -1515,6 +1561,17 @@ async function buildFormalGroups(sourceDraw, selection) {
     .slice(0, GROUP_COUNT);
 
   const finalTierACount = finalGroups.filter((g) => String(g?.meta?.tier || '') === 'A').length;
+  const finalStrategyCounts = new Map();
+
+  for (const group of finalGroups) {
+    const strategyKey = getStrategyKey(group);
+    if (!strategyKey) continue;
+    finalStrategyCounts.set(strategyKey, toInt(finalStrategyCounts.get(strategyKey), 0) + 1);
+  }
+
+  const overLimitStrategy = [...finalStrategyCounts.entries()].find(
+    ([, count]) => count > MAX_GROUPS_PER_STRATEGY
+  );
 
   if (finalGroups.length !== GROUP_COUNT) {
     throw new Error('正式下注分工四組建立失敗：A/B 級可用組數不足 4 組');
@@ -1522,6 +1579,10 @@ async function buildFormalGroups(sourceDraw, selection) {
 
   if (finalTierACount < 2) {
     throw new Error('正式下注分工四組建立失敗：A 級策略不足 2 組，已停止出單');
+  }
+
+  if (overLimitStrategy) {
+    throw new Error(`正式下注分工四組建立失敗：策略分散限制未通過（${overLimitStrategy[0]} 超過 ${MAX_GROUPS_PER_STRATEGY} 組）`);
   }
 
   return {
@@ -1645,7 +1706,7 @@ export default async function handler(req, res) {
       return res.status(400).json({
         ok: false,
         api_version: API_VERSION,
-        error: 'prediction-save 目前僅提供 formal 儲存，test 請走 auto-train'
+        error: 'prediction-save 目前僅提供 formal 儲存'
       });
     }
 
