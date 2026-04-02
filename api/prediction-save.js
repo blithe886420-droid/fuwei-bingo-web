@@ -726,6 +726,22 @@ function forceGroupDifference(nums = [], existingGroups = [], pools = {}, seed =
   return uniqueAsc(result).slice(0, 4);
 }
 
+function getRiskOrder(riskMode = 'balanced', phaseContext = null) {
+  const marketPhase = String(phaseContext?.marketPhase || '').toLowerCase();
+
+  if (marketPhase === 'rotation') {
+    if (riskMode === 'safe') return ['guard', 'extend', 'recent', 'attack'];
+    if (riskMode === 'balanced') return ['extend', 'guard', 'recent', 'attack'];
+    if (riskMode === 'aggressive') return ['extend', 'attack', 'guard', 'recent'];
+    return ['recent', 'extend', 'guard', 'attack'];
+  }
+
+  if (riskMode === 'safe') return ['guard', 'extend', 'attack', 'recent'];
+  if (riskMode === 'balanced') return ['attack', 'extend', 'guard', 'recent'];
+  if (riskMode === 'aggressive') return ['attack', 'attack', 'extend', 'recent'];
+  return ['attack', 'recent', 'extend', 'guard'];
+}
+
 function getKeepNeedByRole(role = 'mix', phaseContext = null) {
   const marketPhase = String(phaseContext?.marketPhase || '').toLowerCase();
   const lastHitLevel = String(phaseContext?.lastHitLevel || '').toLowerCase();
