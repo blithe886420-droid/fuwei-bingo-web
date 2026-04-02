@@ -1504,7 +1504,7 @@ function buildVariantFromSourceGroup(sourceGroup, slotRole, slotNo, pools, exist
       );
 
       const score = evaluateFormalCandidateScore(
-        sourceGroup,
+        row.sourceGroup,
         adjustedNums,
         slotRole,
         selection,
@@ -1519,7 +1519,9 @@ function buildVariantFromSourceGroup(sourceGroup, slotRole, slotNo, pools, exist
         score
       };
     })
-    .filter((row) => passesDecisionGate(sourceGroup, row.score, slotRole, selection, phaseContext))
+    .filter((row) =>
+      passesDecisionGate(row.sourceGroup, row.score, slotRole, selection, phaseContext)
+    )
     .sort((a, b) => b.score - a.score);
 
   if (!ranked.length) {
