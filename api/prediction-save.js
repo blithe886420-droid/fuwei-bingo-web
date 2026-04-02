@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
-const API_VERSION = 'prediction-save-market-role-v10.5-mature-backfill';
+const API_VERSION = 'prediction-save-market-role-v10.6-maturity-pool';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -27,6 +27,7 @@ const MAX_GROUPS_PER_STRATEGY = 2;
 const MIN_TIER_A_COUNT = 2;
 const MIN_MATURE_ROUNDS_FOR_AB = 10;
 const MIN_MATURE_ROUNDS_FOR_A = 20;
+const MATURE_POOL_RECENT_LIMIT = 12;
 
 const DEFAULT_ANALYSIS_PERIOD = 20;
 const ALLOWED_ANALYSIS_PERIODS = new Set([5, 10, 20, 50]);
@@ -339,6 +340,19 @@ async function getRecentPredictionRowsByMode(mode, limitCount = 6) {
     .from(PREDICTIONS_TABLE)
     .select('*')
     .eq('mode', mode)
+    .order('created_at', { ascending: false })
+    .limit(limitCount);
+
+  if (error) throw error;
+  return Array.isArray(data) ? data : [];
+}
+
+async function getRecentComparedPredictionRows(limitCount = MATURE_POOL_RECENT_LIMIT) {
+  const { data, error } = await supabase
+    .from(PREDICTIONS_TABLE)
+    .select('*')
+    .eq('status', 'compared')
+    .in('mode', [TEST_MODE, FORMAL_MODE])
     .order('created_at', { ascending: false })
     .limit(limitCount);
 
@@ -956,6 +970,7 @@ function getStrategyKey(group = {}) {
 function isMatureStrategyGroup(group = {}) {
   const totalRounds = toNum(group?.meta?.total_rounds, 0);
   const sourceTag = getSourceTag(group);
+  if (sourceTag === 'mature_pool') return totalRounds >= MIN_MATURE_ROUNDS_FOR_AB;
   if (totalRounds < MIN_MATURE_ROUNDS_FOR_AB) return false;
   if (sourceTag === 'recent_test' || sourceTag === 'recent_formal_candidate') return false;
   return true;
@@ -1046,17 +1061,28 @@ function scoreGroupForMode(group, role, strategyMode, riskMode, pools, phaseCont
   return round4(score);
 }
 
-function mergeCandidateSources(sourceDraw, sourcePrediction, fallbackTest, formalCandidateRows = [], recentTestRows = [], recentCandidateRows = []) {
+function mergeCandidateSources(
+  sourceDraw,
+  sourcePrediction,
+  fallbackTest,
+  formalCandidateRows = [],
+  recentTestRows = [],
+  recentCandidateRows = [],
+  maturePoolRows = []
+) {
   const seen = new Set();
   const merged = [];
 
-  function pushGroupsFromRow(row, sourceTag) {
+  function pushGroupsFromRow(row, sourceTag, onlyMature = false) {
     if (!row) return;
     const groups = normalizeGroups(parseGroupsJson(row.groups_json), sourceDraw);
     for (const group of groups) {
+      const totalRounds = toNum(group?.meta?.total_rounds, 0);
+      if (onlyMature && totalRounds < MIN_MATURE_ROUNDS_FOR_AB) continue;
+
       const strategyKey = getStrategyKey(group);
       const numsKey = uniqueAsc(group.nums || []).join(',');
-      const mergeKey = `${strategyKey}__${numsKey}`;
+      const mergeKey = `${sourceTag}__${strategyKey}__${numsKey}`;
       if (seen.has(mergeKey)) continue;
       seen.add(mergeKey);
 
@@ -1066,7 +1092,8 @@ function mergeCandidateSources(sourceDraw, sourcePrediction, fallbackTest, forma
           ...(group.meta || {}),
           source_tag: sourceTag,
           source_prediction_id: row.id || null,
-          source_prediction_mode: row.mode || null
+          source_prediction_mode: row.mode || null,
+          mature_pool_candidate: onlyMature || Boolean(group?.meta?.mature_pool_candidate)
         }
       });
     }
@@ -1078,8 +1105,10 @@ function mergeCandidateSources(sourceDraw, sourcePrediction, fallbackTest, forma
   for (const row of formalCandidateRows) pushGroupsFromRow(row, 'formal_candidate');
   for (const row of recentTestRows) pushGroupsFromRow(row, 'recent_test');
   for (const row of recentCandidateRows) pushGroupsFromRow(row, 'recent_formal_candidate');
+  for (const row of maturePoolRows) pushGroupsFromRow(row, 'mature_pool', true);
 
   return merged;
+}
 }
 
 function chooseRoleOrderedGroups(sourceGroups = [], selection = {}, pools = {}, phaseContext = null) {
@@ -1434,13 +1463,13 @@ function buildFormalMeta(sourceGroup, slotRole, slotNo, sourceRow, selection, ph
     source_prediction_mode: sourceRow?.mode || TEST_MODE,
     source_selection_rank: toNum(sourceMeta.selection_rank, slotNo),
     bet_amount: COST_PER_GROUP,
-    decision: 'market_role_formal_v10_5_mature_backfill',
+    decision: 'market_role_formal_v10_6_maturity_pool',
     market_phase: phaseContext?.marketPhase || 'rotation',
     last_hit_level: phaseContext?.lastHitLevel || 'neutral',
     confidence_score: toNum(phaseContext?.confidenceScore, 0),
     weight_profile: weightProfile,
     role_weight: roleWeightOf(slotRole, weightProfile),
-    quality_engine: 'v10.5-mature-backfill',
+    quality_engine: 'v10.6-maturity-pool',
     strategy_spread_limit: MAX_GROUPS_PER_STRATEGY,
     maturity_gate_ab: MIN_MATURE_ROUNDS_FOR_AB,
     maturity_gate_a: MIN_MATURE_ROUNDS_FOR_A
@@ -1462,6 +1491,7 @@ async function buildFormalGroups(sourceDraw, selection) {
   const fallbackTest = latestSameSourceTest ? null : await getLatestAnyTestPrediction();
   const recentTestRows = await getRecentPredictionRowsByMode(TEST_MODE, 6);
   const recentCandidateRows = await getRecentPredictionRowsByMode(FORMAL_CANDIDATE_MODE, 6);
+  const maturePoolRows = await getRecentComparedPredictionRows(MATURE_POOL_RECENT_LIMIT);
 
   const sourcePrediction = latestSameSourceTest || fallbackTest || latestSameSourceCandidate || null;
 
@@ -1475,7 +1505,8 @@ async function buildFormalGroups(sourceDraw, selection) {
     fallbackTest,
     latestSameSourceCandidate ? [latestSameSourceCandidate] : [],
     recentTestRows,
-    recentCandidateRows
+    recentCandidateRows,
+    maturePoolRows
   );
 
   if (!sourceGroups.length) {
@@ -1676,7 +1707,8 @@ async function buildFormalGroups(sourceDraw, selection) {
     marketSnapshot,
     phaseContext,
     candidatePoolSize: sourceGroups.length,
-    matureCandidatePoolSize: sourceGroups.filter((g) => isMatureStrategyGroup(g)).length
+    matureCandidatePoolSize: sourceGroups.filter((g) => isMatureStrategyGroup(g)).length,
+    maturePoolSourceRows: maturePoolRows.length
   };
 }
 
@@ -1758,6 +1790,7 @@ async function createFormalPrediction(selection, triggerSource = 'unknown') {
     recent_draw_count: built.recentDrawCount,
     candidate_pool_size: built.candidatePoolSize,
     mature_candidate_pool_size: built.matureCandidatePoolSize,
+    mature_pool_source_rows: built.maturePoolSourceRows,
     market_phase: built.phaseContext.marketPhase,
     last_hit_level: built.phaseContext.lastHitLevel,
     confidence_score: built.phaseContext.confidenceScore,
