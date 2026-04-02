@@ -1529,7 +1529,7 @@ function buildVariantFromSourceGroup(sourceGroup, slotRole, slotNo, pools, exist
       )
     )
     .sort((a, b) => b.score - a.score);
-
+       
   if (!ranked.length) {
     return [];
   }
