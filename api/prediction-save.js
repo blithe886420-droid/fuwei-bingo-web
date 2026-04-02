@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
-const API_VERSION = 'prediction-save-market-role-v10.4-maturity-gate';
+const API_VERSION = 'prediction-save-market-role-v10.5-mature-backfill';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -953,6 +953,14 @@ function getStrategyKey(group = {}) {
   return String(group?.meta?.strategy_key || group?.key || '').trim();
 }
 
+function isMatureStrategyGroup(group = {}) {
+  const totalRounds = toNum(group?.meta?.total_rounds, 0);
+  const sourceTag = getSourceTag(group);
+  if (totalRounds < MIN_MATURE_ROUNDS_FOR_AB) return false;
+  if (sourceTag === 'recent_test' || sourceTag === 'recent_formal_candidate') return false;
+  return true;
+}
+
 function evaluateFormalCandidateScore(sourceGroup, nums, role, selection, pools, phaseContext, existingGroups = []) {
   const meta = sourceGroup?.meta && typeof sourceGroup.meta === 'object' ? sourceGroup.meta : {};
   const report = buildGroupQualityReport(nums, pools);
@@ -1426,13 +1434,13 @@ function buildFormalMeta(sourceGroup, slotRole, slotNo, sourceRow, selection, ph
     source_prediction_mode: sourceRow?.mode || TEST_MODE,
     source_selection_rank: toNum(sourceMeta.selection_rank, slotNo),
     bet_amount: COST_PER_GROUP,
-    decision: 'market_role_formal_v10_4_maturity_gate',
+    decision: 'market_role_formal_v10_5_mature_backfill',
     market_phase: phaseContext?.marketPhase || 'rotation',
     last_hit_level: phaseContext?.lastHitLevel || 'neutral',
     confidence_score: toNum(phaseContext?.confidenceScore, 0),
     weight_profile: weightProfile,
     role_weight: roleWeightOf(slotRole, weightProfile),
-    quality_engine: 'v10.4-maturity',
+    quality_engine: 'v10.5-mature-backfill',
     strategy_spread_limit: MAX_GROUPS_PER_STRATEGY,
     maturity_gate_ab: MIN_MATURE_ROUNDS_FOR_AB,
     maturity_gate_a: MIN_MATURE_ROUNDS_FOR_A
@@ -1562,6 +1570,7 @@ async function buildFormalGroups(sourceDraw, selection) {
       const strategyKey = getStrategyKey(sourceGroup);
       const currentStrategyCount = toInt(strategyUseCount.get(strategyKey), 0);
       if (strategyKey && currentStrategyCount >= MAX_GROUPS_PER_STRATEGY) continue;
+      if (!isMatureStrategyGroup(sourceGroup)) continue;
 
       for (const role of fallbackRoles) {
         const baseScore = scoreGroupForMode(
@@ -1647,7 +1656,7 @@ async function buildFormalGroups(sourceDraw, selection) {
   );
 
   if (finalGroups.length !== GROUP_COUNT) {
-    throw new Error('正式下注分工四組建立失敗：成熟策略過濾後 A/B 級可用組數不足 4 組');
+    throw new Error('正式下注分工四組建立失敗：成熟策略補位池啟用後，A/B 級可用組數仍不足 4 組');
   }
 
   if (finalTierACount < MIN_TIER_A_COUNT) {
@@ -1666,7 +1675,8 @@ async function buildFormalGroups(sourceDraw, selection) {
     sourcePredictionDrawNo: toNum(sourcePrediction.source_draw_no, 0),
     marketSnapshot,
     phaseContext,
-    candidatePoolSize: sourceGroups.length
+    candidatePoolSize: sourceGroups.length,
+    matureCandidatePoolSize: sourceGroups.filter((g) => isMatureStrategyGroup(g)).length
   };
 }
 
@@ -1747,6 +1757,7 @@ async function createFormalPrediction(selection, triggerSource = 'unknown') {
     source_prediction_draw_no: built.sourcePredictionDrawNo,
     recent_draw_count: built.recentDrawCount,
     candidate_pool_size: built.candidatePoolSize,
+    mature_candidate_pool_size: built.matureCandidatePoolSize,
     market_phase: built.phaseContext.marketPhase,
     last_hit_level: built.phaseContext.lastHitLevel,
     confidence_score: built.phaseContext.confidenceScore,
