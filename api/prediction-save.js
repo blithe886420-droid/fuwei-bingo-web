@@ -1109,7 +1109,6 @@ function mergeCandidateSources(
 
   return merged;
 }
-}
 
 function chooseRoleOrderedGroups(sourceGroups = [], selection = {}, pools = {}, phaseContext = null) {
   const roles = getRiskOrder(selection.riskMode, phaseContext);
