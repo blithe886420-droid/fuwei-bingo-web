@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
-const API_VERSION = 'prediction-save-market-role-v8-quality-core';
+const API_VERSION = 'prediction-save-market-role-v9-quality-gate';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -1085,6 +1085,67 @@ function scoreGroupForMode(group, role, strategyMode, riskMode, pools, phaseCont
 }
 
 
+
+function getDecisionScoreFloor(role = 'mix', selection = {}, phaseContext = null) {
+  const marketPhase = String(phaseContext?.marketPhase || '').toLowerCase();
+  const riskMode = String(selection?.riskMode || 'balanced').toLowerCase();
+
+  let base = 120;
+  if (role === 'extend') base = 150;
+  else if (role === 'attack') base = 130;
+  else if (role === 'guard') base = 90;
+  else if (role === 'recent') base = 95;
+
+  if (marketPhase === 'rotation') {
+    if (role === 'attack') base += 10;
+    if (role === 'extend') base += 10;
+    if (role === 'guard') base -= 5;
+  }
+
+  if (marketPhase === 'continuation') {
+    if (role === 'attack') base -= 10;
+    if (role === 'recent') base += 5;
+  }
+
+  if (riskMode === 'safe' && role === 'guard') base -= 10;
+  if (riskMode === 'aggressive' && role === 'attack') base -= 5;
+  if (riskMode === 'sniper' && role === 'recent') base -= 5;
+
+  return base;
+}
+
+function evaluateFormalCandidateScore(group = {}, nums = [], role = 'mix', selection = {}, pools = {}, phaseContext = null, existingGroups = []) {
+  const safeNums = uniqueAsc(nums).slice(0, 4);
+  if (safeNums.length !== 4) return Number.NEGATIVE_INFINITY;
+  if (!isAcceptableGroup(safeNums, pools, role, selection, phaseContext)) return Number.NEGATIVE_INFINITY;
+
+  const report = buildGroupQualityReport(safeNums, pools);
+  const overlapPenalty = (existingGroups || []).reduce(
+    (acc, g) => acc + Math.max(0, countOverlap(safeNums, g?.nums || []) - 1) * 18,
+    0
+  );
+
+  return (
+    scoreGroupForMode(
+      {
+        ...group,
+        nums: safeNums
+      },
+      role,
+      selection.strategyMode,
+      selection.riskMode,
+      pools,
+      phaseContext
+    ) +
+    scoreQualityReport(report, role, selection, phaseContext) * 2.2 -
+    overlapPenalty
+  );
+}
+
+function passesDecisionGate(score = Number.NEGATIVE_INFINITY, role = 'mix', selection = {}, phaseContext = null) {
+  return score >= getDecisionScoreFloor(role, selection, phaseContext);
+}
+
 function chooseRoleOrderedGroups(sourceGroups = [], selection = {}, pools = {}, phaseContext = null) {
   const roles = getRiskOrder(selection.riskMode, phaseContext);
   const ranked = sourceGroups
@@ -1111,6 +1172,8 @@ function chooseRoleOrderedGroups(sourceGroups = [], selection = {}, pools = {}, 
       const row = ranked[j];
       const score = scoreGroupForMode(row.group, role, selection.strategyMode, selection.riskMode, pools, phaseContext);
 
+      if (!passesDecisionGate(score, role, selection, phaseContext)) continue;
+
       if (score > bestScore) {
         bestScore = score;
         bestIdx = j;
@@ -1121,7 +1184,8 @@ function chooseRoleOrderedGroups(sourceGroups = [], selection = {}, pools = {}, 
       usedIndexes.add(bestIdx);
       picked.push({
         role,
-        group: ranked[bestIdx].group
+        group: ranked[bestIdx].group,
+        role_decision_score: bestScore
       });
     }
   }
@@ -1129,10 +1193,17 @@ function chooseRoleOrderedGroups(sourceGroups = [], selection = {}, pools = {}, 
   if (picked.length < GROUP_COUNT) {
     for (let j = 0; j < ranked.length && picked.length < GROUP_COUNT; j += 1) {
       if (usedIndexes.has(j)) continue;
+
+      const role = roles[picked.length] || 'mix';
+      const score = scoreGroupForMode(ranked[j].group, role, selection.strategyMode, selection.riskMode, pools, phaseContext);
+
+      if (!passesDecisionGate(score, role, selection, phaseContext)) continue;
+
       usedIndexes.add(j);
       picked.push({
-        role: roles[picked.length] || 'mix',
-        group: ranked[j].group
+        role,
+        group: ranked[j].group,
+        role_decision_score: score
       });
     }
   }
@@ -1156,13 +1227,19 @@ function buildVariantFromSourceGroup(sourceGroup, slotRole, slotNo, pools, exist
   const addCandidate = (nums, tag = 'base', extraScore = 0) => {
     const safeNums = uniqueAsc(nums).slice(0, 4);
     if (safeNums.length !== 4) return;
-    if (!isAcceptableGroup(safeNums, pools, slotRole, selection, phaseContext)) return;
 
-    const report = buildGroupQualityReport(safeNums, pools);
     const score =
-      scoreQualityReport(report, slotRole, selection, phaseContext) +
-      extraScore -
-      existingGroups.reduce((acc, g) => acc + Math.max(0, countOverlap(safeNums, g?.nums || []) - 1) * 12, 0);
+      evaluateFormalCandidateScore(
+        sourceGroup,
+        safeNums,
+        slotRole,
+        selection,
+        pools,
+        phaseContext,
+        existingGroups
+      ) + extraScore;
+
+    if (!passesDecisionGate(score, slotRole, selection, phaseContext)) return;
 
     const key = safeNums.join(',');
     const prev = candidateMap.get(key);
@@ -1297,10 +1374,10 @@ function buildVariantFromSourceGroup(sourceGroup, slotRole, slotNo, pools, exist
     );
   }
 
-  for (let i = 0; i < 8; i += 1) {
+  for (let i = 0; i < 12; i += 1) {
     const dynamicBase = uniqueAsc([
       ...keepNums.slice(0, Math.max(1, keepNums.length - (i % 2))),
-      ...((slotRole === 'attack' ? pools.attack : slotRole === 'guard' ? pools.guard : pools.extend) || []).slice(0, 2 + (i % 3)),
+      ...((slotRole === 'attack' ? pools.attack : slotRole === 'guard' ? pools.guard : slotRole === 'recent' ? pools.recent : pools.extend) || []).slice(0, 2 + (i % 3)),
       ...((i % 2 === 0 ? pools.recent : pools.gap) || []).slice(0, 2)
     ]);
 
@@ -1320,9 +1397,8 @@ function buildVariantFromSourceGroup(sourceGroup, slotRole, slotNo, pools, exist
   }
 
   let ranked = [...candidateMap.values()]
-    .map((row) => ({
-      ...row,
-      nums: forceGroupDifference(
+    .map((row) => {
+      const adjustedNums = forceGroupDifference(
         row.nums,
         existingGroups,
         pools,
@@ -1330,38 +1406,33 @@ function buildVariantFromSourceGroup(sourceGroup, slotRole, slotNo, pools, exist
         slotRole,
         selection,
         phaseContext
-      )
-    }))
-    .filter((row) => isAcceptableGroup(row.nums, pools, slotRole, selection, phaseContext))
-    .map((row) => {
-      const report = buildGroupQualityReport(row.nums, pools);
+      );
+
+      const score = evaluateFormalCandidateScore(
+        sourceGroup,
+        adjustedNums,
+        slotRole,
+        selection,
+        pools,
+        phaseContext,
+        existingGroups
+      );
+
       return {
         ...row,
-        score:
-          scoreQualityReport(report, slotRole, selection, phaseContext) +
-          row.score -
-          existingGroups.reduce((acc, g) => acc + Math.max(0, countOverlap(row.nums, g?.nums || []) - 1) * 12, 0)
+        nums: adjustedNums,
+        score
       };
     })
+    .filter((row) => passesDecisionGate(row.score, slotRole, selection, phaseContext))
     .sort((a, b) => b.score - a.score);
 
   if (!ranked.length) {
-    const fallback = forceGroupDifference(
-      fillToFour(keepNums, [...fallbackPools, pools.qualityAll, pools.all], seedBase + 999, pools, slotRole, selection, phaseContext),
-      existingGroups,
-      pools,
-      seedBase + 1111,
-      slotRole,
-      selection,
-      phaseContext
-    );
-
-    return uniqueAsc(fallback).slice(0, 4);
+    return [];
   }
 
   return uniqueAsc(ranked[0].nums).slice(0, 4);
 }
-
 
 function buildFormalLabel(slotRole, slotNo, sourceGroup) {
   const roleText =
@@ -1403,15 +1474,16 @@ function buildFormalMeta(sourceGroup, slotRole, slotNo, sourceRow, selection, ph
     source_prediction_mode: sourceRow?.mode || TEST_MODE,
     source_selection_rank: toNum(sourceMeta.selection_rank, slotNo),
     bet_amount: COST_PER_GROUP,
-    decision: 'market_role_formal_v8_quality_core',
+    decision: 'market_role_formal_v9_quality_gate',
     market_phase: phaseContext?.marketPhase || 'rotation',
     last_hit_level: phaseContext?.lastHitLevel || 'neutral',
     confidence_score: toNum(phaseContext?.confidenceScore, 0),
     weight_profile: weightProfile,
     role_weight: roleWeightOf(slotRole, weightProfile),
-    quality_engine: 'v1'
+    quality_engine: 'v2'
   };
 }
+
 
 async function buildFormalGroups(sourceDraw, selection) {
   const sourceDrawNo = toNum(sourceDraw?.draw_no, 0);
@@ -1457,12 +1529,10 @@ async function buildFormalGroups(sourceDraw, selection) {
   const roleOrdered = chooseRoleOrderedGroups(sourceGroups, selection, pools, phaseContext);
 
   const groups = [];
-  for (let i = 0; i < roleOrdered.length && groups.length < GROUP_COUNT; i += 1) {
-    const slot = roleOrdered[i];
-    const slotRole = slot?.role || 'mix';
-    const sourceGroup = slot?.group;
+  const usedKeys = new Set();
 
-    if (!sourceGroup) continue;
+  const tryAddSlot = (sourceGroup, slotRole) => {
+    if (!sourceGroup) return false;
 
     const nums = buildVariantFromSourceGroup(
       sourceGroup,
@@ -1474,23 +1544,89 @@ async function buildFormalGroups(sourceDraw, selection) {
       phaseContext
     );
 
-    if (nums.length !== 4) continue;
+    if (!Array.isArray(nums) || nums.length !== 4) return false;
+
+    const candidateScore = evaluateFormalCandidateScore(
+      sourceGroup,
+      nums,
+      slotRole,
+      selection,
+      pools,
+      phaseContext,
+      groups
+    );
+
+    if (!passesDecisionGate(candidateScore, slotRole, selection, phaseContext)) return false;
+
+    const safeKey = `${sourceGroup.key}_${slotRole}`;
+    const overlapTooHigh = groups.some((g) => countOverlap(nums, g?.nums || []) >= 3);
+    if (usedKeys.has(safeKey) || overlapTooHigh) return false;
 
     groups.push({
       key: `${sourceGroup.key}_${slotRole}_${groups.length + 1}`,
       label: buildFormalLabel(slotRole, groups.length + 1, sourceGroup),
       nums,
       reason: `正式下注分工：${slotRole.toUpperCase()} / ${strategyModeLabel(selection.strategyMode)} / ${roleLabelOf(selection.riskMode)} / ${phaseContext.marketPhase} / ${phaseContext.lastHitLevel}`,
-      meta: buildFormalMeta(sourceGroup, slotRole, groups.length + 1, sourcePrediction, selection, phaseContext)
+      meta: {
+        ...buildFormalMeta(sourceGroup, slotRole, groups.length + 1, sourcePrediction, selection, phaseContext),
+        decision_score: round4(candidateScore),
+        decision_gate: getDecisionScoreFloor(slotRole, selection, phaseContext)
+      }
     });
+
+    usedKeys.add(safeKey);
+    return true;
+  };
+
+  for (let i = 0; i < roleOrdered.length && groups.length < GROUP_COUNT; i += 1) {
+    const slot = roleOrdered[i];
+    if (!slot?.group) continue;
+    tryAddSlot(slot.group, slot.role || 'mix');
+  }
+
+  if (groups.length < GROUP_COUNT) {
+    const fallbackRoles = getRiskOrder(selection.riskMode, phaseContext);
+    const fallbackMatrix = [];
+
+    for (const sourceGroup of sourceGroups) {
+      for (const role of fallbackRoles) {
+        const baseScore = scoreGroupForMode(
+          sourceGroup,
+          role,
+          selection.strategyMode,
+          selection.riskMode,
+          pools,
+          phaseContext
+        );
+
+        if (!passesDecisionGate(baseScore, role, selection, phaseContext)) continue;
+
+        fallbackMatrix.push({
+          sourceGroup,
+          role,
+          baseScore
+        });
+      }
+    }
+
+    fallbackMatrix
+      .sort((a, b) => b.baseScore - a.baseScore)
+      .forEach((row) => {
+        if (groups.length >= GROUP_COUNT) return;
+        tryAddSlot(row.sourceGroup, row.role);
+      });
   }
 
   const finalGroups = normalizeGroups(groups, sourceDraw)
-    .filter((group) => isAcceptableGroup(group?.nums || [], pools, inferRoleFromGroup(group), selection, phaseContext))
+    .filter((group) => {
+      const role = inferRoleFromGroup(group);
+      const score = evaluateFormalCandidateScore(group, group?.nums || [], role, selection, pools, phaseContext, []);
+      return passesDecisionGate(score, role, selection, phaseContext);
+    })
     .slice(0, GROUP_COUNT);
 
   if (finalGroups.length !== GROUP_COUNT) {
-    throw new Error('正式下注分工四組建立失敗');
+    throw new Error('正式下注分工四組建立失敗：通過品質門檻的組數不足，已停止補入弱組');
   }
 
   return {
@@ -1503,6 +1639,7 @@ async function buildFormalGroups(sourceDraw, selection) {
     phaseContext
   };
 }
+
 
 async function createFormalPrediction(selection) {
   const latestDraw = await getLatestDraw();
