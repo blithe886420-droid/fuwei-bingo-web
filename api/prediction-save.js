@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
-const API_VERSION = 'prediction-save-market-role-v10-roi-hit-gate';
+const API_VERSION = 'prediction-save-market-role-v10-roi-hit-gate-fixed';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -30,7 +30,7 @@ const ALLOWED_STRATEGY_MODES = new Set(['hot', 'cold', 'mix', 'burst']);
 const ALLOWED_RISK_MODES = new Set(['safe', 'balanced', 'aggressive', 'sniper']);
 
 if (!SUPABASE_URL || !SUPABASE_KEY) {
-  throw new Error('Missing SUPABASE_URL or SUPABASE key');
+  throw new Error('Missing SUPABASE_URL or SUPABASE_KEY');
 }
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -42,19 +42,19 @@ function toNum(value, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function toInt(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.trunc(n) : fallback;
+}
+
 function toBool(value, fallback = false) {
   if (typeof value === 'boolean') return value;
-
   if (typeof value === 'string') {
     const v = value.trim().toLowerCase();
     if (v === 'true' || v === '1') return true;
     if (v === 'false' || v === '0') return false;
   }
-
-  if (typeof value === 'number') {
-    return value !== 0;
-  }
-
+  if (typeof value === 'number') return value !== 0;
   return fallback;
 }
 
@@ -90,11 +90,11 @@ function parseNums(value) {
   if (value && typeof value === 'object') {
     return parseNums(
       value.numbers ||
-        value.draw_numbers ||
-        value.result_numbers ||
-        value.open_numbers ||
-        value.nums ||
-        []
+      value.draw_numbers ||
+      value.result_numbers ||
+      value.open_numbers ||
+      value.nums ||
+      []
     );
   }
 
@@ -136,9 +136,7 @@ function normalizeGroup(group, idx = 0, sourceDraw = null) {
   if (nums.length !== 4) return null;
 
   const sourceMeta = group.meta && typeof group.meta === 'object' ? group.meta : {};
-  const strategyKey = String(
-    sourceMeta.strategy_key || group.key || `group_${idx + 1}`
-  ).trim();
+  const strategyKey = String(sourceMeta.strategy_key || group.key || `group_${idx + 1}`).trim();
   const strategyName = String(
     sourceMeta.strategy_name || group.label || group.key || `策略 ${idx + 1}`
   ).trim();
@@ -189,15 +187,6 @@ function getMode(req) {
   return String(body?.mode || req.query?.mode || FORMAL_MODE).toLowerCase() === TEST_MODE
     ? TEST_MODE
     : FORMAL_MODE;
-}
-
-function isManualFormalRequest(req) {
-  const body = getBody(req);
-  const bodyManual = toBool(body?.manual, false);
-  const queryManual = toBool(req.query?.manual, false);
-  const headerManual = toBool(req.headers['x-manual-formal-save'], false);
-
-  return bodyManual || queryManual || headerManual;
 }
 
 function getTriggerSource(req) {
@@ -311,28 +300,17 @@ async function getFormalRowsBySourceDrawNo(sourceDrawNo) {
   return Array.isArray(data) ? data : [];
 }
 
-async function getLatestFormalRow() {
+async function getLatestAnyTestPrediction() {
   const { data, error } = await supabase
     .from(PREDICTIONS_TABLE)
-    .select('id, created_at, source_draw_no, mode, status')
-    .eq('mode', FORMAL_MODE)
+    .select('*')
+    .eq('mode', TEST_MODE)
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();
 
   if (error) throw error;
   return data || null;
-}
-
-async function resolveFormalSourceDraw(latestDraw) {
-  const latestSourceDrawNo = toNum(latestDraw?.draw_no, 0);
-
-  return {
-    sourceDrawNo: latestSourceDrawNo,
-    batchCount: 0,
-    nextBatchNo: 1,
-    usingExistingBatch: false
-  };
 }
 
 async function getLatestTestPredictionUpToSourceDraw(sourceDrawNo) {
@@ -341,19 +319,6 @@ async function getLatestTestPredictionUpToSourceDraw(sourceDrawNo) {
     .select('*')
     .eq('mode', TEST_MODE)
     .eq('source_draw_no', sourceDrawNo)
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (error) throw error;
-  return data || null;
-}
-
-async function getLatestAnyTestPrediction() {
-  const { data, error } = await supabase
-    .from(PREDICTIONS_TABLE)
-    .select('*')
-    .eq('mode', TEST_MODE)
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -378,7 +343,6 @@ async function getLatestFormalCandidateUpToSourceDraw(sourceDrawNo) {
 
 async function getLatestComparedPredictionBeforeSource(sourceDrawNo) {
   const safeSourceDrawNo = toNum(sourceDrawNo, 0);
-
   if (!safeSourceDrawNo) return null;
 
   const { data, error } = await supabase
@@ -395,6 +359,101 @@ async function getLatestComparedPredictionBeforeSource(sourceDrawNo) {
   return data || null;
 }
 
+function roleWeightOf(role = 'mix', weightProfile = {}) {
+  if (role === 'attack') return toNum(weightProfile.attack, 1);
+  if (role === 'extend') return toNum(weightProfile.extend, 1);
+  if (role === 'guard') return toNum(weightProfile.guard, 1);
+  if (role === 'recent') return toNum(weightProfile.recent, 1);
+  return 1;
+}
+
+function inferLastHitLevel(lastComparedPrediction = null) {
+  const hitCount = toInt(lastComparedPrediction?.hit_count, 0);
+  if (hitCount >= 3) return 'good';
+  if (hitCount >= 1) return 'neutral';
+  return 'bad';
+}
+
+function inferMarketPhase(sourcePrediction = null, marketSnapshot = {}) {
+  const snapshotPhase = String(
+    sourcePrediction?.market_phase ||
+      sourcePrediction?.marketPhase ||
+      marketSnapshot?.market_phase ||
+      marketSnapshot?.phase ||
+      ''
+  ).trim().toLowerCase();
+
+  if (snapshotPhase === 'continuation') return 'continuation';
+  if (snapshotPhase === 'rotation') return 'rotation';
+
+  const streak4 = (marketSnapshot?.streak4 || marketSnapshot?.streaks?.streak4 || []).length;
+  const streak3 = (marketSnapshot?.streak3 || marketSnapshot?.streaks?.streak3 || []).length;
+  return streak4 > 0 || streak3 >= 2 ? 'continuation' : 'rotation';
+}
+
+function buildWeightProfile(marketPhase = 'rotation', lastHitLevel = 'neutral') {
+  const profile = {
+    attack: 1,
+    extend: 1,
+    guard: 1,
+    recent: 1
+  };
+
+  if (marketPhase === 'rotation') {
+    profile.attack = 0.9;
+    profile.extend = 1.05;
+    profile.guard = 1.05;
+    profile.recent = 1;
+  } else {
+    profile.attack = 1.1;
+    profile.extend = 1;
+    profile.guard = 0.95;
+    profile.recent = 0.95;
+  }
+
+  if (lastHitLevel === 'good') {
+    profile.attack += 0.05;
+    profile.extend += 0.05;
+  } else if (lastHitLevel === 'bad') {
+    profile.attack -= 0.1;
+    profile.guard += 0.1;
+    profile.extend += 0.05;
+  }
+
+  return {
+    attack: round4(profile.attack),
+    extend: round4(profile.extend),
+    guard: round4(profile.guard),
+    recent: round4(profile.recent)
+  };
+}
+
+function buildPhaseContext(sourcePrediction = null, lastComparedPrediction = null) {
+  const marketSnapshot =
+    sourcePrediction?.market_snapshot_json && typeof sourcePrediction.market_snapshot_json === 'object'
+      ? sourcePrediction.market_snapshot_json
+      : {};
+
+  const marketPhase = inferMarketPhase(sourcePrediction, marketSnapshot);
+  const lastHitLevel = inferLastHitLevel(lastComparedPrediction);
+  const confidenceScore = clamp(
+    toNum(
+      sourcePrediction?.confidence_score ||
+      sourcePrediction?.meta?.confidence_score ||
+      sourcePrediction?.market_signal_json?.confidence_score,
+      45
+    ),
+    0,
+    100
+  );
+
+  return {
+    marketPhase,
+    lastHitLevel,
+    confidenceScore,
+    weightProfile: buildWeightProfile(marketPhase, lastHitLevel)
+  };
+}
 
 function buildMarketPools(drawRows = [], marketSnapshot = {}) {
   const rows = Array.isArray(drawRows) ? drawRows : [];
@@ -402,21 +461,16 @@ function buildMarketPools(drawRows = [], marketSnapshot = {}) {
 
   const freqMap = new Map();
   const lastSeen = new Map();
-  const recentBoost = new Map();
 
   allNums.forEach((n) => {
     freqMap.set(n, 0);
-    recentBoost.set(n, 0);
   });
 
   rows.forEach((row, idx) => {
     const nums = parseNums(row?.numbers);
     nums.forEach((n) => {
       freqMap.set(n, toNum(freqMap.get(n), 0) + 1);
-      recentBoost.set(n, toNum(recentBoost.get(n), 0) + Math.max(0, 12 - idx));
-      if (!lastSeen.has(n)) {
-        lastSeen.set(n, idx);
-      }
+      if (!lastSeen.has(n)) lastSeen.set(n, idx);
     });
   });
 
@@ -439,9 +493,6 @@ function buildMarketPools(drawRows = [], marketSnapshot = {}) {
   const warm = hot.slice(10).concat(hot.slice(0, 10));
   const odd = allNums.filter((n) => n % 2 === 1);
   const even = allNums.filter((n) => n % 2 === 0);
-  const low = allNums.filter((n) => n <= 20);
-  const mid = allNums.filter((n) => n >= 21 && n <= 60);
-  const high = allNums.filter((n) => n >= 61);
 
   const hot5Numbers = uniqueAsc(
     marketSnapshot?.hot_windows?.hot_5?.numbers || marketSnapshot?.hot_5_numbers || []
@@ -504,9 +555,6 @@ function buildMarketPools(drawRows = [], marketSnapshot = {}) {
     gap,
     odd,
     even,
-    low,
-    mid,
-    high,
     attack,
     extend,
     guard,
@@ -519,8 +567,7 @@ function buildMarketPools(drawRows = [], marketSnapshot = {}) {
     streak4,
     all: allNums,
     qualityAll,
-    freqMap,
-    recentBoost
+    freqMap
   };
 }
 
@@ -550,8 +597,6 @@ function buildGroupQualityReport(nums = [], pools = {}) {
   const tailKinds = new Set(arr.map((n) => n % 10)).size;
   const zoneKinds = new Set(arr.map((n) => getZoneBucket(n))).size;
   const consecutivePairs = countConsecutivePairs(arr);
-  const lowCount = arr.filter((n) => n <= 20).length;
-  const highCount = arr.filter((n) => n >= 61).length;
   const hotCount = arr.filter((n) => (pools.hot || []).slice(0, 20).includes(n)).length;
   const attackCount = arr.filter((n) => (pools.attack || []).slice(0, 18).includes(n)).length;
   const extendCount = arr.filter((n) => (pools.extend || []).slice(0, 18).includes(n)).length;
@@ -567,8 +612,6 @@ function buildGroupQualityReport(nums = [], pools = {}) {
     tailKinds,
     zoneKinds,
     consecutivePairs,
-    lowCount,
-    highCount,
     hotCount,
     attackCount,
     extendCount,
@@ -605,22 +648,10 @@ function scoreQualityReport(report = {}, role = 'mix', selection = {}, phaseCont
   else if (report.span >= 10 && report.span <= 70) score += 4;
   else score -= 10;
 
-  if (report.lowCount <= 2) score += 3;
-  if (report.highCount <= 2) score += 3;
-  if (report.lowCount >= 3 && report.nums[0] <= 12) score -= 15;
-  if (report.highCount >= 3 && report.nums[0] >= 58) score -= 12;
-
-  if (role === 'attack') {
-    score += report.attackCount * 8 + report.hotCount * 4;
-  } else if (role === 'extend') {
-    score += report.extendCount * 7 + report.gapCount * 5;
-  } else if (role === 'guard') {
-    score += report.guardCount * 7 + report.hotCount * 3;
-  } else if (role === 'recent') {
-    score += report.hotCount * 4 + report.extendCount * 4;
-  } else {
-    score += report.hotCount * 3 + report.extendCount * 3 + report.guardCount * 3;
-  }
+  if (role === 'attack') score += report.attackCount * 8 + report.hotCount * 4;
+  if (role === 'extend') score += report.extendCount * 7 + report.gapCount * 5;
+  if (role === 'guard') score += report.guardCount * 7 + report.hotCount * 3;
+  if (role === 'recent') score += report.hotCount * 4 + report.extendCount * 4;
 
   if (selection.strategyMode === 'cold') score += report.gapCount * 4;
   if (selection.strategyMode === 'hot') score += report.hotCount * 4;
@@ -639,17 +670,12 @@ function isAcceptableGroup(nums = [], pools = {}, role = 'mix', selection = {}, 
   if (arr.every((n) => n <= 10)) return false;
 
   const report = buildGroupQualityReport(arr, pools);
-
   if (report.consecutivePairs >= 2) return false;
   if (report.tailKinds <= 1) return false;
-  if (report.zoneKinds <= 1 && role !== 'guard') return false;
-  if (report.lowCount >= 3 && arr[0] <= 12) return false;
 
   const qualityScore = scoreQualityReport(report, role, selection, phaseContext);
   return qualityScore >= 18;
 }
-
-
 
 function pickFromPool(pool = [], selectedSet = new Set(), seed = 0) {
   const candidates = uniqueAsc(pool).filter((n) => !selectedSet.has(n));
@@ -664,57 +690,27 @@ function fillToFour(base = [], fallbackPools = [], seed = 0, pools = {}, role = 
   const mergedPools = Array.isArray(fallbackPools) ? fallbackPools : [];
   let cursor = 0;
 
-  const chooseCandidate = () => {
+  while (selected.size < 4 && cursor < 320) {
+    let picked = null;
+
     for (let i = 0; i < mergedPools.length; i += 1) {
       const value = pickFromPool(mergedPools[i], selected, seed + cursor + i * 13);
       cursor += 1;
       if (value == null) continue;
 
       const next = uniqueAsc([...selected, value]).slice(0, 4);
-      if (next.length < 4) {
-        const partial = buildGroupQualityReport(next, pools);
-        if (partial.consecutivePairs <= 1) return value;
-        continue;
-      }
-
-      if (isAcceptableGroup(next, pools, role, selection, phaseContext)) {
-        return value;
-      }
-    }
-    return null;
-  };
-
-  while (selected.size < 4 && cursor < 320) {
-    const value = chooseCandidate();
-    if (value == null) break;
-    selected.add(value);
-  }
-
-  if (selected.size < 4) {
-    const backupOrder = uniqueAsc([
-      ...(pools.qualityAll || []),
-      ...(pools.hot || []).slice(0, 24),
-      ...(pools.extend || []).slice(0, 20),
-      ...(pools.guard || []).slice(0, 20),
-      ...(pools.gap || []).slice(0, 16),
-      ...(pools.all || [])
-    ]);
-
-    while (selected.size < 4 && cursor < 520) {
-      const value = pickFromPool(backupOrder, selected, seed + cursor + 97);
-      cursor += 1;
-      if (value == null) break;
-
-      const next = uniqueAsc([...selected, value]).slice(0, 4);
       if (next.length < 4 || isAcceptableGroup(next, pools, role, selection, phaseContext)) {
-        selected.add(value);
+        picked = value;
+        break;
       }
     }
+
+    if (picked == null) break;
+    selected.add(picked);
   }
 
   const finalNums = uniqueAsc([...selected]).slice(0, 4);
-  if (finalNums.length === 4) return finalNums;
-  return uniqueAsc(base).slice(0, 4);
+  return finalNums;
 }
 
 function countOverlap(a = [], b = []) {
@@ -722,40 +718,9 @@ function countOverlap(a = [], b = []) {
   return uniqueAsc(a).filter((n) => setB.has(n)).length;
 }
 
-function mutateOne(nums = [], pools = [], seed = 0, role = 'mix', allPools = {}, selection = {}, phaseContext = null) {
-  const current = uniqueAsc(nums).slice(0, 4);
-  if (current.length !== 4) return current;
-
-  let best = current;
-  let bestScore = Number.NEGATIVE_INFINITY;
-
-  for (let removeIndex = 0; removeIndex < current.length; removeIndex += 1) {
-    const base = current.filter((_, idx) => idx !== removeIndex);
-    const selected = new Set(base);
-
-    for (let i = 0; i < pools.length; i += 1) {
-      const value = pickFromPool(pools[i], selected, seed + removeIndex * 31 + i * 17 + 3);
-      if (value == null) continue;
-
-      const candidate = uniqueAsc([...base, value]).slice(0, 4);
-      if (!isAcceptableGroup(candidate, allPools, role, selection, phaseContext)) continue;
-
-      const report = buildGroupQualityReport(candidate, allPools);
-      const score = scoreQualityReport(report, role, selection, phaseContext);
-
-      if (score > bestScore) {
-        bestScore = score;
-        best = candidate;
-      }
-    }
-  }
-
-  return uniqueAsc(best).slice(0, 4);
-}
-
 function forceGroupDifference(nums = [], existingGroups = [], pools = {}, seed = 0, role = 'mix', selection = {}, phaseContext = null) {
   let result = uniqueAsc(nums).slice(0, 4);
-  const poolOrder = [
+  const backupPools = [
     pools.attack,
     pools.extend,
     pools.guard,
@@ -767,28 +732,16 @@ function forceGroupDifference(nums = [], existingGroups = [], pools = {}, seed =
     pools.all
   ];
 
-  for (let round = 0; round < 12; round += 1) {
-    let changed = false;
+  for (let round = 0; round < 8; round += 1) {
+    const overlapTooHigh = existingGroups.some((group) => countOverlap(result, group?.nums || []) >= 3);
+    if (!overlapTooHigh) break;
 
-    for (const group of existingGroups) {
-      const overlap = countOverlap(result, group?.nums || []);
-      if (overlap >= 3) {
-        result = mutateOne(result, poolOrder, seed + round * 23 + overlap, role, pools, selection, phaseContext);
-        changed = true;
-        break;
-      }
-    }
-
-    if (!changed) break;
-  }
-
-  if (!isAcceptableGroup(result, pools, role, selection, phaseContext)) {
-    result = fillToFour([], poolOrder, seed + 211, pools, role, selection, phaseContext);
+    const keep = result.slice(0, 2);
+    result = fillToFour(keep, backupPools, seed + round * 17 + 3, pools, role, selection, phaseContext);
   }
 
   return uniqueAsc(result).slice(0, 4);
 }
-
 
 function getRiskOrder(riskMode = 'balanced', phaseContext = null) {
   const marketPhase = String(phaseContext?.marketPhase || '').toLowerCase();
@@ -800,15 +753,9 @@ function getRiskOrder(riskMode = 'balanced', phaseContext = null) {
     return ['recent', 'extend', 'guard', 'attack'];
   }
 
-  if (riskMode === 'safe') {
-    return ['guard', 'extend', 'attack', 'recent'];
-  }
-  if (riskMode === 'balanced') {
-    return ['attack', 'extend', 'guard', 'recent'];
-  }
-  if (riskMode === 'aggressive') {
-    return ['attack', 'attack', 'extend', 'recent'];
-  }
+  if (riskMode === 'safe') return ['guard', 'extend', 'attack', 'recent'];
+  if (riskMode === 'balanced') return ['attack', 'extend', 'guard', 'recent'];
+  if (riskMode === 'aggressive') return ['attack', 'attack', 'extend', 'recent'];
   return ['attack', 'recent', 'extend', 'guard'];
 }
 
@@ -816,20 +763,15 @@ function inferRoleFromGroup(group = {}) {
   const key = String(group?.meta?.strategy_key || group?.key || '').toLowerCase();
   const label = String(group?.label || '').toLowerCase();
   const preferredRole = String(group?.meta?.preferred_role || '').toLowerCase();
-  const focusBucket = String(group?.meta?.focus_bucket || '').toLowerCase();
   const marketReason = String(group?.meta?.market_reason || '').toLowerCase();
 
   if (preferredRole) return preferredRole;
-  if (label.startsWith('attack｜') || label.startsWith('attack-')) return 'attack';
-  if (label.startsWith('extend｜') || label.startsWith('extend-')) return 'extend';
-  if (label.startsWith('guard｜') || label.startsWith('guard-')) return 'guard';
-  if (label.startsWith('recent｜') || label.startsWith('recent-')) return 'recent';
+  if (label.startsWith('attack')) return 'attack';
+  if (label.startsWith('extend')) return 'extend';
+  if (label.startsWith('guard')) return 'guard';
+  if (label.startsWith('recent')) return 'recent';
 
-  if (focusBucket === 'top1') return 'attack';
-  if (focusBucket === 'top2') return 'extend';
-  if (focusBucket === 'top3') return 'guard';
-
-  if (marketReason.includes('streak3') || marketReason.includes('attack_core')) return 'attack';
+  if (marketReason.includes('attack_core')) return 'attack';
   if (marketReason.includes('extend')) return 'extend';
   if (marketReason.includes('guard')) return 'guard';
   if (marketReason.includes('recent')) return 'recent';
@@ -853,18 +795,10 @@ function getRoleSeedPools(role = 'mix', pools = {}, phaseContext = null) {
     return [pools.extend, pools.guard, pools.hot, pools.all];
   }
 
-  if (role === 'attack') {
-    return [pools.attack, pools.hot5 || pools.hot, pools.hot10 || pools.hot, pools.recent, pools.all];
-  }
-  if (role === 'extend') {
-    return [pools.extend, pools.hot10 || pools.hot, pools.hot20 || pools.hot, pools.guard, pools.all];
-  }
-  if (role === 'guard') {
-    return [pools.guard, pools.hot20 || pools.hot, pools.warm, pools.cold, pools.all];
-  }
-  if (role === 'recent') {
-    return [pools.recent, pools.attack, pools.hot5 || pools.hot, pools.extend, pools.all];
-  }
+  if (role === 'attack') return [pools.attack, pools.hot5 || pools.hot, pools.hot10 || pools.hot, pools.recent, pools.all];
+  if (role === 'extend') return [pools.extend, pools.hot10 || pools.hot, pools.hot20 || pools.hot, pools.guard, pools.all];
+  if (role === 'guard') return [pools.guard, pools.hot20 || pools.hot, pools.warm, pools.cold, pools.all];
+  if (role === 'recent') return [pools.recent, pools.attack, pools.hot5 || pools.hot, pools.extend, pools.all];
   return [pools.hot, pools.extend, pools.guard, pools.all];
 }
 
@@ -915,134 +849,125 @@ function pickKeepNumsByRole(sourceNums = [], role = 'mix', pools = {}, phaseCont
   const need = getKeepNeedByRole(role, phaseContext);
 
   const kept = nums.filter((n) => keepPool.has(n));
-  if (kept.length >= need) {
-    return kept.slice(0, need);
-  }
+  if (kept.length >= need) return kept.slice(0, need);
 
-  return nums.slice(0, Math.min(need, nums.length));
+  return uniqueAsc([
+    ...kept,
+    ...nums.slice(0, need)
+  ]).slice(0, need);
 }
 
-function buildWeightProfile(marketPhase = 'rotation', lastHitLevel = 'neutral') {
-  const phase = String(marketPhase || 'rotation').toLowerCase();
-  const hit = String(lastHitLevel || 'neutral').toLowerCase();
+function getBlendedRoi(group = {}) {
+  const meta = group?.meta && typeof group.meta === 'object' ? group.meta : {};
+  const recent50 = toNum(meta.recent_50_roi, NaN);
+  const baseRoi = toNum(meta.roi, 0);
 
-  if (phase === 'continuation' && hit === 'bad') {
-    return { attack: 0.95, extend: 1.10, guard: 1.05, recent: 0.90 };
+  if (Number.isFinite(recent50)) {
+    return round4(recent50 * 0.7 + baseRoi * 0.3);
   }
-
-  if (phase === 'continuation' && hit === 'neutral') {
-    return { attack: 1.10, extend: 1.00, guard: 0.95, recent: 0.95 };
-  }
-
-  if (phase === 'continuation' && hit === 'good') {
-    return { attack: 1.25, extend: 1.05, guard: 0.85, recent: 0.85 };
-  }
-
-  if (phase === 'rotation' && hit === 'bad') {
-    return { attack: 0.65, extend: 1.20, guard: 1.20, recent: 1.10 };
-  }
-
-  if (phase === 'rotation' && hit === 'neutral') {
-    return { attack: 0.75, extend: 1.15, guard: 1.10, recent: 1.00 };
-  }
-
-  if (phase === 'rotation' && hit === 'good') {
-    return { attack: 0.90, extend: 1.05, guard: 1.05, recent: 1.00 };
-  }
-
-  return { attack: 1.00, extend: 1.00, guard: 1.00, recent: 1.00 };
+  return round4(baseRoi);
 }
 
-function roleWeightOf(role = 'mix', weightProfile = {}) {
-  const key = String(role || 'mix').toLowerCase();
-  if (key === 'attack') return toNum(weightProfile.attack, 1);
-  if (key === 'extend') return toNum(weightProfile.extend, 1);
-  if (key === 'guard') return toNum(weightProfile.guard, 1);
-  if (key === 'recent') return toNum(weightProfile.recent, 1);
-  return 1;
+function getBlendedHit3Rate(group = {}) {
+  const meta = group?.meta && typeof group.meta === 'object' ? group.meta : {};
+  const recent50 = toNum(meta.recent_50_hit3_rate, NaN);
+  const base = toNum(meta.hit3_rate, 0);
+
+  if (Number.isFinite(recent50)) {
+    return round4(recent50 * 0.7 + base * 0.3);
+  }
+  return round4(base);
 }
 
-function buildLastHitLevel(lastPrediction = null) {
-  const hitCount = toNum(lastPrediction?.hit_count, 0);
-  if (hitCount >= 2) return 'good';
-  if (hitCount === 1) return 'neutral';
-  return 'bad';
+function getDecisionScoreFloor(role = 'mix', selection = {}, phaseContext = null) {
+  let floor = 90;
+
+  if (role === 'attack') floor = 130;
+  if (role === 'extend') floor = 150;
+  if (role === 'guard') floor = 85;
+  if (role === 'recent') floor = 95;
+
+  if (selection.riskMode === 'safe') floor += 10;
+  if (selection.riskMode === 'aggressive' && role === 'attack') floor -= 5;
+  if (phaseContext?.marketPhase === 'continuation' && role === 'attack') floor -= 10;
+  if (phaseContext?.marketPhase === 'rotation' && role === 'attack') floor += 10;
+
+  return floor;
 }
 
-function buildConfidenceScore(marketPhase = 'rotation', lastHitLevel = 'neutral', marketSnapshot = {}) {
-  const phase = String(marketPhase || 'rotation').toLowerCase();
-  const hit = String(lastHitLevel || 'neutral').toLowerCase();
+function getRecentRoiFloor(role = 'mix', selection = {}, phaseContext = null) {
+  let floor = -0.15;
+  if (role === 'attack') floor = -0.1;
+  if (role === 'extend') floor = -0.2;
+  if (role === 'guard') floor = -0.25;
+  if (role === 'recent') floor = -0.2;
 
-  let score = phase === 'continuation' ? 60 : 45;
-  if (hit === 'bad') score -= 10;
-  if (hit === 'good') score += 12;
+  if (selection.riskMode === 'safe') floor += 0.05;
+  if (phaseContext?.lastHitLevel === 'bad') floor += 0.05;
 
-  const streak3Count = Array.isArray(marketSnapshot?.streak3) ? marketSnapshot.streak3.length : 0;
-  const streak2Count = Array.isArray(marketSnapshot?.streak2) ? marketSnapshot.streak2.length : 0;
-  const streak4Count = Array.isArray(marketSnapshot?.streak4) ? marketSnapshot.streak4.length : 0;
-
-  if (streak3Count > 0) score += 8;
-  if (streak2Count === 0 && streak3Count === 0 && streak4Count === 0) score -= 6;
-
-  return clamp(Math.round(score), 0, 100);
+  return round4(floor);
 }
 
-function buildPhaseContext(sourcePrediction = null, lastComparedPrediction = null) {
-  const marketSnapshot =
-    sourcePrediction?.market_snapshot_json && typeof sourcePrediction.market_snapshot_json === 'object'
-      ? sourcePrediction.market_snapshot_json
-      : {};
+function getHit3RateFloor(role = 'mix', selection = {}, phaseContext = null) {
+  let floor = 0.01;
+  if (role === 'attack') floor = 0.012;
+  if (role === 'extend') floor = 0.01;
+  if (role === 'guard') floor = 0;
+  if (role === 'recent') floor = 0.01;
 
-  const marketPhase = String(marketSnapshot?.market_phase || 'rotation').toLowerCase();
-  const lastHitLevel = buildLastHitLevel(lastComparedPrediction);
-  const weightProfile = buildWeightProfile(marketPhase, lastHitLevel);
-  const confidenceScore = buildConfidenceScore(marketPhase, lastHitLevel, marketSnapshot);
+  if (selection.strategyMode === 'hot') floor += 0.002;
+  if (phaseContext?.marketPhase === 'continuation' && role === 'attack') floor -= 0.002;
 
-  return {
-    marketPhase,
-    lastHitLevel,
-    weightProfile,
-    confidenceScore,
-    lastPredictionId: lastComparedPrediction?.id || null,
-    lastPredictionMode: lastComparedPrediction?.mode || null,
-    lastPredictionHitCount: toNum(lastComparedPrediction?.hit_count, 0)
-  };
+  return round4(Math.max(0, floor));
 }
 
+function getStabilityFloor(role = 'mix', selection = {}, phaseContext = null) {
+  let floor = 2;
+  if (role === 'attack') floor = 1;
+  if (role === 'extend') floor = 2;
+  if (role === 'guard') floor = 0;
+  if (role === 'recent') floor = 1;
+  if (selection.riskMode === 'safe') floor += 1;
+  return floor;
+}
 
-function scoreGroupForMode(group, role, strategyMode, riskMode, pools, phaseContext = null) {
+function evaluateFormalCandidateScore(sourceGroup, nums, role, selection, pools, phaseContext, existingGroups = []) {
+  const meta = sourceGroup?.meta && typeof sourceGroup.meta === 'object' ? sourceGroup.meta : {};
+  const report = buildGroupQualityReport(nums, pools);
+  let score = scoreQualityReport(report, role, selection, phaseContext);
+
+  score += toNum(meta.score, 0) * 0.35;
+  score += Math.max(-120, getBlendedRoi(sourceGroup) * 240);
+  score += getBlendedHit3Rate(sourceGroup) * 1000;
+  score += toNum(meta.hit2_rate, 0) * 90;
+  score += Math.min(50, toNum(meta.total_rounds, 0));
+  score *= roleWeightOf(role, phaseContext?.weightProfile || {});
+
+  for (const group of existingGroups) {
+    const overlap = countOverlap(nums, group?.nums || []);
+    if (overlap >= 3) score -= 180;
+    else if (overlap === 2) score -= 40;
+  }
+
+  return round4(score);
+}
+
+function scoreGroupForMode(group, role, strategyMode, riskMode, pools, phaseContext) {
   const nums = uniqueAsc(group?.nums || []);
-  const key = String(group?.meta?.strategy_key || group?.key || '').toLowerCase();
-  const groupRole = inferRoleFromGroup(group);
-  const weightProfile = phaseContext?.weightProfile || {};
-  const marketPhase = String(phaseContext?.marketPhase || '').toLowerCase();
+  const meta = group?.meta && typeof group.meta === 'object' ? group.meta : {};
+  const key = String(meta.strategy_key || group?.key || '').toLowerCase();
+  const report = buildGroupQualityReport(nums, pools);
+  let score = scoreQualityReport(report, role, { strategyMode, riskMode }, phaseContext);
 
-  const attackSet = new Set((pools.attack || []).slice(0, 18));
-  const extendSet = new Set((pools.extend || []).slice(0, 18));
-  const guardSet = new Set((pools.guard || []).slice(0, 18));
-  const recentSet = new Set((pools.recent || []).slice(0, 18));
-  const hotSet = new Set((pools.hot || []).slice(0, 20));
-  const coldSet = new Set((pools.cold || []).slice(0, 20));
-  const gapSet = new Set((pools.gap || []).slice(0, 20));
+  const hotCount = report.hotCount;
+  const extendCount = report.extendCount;
+  const guardCount = report.guardCount;
+  const gapCount = report.gapCount;
+  const recentCount = nums.filter((n) => (pools.recent || []).slice(0, 18).includes(n)).length;
+  const coldCount = nums.filter((n) => (pools.cold || []).slice(0, 18).includes(n)).length;
 
-  const attackCount = nums.filter((n) => attackSet.has(n)).length;
-  const extendCount = nums.filter((n) => extendSet.has(n)).length;
-  const guardCount = nums.filter((n) => guardSet.has(n)).length;
-  const recentCount = nums.filter((n) => recentSet.has(n)).length;
-  const hotCount = nums.filter((n) => hotSet.has(n)).length;
-  const coldCount = nums.filter((n) => coldSet.has(n)).length;
-  const gapCount = nums.filter((n) => gapSet.has(n)).length;
-
-  let score = 0;
-
-  score += toNum(group?.meta?.decision_score, 0);
-  score += toNum(group?.meta?.recent_50_hit3_rate, 0) * 300;
-  score += toNum(group?.meta?.hit3_rate, 0) * 220;
-  score += toNum(group?.meta?.market_boost, 1) * 30;
-
-  if (groupRole === role) score += 90;
-  if (role === 'attack') score += attackCount * 20 + hotCount * 5;
-  if (role === 'extend') score += extendCount * 18 + hotCount * 4 + gapCount * 3;
+  if (role === 'attack') score += report.attackCount * 18 + hotCount * 6;
+  if (role === 'extend') score += extendCount * 18 + gapCount * 5;
   if (role === 'guard') score += guardCount * 18 + coldCount * 2;
   if (role === 'recent') score += recentCount * 18 + hotCount * 4;
 
@@ -1053,191 +978,49 @@ function scoreGroupForMode(group, role, strategyMode, riskMode, pools, phaseCont
     score += coldCount * 12 + gapCount * 6;
     if (key.includes('cold') || key.includes('gap') || key.includes('guard')) score += 20;
   } else if (strategyMode === 'burst') {
-    score += attackCount * 8 + gapCount * 10 + recentCount * 6;
+    score += report.attackCount * 8 + gapCount * 10 + recentCount * 6;
     if (key.includes('gap') || key.includes('tail') || key.includes('zone')) score += 18;
   } else {
-    score += attackCount * 6 + extendCount * 6 + guardCount * 6;
+    score += report.attackCount * 6 + extendCount * 6 + guardCount * 6;
   }
-
-  const qualityReport = buildGroupQualityReport(nums, pools);
-  score += scoreQualityReport(qualityReport, role, { strategyMode, riskMode }, phaseContext) * 1.8;
 
   if (riskMode === 'safe' && (role === 'guard' || role === 'extend')) score += 10;
   if (riskMode === 'aggressive' && role === 'attack') score += 10;
   if (riskMode === 'sniper' && (role === 'attack' || role === 'recent')) score += 10;
 
-  const roleWeight = roleWeightOf(role, weightProfile);
-  score *= roleWeight;
+  score *= roleWeightOf(role, phaseContext?.weightProfile || {});
 
-  if (marketPhase === 'rotation') {
+  if (phaseContext?.marketPhase === 'rotation') {
     if (role === 'attack') score -= 20;
     if (role === 'extend') score += 12;
     if (role === 'guard') score += 12;
     if (role === 'recent') score += 8;
   }
 
-  if (marketPhase === 'continuation') {
+  if (phaseContext?.marketPhase === 'continuation') {
     if (role === 'attack') score += 18;
     if (role === 'recent') score -= 6;
   }
 
-  return score;
+  return round4(score);
 }
 
+function passesDecisionGate(sourceGroup, score, role, selection, phaseContext) {
+  const meta = sourceGroup?.meta && typeof sourceGroup.meta === 'object' ? sourceGroup.meta : {};
+  const decisionGate = getDecisionScoreFloor(role, selection, phaseContext);
+  const roiGate = getRecentRoiFloor(role, selection, phaseContext);
+  const hit3Gate = getHit3RateFloor(role, selection, phaseContext);
+  const stabilityGate = getStabilityFloor(role, selection, phaseContext);
 
+  const blendedRoi = getBlendedRoi(sourceGroup);
+  const blendedHit3Rate = getBlendedHit3Rate(sourceGroup);
+  const totalRounds = toNum(meta.total_rounds, 0);
 
-function getDecisionScoreFloor(role = 'mix', selection = {}, phaseContext = null) {
-  const marketPhase = String(phaseContext?.marketPhase || '').toLowerCase();
-  const riskMode = String(selection?.riskMode || 'balanced').toLowerCase();
+  if (!Number.isFinite(score) || score < decisionGate) return false;
+  if (blendedRoi < roiGate) return false;
+  if (blendedHit3Rate < hit3Gate) return false;
+  if (totalRounds < stabilityGate && role !== 'attack') return false;
 
-  let base = 120;
-  if (role === 'extend') base = 150;
-  else if (role === 'attack') base = 130;
-  else if (role === 'guard') base = 90;
-  else if (role === 'recent') base = 95;
-
-  if (marketPhase === 'rotation') {
-    if (role === 'attack') base += 10;
-    if (role === 'extend') base += 10;
-    if (role === 'guard') base -= 5;
-  }
-
-  if (marketPhase === 'continuation') {
-    if (role === 'attack') base -= 10;
-    if (role === 'recent') base += 5;
-  }
-
-  if (riskMode === 'safe' && role === 'guard') base -= 10;
-  if (riskMode === 'aggressive' && role === 'attack') base -= 5;
-  if (riskMode === 'sniper' && role === 'recent') base -= 5;
-
-  return base;
-}
-
-function getRecentRoiFloor(role = 'mix', selection = {}, phaseContext = null) {
-  const marketPhase = String(phaseContext?.marketPhase || '').toLowerCase();
-  const riskMode = String(selection?.riskMode || 'balanced').toLowerCase();
-
-  let floor = -0.28;
-  if (role === 'attack') floor = -0.18;
-  else if (role === 'extend') floor = -0.25;
-  else if (role === 'guard') floor = -0.20;
-  else if (role === 'recent') floor = -0.16;
-
-  if (marketPhase === 'rotation' && (role === 'guard' || role === 'extend')) floor -= 0.03;
-  if (marketPhase === 'continuation' && role === 'attack') floor -= 0.03;
-
-  if (riskMode === 'safe' && role === 'guard') floor -= 0.05;
-  if (riskMode === 'aggressive' && (role === 'attack' || role === 'recent')) floor += 0.03;
-  if (riskMode === 'sniper' && role === 'recent') floor += 0.02;
-
-  return round4(floor);
-}
-
-function getHit3RateFloor(role = 'mix', selection = {}, phaseContext = null) {
-  const riskMode = String(selection?.riskMode || 'balanced').toLowerCase();
-
-  let floor = 0.008;
-  if (role === 'attack') floor = 0.015;
-  else if (role === 'extend') floor = 0.010;
-  else if (role === 'guard') floor = 0.004;
-  else if (role === 'recent') floor = 0.012;
-
-  if (riskMode === 'aggressive' && role === 'attack') floor += 0.002;
-  if (riskMode === 'safe' && role === 'guard') floor -= 0.002;
-
-  return round4(Math.max(0, floor));
-}
-
-function getMinRoundsForStrictFilter(role = 'mix') {
-  if (role === 'attack') return 8;
-  if (role === 'recent') return 8;
-  if (role === 'extend') return 10;
-  if (role === 'guard') return 6;
-  return 8;
-}
-
-function getMetaMetric(group = {}, key = '', fallback = 0) {
-  return toNum(group?.meta?.[key], fallback);
-}
-
-function getBlendedRoi(group = {}) {
-  const lifetimeRoi = getMetaMetric(group, 'roi', 0);
-  const recent50Roi = getMetaMetric(group, 'recent_50_roi', lifetimeRoi);
-  return round4(recent50Roi * 0.7 + lifetimeRoi * 0.3);
-}
-
-function getBlendedHit3Rate(group = {}) {
-  const recent = getMetaMetric(group, 'recent_50_hit3_rate', 0);
-  const lifetime = getMetaMetric(group, 'hit3_rate', 0);
-  return round4(recent * 0.7 + lifetime * 0.3);
-}
-
-function passesRoiGate(group = {}, role = 'mix', selection = {}, phaseContext = null) {
-  const totalRounds = getMetaMetric(group, 'total_rounds', 0);
-  const floor = getRecentRoiFloor(role, selection, phaseContext);
-
-  if (totalRounds < getMinRoundsForStrictFilter(role)) return true;
-
-  const blendedRoi = getBlendedRoi(group);
-  return blendedRoi >= floor;
-}
-
-function passesHit3Gate(group = {}, role = 'mix', selection = {}, phaseContext = null) {
-  const totalRounds = getMetaMetric(group, 'total_rounds', 0);
-  const floor = getHit3RateFloor(role, selection, phaseContext);
-
-  if (totalRounds < getMinRoundsForStrictFilter(role)) return true;
-
-  const blendedHit3Rate = getBlendedHit3Rate(group);
-  return blendedHit3Rate >= floor;
-}
-
-function passesStabilityGate(group = {}, role = 'mix') {
-  const totalRounds = getMetaMetric(group, 'total_rounds', 0);
-  const recent50HitRate = getMetaMetric(group, 'recent_50_hit_rate', getMetaMetric(group, 'hit2_rate', 0));
-  const roi = getMetaMetric(group, 'roi', 0);
-  const recent50Roi = getMetaMetric(group, 'recent_50_roi', roi);
-
-  if (totalRounds < 12) return true;
-  if (recent50HitRate >= 0.22) return true;
-
-  return !(roi < -0.25 && recent50Roi < -0.25 && (role === 'attack' || role === 'recent'));
-}
-
-function evaluateFormalCandidateScore(group = {}, nums = [], role = 'mix', selection = {}, pools = {}, phaseContext = null, existingGroups = []) {
-  const safeNums = uniqueAsc(nums).slice(0, 4);
-  if (safeNums.length !== 4) return Number.NEGATIVE_INFINITY;
-  if (!isAcceptableGroup(safeNums, pools, role, selection, phaseContext)) return Number.NEGATIVE_INFINITY;
-
-  const report = buildGroupQualityReport(safeNums, pools);
-  const overlapPenalty = (existingGroups || []).reduce(
-    (acc, g) => acc + Math.max(0, countOverlap(safeNums, g?.nums || []) - 1) * 18,
-    0
-  );
-
-  return (
-    scoreGroupForMode(
-      {
-        ...group,
-        nums: safeNums
-      },
-      role,
-      selection.strategyMode,
-      selection.riskMode,
-      pools,
-      phaseContext
-    ) +
-    scoreQualityReport(report, role, selection, phaseContext) * 2.2 -
-    overlapPenalty
-  );
-}
-
-function passesDecisionGate(group = {}, score = Number.NEGATIVE_INFINITY, role = 'mix', selection = {}, phaseContext = null) {
-  if (score < getDecisionScoreFloor(role, selection, phaseContext)) return false;
-  if (!passesRoiGate(group, role, selection, phaseContext)) return false;
-  if (!passesHit3Gate(group, role, selection, phaseContext)) return false;
-  if (!passesStabilityGate(group, role)) return false;
   return true;
 }
 
@@ -1264,10 +1047,17 @@ function chooseRoleOrderedGroups(sourceGroups = [], selection = {}, pools = {}, 
 
     for (let j = 0; j < ranked.length; j += 1) {
       if (usedIndexes.has(j)) continue;
-      const row = ranked[j];
-      const score = scoreGroupForMode(row.group, role, selection.strategyMode, selection.riskMode, pools, phaseContext);
+      const rankedRow = ranked[j];
+      const score = scoreGroupForMode(
+        rankedRow.group,
+        role,
+        selection.strategyMode,
+        selection.riskMode,
+        pools,
+        phaseContext
+      );
 
-      if (!passesDecisionGate(row.group, score, role, selection, phaseContext)) continue;
+      if (!passesDecisionGate(rankedRow.group, score, role, selection, phaseContext)) continue;
 
       if (score > bestScore) {
         bestScore = score;
@@ -1290,14 +1080,22 @@ function chooseRoleOrderedGroups(sourceGroups = [], selection = {}, pools = {}, 
       if (usedIndexes.has(j)) continue;
 
       const role = roles[picked.length] || 'mix';
-      const score = scoreGroupForMode(ranked[j].group, role, selection.strategyMode, selection.riskMode, pools, phaseContext);
+      const rankedRow = ranked[j];
+      const score = scoreGroupForMode(
+        rankedRow.group,
+        role,
+        selection.strategyMode,
+        selection.riskMode,
+        pools,
+        phaseContext
+      );
 
-      if (!passesDecisionGate(row.group, score, role, selection, phaseContext)) continue;
+      if (!passesDecisionGate(rankedRow.group, score, role, selection, phaseContext)) continue;
 
       usedIndexes.add(j);
       picked.push({
         role,
-        group: ranked[j].group,
+        group: rankedRow.group,
         role_decision_score: score
       });
     }
@@ -1306,11 +1104,9 @@ function chooseRoleOrderedGroups(sourceGroups = [], selection = {}, pools = {}, 
   return picked.slice(0, GROUP_COUNT);
 }
 
-
 function buildVariantFromSourceGroup(sourceGroup, slotRole, slotNo, pools, existingGroups = [], selection = {}, phaseContext = null) {
   const sourceNums = uniqueAsc(sourceGroup?.nums || []);
   const keepNums = pickKeepNumsByRole(sourceNums, slotRole, pools, phaseContext);
-
   const fallbackPools = getRoleSeedPools(slotRole, pools, phaseContext);
   const seedBase =
     slotNo * 101 +
@@ -1322,6 +1118,7 @@ function buildVariantFromSourceGroup(sourceGroup, slotRole, slotNo, pools, exist
   const addCandidate = (nums, tag = 'base', extraScore = 0) => {
     const safeNums = uniqueAsc(nums).slice(0, 4);
     if (safeNums.length !== 4) return;
+    if (!isAcceptableGroup(safeNums, pools, slotRole, selection, phaseContext)) return;
 
     const score =
       evaluateFormalCandidateScore(
@@ -1342,7 +1139,8 @@ function buildVariantFromSourceGroup(sourceGroup, slotRole, slotNo, pools, exist
       candidateMap.set(key, {
         nums: safeNums,
         score,
-        tag
+        tag,
+        sourceGroup
       });
     }
   };
@@ -1395,90 +1193,70 @@ function buildVariantFromSourceGroup(sourceGroup, slotRole, slotNo, pools, exist
     );
   }
 
-  if (slotRole === 'guard' && marketPhase === 'rotation') {
+  if (slotRole === 'extend') {
     addCandidate(
       fillToFour(
         uniqueAsc([
           ...keepNums,
-          ...(pools.guard || []).slice(0, 4)
+          ...(pools.extend || []).slice(0, 4),
+          ...(pools.gap || []).slice(0, 3)
         ]),
-        [pools.guard, pools.extend, pools.recent, pools.qualityAll, pools.all],
-        seedBase + 23,
-        pools,
-        slotRole,
-        selection,
-        phaseContext
-      ),
-      'guard_rotation',
-      10
-    );
-  }
-
-  if (slotRole === 'recent' && marketPhase === 'rotation') {
-    addCandidate(
-      fillToFour(
-        uniqueAsc([
-          ...keepNums,
-          ...(pools.recent || []).slice(0, 4)
-        ]),
-        [pools.recent, pools.extend, pools.guard, pools.qualityAll, pools.all],
-        seedBase + 27,
-        pools,
-        slotRole,
-        selection,
-        phaseContext
-      ),
-      'recent_rotation',
-      8
-    );
-  }
-
-  if (selection.strategyMode === 'cold') {
-    addCandidate(
-      fillToFour(
-        uniqueAsc([...keepNums.slice(0, 2), ...(pools.cold || []).slice(0, 4), ...(pools.gap || []).slice(0, 3)]),
-        [pools.guard, pools.cold, pools.gap, pools.qualityAll, pools.all],
+        [pools.extend, pools.guard, pools.hot10, pools.qualityAll, pools.all],
         seedBase + 29,
         pools,
         slotRole,
         selection,
         phaseContext
       ),
-      'cold_mode',
-      9
+      'extend_focus',
+      10
     );
   }
 
-  if (selection.strategyMode === 'burst') {
+  if (slotRole === 'guard') {
     addCandidate(
       fillToFour(
         uniqueAsc([
-          ...keepNums.slice(0, 2),
-          ...(marketPhase === 'continuation' ? (pools.attack || []).slice(0, 3) : (pools.extend || []).slice(0, 2)),
-          ...(pools.recent || []).slice(0, 2)
+          ...keepNums,
+          ...(pools.guard || []).slice(0, 4),
+          ...(pools.hot20 || []).slice(0, 3)
         ]),
-        [pools.attack, pools.extend, pools.recent, pools.hot, pools.qualityAll, pools.all],
-        seedBase + 31,
+        [pools.guard, pools.hot20, pools.warm, pools.qualityAll, pools.all],
+        seedBase + 37,
         pools,
         slotRole,
         selection,
         phaseContext
       ),
-      'burst_mode',
-      11
+      'guard_focus',
+      9
     );
   }
 
-  for (let i = 0; i < 12; i += 1) {
-    const dynamicBase = uniqueAsc([
-      ...keepNums.slice(0, Math.max(1, keepNums.length - (i % 2))),
-      ...((slotRole === 'attack' ? pools.attack : slotRole === 'guard' ? pools.guard : slotRole === 'recent' ? pools.recent : pools.extend) || []).slice(0, 2 + (i % 3)),
-      ...((i % 2 === 0 ? pools.recent : pools.gap) || []).slice(0, 2)
-    ]);
-
+  if (slotRole === 'recent') {
     addCandidate(
       fillToFour(
-        dynamicBase,
+        uniqueAsc([
+          ...keepNums,
+          ...(pools.recent || []).slice(0, 4),
+          ...(pools.hot5 || []).slice(0, 3)
+        ]),
+        [pools.recent, pools.extend, pools.hot5, pools.qualityAll, pools.all],
+        seedBase + 43,
+        pools,
+        slotRole,
+        selection,
+        phaseContext
+      ),
+      'recent_focus',
+      8
+    );
+  }
+
+  for (let i = 0; i < 6; i += 1) {
+    addCandidate(
+      fillToFour(
+        keepNums,
         [...fallbackPools, pools.qualityAll, pools.all],
         seedBase + 101 + i * 37,
         pools,
@@ -1529,7 +1307,7 @@ function buildVariantFromSourceGroup(sourceGroup, slotRole, slotNo, pools, exist
       )
     )
     .sort((a, b) => b.score - a.score);
-       
+
   if (!ranked.length) {
     return [];
   }
@@ -1577,16 +1355,15 @@ function buildFormalMeta(sourceGroup, slotRole, slotNo, sourceRow, selection, ph
     source_prediction_mode: sourceRow?.mode || TEST_MODE,
     source_selection_rank: toNum(sourceMeta.selection_rank, slotNo),
     bet_amount: COST_PER_GROUP,
-    decision: 'market_role_formal_v9_quality_gate',
+    decision: 'market_role_formal_v10_roi_hit_gate',
     market_phase: phaseContext?.marketPhase || 'rotation',
     last_hit_level: phaseContext?.lastHitLevel || 'neutral',
     confidence_score: toNum(phaseContext?.confidenceScore, 0),
     weight_profile: weightProfile,
     role_weight: roleWeightOf(slotRole, weightProfile),
-    quality_engine: 'v2'
+    quality_engine: 'v3'
   };
 }
-
 
 async function buildFormalGroups(sourceDraw, selection) {
   const sourceDrawNo = toNum(sourceDraw?.draw_no, 0);
@@ -1612,11 +1389,7 @@ async function buildFormalGroups(sourceDraw, selection) {
     throw new Error('找不到可用的 test prediction，請先讓 auto-train 建立最新 test prediction');
   }
 
-  const sourceGroups = normalizeGroups(
-    parseGroupsJson(sourcePrediction.groups_json),
-    sourceDraw
-  );
-
+  const sourceGroups = normalizeGroups(parseGroupsJson(sourcePrediction.groups_json), sourceDraw);
   if (!sourceGroups.length) {
     throw new Error('最新 test prediction 沒有可用四碼群組');
   }
@@ -1635,8 +1408,6 @@ async function buildFormalGroups(sourceDraw, selection) {
   const usedKeys = new Set();
 
   const tryAddSlot = (sourceGroup, slotRole) => {
-    if (!sourceGroup) return false;
-
     const nums = buildVariantFromSourceGroup(
       sourceGroup,
       slotRole,
@@ -1718,9 +1489,9 @@ async function buildFormalGroups(sourceDraw, selection) {
 
     fallbackMatrix
       .sort((a, b) => b.baseScore - a.baseScore)
-      .forEach((row) => {
+      .forEach((matrixRow) => {
         if (groups.length >= GROUP_COUNT) return;
-        tryAddSlot(row.sourceGroup, row.role);
+        tryAddSlot(matrixRow.sourceGroup, matrixRow.role);
       });
   }
 
@@ -1747,11 +1518,9 @@ async function buildFormalGroups(sourceDraw, selection) {
   };
 }
 
-
-async function createFormalPrediction(selection) {
+async function createFormalPrediction(selection, triggerSource = 'unknown') {
   const latestDraw = await getLatestDraw();
-  const sourceResolved = await resolveFormalSourceDraw(latestDraw);
-  const sourceDrawNo = toNum(sourceResolved?.sourceDrawNo, 0);
+  const sourceDrawNo = toNum(latestDraw?.draw_no, 0);
 
   if (!sourceDrawNo) {
     throw new Error('找不到可用 source_draw_no');
@@ -1762,130 +1531,87 @@ async function createFormalPrediction(selection) {
   if (existingRows.length >= FORMAL_BATCH_LIMIT) {
     return {
       ok: true,
+      api_version: API_VERSION,
+      mode: FORMAL_MODE,
+      trigger_source: triggerSource,
+      cost_per_group: COST_PER_GROUP,
+      group_count: GROUP_COUNT,
+      formal_batch_limit: FORMAL_BATCH_LIMIT,
+      requested_selection: selection,
       skipped: true,
       reason: '本期 formal 批次已達上限',
-      latest_draw_no: toNum(latestDraw?.draw_no, 0),
+      latest_draw_no: sourceDrawNo,
       latest_draw_time: latestDraw?.draw_time || null,
       source_draw_no: sourceDrawNo,
       formal_batch_no: existingRows.length,
-      formal_batch_limit: FORMAL_BATCH_LIMIT,
       existing_count: existingRows.length,
-      requested_selection: selection,
       prediction: null
     };
   }
 
-  const nextBatchNo = existingRows.length + 1;
+  const built = await buildFormalGroups(latestDraw, selection);
 
-  const {
-    groups,
-    recentDrawCount,
-    sourcePredictionId,
-    sourcePredictionMode,
-    sourcePredictionDrawNo,
-    marketSnapshot,
-    phaseContext
-  } = await buildFormalGroups(latestDraw, selection);
-
-  const payload = {
+  const insertPayload = {
     mode: FORMAL_MODE,
     status: 'created',
     source_draw_no: sourceDrawNo,
     target_periods: 1,
-    groups_json: groups,
-    compare_status: 'pending',
-    compare_result: null,
-    compare_result_json: null,
-    hit_count: 0,
-    verdict: null,
-    latest_draw_numbers: parseNums(latestDraw?.numbers).join(','),
-    market_snapshot_json: {
-      ...(marketSnapshot || {}),
-      market_phase: phaseContext?.marketPhase || marketSnapshot?.market_phase || 'rotation',
-      last_hit_level: phaseContext?.lastHitLevel || 'neutral',
-      confidence_score: toNum(phaseContext?.confidenceScore, 0),
-      weight_profile: phaseContext?.weightProfile || {}
-    },
+    groups_json: built.groups,
+    market_snapshot_json: built.marketSnapshot,
+    market_phase: built.phaseContext.marketPhase,
+    last_hit_level: built.phaseContext.lastHitLevel,
+    confidence_score: built.phaseContext.confidenceScore,
+    weight_profile: built.phaseContext.weightProfile,
     created_at: new Date().toISOString()
   };
 
-  const { data, error } = await supabase
+  const { data: inserted, error: insertError } = await supabase
     .from(PREDICTIONS_TABLE)
-    .insert(payload)
+    .insert(insertPayload)
     .select('*')
+    .limit(1)
     .maybeSingle();
 
-  if (error) throw error;
+  if (insertError) throw insertError;
 
   return {
     ok: true,
+    api_version: API_VERSION,
+    mode: FORMAL_MODE,
+    trigger_source: triggerSource,
+    cost_per_group: COST_PER_GROUP,
+    group_count: GROUP_COUNT,
+    formal_batch_limit: FORMAL_BATCH_LIMIT,
+    requested_selection: selection,
     skipped: false,
     reason: '',
-    latest_draw_no: toNum(latestDraw?.draw_no, 0),
+    latest_draw_no: sourceDrawNo,
     latest_draw_time: latestDraw?.draw_time || null,
     source_draw_no: sourceDrawNo,
-    formal_batch_no: nextBatchNo,
-    formal_batch_limit: FORMAL_BATCH_LIMIT,
+    formal_batch_no: existingRows.length + 1,
     existing_count: existingRows.length,
-    source_prediction_id: sourcePredictionId,
-    source_prediction_mode: sourcePredictionMode,
-    source_prediction_draw_no: sourcePredictionDrawNo,
-    requested_selection: selection,
-    recent_draw_count: recentDrawCount,
-    market_phase: phaseContext?.marketPhase || 'rotation',
-    last_hit_level: phaseContext?.lastHitLevel || 'neutral',
-    confidence_score: toNum(phaseContext?.confidenceScore, 0),
-    weight_profile: phaseContext?.weightProfile || {},
+    source_prediction_id: built.sourcePredictionId,
+    source_prediction_mode: built.sourcePredictionMode,
+    source_prediction_draw_no: built.sourcePredictionDrawNo,
+    recent_draw_count: built.recentDrawCount,
+    market_phase: built.phaseContext.marketPhase,
+    last_hit_level: built.phaseContext.lastHitLevel,
+    confidence_score: built.phaseContext.confidenceScore,
+    weight_profile: built.phaseContext.weightProfile,
     prediction: {
-      id: data?.id || null,
+      id: inserted?.id || null,
       mode: FORMAL_MODE,
-      status: data?.status || 'created',
+      status: inserted?.status || 'created',
       source_draw_no: sourceDrawNo,
       target_periods: 1,
-      group_count: groups.length,
-      groups
+      group_count: built.groups.length,
+      groups: built.groups
     }
   };
 }
 
-async function getExistingTestResponse(latestDraw) {
-  const sourceDrawNo = toNum(latestDraw?.draw_no, 0);
-
-  const { data: existing, error } = await supabase
-    .from(PREDICTIONS_TABLE)
-    .select('id, created_at, groups_json, source_draw_no, target_periods, status, market_snapshot_json')
-    .eq('mode', TEST_MODE)
-    .eq('source_draw_no', sourceDrawNo)
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (error) throw error;
-
-  if (existing?.id) {
-    return {
-      ok: true,
-      skipped: true,
-      reason: '本期 test prediction 已存在',
-      source_draw_no: sourceDrawNo,
-      prediction: {
-        id: existing.id,
-        mode: TEST_MODE,
-        status: existing.status || 'created',
-        source_draw_no: sourceDrawNo,
-        target_periods: toNum(existing.target_periods, 1),
-        group_count: parseGroupsJson(existing.groups_json).length,
-        groups: parseGroupsJson(existing.groups_json),
-        market_snapshot_json: existing.market_snapshot_json || null
-      }
-    };
-  }
-
-  throw new Error('目前這一版不負責自動建立 test prediction，請先由 auto-train 或既有流程建立 test prediction');
-}
-
 export default async function handler(req, res) {
-  if (req.method !== 'POST' && req.method !== 'GET') {
+  if (req.method !== 'GET' && req.method !== 'POST') {
     return res.status(405).json({
       ok: false,
       api_version: API_VERSION,
@@ -1895,70 +1621,24 @@ export default async function handler(req, res) {
 
   try {
     const mode = getMode(req);
-    const triggerSource = getTriggerSource(req);
     const selection = getSelectionParams(req);
+    const triggerSource = getTriggerSource(req);
 
-    if (mode === TEST_MODE) {
-      const latestDraw = await getLatestDraw();
-      const result = await getExistingTestResponse(latestDraw);
-
-      return res.status(200).json({
-        ok: true,
-        api_version: API_VERSION,
-        mode,
-        trigger_source: triggerSource,
-        latest_draw_no: toNum(latestDraw?.draw_no, 0),
-        latest_draw_time: latestDraw?.draw_time || null,
-        target_periods: 1,
-        bet_type: 'test_existing_only',
-        cost_per_group: COST_PER_GROUP,
-        group_count: GROUP_COUNT,
-        formal_batch_limit: FORMAL_BATCH_LIMIT,
-        requested_selection: selection,
-        ...result
-      });
-    }
-
-    if (req.method !== 'POST') {
-      return res.status(405).json({
+    if (mode !== FORMAL_MODE) {
+      return res.status(400).json({
         ok: false,
         api_version: API_VERSION,
-        mode: FORMAL_MODE,
-        trigger_source: triggerSource,
-        requested_selection: selection,
-        error: '正式下注只允許 POST'
+        error: 'prediction-save 目前僅提供 formal 儲存，test 請走 auto-train'
       });
     }
 
-    if (!isManualFormalRequest(req)) {
-      return res.status(403).json({
-        ok: false,
-        api_version: API_VERSION,
-        mode: FORMAL_MODE,
-        trigger_source: triggerSource,
-        requested_selection: selection,
-        error: '正式下注已鎖定為手動觸發，請由前端按鈕使用 manual=true 呼叫'
-      });
-    }
-
-    const result = await createFormalPrediction(selection);
-
-    return res.status(200).json({
-      ok: true,
-      api_version: API_VERSION,
-      mode: FORMAL_MODE,
-      trigger_source: triggerSource,
-      cost_per_group: COST_PER_GROUP,
-      group_count: GROUP_COUNT,
-      formal_batch_limit: FORMAL_BATCH_LIMIT,
-      requested_selection: selection,
-      ...result
-    });
+    const result = await createFormalPrediction(selection, triggerSource);
+    return res.status(200).json(result);
   } catch (error) {
-    return res.status(500).json({
+    return res.status(200).json({
       ok: false,
       api_version: API_VERSION,
-      error: error?.message || 'Unknown error'
+      error: error instanceof Error ? error.message : String(error || 'unknown error')
     });
   }
 }
