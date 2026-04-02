@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
-const API_VERSION = 'prediction-save-market-role-v10.3-candidate-expansion';
+const API_VERSION = 'prediction-save-market-role-v10.4-maturity-gate';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -24,6 +24,9 @@ const COST_PER_GROUP = 25;
 const FORMAL_BATCH_LIMIT = 3;
 const GROUP_COUNT = 4;
 const MAX_GROUPS_PER_STRATEGY = 2;
+const MIN_TIER_A_COUNT = 2;
+const MIN_MATURE_ROUNDS_FOR_AB = 10;
+const MIN_MATURE_ROUNDS_FOR_A = 20;
 
 const DEFAULT_ANALYSIS_PERIOD = 20;
 const ALLOWED_ANALYSIS_PERIODS = new Set([5, 10, 20, 50]);
@@ -155,7 +158,7 @@ function normalizeGroups(groups = [], sourceDraw = null) {
   return (Array.isArray(groups) ? groups : [])
     .map((group, idx) => normalizeGroup(group, idx, sourceDraw))
     .filter(Boolean)
-    .slice(0, 40);
+    .slice(0, 60);
 }
 
 function getBody(req) {
@@ -896,19 +899,30 @@ function getTierThresholds(role = 'mix', selection = {}, phaseContext = null) {
   };
 }
 
+function getSourceTag(group = {}) {
+  return String(group?.meta?.source_tag || '').trim().toLowerCase();
+}
+
 function getCandidateTier(sourceGroup, score, role, selection, phaseContext) {
   const meta = sourceGroup?.meta && typeof sourceGroup.meta === 'object' ? sourceGroup.meta : {};
   const blendedRoi = getBlendedRoi(sourceGroup);
   const blendedHit3Rate = getBlendedHit3Rate(sourceGroup);
   const totalRounds = toNum(meta.total_rounds, 0);
+  const sourceTag = getSourceTag(sourceGroup);
   const t = getTierThresholds(role, selection, phaseContext);
+
+  const matureForA = totalRounds >= MIN_MATURE_ROUNDS_FOR_A;
+  const matureForAB = totalRounds >= MIN_MATURE_ROUNDS_FOR_AB;
 
   const passA =
     Number.isFinite(score) &&
     score >= t.decisionGate &&
     blendedRoi >= t.roiGate &&
     blendedHit3Rate >= t.hit3Gate &&
-    (role === 'attack' || totalRounds >= t.stabilityGate);
+    (role === 'attack' || totalRounds >= t.stabilityGate) &&
+    matureForA &&
+    sourceTag !== 'recent_test' &&
+    sourceTag !== 'recent_formal_candidate';
 
   if (passA) return 'A';
 
@@ -917,7 +931,13 @@ function getCandidateTier(sourceGroup, score, role, selection, phaseContext) {
     score >= t.decisionGateB &&
     blendedRoi >= t.roiGateB &&
     blendedHit3Rate >= t.hit3GateB &&
-    (role === 'attack' || totalRounds >= t.stabilityGateB);
+    (role === 'attack' || totalRounds >= t.stabilityGateB) &&
+    (
+      matureForAB ||
+      sourceTag === 'formal_candidate' ||
+      sourceTag === 'primary_test' ||
+      sourceTag === 'fallback_test'
+    );
 
   if (passB) return 'B';
   return 'C';
@@ -944,6 +964,17 @@ function evaluateFormalCandidateScore(sourceGroup, nums, role, selection, pools,
   score += toNum(meta.hit2_rate, 0) * 90;
   score += Math.min(50, toNum(meta.total_rounds, 0));
   score *= roleWeightOf(role, phaseContext?.weightProfile || {});
+
+  const rounds = toNum(meta.total_rounds, 0);
+  const sourceTag = getSourceTag(sourceGroup);
+
+  if (rounds < MIN_MATURE_ROUNDS_FOR_AB) {
+    score -= 120;
+  }
+
+  if (sourceTag === 'recent_test' || sourceTag === 'recent_formal_candidate') {
+    score -= 80;
+  }
 
   for (const group of existingGroups) {
     const overlap = countOverlap(nums, group?.nums || []);
@@ -1395,14 +1426,16 @@ function buildFormalMeta(sourceGroup, slotRole, slotNo, sourceRow, selection, ph
     source_prediction_mode: sourceRow?.mode || TEST_MODE,
     source_selection_rank: toNum(sourceMeta.selection_rank, slotNo),
     bet_amount: COST_PER_GROUP,
-    decision: 'market_role_formal_v10_3_candidate_expansion',
+    decision: 'market_role_formal_v10_4_maturity_gate',
     market_phase: phaseContext?.marketPhase || 'rotation',
     last_hit_level: phaseContext?.lastHitLevel || 'neutral',
     confidence_score: toNum(phaseContext?.confidenceScore, 0),
     weight_profile: weightProfile,
     role_weight: roleWeightOf(slotRole, weightProfile),
-    quality_engine: 'v10.3-expansion',
-    strategy_spread_limit: MAX_GROUPS_PER_STRATEGY
+    quality_engine: 'v10.4-maturity',
+    strategy_spread_limit: MAX_GROUPS_PER_STRATEGY,
+    maturity_gate_ab: MIN_MATURE_ROUNDS_FOR_AB,
+    maturity_gate_a: MIN_MATURE_ROUNDS_FOR_A
   };
 }
 
@@ -1548,7 +1581,9 @@ async function buildFormalGroups(sourceDraw, selection) {
           baseScore,
           tier,
           strategyKey,
-          currentStrategyCount
+          currentStrategyCount,
+          totalRounds: toNum(sourceGroup?.meta?.total_rounds, 0),
+          sourceTag: getSourceTag(sourceGroup)
         });
       }
     }
@@ -1557,8 +1592,12 @@ async function buildFormalGroups(sourceDraw, selection) {
       .sort((a, b) => {
         const spreadPenaltyA = a.currentStrategyCount * 1500;
         const spreadPenaltyB = b.currentStrategyCount * 1500;
-        const bonusA = candidateTierBonus(a.tier) - spreadPenaltyA;
-        const bonusB = candidateTierBonus(b.tier) - spreadPenaltyB;
+        const maturityA = a.totalRounds >= MIN_MATURE_ROUNDS_FOR_AB ? 200 : 0;
+        const maturityB = b.totalRounds >= MIN_MATURE_ROUNDS_FOR_AB ? 200 : 0;
+        const sourcePenaltyA = a.sourceTag.startsWith('recent_') ? 120 : 0;
+        const sourcePenaltyB = b.sourceTag.startsWith('recent_') ? 120 : 0;
+        const bonusA = candidateTierBonus(a.tier) - spreadPenaltyA + maturityA - sourcePenaltyA;
+        const bonusB = candidateTierBonus(b.tier) - spreadPenaltyB + maturityB - sourcePenaltyB;
         return b.baseScore + bonusB - (a.baseScore + bonusA);
       })
       .forEach((matrixRow) => {
@@ -1608,11 +1647,11 @@ async function buildFormalGroups(sourceDraw, selection) {
   );
 
   if (finalGroups.length !== GROUP_COUNT) {
-    throw new Error('正式下注分工四組建立失敗：候選池擴容後 A/B 級可用組數仍不足 4 組');
+    throw new Error('正式下注分工四組建立失敗：成熟策略過濾後 A/B 級可用組數不足 4 組');
   }
 
-  if (finalTierACount < 2) {
-    throw new Error('正式下注分工四組建立失敗：A 級策略不足 2 組，已停止出單');
+  if (finalTierACount < MIN_TIER_A_COUNT) {
+    throw new Error(`正式下注分工四組建立失敗：A 級成熟策略不足 ${MIN_TIER_A_COUNT} 組，已停止出單`);
   }
 
   if (overLimitStrategy) {
