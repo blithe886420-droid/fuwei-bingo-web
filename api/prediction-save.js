@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
-const API_VERSION = 'prediction-save-market-role-v7';
+const API_VERSION = 'prediction-save-market-role-v8-quality-core';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -395,20 +395,25 @@ async function getLatestComparedPredictionBeforeSource(sourceDrawNo) {
   return data || null;
 }
 
+
 function buildMarketPools(drawRows = [], marketSnapshot = {}) {
   const rows = Array.isArray(drawRows) ? drawRows : [];
   const allNums = Array.from({ length: 80 }, (_, i) => i + 1);
 
   const freqMap = new Map();
   const lastSeen = new Map();
+  const recentBoost = new Map();
+
   allNums.forEach((n) => {
     freqMap.set(n, 0);
+    recentBoost.set(n, 0);
   });
 
   rows.forEach((row, idx) => {
     const nums = parseNums(row?.numbers);
     nums.forEach((n) => {
       freqMap.set(n, toNum(freqMap.get(n), 0) + 1);
+      recentBoost.set(n, toNum(recentBoost.get(n), 0) + Math.max(0, 12 - idx));
       if (!lastSeen.has(n)) {
         lastSeen.set(n, idx);
       }
@@ -434,6 +439,9 @@ function buildMarketPools(drawRows = [], marketSnapshot = {}) {
   const warm = hot.slice(10).concat(hot.slice(0, 10));
   const odd = allNums.filter((n) => n % 2 === 1);
   const even = allNums.filter((n) => n % 2 === 0);
+  const low = allNums.filter((n) => n <= 20);
+  const mid = allNums.filter((n) => n >= 21 && n <= 60);
+  const high = allNums.filter((n) => n >= 61);
 
   const hot5Numbers = uniqueAsc(
     marketSnapshot?.hot_windows?.hot_5?.numbers || marketSnapshot?.hot_5_numbers || []
@@ -461,19 +469,32 @@ function buildMarketPools(drawRows = [], marketSnapshot = {}) {
     ...(marketSnapshot?.decision_basis?.extend_numbers || []),
     ...streak2,
     ...hot10Numbers.slice(0, 14),
-    ...hot20Numbers.slice(0, 10)
+    ...hot20Numbers.slice(0, 10),
+    ...gap.slice(0, 8)
   ]);
 
   const guard = uniqueAsc([
     ...(marketSnapshot?.decision_basis?.guard_numbers || []),
     ...hot20Numbers.slice(0, 20),
-    ...warm.slice(0, 16)
+    ...warm.slice(0, 16),
+    ...cold.slice(0, 8)
   ]);
 
   const recent = uniqueAsc([
     ...(marketSnapshot?.decision_basis?.recent_focus_numbers || []),
     ...parseNums(rows[0]?.numbers || []),
     ...hot5Numbers.slice(0, 10)
+  ]);
+
+  const qualityAll = uniqueAsc([
+    ...attack,
+    ...extend,
+    ...guard,
+    ...recent,
+    ...hot.slice(0, 28),
+    ...warm.slice(0, 24),
+    ...gap.slice(0, 18),
+    ...allNums
   ]);
 
   return {
@@ -483,6 +504,9 @@ function buildMarketPools(drawRows = [], marketSnapshot = {}) {
     gap,
     odd,
     even,
+    low,
+    mid,
+    high,
     attack,
     extend,
     guard,
@@ -493,44 +517,204 @@ function buildMarketPools(drawRows = [], marketSnapshot = {}) {
     streak2,
     streak3,
     streak4,
-    all: allNums
+    all: allNums,
+    qualityAll,
+    freqMap,
+    recentBoost
   };
 }
+
+function getZoneBucket(n) {
+  const num = toNum(n, 0);
+  if (num <= 20) return 1;
+  if (num <= 40) return 2;
+  if (num <= 60) return 3;
+  return 4;
+}
+
+function countConsecutivePairs(nums = []) {
+  const arr = uniqueAsc(nums);
+  let count = 0;
+  for (let i = 1; i < arr.length; i += 1) {
+    if (arr[i] - arr[i - 1] === 1) count += 1;
+  }
+  return count;
+}
+
+function buildGroupQualityReport(nums = [], pools = {}) {
+  const arr = uniqueAsc(nums).slice(0, 4);
+  const oddCount = arr.filter((n) => n % 2 === 1).length;
+  const evenCount = arr.length - oddCount;
+  const sum = arr.reduce((acc, n) => acc + n, 0);
+  const span = arr.length ? arr[arr.length - 1] - arr[0] : 0;
+  const tailKinds = new Set(arr.map((n) => n % 10)).size;
+  const zoneKinds = new Set(arr.map((n) => getZoneBucket(n))).size;
+  const consecutivePairs = countConsecutivePairs(arr);
+  const lowCount = arr.filter((n) => n <= 20).length;
+  const highCount = arr.filter((n) => n >= 61).length;
+  const hotCount = arr.filter((n) => (pools.hot || []).slice(0, 20).includes(n)).length;
+  const attackCount = arr.filter((n) => (pools.attack || []).slice(0, 18).includes(n)).length;
+  const extendCount = arr.filter((n) => (pools.extend || []).slice(0, 18).includes(n)).length;
+  const guardCount = arr.filter((n) => (pools.guard || []).slice(0, 18).includes(n)).length;
+  const gapCount = arr.filter((n) => (pools.gap || []).slice(0, 18).includes(n)).length;
+
+  return {
+    nums: arr,
+    oddCount,
+    evenCount,
+    sum,
+    span,
+    tailKinds,
+    zoneKinds,
+    consecutivePairs,
+    lowCount,
+    highCount,
+    hotCount,
+    attackCount,
+    extendCount,
+    guardCount,
+    gapCount
+  };
+}
+
+function scoreQualityReport(report = {}, role = 'mix', selection = {}, phaseContext = null) {
+  let score = 0;
+  const marketPhase = String(phaseContext?.marketPhase || '').toLowerCase();
+
+  if (report.oddCount === 2) score += 16;
+  else if (report.oddCount === 1 || report.oddCount === 3) score += 8;
+  else score -= 12;
+
+  if (report.tailKinds >= 4) score += 12;
+  else if (report.tailKinds === 3) score += 8;
+  else if (report.tailKinds === 2) score += 2;
+  else score -= 12;
+
+  if (report.zoneKinds >= 3) score += 14;
+  else if (report.zoneKinds === 2) score += 6;
+  else score -= 10;
+
+  if (report.consecutivePairs === 0) score += 10;
+  else if (report.consecutivePairs === 1) score += 2;
+  else score -= 14;
+
+  if (report.sum >= 70 && report.sum <= 210) score += 10;
+  else score -= 8;
+
+  if (report.span >= 18 && report.span <= 62) score += 10;
+  else if (report.span >= 10 && report.span <= 70) score += 4;
+  else score -= 10;
+
+  if (report.lowCount <= 2) score += 3;
+  if (report.highCount <= 2) score += 3;
+  if (report.lowCount >= 3 && report.nums[0] <= 12) score -= 15;
+  if (report.highCount >= 3 && report.nums[0] >= 58) score -= 12;
+
+  if (role === 'attack') {
+    score += report.attackCount * 8 + report.hotCount * 4;
+  } else if (role === 'extend') {
+    score += report.extendCount * 7 + report.gapCount * 5;
+  } else if (role === 'guard') {
+    score += report.guardCount * 7 + report.hotCount * 3;
+  } else if (role === 'recent') {
+    score += report.hotCount * 4 + report.extendCount * 4;
+  } else {
+    score += report.hotCount * 3 + report.extendCount * 3 + report.guardCount * 3;
+  }
+
+  if (selection.strategyMode === 'cold') score += report.gapCount * 4;
+  if (selection.strategyMode === 'hot') score += report.hotCount * 4;
+  if (selection.strategyMode === 'burst') score += report.attackCount * 5 + report.gapCount * 4;
+
+  if (marketPhase === 'rotation' && role === 'attack') score -= 6;
+  if (marketPhase === 'rotation' && (role === 'extend' || role === 'guard')) score += 4;
+  if (marketPhase === 'continuation' && role === 'attack') score += 8;
+
+  return score;
+}
+
+function isAcceptableGroup(nums = [], pools = {}, role = 'mix', selection = {}, phaseContext = null) {
+  const arr = uniqueAsc(nums).slice(0, 4);
+  if (arr.length !== 4) return false;
+  if (arr.every((n) => n <= 10)) return false;
+
+  const report = buildGroupQualityReport(arr, pools);
+
+  if (report.consecutivePairs >= 2) return false;
+  if (report.tailKinds <= 1) return false;
+  if (report.zoneKinds <= 1 && role !== 'guard') return false;
+  if (report.lowCount >= 3 && arr[0] <= 12) return false;
+
+  const qualityScore = scoreQualityReport(report, role, selection, phaseContext);
+  return qualityScore >= 18;
+}
+
+
 
 function pickFromPool(pool = [], selectedSet = new Set(), seed = 0) {
   const candidates = uniqueAsc(pool).filter((n) => !selectedSet.has(n));
   if (!candidates.length) return null;
-  return candidates[Math.abs(toNum(seed, 0)) % candidates.length];
+  const index = Math.abs(toNum(seed, 0) * 7 + candidates.length * 3) % candidates.length;
+  return candidates[index];
 }
 
-function fillToFour(base = [], fallbackPools = [], seed = 0) {
-  const result = uniqueAsc(base).slice(0, 4);
-  const selected = new Set(result);
+function fillToFour(base = [], fallbackPools = [], seed = 0, pools = {}, role = 'mix', selection = {}, phaseContext = null) {
+  const initial = uniqueAsc(base).slice(0, 4);
+  const selected = new Set(initial);
+  const mergedPools = Array.isArray(fallbackPools) ? fallbackPools : [];
   let cursor = 0;
 
-  for (const pool of fallbackPools) {
-    while (result.length < 4 && cursor < 220) {
-      const value = pickFromPool(pool, selected, seed + cursor);
+  const chooseCandidate = () => {
+    for (let i = 0; i < mergedPools.length; i += 1) {
+      const value = pickFromPool(mergedPools[i], selected, seed + cursor + i * 13);
       cursor += 1;
-      if (value == null) break;
-      selected.add(value);
-      result.push(value);
+      if (value == null) continue;
+
+      const next = uniqueAsc([...selected, value]).slice(0, 4);
+      if (next.length < 4) {
+        const partial = buildGroupQualityReport(next, pools);
+        if (partial.consecutivePairs <= 1) return value;
+        continue;
+      }
+
+      if (isAcceptableGroup(next, pools, role, selection, phaseContext)) {
+        return value;
+      }
     }
-    if (result.length >= 4) break;
+    return null;
+  };
+
+  while (selected.size < 4 && cursor < 320) {
+    const value = chooseCandidate();
+    if (value == null) break;
+    selected.add(value);
   }
 
-  if (result.length < 4) {
-    const allNums = Array.from({ length: 80 }, (_, i) => i + 1);
-    while (result.length < 4 && cursor < 500) {
-      const value = pickFromPool(allNums, selected, seed + cursor);
+  if (selected.size < 4) {
+    const backupOrder = uniqueAsc([
+      ...(pools.qualityAll || []),
+      ...(pools.hot || []).slice(0, 24),
+      ...(pools.extend || []).slice(0, 20),
+      ...(pools.guard || []).slice(0, 20),
+      ...(pools.gap || []).slice(0, 16),
+      ...(pools.all || [])
+    ]);
+
+    while (selected.size < 4 && cursor < 520) {
+      const value = pickFromPool(backupOrder, selected, seed + cursor + 97);
       cursor += 1;
       if (value == null) break;
-      selected.add(value);
-      result.push(value);
+
+      const next = uniqueAsc([...selected, value]).slice(0, 4);
+      if (next.length < 4 || isAcceptableGroup(next, pools, role, selection, phaseContext)) {
+        selected.add(value);
+      }
     }
   }
 
-  return uniqueAsc(result).slice(0, 4);
+  const finalNums = uniqueAsc([...selected]).slice(0, 4);
+  if (finalNums.length === 4) return finalNums;
+  return uniqueAsc(base).slice(0, 4);
 }
 
 function countOverlap(a = [], b = []) {
@@ -538,26 +722,38 @@ function countOverlap(a = [], b = []) {
   return uniqueAsc(a).filter((n) => setB.has(n)).length;
 }
 
-function mutateOne(nums = [], pools = [], seed = 0) {
+function mutateOne(nums = [], pools = [], seed = 0, role = 'mix', allPools = {}, selection = {}, phaseContext = null) {
   const current = uniqueAsc(nums).slice(0, 4);
   if (current.length !== 4) return current;
 
-  const selected = new Set(current);
-  const removeIndex = Math.abs(seed) % current.length;
-  selected.delete(current[removeIndex]);
+  let best = current;
+  let bestScore = Number.NEGATIVE_INFINITY;
 
-  for (let i = 0; i < pools.length; i += 1) {
-    const value = pickFromPool(pools[i], selected, seed + i * 17 + 3);
-    if (value != null) {
-      selected.add(value);
-      return uniqueAsc([...selected]).slice(0, 4);
+  for (let removeIndex = 0; removeIndex < current.length; removeIndex += 1) {
+    const base = current.filter((_, idx) => idx !== removeIndex);
+    const selected = new Set(base);
+
+    for (let i = 0; i < pools.length; i += 1) {
+      const value = pickFromPool(pools[i], selected, seed + removeIndex * 31 + i * 17 + 3);
+      if (value == null) continue;
+
+      const candidate = uniqueAsc([...base, value]).slice(0, 4);
+      if (!isAcceptableGroup(candidate, allPools, role, selection, phaseContext)) continue;
+
+      const report = buildGroupQualityReport(candidate, allPools);
+      const score = scoreQualityReport(report, role, selection, phaseContext);
+
+      if (score > bestScore) {
+        bestScore = score;
+        best = candidate;
+      }
     }
   }
 
-  return uniqueAsc([...selected]).slice(0, 4);
+  return uniqueAsc(best).slice(0, 4);
 }
 
-function forceGroupDifference(nums = [], existingGroups = [], pools = {}, seed = 0) {
+function forceGroupDifference(nums = [], existingGroups = [], pools = {}, seed = 0, role = 'mix', selection = {}, phaseContext = null) {
   let result = uniqueAsc(nums).slice(0, 4);
   const poolOrder = [
     pools.attack,
@@ -567,16 +763,17 @@ function forceGroupDifference(nums = [], existingGroups = [], pools = {}, seed =
     pools.hot,
     pools.gap,
     pools.warm,
+    pools.qualityAll,
     pools.all
   ];
 
-  for (let round = 0; round < 10; round += 1) {
+  for (let round = 0; round < 12; round += 1) {
     let changed = false;
 
     for (const group of existingGroups) {
       const overlap = countOverlap(result, group?.nums || []);
       if (overlap >= 3) {
-        result = mutateOne(result, poolOrder, seed + round * 23 + overlap);
+        result = mutateOne(result, poolOrder, seed + round * 23 + overlap, role, pools, selection, phaseContext);
         changed = true;
         break;
       }
@@ -585,8 +782,13 @@ function forceGroupDifference(nums = [], existingGroups = [], pools = {}, seed =
     if (!changed) break;
   }
 
+  if (!isAcceptableGroup(result, pools, role, selection, phaseContext)) {
+    result = fillToFour([], poolOrder, seed + 211, pools, role, selection, phaseContext);
+  }
+
   return uniqueAsc(result).slice(0, 4);
 }
+
 
 function getRiskOrder(riskMode = 'balanced', phaseContext = null) {
   const marketPhase = String(phaseContext?.marketPhase || '').toLowerCase();
@@ -807,6 +1009,7 @@ function buildPhaseContext(sourcePrediction = null, lastComparedPrediction = nul
   };
 }
 
+
 function scoreGroupForMode(group, role, strategyMode, riskMode, pools, phaseContext = null) {
   const nums = uniqueAsc(group?.nums || []);
   const key = String(group?.meta?.strategy_key || group?.key || '').toLowerCase();
@@ -856,6 +1059,9 @@ function scoreGroupForMode(group, role, strategyMode, riskMode, pools, phaseCont
     score += attackCount * 6 + extendCount * 6 + guardCount * 6;
   }
 
+  const qualityReport = buildGroupQualityReport(nums, pools);
+  score += scoreQualityReport(qualityReport, role, { strategyMode, riskMode }, phaseContext) * 1.8;
+
   if (riskMode === 'safe' && (role === 'guard' || role === 'extend')) score += 10;
   if (riskMode === 'aggressive' && role === 'attack') score += 10;
   if (riskMode === 'sniper' && (role === 'attack' || role === 'recent')) score += 10;
@@ -877,6 +1083,7 @@ function scoreGroupForMode(group, role, strategyMode, riskMode, pools, phaseCont
 
   return score;
 }
+
 
 function chooseRoleOrderedGroups(sourceGroups = [], selection = {}, pools = {}, phaseContext = null) {
   const roles = getRiskOrder(selection.riskMode, phaseContext);
@@ -933,6 +1140,7 @@ function chooseRoleOrderedGroups(sourceGroups = [], selection = {}, pools = {}, 
   return picked.slice(0, GROUP_COUNT);
 }
 
+
 function buildVariantFromSourceGroup(sourceGroup, slotRole, slotNo, pools, existingGroups = [], selection = {}, phaseContext = null) {
   const sourceNums = uniqueAsc(sourceGroup?.nums || []);
   const keepNums = pickKeepNumsByRole(sourceNums, slotRole, pools, phaseContext);
@@ -943,79 +1151,217 @@ function buildVariantFromSourceGroup(sourceGroup, slotRole, slotNo, pools, exist
     toNum(sourceGroup?.meta?.selection_rank, slotNo) * 17 +
     selection.analysisPeriod * 3;
 
-  let result = fillToFour(keepNums, fallbackPools, seedBase);
+  const candidateMap = new Map();
+
+  const addCandidate = (nums, tag = 'base', extraScore = 0) => {
+    const safeNums = uniqueAsc(nums).slice(0, 4);
+    if (safeNums.length !== 4) return;
+    if (!isAcceptableGroup(safeNums, pools, slotRole, selection, phaseContext)) return;
+
+    const report = buildGroupQualityReport(safeNums, pools);
+    const score =
+      scoreQualityReport(report, slotRole, selection, phaseContext) +
+      extraScore -
+      existingGroups.reduce((acc, g) => acc + Math.max(0, countOverlap(safeNums, g?.nums || []) - 1) * 12, 0);
+
+    const key = safeNums.join(',');
+    const prev = candidateMap.get(key);
+    if (!prev || score > prev.score) {
+      candidateMap.set(key, {
+        nums: safeNums,
+        score,
+        tag
+      });
+    }
+  };
+
+  addCandidate(
+    fillToFour(keepNums, fallbackPools, seedBase, pools, slotRole, selection, phaseContext),
+    'keep_base',
+    0
+  );
 
   const marketPhase = String(phaseContext?.marketPhase || '').toLowerCase();
   const lastHitLevel = String(phaseContext?.lastHitLevel || '').toLowerCase();
 
   if (slotRole === 'attack' && marketPhase === 'continuation') {
-    result = fillToFour(
-      uniqueAsc([
-        ...keepNums,
-        ...(pools.attack || []).slice(0, lastHitLevel === 'good' ? 4 : 3)
-      ]),
-      fallbackPools,
-      seedBase + 19
+    addCandidate(
+      fillToFour(
+        uniqueAsc([
+          ...keepNums,
+          ...(pools.attack || []).slice(0, lastHitLevel === 'good' ? 4 : 3)
+        ]),
+        fallbackPools,
+        seedBase + 19,
+        pools,
+        slotRole,
+        selection,
+        phaseContext
+      ),
+      'attack_continuation',
+      14
     );
   }
 
   if (slotRole === 'attack' && marketPhase === 'rotation') {
-    result = fillToFour(
-      uniqueAsc([
-        ...keepNums.slice(0, 1),
-        ...(pools.extend || []).slice(0, 2),
-        ...(pools.guard || []).slice(0, 2)
-      ]),
-      [pools.extend, pools.guard, pools.recent, pools.all],
-      seedBase + 21
+    addCandidate(
+      fillToFour(
+        uniqueAsc([
+          ...keepNums.slice(0, 1),
+          ...(pools.extend || []).slice(0, 2),
+          ...(pools.guard || []).slice(0, 2)
+        ]),
+        [pools.extend, pools.guard, pools.recent, pools.qualityAll, pools.all],
+        seedBase + 21,
+        pools,
+        slotRole,
+        selection,
+        phaseContext
+      ),
+      'attack_rotation',
+      12
     );
   }
 
   if (slotRole === 'guard' && marketPhase === 'rotation') {
-    result = fillToFour(
-      uniqueAsc([
-        ...keepNums,
-        ...(pools.guard || []).slice(0, 4)
-      ]),
-      [pools.guard, pools.extend, pools.recent, pools.all],
-      seedBase + 23
+    addCandidate(
+      fillToFour(
+        uniqueAsc([
+          ...keepNums,
+          ...(pools.guard || []).slice(0, 4)
+        ]),
+        [pools.guard, pools.extend, pools.recent, pools.qualityAll, pools.all],
+        seedBase + 23,
+        pools,
+        slotRole,
+        selection,
+        phaseContext
+      ),
+      'guard_rotation',
+      10
     );
   }
 
   if (slotRole === 'recent' && marketPhase === 'rotation') {
-    result = fillToFour(
-      uniqueAsc([
-        ...keepNums,
-        ...(pools.recent || []).slice(0, 4)
-      ]),
-      [pools.recent, pools.extend, pools.guard, pools.all],
-      seedBase + 27
+    addCandidate(
+      fillToFour(
+        uniqueAsc([
+          ...keepNums,
+          ...(pools.recent || []).slice(0, 4)
+        ]),
+        [pools.recent, pools.extend, pools.guard, pools.qualityAll, pools.all],
+        seedBase + 27,
+        pools,
+        slotRole,
+        selection,
+        phaseContext
+      ),
+      'recent_rotation',
+      8
     );
   }
 
   if (selection.strategyMode === 'cold') {
-    result = fillToFour(
-      uniqueAsc([...result.slice(0, 2), ...(pools.cold || []).slice(0, 4)]),
-      [pools.guard, pools.cold, pools.gap, pools.all],
-      seedBase + 29
+    addCandidate(
+      fillToFour(
+        uniqueAsc([...keepNums.slice(0, 2), ...(pools.cold || []).slice(0, 4), ...(pools.gap || []).slice(0, 3)]),
+        [pools.guard, pools.cold, pools.gap, pools.qualityAll, pools.all],
+        seedBase + 29,
+        pools,
+        slotRole,
+        selection,
+        phaseContext
+      ),
+      'cold_mode',
+      9
     );
   }
 
   if (selection.strategyMode === 'burst') {
-    result = fillToFour(
-      uniqueAsc([
-        ...result.slice(0, 2),
-        ...(marketPhase === 'continuation' ? (pools.attack || []).slice(0, 3) : (pools.extend || []).slice(0, 2)),
-        ...(pools.recent || []).slice(0, 2)
-      ]),
-      [pools.attack, pools.extend, pools.recent, pools.hot, pools.all],
-      seedBase + 31
+    addCandidate(
+      fillToFour(
+        uniqueAsc([
+          ...keepNums.slice(0, 2),
+          ...(marketPhase === 'continuation' ? (pools.attack || []).slice(0, 3) : (pools.extend || []).slice(0, 2)),
+          ...(pools.recent || []).slice(0, 2)
+        ]),
+        [pools.attack, pools.extend, pools.recent, pools.hot, pools.qualityAll, pools.all],
+        seedBase + 31,
+        pools,
+        slotRole,
+        selection,
+        phaseContext
+      ),
+      'burst_mode',
+      11
     );
   }
 
-  result = forceGroupDifference(result, existingGroups, pools, seedBase + 41);
-  return uniqueAsc(result).slice(0, 4);
+  for (let i = 0; i < 8; i += 1) {
+    const dynamicBase = uniqueAsc([
+      ...keepNums.slice(0, Math.max(1, keepNums.length - (i % 2))),
+      ...((slotRole === 'attack' ? pools.attack : slotRole === 'guard' ? pools.guard : pools.extend) || []).slice(0, 2 + (i % 3)),
+      ...((i % 2 === 0 ? pools.recent : pools.gap) || []).slice(0, 2)
+    ]);
+
+    addCandidate(
+      fillToFour(
+        dynamicBase,
+        [...fallbackPools, pools.qualityAll, pools.all],
+        seedBase + 101 + i * 37,
+        pools,
+        slotRole,
+        selection,
+        phaseContext
+      ),
+      `dynamic_${i + 1}`,
+      0
+    );
+  }
+
+  let ranked = [...candidateMap.values()]
+    .map((row) => ({
+      ...row,
+      nums: forceGroupDifference(
+        row.nums,
+        existingGroups,
+        pools,
+        seedBase + row.score,
+        slotRole,
+        selection,
+        phaseContext
+      )
+    }))
+    .filter((row) => isAcceptableGroup(row.nums, pools, slotRole, selection, phaseContext))
+    .map((row) => {
+      const report = buildGroupQualityReport(row.nums, pools);
+      return {
+        ...row,
+        score:
+          scoreQualityReport(report, slotRole, selection, phaseContext) +
+          row.score -
+          existingGroups.reduce((acc, g) => acc + Math.max(0, countOverlap(row.nums, g?.nums || []) - 1) * 12, 0)
+      };
+    })
+    .sort((a, b) => b.score - a.score);
+
+  if (!ranked.length) {
+    const fallback = forceGroupDifference(
+      fillToFour(keepNums, [...fallbackPools, pools.qualityAll, pools.all], seedBase + 999, pools, slotRole, selection, phaseContext),
+      existingGroups,
+      pools,
+      seedBase + 1111,
+      slotRole,
+      selection,
+      phaseContext
+    );
+
+    return uniqueAsc(fallback).slice(0, 4);
+  }
+
+  return uniqueAsc(ranked[0].nums).slice(0, 4);
 }
+
 
 function buildFormalLabel(slotRole, slotNo, sourceGroup) {
   const roleText =
@@ -1057,12 +1403,13 @@ function buildFormalMeta(sourceGroup, slotRole, slotNo, sourceRow, selection, ph
     source_prediction_mode: sourceRow?.mode || TEST_MODE,
     source_selection_rank: toNum(sourceMeta.selection_rank, slotNo),
     bet_amount: COST_PER_GROUP,
-    decision: 'market_role_formal_v7',
+    decision: 'market_role_formal_v8_quality_core',
     market_phase: phaseContext?.marketPhase || 'rotation',
     last_hit_level: phaseContext?.lastHitLevel || 'neutral',
     confidence_score: toNum(phaseContext?.confidenceScore, 0),
     weight_profile: weightProfile,
-    role_weight: roleWeightOf(slotRole, weightProfile)
+    role_weight: roleWeightOf(slotRole, weightProfile),
+    quality_engine: 'v1'
   };
 }
 
@@ -1138,7 +1485,9 @@ async function buildFormalGroups(sourceDraw, selection) {
     });
   }
 
-  const finalGroups = normalizeGroups(groups, sourceDraw).slice(0, GROUP_COUNT);
+  const finalGroups = normalizeGroups(groups, sourceDraw)
+    .filter((group) => isAcceptableGroup(group?.nums || [], pools, inferRoleFromGroup(group), selection, phaseContext))
+    .slice(0, GROUP_COUNT);
 
   if (finalGroups.length !== GROUP_COUNT) {
     throw new Error('正式下注分工四組建立失敗');
