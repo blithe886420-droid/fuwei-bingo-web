@@ -1492,19 +1492,19 @@ function buildVariantFromSourceGroup(sourceGroup, slotRole, slotNo, pools, exist
   }
 
   let ranked = [...candidateMap.values()]
-    .map((row) => {
+    .map((candidateRow) => {
       const adjustedNums = forceGroupDifference(
-        row.nums,
+        candidateRow.nums,
         existingGroups,
         pools,
-        seedBase + row.score,
+        seedBase + candidateRow.score,
         slotRole,
         selection,
         phaseContext
       );
 
-      const score = evaluateFormalCandidateScore(
-        row.sourceGroup,
+      const nextScore = evaluateFormalCandidateScore(
+        candidateRow.sourceGroup,
         adjustedNums,
         slotRole,
         selection,
@@ -1514,13 +1514,19 @@ function buildVariantFromSourceGroup(sourceGroup, slotRole, slotNo, pools, exist
       );
 
       return {
-        ...row,
+        ...candidateRow,
         nums: adjustedNums,
-        score
+        score: nextScore
       };
     })
-    .filter((row) =>
-      passesDecisionGate(row.sourceGroup, row.score, slotRole, selection, phaseContext)
+    .filter((candidateRow) =>
+      passesDecisionGate(
+        candidateRow.sourceGroup,
+        candidateRow.score,
+        slotRole,
+        selection,
+        phaseContext
+      )
     )
     .sort((a, b) => b.score - a.score);
 
