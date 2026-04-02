@@ -742,6 +742,31 @@ function getRiskOrder(riskMode = 'balanced', phaseContext = null) {
   return ['attack', 'recent', 'extend', 'guard'];
 }
 
+function inferRoleFromGroup(group = {}) {
+  const key = String(group?.meta?.strategy_key || group?.key || '').toLowerCase();
+  const label = String(group?.label || '').toLowerCase();
+  const preferredRole = String(group?.meta?.preferred_role || '').toLowerCase();
+  const marketReason = String(group?.meta?.market_reason || '').toLowerCase();
+
+  if (preferredRole) return preferredRole;
+  if (label.startsWith('attack')) return 'attack';
+  if (label.startsWith('extend')) return 'extend';
+  if (label.startsWith('guard')) return 'guard';
+  if (label.startsWith('recent')) return 'recent';
+
+  if (marketReason.includes('attack_core')) return 'attack';
+  if (marketReason.includes('extend')) return 'extend';
+  if (marketReason.includes('guard')) return 'guard';
+  if (marketReason.includes('recent')) return 'recent';
+
+  if (key.includes('repeat') || key.includes('hot')) return 'attack';
+  if (key.includes('gap') || key.includes('chase') || key.includes('jump')) return 'extend';
+  if (key.includes('guard') || key.includes('balance') || key.includes('mix')) return 'guard';
+  if (key.includes('tail') || key.includes('rotation') || key.includes('split')) return 'recent';
+
+  return 'mix';
+}
+
 function getKeepNeedByRole(role = 'mix', phaseContext = null) {
   const marketPhase = String(phaseContext?.marketPhase || '').toLowerCase();
   const lastHitLevel = String(phaseContext?.lastHitLevel || '').toLowerCase();
