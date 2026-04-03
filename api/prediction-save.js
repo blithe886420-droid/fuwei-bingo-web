@@ -1693,6 +1693,10 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
     const requiredTier = minTierForSlot(nextSlotNo);
     const isPool = isStrategyPoolGroup(sourceGroup);
 
+    if (nextSlotNo <= 3 && isFallbackStrategyKey(strategyKey)) {
+      return false;
+    }
+
     const variant = buildVariantFromSourceGroup(
       sourceGroup,
       slotRole,
@@ -1712,24 +1716,19 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
     const hit3 = getBlendedHit3Rate(sourceGroup);
     const totalRounds = toNum(sourceGroup?.meta?.total_rounds, 0);
 
-    // 前 3 組禁止 fallback
-    if (nextSlotNo <= 3 && isFallbackStrategyKey(strategyKey)) {
-      return false;
-    }
-
-    // strategy_pool 成熟門檻（分層）
+    // 階段式 gate：先 rounds，再 roi，最後 hit3
     if (isPool) {
       if (nextSlotNo === 1 && totalRounds < 10) return false;
       if (nextSlotNo === 2 && totalRounds < 5) return false;
       if (nextSlotNo === 3 && totalRounds < 3) return false;
     }
 
-    // ROI 分層淘汰（真正進場門檻）
-    if (nextSlotNo === 1 && roi < -0.35) return false;
-    if (nextSlotNo === 2 && roi < -0.45) return false;
-    if (nextSlotNo === 3 && roi < -0.55) return false;
+    if (totalRounds >= 10) {
+      if (nextSlotNo === 1 && roi < -0.45) return false;
+      if (nextSlotNo === 2 && roi < -0.55) return false;
+      if (nextSlotNo === 3 && roi < -0.65) return false;
+    }
 
-    // hit3 只對成熟策略生效
     if (nextSlotNo <= 3 && totalRounds >= 10 && hit3 <= 0) {
       return false;
     }
