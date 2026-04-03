@@ -1683,14 +1683,13 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
     // ROI / hit3 硬門檻（ stats 已接入後的穩定版 ）
     const totalRounds = toNum(sourceGroup?.meta?.total_rounds, 0);
 
-    if (!isPool && totalRounds >= 20) {
-      if (nextSlotNo === 1 && roi < -0.3) return false;
-      if (nextSlotNo === 2 && roi < -0.4) return false;
-      if (nextSlotNo === 3 && roi < -0.5) return false;
-    }
+    // ROI 分層淘汰（真正進場門檻，對所有策略生效）
+    if (nextSlotNo === 1 && roi < -0.35) return false;
+    if (nextSlotNo === 2 && roi < -0.45) return false;
+    if (nextSlotNo === 3 && roi < -0.55) return false;
 
-    // 只對成熟的非 strategy_pool 策略做 hit3 限制，避免探索策略全部被判死
-    if (!isPool && nextSlotNo <= 3 && totalRounds >= 10 && hit3 <= 0) {
+    // hit3 只對成熟策略生效，避免新策略全部被判死
+    if (nextSlotNo <= 3 && totalRounds >= 10 && hit3 <= 0) {
       return false;
     }
 
