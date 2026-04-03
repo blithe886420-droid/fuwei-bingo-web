@@ -903,6 +903,23 @@ function candidateTierBonus(tier = 'C') {
   return 0;
 }
 
+function tierRank(tier = 'C') {
+  if (tier === 'A') return 3;
+  if (tier === 'B') return 2;
+  return 1;
+}
+
+function minTierForSlot(slotNo = 1) {
+  if (slotNo === 1) return 'A';
+  if (slotNo === 2) return 'B';
+  if (slotNo === 3) return 'B';
+  return 'C';
+}
+
+function meetsMinTier(actualTier = 'C', requiredTier = 'C') {
+  return tierRank(actualTier) >= tierRank(requiredTier);
+}
+
 function getStrategyKey(group = {}) {
   return String(group?.meta?.strategy_key || group?.key || '').trim();
 }
@@ -913,7 +930,15 @@ function getSourceTag(group = {}) {
 
 function scoreGroupForMode(group, role = 'mix', strategyMode = 'mix', riskMode = 'balanced', pools = {}, phaseContext = null) {
   const nums = uniqueAsc(group?.nums || []);
+  const meta = group?.meta && typeof group.meta === 'object' ? group.meta : {};
   const report = buildGroupQualityReport(nums, pools);
+  const blendedRoi = getBlendedRoi(group);
+  const blendedHit3Rate = getBlendedHit3Rate(group);
+  const recent50Roi = toNum(meta.recent_50_roi, blendedRoi);
+  const recent50Hit3Rate = toNum(meta.recent_50_hit3_rate, blendedHit3Rate);
+  const avgHit = toNum(meta.avg_hit, 0);
+  const totalRounds = toNum(meta.total_rounds, 0);
+
   const roleWeight =
     role === 'attack'
       ? toNum(phaseContext?.weightProfile?.attack, 1)
@@ -926,10 +951,20 @@ function scoreGroupForMode(group, role = 'mix', strategyMode = 'mix', riskMode =
             : 1;
 
   let score = scoreQualityReport(report, role, { strategyMode, riskMode }, phaseContext);
-  score += getBlendedRoi(group) * 100;
-  score += getBlendedHit3Rate(group) * 1800;
-  score += toNum(group?.meta?.avg_hit, 0) * 40;
-  score += toNum(group?.meta?.total_rounds, 0) * 1.2;
+  score += blendedRoi * 260;
+  score += recent50Roi * 340;
+  score += blendedHit3Rate * 3600;
+  score += recent50Hit3Rate * 4200;
+  score += avgHit * 65;
+  score += totalRounds * 1.6;
+  score += toNum(meta.hit4_rate, 0) * 5200;
+  score += toNum(meta.recent_50_hit4_rate, 0) * 6000;
+
+  if (blendedRoi < 0) score += blendedRoi * 260;
+  if (recent50Roi < 0) score += recent50Roi * 320;
+  if (blendedHit3Rate <= 0) score -= 180;
+  if (recent50Hit3Rate <= 0) score -= 220;
+
   score *= roleWeight;
 
   if (riskMode === 'safe' && role === 'guard') score += 35;
@@ -1302,11 +1337,9 @@ function buildRankedSourceGroups(sourceGroups = [], selection = {}, pools = {}, 
       };
     })
     .sort((a, b) => {
-      const tierGap = candidateTierBonus(b.tier) - candidateTierBonus(a.tier);
-      if (tierGap !== 0) return tierGap;
-      const maturityGap = b.totalRounds - a.totalRounds;
-      if (maturityGap !== 0) return maturityGap;
-      return b.score - a.score;
+      const slotPriorityA = candidateTierBonus(a.tier) + a.score + a.totalRounds;
+      const slotPriorityB = candidateTierBonus(b.tier) + b.score + b.totalRounds;
+      return slotPriorityB - slotPriorityA;
     });
 }
 
@@ -1318,6 +1351,8 @@ function pickRoleOrderedGroups(ranked = [], selection = {}, pools = {}, phaseCon
 
   for (let i = 0; i < roles.length && picked.length < GROUP_COUNT; i += 1) {
     const role = roles[i];
+    const slotNo = picked.length + 1;
+    const requiredTier = minTierForSlot(slotNo);
     let bestIdx = -1;
     let bestScore = -Infinity;
     let bestTier = 'C';
@@ -1328,7 +1363,9 @@ function pickRoleOrderedGroups(ranked = [], selection = {}, pools = {}, phaseCon
       const rankedRow = ranked[j];
       const strategyKey = getStrategyKey(rankedRow.group);
       const usedCount = toInt(strategyUseCount.get(strategyKey), 0);
+
       if (strategyKey && usedCount >= MAX_GROUPS_PER_STRATEGY) continue;
+      if (slotNo <= 2 && strategyKey && usedCount >= 1) continue;
 
       const score = scoreGroupForMode(
         rankedRow.group,
@@ -1340,6 +1377,8 @@ function pickRoleOrderedGroups(ranked = [], selection = {}, pools = {}, phaseCon
       );
 
       const tier = getCandidateTier(rankedRow.group, score, role, selection, phaseContext);
+      if (!meetsMinTier(tier, requiredTier)) continue;
+
       const bonus = candidateTierBonus(tier) - usedCount * 1500;
       if (score + bonus > bestScore) {
         bestScore = score + bonus;
@@ -1370,11 +1409,15 @@ function pickRoleOrderedGroups(ranked = [], selection = {}, pools = {}, phaseCon
     for (let j = 0; j < ranked.length && picked.length < GROUP_COUNT; j += 1) {
       if (usedIndexes.has(j)) continue;
 
+      const slotNo = picked.length + 1;
+      const requiredTier = minTierForSlot(slotNo);
       const role = roles[picked.length] || 'mix';
       const rankedRow = ranked[j];
       const strategyKey = getStrategyKey(rankedRow.group);
       const usedCount = toInt(strategyUseCount.get(strategyKey), 0);
       if (strategyKey && usedCount >= MAX_GROUPS_PER_STRATEGY) continue;
+      if (slotNo <= 2 && strategyKey && usedCount >= 1) continue;
+      if (!meetsMinTier(rankedRow.tier, requiredTier)) continue;
 
       usedIndexes.add(j);
       if (strategyKey) {
@@ -1406,11 +1449,13 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
 
     const strategyKey = getStrategyKey(sourceGroup);
     const currentStrategyCount = toInt(strategyUseCount.get(strategyKey), 0);
+    const nextSlotNo = groups.length + 1;
+    const requiredTier = minTierForSlot(nextSlotNo);
 
     const variant = buildVariantFromSourceGroup(
       sourceGroup,
       slotRole,
-      groups.length + 1,
+      nextSlotNo,
       pools,
       groups,
       selection,
@@ -1425,21 +1470,24 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
     const overlapTooHigh = groups.some((g) => countOverlap(nums, g?.nums || []) > MAX_GROUP_OVERLAP);
 
     const canUseStrategy = !strategyKey || currentStrategyCount < MAX_GROUPS_PER_STRATEGY;
-    const canUseByTier = tier !== 'C' || groups.length >= 2;
+    const canUseByTier = meetsMinTier(tier, requiredTier);
+    const mustSpreadTopSlots = nextSlotNo <= 2;
+    const violatesTopSpread = mustSpreadTopSlots && strategyKey && currentStrategyCount >= 1;
 
     const safeKey = `${sourceGroup.key}_${slotRole}_${nums.join('_')}`;
     if (usedKeys.has(safeKey)) return false;
     if (overlapTooHigh) return false;
     if (!canUseStrategy) return false;
     if (!canUseByTier) return false;
+    if (violatesTopSpread) return false;
 
     groups.push({
-      key: `${sourceGroup.key}_${slotRole}_${groups.length + 1}`,
-      label: buildFormalLabel(slotRole, groups.length + 1, sourceGroup),
+      key: `${sourceGroup.key}_${slotRole}_${nextSlotNo}`,
+      label: buildFormalLabel(slotRole, nextSlotNo, sourceGroup),
       nums,
       reason: `正式下注分工：${slotRole.toUpperCase()} / ${strategyModeLabel(selection.strategyMode)} / ${roleLabelOf(selection.riskMode)} / ${phaseContext.marketPhase} / ${phaseContext.lastHitLevel}`,
       meta: {
-        ...buildFormalMeta(sourceGroup, slotRole, groups.length + 1, sourcePrediction, selection, phaseContext),
+        ...buildFormalMeta(sourceGroup, slotRole, nextSlotNo, sourcePrediction, selection, phaseContext),
         decision_score: round4(candidateScore),
         decision_gate: getDecisionScoreFloor(slotRole, selection, phaseContext),
         roi_gate: getRecentRoiFloor(slotRole, selection, phaseContext),
