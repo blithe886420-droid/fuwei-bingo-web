@@ -1480,7 +1480,9 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
     }
 
     // 第 4 組完全開放，避免整批都掉進 fallback
-    if (nextSlotNo <= 3 && hit3 <= 0) {
+    // 只對有歷史的策略做 hit3 限制，避免新策略全部被判死
+    const totalRounds = toNum(sourceGroup?.meta?.total_rounds, 0);
+    if (nextSlotNo <= 3 && totalRounds >= 10 && hit3 <= 0) {
       return false;
     }
 
