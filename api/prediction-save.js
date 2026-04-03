@@ -1310,7 +1310,7 @@ function buildRankedSourceGroups(sourceGroups = [], selection = {}, pools = {}, 
     });
 }
 
-function pickRoleOrderedGroups(ranked = [], selection = {}, phaseContext = null) {
+function pickRoleOrderedGroups(ranked = [], selection = {}, pools = {}, phaseContext = null) {
   const roles = getRiskOrder(selection.riskMode, phaseContext);
   const picked = [];
   const usedIndexes = new Set();
@@ -1335,7 +1335,7 @@ function pickRoleOrderedGroups(ranked = [], selection = {}, phaseContext = null)
         role,
         selection.strategyMode,
         selection.riskMode,
-        pools = {},
+        pools,
         phaseContext
       );
 
@@ -1399,7 +1399,7 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
   const strategyUseCount = new Map();
 
   const ranked = buildRankedSourceGroups(sourceGroups, selection, pools, phaseContext);
-  const roleOrdered = pickRoleOrderedGroups(ranked, selection, phaseContext);
+  const roleOrdered = pickRoleOrderedGroups(ranked, selection, pools, phaseContext);
 
   const tryAddSlot = (sourceGroup, slotRole = 'mix') => {
     if (!sourceGroup) return false;
