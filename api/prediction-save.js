@@ -17,6 +17,7 @@ const SUPABASE_KEY =
 const DRAWS_TABLE = 'bingo_draws';
 const PREDICTIONS_TABLE = 'bingo_predictions';
 const STRATEGY_STATS_TABLE = 'strategy_stats';
+const STRATEGY_POOL_TABLE = 'strategy_pool';
 
 const TEST_MODE = 'test';
 const FORMAL_MODE = 'formal';
@@ -362,6 +363,17 @@ async function getStrategyStatsRowsByKeys(strategyKeys = []) {
   return Array.isArray(data) ? data : [];
 }
 
+
+async function getStrategyPoolRows(limitCount = 120) {
+  const { data, error } = await supabase
+    .from(STRATEGY_POOL_TABLE)
+    .select('strategy_key, strategy_name')
+    .limit(limitCount);
+
+  if (error) throw error;
+  return Array.isArray(data) ? data : [];
+}
+
 function pickMetric(preferredValue, fallbackValue) {
   const preferred = Number(preferredValue);
   if (Number.isFinite(preferred)) return preferred;
@@ -409,6 +421,112 @@ function mergeStrategyStatsIntoGroups(groups = [], statsRows = []) {
   return (Array.isArray(groups) ? groups : []).map((group) =>
     mergeStrategyStatsIntoGroup(group, statsMap)
   );
+}
+
+
+function pickZoneAnchors(source = []) {
+  const nums = uniqueAsc(source);
+  const zones = [[], [], [], []];
+  nums.forEach((n) => {
+    if (n <= 20) zones[0].push(n);
+    else if (n <= 40) zones[1].push(n);
+    else if (n <= 60) zones[2].push(n);
+    else zones[3].push(n);
+  });
+
+  return uniqueAsc([
+    zones[0][0],
+    zones[1][0],
+    zones[2][0],
+    zones[3][0]
+  ].filter((n) => Number.isFinite(n)));
+}
+
+function buildNumsFromStrategyKey(strategyKey = '', pools = {}, selection = {}, phaseContext = null) {
+  const key = String(strategyKey || '').trim().toLowerCase();
+
+  const hotCore = [...(pools.hot5 || []), ...(pools.hot10 || []), ...(pools.attack || [])];
+  const coldCore = [...(pools.cold || []), ...(pools.gap || []), ...(pools.extend || [])];
+  const guardCore = [...(pools.guard || []), ...(pools.hot20 || []), ...(pools.warm || [])];
+  const recentCore = [...(pools.recent || []), ...(pools.hot5 || []), ...(pools.attack || [])];
+  const mixedCore = [...(pools.qualityAll || []), ...(pools.hot || []), ...(pools.extend || []), ...(pools.guard || [])];
+
+  let base = [];
+
+  if (key.includes('gap') || key.includes('chase') || key.includes('jump')) {
+    base = [...coldCore, ...(pools.hot10 || [])];
+  } else if (key.includes('cold')) {
+    base = [...(pools.cold || []), ...(pools.gap || []), ...(pools.guard || [])];
+  } else if (key.includes('hot') || key.includes('repeat')) {
+    base = [...hotCore, ...(pools.recent || [])];
+  } else if (key.includes('guard') || key.includes('balance') || key.includes('balanced') || key.includes('mix')) {
+    base = [...guardCore, ...(pools.extend || [])];
+  } else if (key.includes('recent')) {
+    base = [...recentCore, ...(pools.extend || [])];
+  } else {
+    base = mixedCore;
+  }
+
+  if (key.includes('zone')) {
+    base = uniqueAsc([...pickZoneAnchors(base), ...base, ...(pools.qualityAll || [])]);
+  }
+
+  if (key.includes('tail')) {
+    const tails = new Map();
+    for (const n of base) {
+      const t = n % 10;
+      if (!tails.has(t)) tails.set(t, n);
+      if (tails.size >= 4) break;
+    }
+    base = uniqueAsc([...tails.values(), ...base, ...(pools.qualityAll || [])]);
+  }
+
+  if (key.includes('skip')) {
+    base = uniqueAsc(base.filter((_, idx) => idx % 2 === 0).concat(pools.gap || []));
+  }
+
+  if (key.includes('cluster') || key.includes('pattern')) {
+    base = uniqueAsc([...(pools.hot10 || []), ...(pools.hot20 || []), ...base]);
+  }
+
+  if (key.includes('split')) {
+    base = uniqueAsc([...(pools.attack || []).slice(0, 2), ...(pools.gap || []).slice(0, 4), ...base]);
+  }
+
+  const nums = fillToFour([], [base, pools.qualityAll || [], pools.hot || [], pools.gap || [], pools.all || []], key.length * 37 + (selection.analysisPeriod || 0) * 11);
+
+  return uniqueAsc(nums).slice(0, 4);
+}
+
+function buildStrategyPoolGroups(poolRows = [], pools = {}, selection = {}, phaseContext = null, sourceDraw = null) {
+  const groups = [];
+
+  for (const row of Array.isArray(poolRows) ? poolRows : []) {
+    const strategyKey = String(row?.strategy_key || '').trim();
+    if (!strategyKey || isFallbackStrategyKey(strategyKey)) continue;
+
+    const nums = buildNumsFromStrategyKey(strategyKey, pools, selection, phaseContext);
+    if (nums.length !== 4) continue;
+    if (!isAcceptableGroup(nums, pools, inferRoleFromGroup({ key: strategyKey, meta: { strategy_key: strategyKey } }), selection, phaseContext)) continue;
+
+    groups.push({
+      key: strategyKey,
+      label: String(row?.strategy_name || strategyKey),
+      nums,
+      reason: `正式下注採用策略池策略（單期 / 每組 ${COST_PER_GROUP} 元）`,
+      meta: {
+        strategy_key: strategyKey,
+        strategy_name: String(row?.strategy_name || strategyKey),
+        source_tag: 'strategy_pool',
+        source_draw_no: toNum(sourceDraw?.draw_no, 0),
+        source_draw_time: sourceDraw?.draw_time || null,
+        bet_amount: COST_PER_GROUP,
+        decision: 'from_strategy_pool'
+      }
+    });
+  }
+
+  return normalizeGroups(groups, sourceDraw);
 }
 
 async function getLatestComparedPredictionBeforeSource(sourceDrawNo) {
@@ -1721,7 +1839,7 @@ async function buildFormalPrediction(selection = {}, triggerSource = 'unknown') 
   const recentTestRows = await getRecentPredictionRowsByMode(TEST_MODE, 10);
   const recentFormalCandidateRows = await getRecentPredictionRowsByMode(FORMAL_CANDIDATE_MODE, 10);
 
-  const rawSourceGroups = collectSourceGroups(
+  const predictionSourceGroups = collectSourceGroups(
     [
       sourcePrediction,
       ...recentFormalCandidateRows,
@@ -1729,6 +1847,20 @@ async function buildFormalPrediction(selection = {}, triggerSource = 'unknown') 
     ].filter(Boolean),
     latestDraw
   );
+
+  const strategyPoolRows = await getStrategyPoolRows(120);
+  const strategyPoolGroups = buildStrategyPoolGroups(
+    strategyPoolRows,
+    pools,
+    selection,
+    phaseContext,
+    latestDraw
+  );
+
+  const rawSourceGroups = [
+    ...predictionSourceGroups,
+    ...strategyPoolGroups
+  ];
 
   const strategyStatsRows = await getStrategyStatsRowsByKeys(
     rawSourceGroups.map((group) => getStrategyKey(group))
