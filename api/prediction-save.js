@@ -498,19 +498,39 @@ function buildNumsFromStrategyKey(strategyKey = '', pools = {}, selection = {}, 
   return uniqueAsc(nums).slice(0, 4);
 }
 
-function buildStrategyPoolGroups(poolRows = [], pools = {}, selection = {}, phaseContext = null, sourceDraw = null) {
+function buildStrategyPoolGroups(poolRows = [], statsRows = [], pools = {}, selection = {}, phaseContext = null, sourceDraw = null) {
   const groups = [];
+  const statsMap = new Map(
+    (Array.isArray(statsRows) ? statsRows : []).map((row) => [String(row?.strategy_key || '').trim(), row])
+  );
 
   for (const row of Array.isArray(poolRows) ? poolRows : []) {
     const strategyKey = String(row?.strategy_key || '').trim();
     if (!strategyKey || isFallbackStrategyKey(strategyKey)) continue;
 
-    const role = inferRoleFromGroup({ key: strategyKey, meta: { strategy_key: strategyKey } });
+    const stats = statsMap.get(strategyKey);
+    const totalRounds = toNum(stats?.total_rounds, 0);
+
+    // 🔥 只允許成熟策略進 formal 候選池
+    if (!stats || totalRounds < 10) continue;
+
+    const role = inferRoleFromGroup({
+      key: strategyKey,
+      meta: {
+        strategy_key: strategyKey,
+        preferred_role: stats?.preferred_role || ''
+      }
+    });
+
     let nums = buildNumsFromStrategyKey(strategyKey, pools, selection, phaseContext);
     if (nums.length !== 4) continue;
 
     if (!isAcceptableGroup(nums, pools, role, selection, phaseContext)) {
-      nums = fillToFour(nums, [pools.qualityAll || [], pools.hot || [], pools.gap || [], pools.all || []], strategyKey.length * 53);
+      nums = fillToFour(
+        nums,
+        [pools.qualityAll || [], pools.hot || [], pools.gap || [], pools.all || []],
+        strategyKey.length * 53
+      );
     }
 
     if (nums.length !== 4) continue;
@@ -527,7 +547,14 @@ function buildStrategyPoolGroups(poolRows = [], pools = {}, selection = {}, phas
         source_draw_no: toNum(sourceDraw?.draw_no, 0),
         source_draw_time: sourceDraw?.draw_time || null,
         bet_amount: COST_PER_GROUP,
-        decision: 'from_strategy_pool'
+        decision: 'from_strategy_pool',
+        total_rounds: totalRounds,
+        roi: toNum(stats?.roi, 0),
+        avg_hit: toNum(stats?.avg_hit, 0),
+        hit3_rate: toNum(stats?.hit3_rate, 0),
+        recent_50_roi: toNum(stats?.recent_50_roi, 0),
+        recent_50_hit3_rate: toNum(stats?.recent_50_hit3_rate, 0),
+        score: toNum(stats?.score, 0)
       }
     });
   }
@@ -1868,8 +1895,18 @@ async function buildFormalPrediction(selection = {}, triggerSource = 'unknown') 
   );
 
   const strategyPoolRows = await getStrategyPoolRows(120);
+
+  const predictionKeys = predictionSourceGroups.map((group) => getStrategyKey(group));
+  const strategyPoolKeys = strategyPoolRows.map((row) => String(row?.strategy_key || '').trim()).filter(Boolean);
+
+  const strategyStatsRows = await getStrategyStatsRowsByKeys([
+    ...predictionKeys,
+    ...strategyPoolKeys
+  ]);
+
   const strategyPoolGroups = buildStrategyPoolGroups(
     strategyPoolRows,
+    strategyStatsRows,
     pools,
     selection,
     phaseContext,
@@ -1880,10 +1917,6 @@ async function buildFormalPrediction(selection = {}, triggerSource = 'unknown') 
     ...predictionSourceGroups,
     ...strategyPoolGroups
   ];
-
-  const strategyStatsRows = await getStrategyStatsRowsByKeys(
-    rawSourceGroups.map((group) => getStrategyKey(group))
-  );
 
   const sourceGroups = dedupeSourceGroups(
     mergeStrategyStatsIntoGroups(rawSourceGroups, strategyStatsRows)
