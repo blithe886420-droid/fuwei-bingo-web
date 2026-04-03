@@ -1466,6 +1466,19 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
 
     const nums = variant.nums;
     const candidateScore = variant.score;
+
+    const roi = getBlendedRoi(sourceGroup);
+    const hit3 = getBlendedHit3Rate(sourceGroup);
+
+    if (nextSlotNo <= 2) {
+      if (roi < -0.2) return false;
+      if (hit3 <= 0) return false;
+    } else if (nextSlotNo === 3) {
+      if (roi < -0.3) return false;
+    } else {
+      if (roi < -0.45) return false;
+    }
+
     const tier = getCandidateTier(sourceGroup, candidateScore, slotRole, selection, phaseContext);
     const overlapTooHigh = groups.some((g) => countOverlap(nums, g?.nums || []) > MAX_GROUP_OVERLAP);
 
