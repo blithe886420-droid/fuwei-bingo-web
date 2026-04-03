@@ -16,6 +16,7 @@ const SUPABASE_KEY =
 
 const DRAWS_TABLE = 'bingo_draws';
 const PREDICTIONS_TABLE = 'bingo_predictions';
+const STRATEGY_STATS_TABLE = 'strategy_stats';
 
 const TEST_MODE = 'test';
 const FORMAL_MODE = 'formal';
@@ -345,6 +346,69 @@ async function getRecentPredictionRowsByMode(mode, limitCount = 12) {
 
   if (error) throw error;
   return Array.isArray(data) ? data : [];
+}
+
+
+async function getStrategyStatsRowsByKeys(strategyKeys = []) {
+  const keys = [...new Set((Array.isArray(strategyKeys) ? strategyKeys : []).map((v) => String(v || '').trim()).filter(Boolean))];
+  if (!keys.length) return [];
+
+  const { data, error } = await supabase
+    .from(STRATEGY_STATS_TABLE)
+    .select('*')
+    .in('strategy_key', keys);
+
+  if (error) throw error;
+  return Array.isArray(data) ? data : [];
+}
+
+function pickMetric(preferredValue, fallbackValue) {
+  const preferred = Number(preferredValue);
+  if (Number.isFinite(preferred)) return preferred;
+  const fallback = Number(fallbackValue);
+  return Number.isFinite(fallback) ? fallback : 0;
+}
+
+function mergeStrategyStatsIntoGroup(group = {}, statsMap = new Map()) {
+  const strategyKey = getStrategyKey(group);
+  if (!strategyKey || !statsMap.has(strategyKey)) return group;
+
+  const stats = statsMap.get(strategyKey) || {};
+  const meta = group?.meta && typeof group.meta === 'object' ? group.meta : {};
+
+  return {
+    ...group,
+    meta: {
+      ...meta,
+      strategy_key: strategyKey,
+      strategy_name: String(stats.strategy_name || meta.strategy_name || group.label || strategyKey),
+      total_rounds: pickMetric(stats.total_rounds, meta.total_rounds),
+      total_profit: pickMetric(stats.total_profit, meta.total_profit),
+      roi: pickMetric(stats.roi, meta.roi),
+      avg_hit: pickMetric(stats.avg_hit, meta.avg_hit),
+      hit2: pickMetric(stats.hit2, meta.hit2),
+      hit3: pickMetric(stats.hit3, meta.hit3),
+      hit4: pickMetric(stats.hit4, meta.hit4),
+      hit2_rate: pickMetric(stats.hit2_rate, meta.hit2_rate),
+      hit3_rate: pickMetric(stats.hit3_rate, meta.hit3_rate),
+      hit4_rate: pickMetric(stats.hit4_rate, meta.hit4_rate),
+      recent_50_roi: pickMetric(stats.recent_50_roi, meta.recent_50_roi),
+      recent_50_hit_rate: pickMetric(stats.recent_50_hit_rate, meta.recent_50_hit_rate),
+      recent_50_hit3_rate: pickMetric(stats.recent_50_hit3_rate, meta.recent_50_hit3_rate),
+      recent_50_hit4_rate: pickMetric(stats.recent_50_hit4_rate, meta.recent_50_hit4_rate),
+      score: pickMetric(stats.score, meta.score)
+    }
+  };
+}
+
+function mergeStrategyStatsIntoGroups(groups = [], statsRows = []) {
+  const statsMap = new Map(
+    (Array.isArray(statsRows) ? statsRows : []).map((row) => [String(row?.strategy_key || '').trim(), row])
+  );
+
+  return (Array.isArray(groups) ? groups : []).map((group) =>
+    mergeStrategyStatsIntoGroup(group, statsMap)
+  );
 }
 
 async function getLatestComparedPredictionBeforeSource(sourceDrawNo) {
@@ -1470,18 +1534,16 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
     const roi = getBlendedRoi(sourceGroup);
     const hit3 = getBlendedHit3Rate(sourceGroup);
 
-    // ROI / hit3 硬門檻（放鬆版，避免四組全 fallback）
-    if (nextSlotNo === 1) {
-      if (roi < -0.25) return false;
-    } else if (nextSlotNo === 2) {
-      if (roi < -0.35) return false;
-    } else if (nextSlotNo === 3) {
-      if (roi < -0.45) return false;
+    // ROI / hit3 硬門檻（ stats 已接入後的穩定版 ）
+    const totalRounds = toNum(sourceGroup?.meta?.total_rounds, 0);
+
+    if (totalRounds >= 20) {
+      if (nextSlotNo === 1 && roi < -0.3) return false;
+      if (nextSlotNo === 2 && roi < -0.4) return false;
+      if (nextSlotNo === 3 && roi < -0.5) return false;
     }
 
-    // 第 4 組完全開放，避免整批都掉進 fallback
-    // 只對有歷史的策略做 hit3 限制，避免新策略全部被判死
-    const totalRounds = toNum(sourceGroup?.meta?.total_rounds, 0);
+    // 只對成熟策略做 hit3 限制，避免新策略全部被判死
     if (nextSlotNo <= 3 && totalRounds >= 10 && hit3 <= 0) {
       return false;
     }
@@ -1646,15 +1708,21 @@ async function buildFormalPrediction(selection = {}, triggerSource = 'unknown') 
   const recentTestRows = await getRecentPredictionRowsByMode(TEST_MODE, 10);
   const recentFormalCandidateRows = await getRecentPredictionRowsByMode(FORMAL_CANDIDATE_MODE, 10);
 
+  const rawSourceGroups = collectSourceGroups(
+    [
+      sourcePrediction,
+      ...recentFormalCandidateRows,
+      ...recentTestRows
+    ].filter(Boolean),
+    latestDraw
+  );
+
+  const strategyStatsRows = await getStrategyStatsRowsByKeys(
+    rawSourceGroups.map((group) => getStrategyKey(group))
+  );
+
   const sourceGroups = dedupeSourceGroups(
-    collectSourceGroups(
-      [
-        sourcePrediction,
-        ...recentFormalCandidateRows,
-        ...recentTestRows
-      ].filter(Boolean),
-      latestDraw
-    )
+    mergeStrategyStatsIntoGroups(rawSourceGroups, strategyStatsRows)
   );
 
   if (!sourceGroups.length) {
