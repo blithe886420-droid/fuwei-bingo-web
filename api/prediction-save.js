@@ -1470,13 +1470,18 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
     const roi = getBlendedRoi(sourceGroup);
     const hit3 = getBlendedHit3Rate(sourceGroup);
 
-    if (nextSlotNo <= 2) {
-      if (roi < -0.2) return false;
-      if (hit3 <= 0) return false;
+    // ROI / hit3 硬門檻（放鬆版，避免四組全 fallback）
+    if (nextSlotNo === 1) {
+      if (roi < -0.25) return false;
+    } else if (nextSlotNo === 2) {
+      if (roi < -0.35) return false;
     } else if (nextSlotNo === 3) {
-      if (roi < -0.3) return false;
-    } else {
       if (roi < -0.45) return false;
+    }
+
+    // 第 4 組完全開放，避免整批都掉進 fallback
+    if (nextSlotNo <= 3 && hit3 <= 0) {
+      return false;
     }
 
     const tier = getCandidateTier(sourceGroup, candidateScore, slotRole, selection, phaseContext);
