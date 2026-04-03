@@ -988,6 +988,14 @@ function getStrategyKey(group = {}) {
   return String(group?.meta?.strategy_key || group?.key || '').trim();
 }
 
+function isFallbackStrategyKey(strategyKey = '') {
+  return String(strategyKey || '').trim().toLowerCase().startsWith('fallback_');
+}
+
+function isFallbackGroup(group = {}) {
+  return isFallbackStrategyKey(getStrategyKey(group));
+}
+
 function getSourceTag(group = {}) {
   return String(group?.meta?.source_tag || group?.meta?.decision || 'source').trim();
 }
@@ -1428,6 +1436,7 @@ function pickRoleOrderedGroups(ranked = [], selection = {}, pools = {}, phaseCon
       const strategyKey = getStrategyKey(rankedRow.group);
       const usedCount = toInt(strategyUseCount.get(strategyKey), 0);
 
+      if (slotNo <= 3 && isFallbackStrategyKey(strategyKey)) continue;
       if (strategyKey && usedCount >= MAX_GROUPS_PER_STRATEGY) continue;
       if (slotNo <= 2 && strategyKey && usedCount >= 1) continue;
 
@@ -1515,6 +1524,10 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
     const currentStrategyCount = toInt(strategyUseCount.get(strategyKey), 0);
     const nextSlotNo = groups.length + 1;
     const requiredTier = minTierForSlot(nextSlotNo);
+
+    if (nextSlotNo <= 3 && isFallbackStrategyKey(strategyKey)) {
+      return false;
+    }
 
     const variant = buildVariantFromSourceGroup(
       sourceGroup,
