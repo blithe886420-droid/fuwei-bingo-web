@@ -1680,6 +1680,11 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
     const roi = getBlendedRoi(sourceGroup);
     const hit3 = getBlendedHit3Rate(sourceGroup);
 
+    // 🔥 強制 ROI 進場門檻（真正生效）
+    if (nextSlotNo === 1 && roi < -0.35) return false;
+    if (nextSlotNo === 2 && roi < -0.45) return false;
+    if (nextSlotNo === 3 && roi < -0.55) return false;
+
     // ROI / hit3 硬門檻（ stats 已接入後的穩定版 ）
     const totalRounds = toNum(sourceGroup?.meta?.total_rounds, 0);
 
