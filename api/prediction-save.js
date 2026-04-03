@@ -505,9 +505,15 @@ function buildStrategyPoolGroups(poolRows = [], pools = {}, selection = {}, phas
     const strategyKey = String(row?.strategy_key || '').trim();
     if (!strategyKey || isFallbackStrategyKey(strategyKey)) continue;
 
-    const nums = buildNumsFromStrategyKey(strategyKey, pools, selection, phaseContext);
+    const role = inferRoleFromGroup({ key: strategyKey, meta: { strategy_key: strategyKey } });
+    let nums = buildNumsFromStrategyKey(strategyKey, pools, selection, phaseContext);
     if (nums.length !== 4) continue;
-    if (!isAcceptableGroup(nums, pools, inferRoleFromGroup({ key: strategyKey, meta: { strategy_key: strategyKey } }), selection, phaseContext)) continue;
+
+    if (!isAcceptableGroup(nums, pools, role, selection, phaseContext)) {
+      nums = fillToFour(nums, [pools.qualityAll || [], pools.hot || [], pools.gap || [], pools.all || []], strategyKey.length * 53);
+    }
+
+    if (nums.length !== 4) continue;
 
     groups.push({
       key: strategyKey,
@@ -1114,6 +1120,10 @@ function isFallbackGroup(group = {}) {
   return isFallbackStrategyKey(getStrategyKey(group));
 }
 
+function isStrategyPoolGroup(group = {}) {
+  return String(group?.meta?.source_tag || '').trim().toLowerCase() === 'strategy_pool';
+}
+
 function getSourceTag(group = {}) {
   return String(group?.meta?.source_tag || group?.meta?.decision || 'source').trim();
 }
@@ -1516,14 +1526,17 @@ function buildRankedSourceGroups(sourceGroups = [], selection = {}, pools = {}, 
       );
       const tier = getCandidateTier(group, score, role, selection, phaseContext);
 
+      const isPool = isStrategyPoolGroup(group);
+
       return {
         group,
         role,
-        score,
+        score: isPool ? round4(score + 120) : score,
         tier,
         strategyKey: getStrategyKey(group),
         totalRounds: toNum(group?.meta?.total_rounds, 0),
-        sourceTag: getSourceTag(group)
+        sourceTag: getSourceTag(group),
+        isPool
       };
     })
     .sort((a, b) => {
@@ -1553,6 +1566,7 @@ function pickRoleOrderedGroups(ranked = [], selection = {}, pools = {}, phaseCon
       const rankedRow = ranked[j];
       const strategyKey = getStrategyKey(rankedRow.group);
       const usedCount = toInt(strategyUseCount.get(strategyKey), 0);
+      const isPool = isStrategyPoolGroup(rankedRow.group);
 
       if (slotNo <= 3 && isFallbackStrategyKey(strategyKey)) continue;
       if (strategyKey && usedCount >= MAX_GROUPS_PER_STRATEGY) continue;
@@ -1568,7 +1582,7 @@ function pickRoleOrderedGroups(ranked = [], selection = {}, pools = {}, phaseCon
       );
 
       const tier = getCandidateTier(rankedRow.group, score, role, selection, phaseContext);
-      if (!meetsMinTier(tier, requiredTier)) continue;
+      if (!isPool && !meetsMinTier(tier, requiredTier)) continue;
 
       const bonus = candidateTierBonus(tier) - usedCount * 1500;
       if (score + bonus > bestScore) {
@@ -1642,6 +1656,7 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
     const currentStrategyCount = toInt(strategyUseCount.get(strategyKey), 0);
     const nextSlotNo = groups.length + 1;
     const requiredTier = minTierForSlot(nextSlotNo);
+    const isPool = isStrategyPoolGroup(sourceGroup);
 
     if (nextSlotNo <= 3 && isFallbackStrategyKey(strategyKey)) {
       return false;
@@ -1668,14 +1683,14 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
     // ROI / hit3 硬門檻（ stats 已接入後的穩定版 ）
     const totalRounds = toNum(sourceGroup?.meta?.total_rounds, 0);
 
-    if (totalRounds >= 20) {
+    if (!isPool && totalRounds >= 20) {
       if (nextSlotNo === 1 && roi < -0.3) return false;
       if (nextSlotNo === 2 && roi < -0.4) return false;
       if (nextSlotNo === 3 && roi < -0.5) return false;
     }
 
-    // 只對成熟策略做 hit3 限制，避免新策略全部被判死
-    if (nextSlotNo <= 3 && totalRounds >= 10 && hit3 <= 0) {
+    // 只對成熟的非 strategy_pool 策略做 hit3 限制，避免探索策略全部被判死
+    if (!isPool && nextSlotNo <= 3 && totalRounds >= 10 && hit3 <= 0) {
       return false;
     }
 
@@ -1683,7 +1698,7 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
     const overlapTooHigh = groups.some((g) => countOverlap(nums, g?.nums || []) > MAX_GROUP_OVERLAP);
 
     const canUseStrategy = !strategyKey || currentStrategyCount < MAX_GROUPS_PER_STRATEGY;
-    const canUseByTier = meetsMinTier(tier, requiredTier);
+    const canUseByTier = isPool ? true : meetsMinTier(tier, requiredTier);
     const mustSpreadTopSlots = nextSlotNo <= 2;
     const violatesTopSpread = mustSpreadTopSlots && strategyKey && currentStrategyCount >= 1;
 
