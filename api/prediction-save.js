@@ -509,10 +509,10 @@ function buildStrategyPoolGroups(poolRows = [], statsRows = [], pools = {}, sele
     if (!strategyKey || isFallbackStrategyKey(strategyKey)) continue;
 
     const stats = statsMap.get(strategyKey);
-    const totalRounds = toNum(stats?.total_rounds, 0);
+    if (!stats) continue;
 
-    // 🔥 只允許成熟策略進 formal 候選池
-    if (!stats || totalRounds < 10) continue;
+    const totalRounds = toNum(stats.total_rounds, 0);
+    if (totalRounds < 3) continue;
 
     const role = inferRoleFromGroup({
       key: strategyKey,
@@ -548,13 +548,21 @@ function buildStrategyPoolGroups(poolRows = [], statsRows = [], pools = {}, sele
         source_draw_time: sourceDraw?.draw_time || null,
         bet_amount: COST_PER_GROUP,
         decision: 'from_strategy_pool',
-        total_rounds: totalRounds,
-        roi: toNum(stats?.roi, 0),
-        avg_hit: toNum(stats?.avg_hit, 0),
-        hit3_rate: toNum(stats?.hit3_rate, 0),
-        recent_50_roi: toNum(stats?.recent_50_roi, 0),
-        recent_50_hit3_rate: toNum(stats?.recent_50_hit3_rate, 0),
-        score: toNum(stats?.score, 0)
+        total_rounds: toNum(stats.total_rounds, 0),
+        total_profit: toNum(stats.total_profit, 0),
+        roi: toNum(stats.roi, 0),
+        avg_hit: toNum(stats.avg_hit, 0),
+        hit2: toNum(stats.hit2, 0),
+        hit3: toNum(stats.hit3, 0),
+        hit4: toNum(stats.hit4, 0),
+        hit2_rate: toNum(stats.hit2_rate, 0),
+        hit3_rate: toNum(stats.hit3_rate, 0),
+        hit4_rate: toNum(stats.hit4_rate, 0),
+        recent_50_roi: toNum(stats.recent_50_roi, 0),
+        recent_50_hit_rate: toNum(stats.recent_50_hit_rate, 0),
+        recent_50_hit3_rate: toNum(stats.recent_50_hit3_rate, 0),
+        recent_50_hit4_rate: toNum(stats.recent_50_hit4_rate, 0),
+        score: toNum(stats.score, 0)
       }
     });
   }
@@ -1685,10 +1693,6 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
     const requiredTier = minTierForSlot(nextSlotNo);
     const isPool = isStrategyPoolGroup(sourceGroup);
 
-    if (nextSlotNo <= 3 && isFallbackStrategyKey(strategyKey)) {
-      return false;
-    }
-
     const variant = buildVariantFromSourceGroup(
       sourceGroup,
       slotRole,
@@ -1706,21 +1710,26 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
 
     const roi = getBlendedRoi(sourceGroup);
     const hit3 = getBlendedHit3Rate(sourceGroup);
-
-    // 🔥 強制 ROI 進場門檻（真正生效）
-    if (nextSlotNo === 1 && roi < -0.35) return false;
-    if (nextSlotNo === 2 && roi < -0.45) return false;
-    if (nextSlotNo === 3 && roi < -0.55) return false;
-
-    // ROI / hit3 硬門檻（ stats 已接入後的穩定版 ）
     const totalRounds = toNum(sourceGroup?.meta?.total_rounds, 0);
 
-    // ROI 分層淘汰（真正進場門檻，對所有策略生效）
+    // 前 3 組禁止 fallback
+    if (nextSlotNo <= 3 && isFallbackStrategyKey(strategyKey)) {
+      return false;
+    }
+
+    // strategy_pool 成熟門檻（分層）
+    if (isPool) {
+      if (nextSlotNo === 1 && totalRounds < 10) return false;
+      if (nextSlotNo === 2 && totalRounds < 5) return false;
+      if (nextSlotNo === 3 && totalRounds < 3) return false;
+    }
+
+    // ROI 分層淘汰（真正進場門檻）
     if (nextSlotNo === 1 && roi < -0.35) return false;
     if (nextSlotNo === 2 && roi < -0.45) return false;
     if (nextSlotNo === 3 && roi < -0.55) return false;
 
-    // hit3 只對成熟策略生效，避免新策略全部被判死
+    // hit3 只對成熟策略生效
     if (nextSlotNo <= 3 && totalRounds >= 10 && hit3 <= 0) {
       return false;
     }
@@ -1897,7 +1906,9 @@ async function buildFormalPrediction(selection = {}, triggerSource = 'unknown') 
   const strategyPoolRows = await getStrategyPoolRows(120);
 
   const predictionKeys = predictionSourceGroups.map((group) => getStrategyKey(group));
-  const strategyPoolKeys = strategyPoolRows.map((row) => String(row?.strategy_key || '').trim()).filter(Boolean);
+  const strategyPoolKeys = strategyPoolRows
+    .map((row) => String(row?.strategy_key || '').trim())
+    .filter(Boolean);
 
   const strategyStatsRows = await getStrategyStatsRowsByKeys([
     ...predictionKeys,
