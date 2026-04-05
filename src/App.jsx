@@ -148,8 +148,14 @@ function getRecentRows(data) {
   return [];
 }
 
-function safeFetchJson(url, options) {
-  return fetch(url, options).then(async (res) => {
+function safeFetchJson(url, options = {}) {
+  return fetch(url, {
+    cache: 'no-store',
+    ...options,
+    headers: {
+      ...(options?.headers || {})
+    }
+  }).then(async (res) => {
     const text = await res.text();
 
     let json = {};
@@ -167,8 +173,14 @@ function safeFetchJson(url, options) {
   });
 }
 
-async function safeFetchJsonAllowHttpError(url, options) {
-  const res = await fetch(url, options);
+async function safeFetchJsonAllowHttpError(url, options = {}) {
+  const res = await fetch(url, {
+    cache: 'no-store',
+    ...options,
+    headers: {
+      ...(options?.headers || {})
+    }
+  });
   const text = await res.text();
 
   let json = {};
@@ -839,6 +851,18 @@ export default function App() {
     });
   }, [runAction]);
 
+  const handleRefresh = useCallback(async () => {
+    await runAction('refresh', async () => {
+      await safeFetchJson('/api/sync', { method: 'POST' }).catch(async () => {
+        await safeFetchJson('/api/sync');
+      });
+
+      await safeFetchJson('/api/recent20').catch(() => ({}));
+      await safeFetchJson('/api/prediction-latest').catch(() => ({}));
+      await safeFetchJson('/api/ai-player').catch(() => ({}));
+    });
+  }, [runAction]);
+
   const handleFormalBet = useCallback(async () => {
     await runAction('formalBet', async () => {
       await safeFetchJson('/api/prediction-save', {
@@ -1119,10 +1143,10 @@ export default function App() {
           <div style={styles.headerActions}>
             <button
               style={styles.secondaryButton}
-              onClick={loadAll}
-              disabled={busyKey !== ''}
+              onClick={handleRefresh}
+              disabled={busyKey !== '' && busyKey !== 'refresh'}
             >
-              重新整理
+              {busyKey === 'refresh' ? '更新中...' : '重新整理'}
             </button>
             <button
               style={{
