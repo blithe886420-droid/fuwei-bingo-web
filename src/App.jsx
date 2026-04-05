@@ -1168,30 +1168,6 @@ export default function App() {
       ? '本期已達 3 批上限'
       : '手動產生一批正式下注';
 
-  const strategyStabilityScore = Math.max(
-    0,
-    Math.min(
-      100,
-      Math.round(
-        aiPlayer.activeCount * 0.8 +
-          Math.min(30, formalBatchCount * 8) +
-          Math.max(0, toNum(aiPlayer.topStrategyRecent50Roi, 0) * 100 * 0.6)
-      )
-    )
-  );
-
-  const marketFitScore = Math.max(
-    0,
-    Math.min(
-      100,
-      Math.round(
-        toNum(aiPlayer.trainingStrength, 0) * 0.7 +
-          (predictionSummary.readyForFormal ? 18 : 0) +
-          (aiPlayer.decisionPhase === 'good' ? 10 : 0)
-      )
-    )
-  );
-
   const displayedSelection = useMemo(
     () =>
       resolveDisplayedSelection(
@@ -1203,6 +1179,167 @@ export default function App() {
       ),
     [predictionSummary, trainingLatest, formalLatest, strategyMode, riskMode]
   );
+
+  const normalizedStrategyScores = useMemo(() => {
+    const collectScore = (item) => {
+      const direct = toNum(item?.score, NaN);
+      if (Number.isFinite(direct)) return direct;
+
+      const meta = item?.meta && typeof item.meta === 'object' ? item.meta : {};
+      const metaScore = toNum(meta?.score, NaN);
+      if (Number.isFinite(metaScore)) return metaScore;
+
+      const decisionScore = toNum(meta?.decision_score, NaN);
+      if (Number.isFinite(decisionScore)) return decisionScore;
+
+      return NaN;
+    };
+
+    return [
+      ...toArray(formalDisplayGroups),
+      ...toArray(trainingGroups),
+      ...toArray(currentTopStrategies),
+      ...toArray(leaderboard)
+    ]
+      .map(collectScore)
+      .filter((score) => Number.isFinite(score) && score > -9999)
+      .sort((a, b) => b - a);
+  }, [formalDisplayGroups, trainingGroups, currentTopStrategies, leaderboard]);
+
+  const formalGroupMetrics = useMemo(() => {
+    const groups = toArray(formalDisplayGroups);
+    const safeCount = groups.length || 1;
+
+    const avgHit =
+      groups.reduce((sum, group) => sum + toNum(group?.meta?.avg_hit, 0), 0) / safeCount;
+
+    const avgHit3Rate =
+      groups.reduce((sum, group) => sum + toNum(group?.meta?.hit3_rate, 0), 0) / safeCount;
+
+    const avgMarketBoost =
+      groups.reduce((sum, group) => sum + toNum(group?.meta?.market_boost, 1), 0) / safeCount;
+
+    const uniqueStrategyRatio =
+      new Set(groups.map((group) => String(group?.key || group?.meta?.strategy_key || '')).filter(Boolean)).size /
+      safeCount;
+
+    const roles = groups.map((group) => {
+      const rawRole = String(
+        group?.meta?.preferred_role ||
+          group?.meta?.role ||
+          group?.label ||
+          ''
+      ).toLowerCase();
+
+      if (rawRole.includes('extend')) return 'extend';
+      if (rawRole.includes('guard')) return 'guard';
+      if (rawRole.includes('recent')) return 'recent';
+      if (rawRole.includes('attack')) return 'attack';
+      return 'other';
+    });
+
+    return {
+      avgHit,
+      avgHit3Rate,
+      avgMarketBoost,
+      uniqueStrategyRatio,
+      roles
+    };
+  }, [formalDisplayGroups]);
+
+  const strategyStabilityScore = useMemo(() => {
+    const top3 = normalizedStrategyScores.slice(0, 3);
+    const avgTopStrategyScore = top3.length
+      ? top3.reduce((sum, score) => sum + score, 0) / top3.length
+      : 0;
+
+    let base = 34;
+    if (avgTopStrategyScore >= 2200) base = 82;
+    else if (avgTopStrategyScore >= 1600) base = 74;
+    else if (avgTopStrategyScore >= 1200) base = 66;
+    else if (avgTopStrategyScore >= 800) base = 58;
+    else if (avgTopStrategyScore >= 500) base = 50;
+    else if (avgTopStrategyScore >= 250) base = 42;
+
+    const hitBonus = Math.min(8, Math.max(0, (formalGroupMetrics.avgHit - 1) * 30));
+    const hit3Bonus = Math.min(8, Math.max(0, formalGroupMetrics.avgHit3Rate * 70));
+    const batchBonus = Math.min(6, formalBatchCount * 2);
+    const uniqueBonus = Math.max(0, Math.round((formalGroupMetrics.uniqueStrategyRatio - 0.5) * 10));
+    const confidenceBonus = Math.min(6, Math.round(toNum(displayedSelection.confidenceScore, 0) * 0.06));
+    const formalReadyBonus = canFormalBet ? 5 : 0;
+
+    return clamp(
+      Math.round(
+        base +
+          hitBonus +
+          hit3Bonus +
+          batchBonus +
+          uniqueBonus +
+          confidenceBonus +
+          formalReadyBonus
+      ),
+      0,
+      100
+    );
+  }, [
+    normalizedStrategyScores,
+    formalGroupMetrics,
+    formalBatchCount,
+    displayedSelection.confidenceScore,
+    canFormalBet
+  ]);
+
+  const marketFitScore = useMemo(() => {
+    const phase = String(displayedSelection.marketPhase || '').toLowerCase();
+    const roleCounts = formalGroupMetrics.roles.reduce(
+      (acc, role) => {
+        acc[role] = (acc[role] || 0) + 1;
+        return acc;
+      },
+      { attack: 0, extend: 0, guard: 0, recent: 0, other: 0 }
+    );
+
+    let roleAlignmentBonus = 0;
+    if (phase === 'rotation') {
+      roleAlignmentBonus =
+        roleCounts.extend * 5 +
+        roleCounts.guard * 4 +
+        roleCounts.recent * 4 -
+        roleCounts.attack * 3;
+    } else if (phase === 'continuation') {
+      roleAlignmentBonus =
+        roleCounts.attack * 6 +
+        roleCounts.extend * 3 -
+        roleCounts.guard * 2;
+    } else {
+      roleAlignmentBonus = roleCounts.guard * 3 + roleCounts.extend * 2;
+    }
+
+    const confidencePart = Math.min(28, toNum(displayedSelection.confidenceScore, 0) * 0.28);
+    const marketBoostPart = Math.min(26, Math.max(0, formalGroupMetrics.avgMarketBoost - 1) * 22);
+    const readyPart = predictionSummary.readyForFormal ? 10 : 0;
+    const phasePart = phase ? 12 : 0;
+    const decisionPart = aiPlayer.decisionPhase === 'good' ? 6 : aiPlayer.decisionPhase === 'neutral' ? 3 : 0;
+
+    return clamp(
+      Math.round(
+        phasePart +
+          confidencePart +
+          marketBoostPart +
+          readyPart +
+          decisionPart +
+          roleAlignmentBonus
+      ),
+      0,
+      100
+    );
+  }, [
+    displayedSelection.marketPhase,
+    displayedSelection.confidenceScore,
+    formalGroupMetrics,
+    predictionSummary.readyForFormal,
+    aiPlayer.decisionPhase
+  ]);
 
   const decisionTitle = canFormalBet ? '可小試' : '暫不建議正式下注';
   const decisionColor = canFormalBet ? '#0f766e' : '#b45309';
