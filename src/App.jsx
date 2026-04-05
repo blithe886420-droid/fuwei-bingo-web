@@ -1268,6 +1268,77 @@ export default function App() {
   const decisionColor = canFormalBet ? '#0f766e' : '#b45309';
   const decisionSubtitle = displayedSelection.summaryText || predictionSummary.summaryText || aiPlayer.statusText || '先觀察再行動。';
 
+
+  const selectedStrategyOption =
+    STRATEGY_MODE_OPTIONS.find((item) => item.key === strategyMode) ||
+    STRATEGY_MODE_OPTIONS.find((item) => item.key === displayedSelection.strategyMode) ||
+    STRATEGY_MODE_OPTIONS[2];
+
+  const selectedRiskOption =
+    RISK_MODE_OPTIONS.find((item) => item.key === riskMode) ||
+    RISK_MODE_OPTIONS.find((item) => item.key === displayedSelection.riskMode) ||
+    RISK_MODE_OPTIONS[1];
+
+  const decisionCoreNumbers = useMemo(() => {
+    const core = uniqueNumbers([
+      ...streakNumbers.map((item) => item?.num),
+      ...streak4Buckets,
+      ...streak3Buckets,
+      ...streak2Buckets,
+      ...hotNumbers.slice(0, 4).map((item) => item?.num),
+      ...latestNumbers.slice(0, 4)
+    ]);
+    return core.slice(0, 10);
+  }, [streakNumbers, streak4Buckets, streak3Buckets, streak2Buckets, hotNumbers, latestNumbers]);
+
+  const decisionPreset = useMemo(() => {
+    const marketPhase = String(displayedSelection.marketPhase || '').toLowerCase();
+    const confidence = toNum(displayedSelection.confidenceScore, 0);
+
+    if (selectedRiskOption?.key === 'aggressive' || marketPhase === 'continuation' || confidence >= 85) {
+      return {
+        label: '進攻壓制',
+        desc: '這一期優先鎖核心與高動能號碼，讓中 3 的機會不要被分散。',
+        chips: ['進攻', '核心重疊', '主攻中3']
+      };
+    }
+
+    if (selectedRiskOption?.key === 'safe' || confidence <= 45) {
+      return {
+        label: '保守防守',
+        desc: '這一期優先控制波動與守住中 2，避免全部攤平後被市場咬走。',
+        chips: ['保守', '守中2', '避免擴散']
+      };
+    }
+
+    return {
+      label: '平衡推進',
+      desc: '這一期採用中 2 與中 3 並重的結構，先穩住命中，再觀察是否放大攻擊。',
+      chips: ['平衡', '兼顧中2中3', '動態調整']
+    };
+  }, [displayedSelection.marketPhase, displayedSelection.confidenceScore, selectedRiskOption]);
+
+  const decisionSignals = useMemo(() => {
+    return [
+      {
+        label: '盤相',
+        value: fmtText(displayedSelection.marketPhase || aiPlayer.decisionPhase || '--')
+      },
+      {
+        label: '信心',
+        value: `${toNum(displayedSelection.confidenceScore, 0)}/100`
+      },
+      {
+        label: '剩餘批次',
+        value: `${formalRemainingBatchCount}/${formalBatchLimit}`
+      },
+      {
+        label: '自動訓練',
+        value: autoTrainEnabled ? '運行中' : '待命'
+      }
+    ];
+  }, [displayedSelection.marketPhase, displayedSelection.confidenceScore, aiPlayer.decisionPhase, formalRemainingBatchCount, formalBatchLimit, autoTrainEnabled]);
+
   return (
     <div style={styles.page}>
       <div style={styles.app}>
