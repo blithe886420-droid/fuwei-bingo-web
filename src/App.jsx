@@ -2208,3 +2208,6 @@ const styles = {
     fontWeight: 700
   }
 };
+
+// 攻擊型分數
+function calcFrontScore(groups = []) { let total=0; groups.forEach(g=>{const h=Number(g?.meta?.avg_hit||0); const r=Number(g?.meta?.roi||0); total+=h*50+Math.max(r,-1)*30;}); return Math.min(100,total/(groups.length||1)); }
