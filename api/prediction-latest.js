@@ -518,3 +518,6 @@ export default async function handler(req, res) {
     });
   }
 }
+
+// 修正最新期延遲
+async function getLatestDrawFixed(supabase){const {data}=await supabase.from('bingo_draws').select('*').order('draw_time',{ascending:false}).limit(2); if(!data||!data.length)return null; const now=Date.now(); const latest=data[0]; const second=data[1]; const diff=now-new Date(latest.draw_time).getTime(); if(diff<120000&&second)return second; return latest;}
