@@ -730,6 +730,42 @@ function buildPhaseContext(sourcePrediction = null, lastComparedPrediction = nul
   };
 }
 
+
+function applyMarketControl(selection = {}, phaseContext = null) {
+  const safeSelection =
+    selection && typeof selection === 'object'
+      ? { ...selection }
+      : {
+          analysisPeriod: DEFAULT_ANALYSIS_PERIOD,
+          strategyMode: 'mix',
+          riskMode: 'balanced'
+        };
+
+  const marketPhase = String(phaseContext?.marketPhase || '').trim().toLowerCase();
+
+  if (marketPhase === 'continuation') {
+    return {
+      ...safeSelection,
+      strategyMode: 'hot',
+      riskMode: 'aggressive'
+    };
+  }
+
+  if (marketPhase === 'rotation') {
+    return {
+      ...safeSelection,
+      strategyMode: 'mix',
+      riskMode: 'balanced'
+    };
+  }
+
+  return {
+    ...safeSelection,
+    strategyMode: 'cold',
+    riskMode: 'safe'
+  };
+}
+
 function buildMarketPools(drawRows = [], marketSnapshot = {}) {
   const rows = Array.isArray(drawRows) ? drawRows : [];
   const allNums = Array.from({ length: 80 }, (_, i) => i + 1);
@@ -1960,6 +1996,7 @@ async function buildFormalPrediction(selection = {}, triggerSource = 'unknown') 
   }
 
   const phaseContext = buildPhaseContext(sourcePrediction, lastComparedPrediction);
+  const controlledSelection = applyMarketControl(selection, phaseContext);
 
   const marketSnapshot =
     sourcePrediction?.market_snapshot_json && typeof sourcePrediction.market_snapshot_json === 'object'
@@ -1996,7 +2033,7 @@ async function buildFormalPrediction(selection = {}, triggerSource = 'unknown') 
     strategyPoolRows,
     strategyStatsRows,
     pools,
-    selection,
+    controlledSelection,
     phaseContext,
     latestDraw
   );
@@ -2059,7 +2096,7 @@ async function buildFormalPrediction(selection = {}, triggerSource = 'unknown') 
     cost_per_group: COST_PER_GROUP,
     group_count: GROUP_COUNT,
     formal_batch_limit: FORMAL_BATCH_LIMIT,
-    requested_selection: selection,
+    requested_selection: controlledSelection,
     skipped: false,
     reason: '',
     latest_draw_no: sourceDrawNo,
