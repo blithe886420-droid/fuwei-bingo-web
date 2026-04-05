@@ -1162,7 +1162,211 @@ export default function App() {
 
         {!loading && activeTab === TABS.DASHBOARD && (
           <div style={styles.sectionStack}>
+            <Card
+              title="首頁決策"
+              subtitle="先看雙分數，再決定要不要直接產生正式下注。"
+            >
+              <div style={styles.statsGrid2}>
+                <StatBox
+                  label="策略穩定度"
+                  value={`${strategyStabilityScore} / 100`}
+                  hint={`活躍策略 ${aiPlayer.activeCount} / 策略池 ${aiPlayer.totalPoolCount}`}
+                  valueStyle={{ color: '#0f766e' }}
+                />
+                <StatBox
+                  label="市場適應度"
+                  value={`${marketFitScore} / 100`}
+                  hint={`最新期數 ${fmtText(latestDrawNo)} / ${fmtText(latestDrawTime)}`}
+                  valueStyle={{ color: decisionColor }}
+                />
+              </div>
 
+              <div style={styles.resultPanel}>
+                <div style={styles.resultTitle}>綜合建議</div>
+                <div style={styles.decisionHeadline}>
+                  <span style={{ ...styles.decisionBadge, color: decisionColor }}>
+                    {decisionTitle}
+                  </span>
+                </div>
+                <div style={styles.resultText}>{decisionSubtitle}</div>
+                <div style={{ ...styles.metaChipRow, marginTop: 12 }}>
+                  <MetaChip label="本輪摘要" value={lastCycleSummary} />
+                  <MetaChip label="formal 批次" value={formalBatchProgressText} />
+                  <MetaChip label="自動訓練" value={autoTrainEnabled ? '運行中' : '停止'} />
+                </div>
+              </div>
+
+              <div style={styles.predictControlStack}>
+                <div style={styles.selectorBlock}>
+                  <div style={styles.selectorTitle}>分析期數</div>
+                  <div style={styles.selectorRow}>
+                    {ANALYSIS_PERIOD_OPTIONS.map((period) => (
+                      <SelectorButton
+                        key={period}
+                        active={analysisPeriod === period}
+                        onClick={() => setAnalysisPeriod(period)}
+                      >
+                        {period} 期
+                      </SelectorButton>
+                    ))}
+                  </div>
+                </div>
+
+                <div style={styles.selectorBlock}>
+                  <div style={styles.selectorTitle}>策略模式</div>
+                  <div style={styles.selectorGrid}>
+                    {STRATEGY_MODE_OPTIONS.map((item) => (
+                      <SelectorCard
+                        key={item.key}
+                        active={strategyMode === item.key}
+                        onClick={() => setStrategyMode(item.key)}
+                        title={item.label}
+                        desc={item.desc}
+                      />
+                    ))}
+                  </div>
+                </div>
+
+                <div style={styles.selectorBlock}>
+                  <div style={styles.selectorTitle}>下注風格</div>
+                  <div style={styles.selectorGrid}>
+                    {RISK_MODE_OPTIONS.map((item) => (
+                      <SelectorCard
+                        key={item.key}
+                        active={riskMode === item.key}
+                        onClick={() => setRiskMode(item.key)}
+                        title={item.label}
+                        desc={item.desc}
+                      />
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </Card>
+
+            <Card
+              title="正式下注"
+              subtitle="用現在選定的條件，直接產生一批正式下注四組號碼。"
+              right={
+                <div style={styles.metaChipRow}>
+                  <MetaChip label="每組" value={fmtMoney(COST_PER_GROUP)} />
+                  <MetaChip label="剩餘批次" value={formalRemainingBatchCount} />
+                </div>
+              }
+            >
+              <div style={styles.formalActionBar}>
+                <button
+                  style={{
+                    ...styles.primaryButton,
+                    marginTop: 0,
+                    opacity: formalButtonDisabled ? 0.6 : 1
+                  }}
+                  onClick={handleFormalBet}
+                  disabled={formalButtonDisabled}
+                >
+                  {formalButtonLabel}
+                </button>
+
+                <div style={styles.formalActionHint}>
+                  條件：{analysisPeriod}期｜{getStrategyModeLabel(strategyMode)}｜{getRiskModeLabel(riskMode)}
+                </div>
+              </div>
+
+              <div style={styles.groupGrid}>
+                {formalDisplayGroups.length ? (
+                  formalDisplayGroups.slice(0, 4).map((group, idx) => (
+                    <CompactBetCard
+                      key={`${group?.key || idx}_${idx}`}
+                      group={group}
+                      idx={idx}
+                    />
+                  ))
+                ) : (
+                  <div style={styles.emptyBox}>尚未產生正式下注四組，先按上方按鈕建立一批。</div>
+                )}
+              </div>
+            </Card>
+          </div>
+        )}
+
+        {!loading && activeTab === TABS.PREDICT && (
+
+          <div style={styles.sectionStack}>
+            <Card
+              title="預測控制面板"
+              subtitle="這一頁只保留條件設定；正式下注按鈕與正式下注四組已移到第一頁。"
+            >
+              <div style={styles.predictControlStack}>
+                <div style={styles.selectorBlock}>
+                  <div style={styles.selectorTitle}>分析期數</div>
+                  <div style={styles.selectorDesc}>
+                    選擇較少期數可觀察近期變動，較多期數可看長一點的分布。
+                  </div>
+                  <div style={styles.selectorRow}>
+                    {ANALYSIS_PERIOD_OPTIONS.map((period) => (
+                      <SelectorButton
+                        key={period}
+                        active={analysisPeriod === period}
+                        onClick={() => setAnalysisPeriod(period)}
+                      >
+                        {period} 期
+                      </SelectorButton>
+                    ))}
+                  </div>
+                </div>
+
+                <div style={styles.selectorBlock}>
+                  <div style={styles.selectorTitle}>策略模式</div>
+                  <div style={styles.selectorDesc}>
+                    目前先作為前端操作條件，會同步帶到第一頁正式下注。
+                  </div>
+                  <div style={styles.selectorGrid}>
+                    {STRATEGY_MODE_OPTIONS.map((item) => (
+                      <SelectorCard
+                        key={item.key}
+                        active={strategyMode === item.key}
+                        onClick={() => setStrategyMode(item.key)}
+                        title={item.label}
+                        desc={item.desc}
+                      />
+                    ))}
+                  </div>
+                </div>
+
+                <div style={styles.selectorBlock}>
+                  <div style={styles.selectorTitle}>下注風格</div>
+                  <div style={styles.selectorDesc}>
+                    對應目前四組分工：保守、平衡、進攻、衝高。
+                  </div>
+                  <div style={styles.selectorGrid}>
+                    {RISK_MODE_OPTIONS.map((item) => (
+                      <SelectorCard
+                        key={item.key}
+                        active={riskMode === item.key}
+                        onClick={() => setRiskMode(item.key)}
+                        title={item.label}
+                        desc={item.desc}
+                      />
+                    ))}
+                  </div>
+                </div>
+
+                <div style={styles.selectionSummaryBox}>
+                  <div style={styles.selectionSummaryTitle}>目前選擇摘要</div>
+                  <div style={styles.metaChipRow}>
+                    <MetaChip label="分析期數" value={`${analysisPeriod} 期`} />
+                    <MetaChip label="策略模式" value={getStrategyModeLabel(strategyMode)} />
+                    <MetaChip label="下注風格" value={getRiskModeLabel(riskMode)} />
+                    <MetaChip label="最新期數" value={fmtText(latestDrawNo)} />
+                  </div>
+                </div>
+
+                <div style={styles.predictOnlyHint}>
+                  第二頁現在只負責設定條件。
+                  正式下注按鈕、正式下注四組、批次狀態與下注建議，都已集中到第一頁顯示。
+                </div>
+              </div>
+            </Card>
           </div>
         )}
 
@@ -1647,6 +1851,16 @@ const styles = {
     border: '2px dashed #d3b88e',
     borderRadius: 18,
     padding: 16
+  },
+  predictOnlyHint: {
+    marginTop: 4,
+    padding: 14,
+    borderRadius: 16,
+    border: '1px dashed #d3b88e',
+    background: '#faf6f0',
+    color: '#7b6e5c',
+    fontSize: 13,
+    lineHeight: 1.7
   },
   selectionSummaryTitle: {
     fontSize: 17,
