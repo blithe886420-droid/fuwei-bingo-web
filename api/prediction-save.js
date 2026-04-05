@@ -2055,7 +2055,7 @@ async function buildFormalPrediction(selection = {}, triggerSource = 'unknown') 
     sourceGroups,
     sourcePrediction,
     latestDraw,
-    selection,
+    controlledSelection,
     pools,
     phaseContext
   );
