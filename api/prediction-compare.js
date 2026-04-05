@@ -209,3 +209,6 @@ export default async function handler(req, res) {
     });
   }
 }
+
+// 短期命中分數
+function calcShortTermScore(history=[]){const recent=history.slice(-20); let h=0,c=0,r=0; for(const x of recent){h+=x.hit;c+=x.cost;r+=x.reward;} const avg=h/(recent.length||1); const roi=c>0?(r-c)/c:0; return avg*50+Math.max(roi,-1)*30;}
