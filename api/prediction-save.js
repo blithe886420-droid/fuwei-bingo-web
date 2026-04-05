@@ -241,6 +241,63 @@ function getSelectionParams(req) {
   };
 }
 
+
+function resolveSelectionWithPhase(selection = {}, phaseContext = {}, triggerSource = 'unknown') {
+  const requestedStrategyMode = ALLOWED_STRATEGY_MODES.has(String(selection?.strategyMode || '').trim().toLowerCase())
+    ? String(selection.strategyMode).trim().toLowerCase()
+    : 'mix';
+
+  const requestedRiskMode = ALLOWED_RISK_MODES.has(String(selection?.riskMode || '').trim().toLowerCase())
+    ? String(selection.riskMode).trim().toLowerCase()
+    : 'balanced';
+
+  const marketType = String(phaseContext?.marketType || 'random').trim().toLowerCase();
+  const hintStrategyMode = ALLOWED_STRATEGY_MODES.has(String(phaseContext?.strategyModeHint || '').trim().toLowerCase())
+    ? String(phaseContext.strategyModeHint).trim().toLowerCase()
+    : '';
+  const hintRiskMode = ALLOWED_RISK_MODES.has(String(phaseContext?.riskModeHint || '').trim().toLowerCase())
+    ? String(phaseContext.riskModeHint).trim().toLowerCase()
+    : '';
+  const confidenceScore = clamp(toNum(phaseContext?.confidenceScore, 45), 0, 100);
+
+  let effectiveStrategyMode = requestedStrategyMode;
+  let effectiveRiskMode = requestedRiskMode;
+
+  if (marketType === 'strong_trend') {
+    effectiveStrategyMode = hintStrategyMode || 'hot';
+    effectiveRiskMode = hintRiskMode || (confidenceScore >= 84 ? 'sniper' : 'aggressive');
+  } else if (marketType === 'weak_trend') {
+    effectiveStrategyMode = hintStrategyMode || 'mix';
+    effectiveRiskMode = hintRiskMode || 'balanced';
+  } else {
+    effectiveStrategyMode = hintStrategyMode || 'cold';
+    effectiveRiskMode = hintRiskMode || 'safe';
+  }
+
+  let effectiveBatchLimit = FORMAL_BATCH_LIMIT;
+  if (marketType === 'strong_trend') {
+    effectiveBatchLimit = confidenceScore >= 78 ? 3 : 2;
+  } else if (marketType === 'weak_trend') {
+    effectiveBatchLimit = confidenceScore >= 60 ? 2 : 1;
+  } else {
+    effectiveBatchLimit = 1;
+  }
+
+  return {
+    ...selection,
+    requestedStrategyMode,
+    requestedRiskMode,
+    strategyMode: effectiveStrategyMode,
+    riskMode: effectiveRiskMode,
+    effectiveBatchLimit,
+    confidenceScore,
+    triggerSource: String(triggerSource || '').trim() || 'unknown',
+    backendAdjusted:
+      requestedStrategyMode !== effectiveStrategyMode ||
+      requestedRiskMode !== effectiveRiskMode
+  };
+}
+
 function roleLabelOf(type = '') {
   const key = String(type || '').trim().toLowerCase();
   if (key === 'safe') return '保守';
@@ -1917,7 +1974,6 @@ async function buildFormalPrediction(selection = {}, triggerSource = 'unknown') 
   }
 
   const existingRows = await getFormalRowsBySourceDrawNo(sourceDrawNo);
-  if (existingRows.length >= FORMAL_BATCH_LIMIT) {
     return {
       ok: true,
       api_version: API_VERSION,
@@ -1949,11 +2005,32 @@ async function buildFormalPrediction(selection = {}, triggerSource = 'unknown') 
   }
 
   const phaseContext = buildPhaseContext(sourcePrediction, lastComparedPrediction);
+  const resolvedSelection = resolveSelectionWithPhase(selection, phaseContext, triggerSource);
 
   const marketSnapshot =
     sourcePrediction?.market_snapshot_json && typeof sourcePrediction.market_snapshot_json === 'object'
       ? sourcePrediction.market_snapshot_json
       : safeJsonParse(sourcePrediction?.market_snapshot_json, {}) || {};
+
+  if (existingRows.length >= resolvedSelection.effectiveBatchLimit) {
+    return {
+      ok: true,
+      api_version: API_VERSION,
+      mode: FORMAL_MODE,
+      trigger_source: triggerSource,
+      skipped: true,
+      reason: `formal batch limit reached (${resolvedSelection.effectiveBatchLimit})`,
+      latest_draw_no: sourceDrawNo,
+      latest_draw_time: latestDraw?.draw_time || null,
+      existing_count: existingRows.length,
+      formal_batch_limit: resolvedSelection.effectiveBatchLimit,
+      requested_selection: selection,
+      effective_selection: resolvedSelection,
+      market_phase: phaseContext.marketPhase,
+      market_type: phaseContext.marketType,
+      confidence_score: phaseContext.confidenceScore
+    };
+  }
 
   const pools = buildMarketPools(recentDraws, marketSnapshot);
 
@@ -1985,7 +2062,7 @@ async function buildFormalPrediction(selection = {}, triggerSource = 'unknown') 
     strategyPoolRows,
     strategyStatsRows,
     pools,
-    selection,
+    resolvedSelection,
     phaseContext,
     latestDraw
   );
@@ -2007,7 +2084,7 @@ async function buildFormalPrediction(selection = {}, triggerSource = 'unknown') 
     sourceGroups,
     sourcePrediction,
     latestDraw,
-    selection,
+    resolvedSelection,
     pools,
     phaseContext
   );
@@ -2047,8 +2124,9 @@ async function buildFormalPrediction(selection = {}, triggerSource = 'unknown') 
     trigger_source: triggerSource,
     cost_per_group: COST_PER_GROUP,
     group_count: GROUP_COUNT,
-    formal_batch_limit: FORMAL_BATCH_LIMIT,
+    formal_batch_limit: resolvedSelection.effectiveBatchLimit,
     requested_selection: selection,
+    effective_selection: resolvedSelection,
     skipped: false,
     reason: '',
     latest_draw_no: sourceDrawNo,
@@ -2062,6 +2140,9 @@ async function buildFormalPrediction(selection = {}, triggerSource = 'unknown') 
     recent_draw_count: recentDraws.length,
     candidate_pool_size: sourceGroups.length,
     market_phase: phaseContext.marketPhase,
+    market_type: phaseContext.marketType,
+    strategy_mode_hint: phaseContext.strategyModeHint,
+    risk_mode_hint: phaseContext.riskModeHint,
     last_hit_level: phaseContext.lastHitLevel,
     confidence_score: phaseContext.confidenceScore,
     weight_profile: phaseContext.weightProfile,
