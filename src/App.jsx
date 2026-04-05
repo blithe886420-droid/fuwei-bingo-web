@@ -1063,6 +1063,11 @@ export default function App() {
   const formalBatches = predictionSummary.formalBatches || [];
   const formalBatchProgressText = `${formalBatchCount} / ${formalBatchLimit}`;
 
+  const latestFormalBatch = formalBatches.length ? formalBatches[formalBatches.length - 1] : null;
+  const formalDisplayGroups = formalGroups.length
+    ? formalGroups
+    : getPredictionGroups(latestFormalBatch);
+
   const formalButtonDisabled =
     busyKey !== '' ||
     !canFormalBet ||
@@ -1268,8 +1273,8 @@ export default function App() {
               </div>
 
               <div style={styles.groupGrid}>
-                {formalGroups.length ? (
-                  formalGroups.slice(0, 4).map((group, idx) => (
+                {formalDisplayGroups.length ? (
+                  formalDisplayGroups.slice(0, 4).map((group, idx) => (
                     <CompactBetCard
                       key={`${group?.key || idx}_${idx}`}
                       group={group}
@@ -1664,7 +1669,7 @@ const styles = {
     padding: '8px 4px 0'
   },
   brand: {
-    fontSize: 38,
+    fontSize: 32,
     fontWeight: 900,
     color: '#0f766e',
     letterSpacing: '0.5px'
@@ -1672,12 +1677,12 @@ const styles = {
   headerSub: {
     marginTop: 6,
     color: '#7b6e5c',
-    fontSize: 15
+    fontSize: 14
   },
   headerActions: {
     display: 'flex',
     alignItems: 'center',
-    gap: 12
+    gap: 10
   },
   tabBar: {
     display: 'grid',
@@ -1689,8 +1694,8 @@ const styles = {
     background: '#f7f1e7',
     color: '#23413a',
     borderRadius: 18,
-    padding: '18px 16px',
-    fontSize: 28,
+    padding: '14px 12px',
+    fontSize: 22,
     fontWeight: 800,
     cursor: 'pointer',
     display: 'flex',
@@ -1705,7 +1710,7 @@ const styles = {
     borderColor: '#0f766e'
   },
   tabIcon: {
-    fontSize: 24
+    fontSize: 20
   },
   sectionStack: {
     display: 'flex',
@@ -1716,7 +1721,7 @@ const styles = {
     background: '#efe8db',
     border: '2px solid #d8c7ad',
     borderRadius: 24,
-    padding: 20,
+    padding: 18,
     boxShadow: '0 2px 0 rgba(124, 90, 34, 0.04)'
   },
   cardHeader: {
@@ -1727,7 +1732,7 @@ const styles = {
     marginBottom: 18
   },
   cardTitle: {
-    fontSize: 24,
+    fontSize: 21,
     fontWeight: 900,
     color: '#0f766e'
   },
@@ -1751,8 +1756,8 @@ const styles = {
     background: '#f8f1e6',
     border: '2px solid #d9c7a8',
     borderRadius: 18,
-    padding: 16,
-    minHeight: 120,
+    padding: 14,
+    minHeight: 108,
     boxSizing: 'border-box'
   },
   statLabel: {
@@ -1761,7 +1766,7 @@ const styles = {
     marginBottom: 10
   },
   statValue: {
-    fontSize: 22,
+    fontSize: 18,
     fontWeight: 900,
     color: '#d2534f',
     lineHeight: 1.2
@@ -1780,15 +1785,15 @@ const styles = {
     padding: 16
   },
   resultTitle: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: 800,
     color: '#0f766e',
-    marginBottom: 10
+    marginBottom: 8
   },
   resultText: {
     color: '#23413a',
-    fontSize: 15,
-    lineHeight: 1.7
+    fontSize: 14,
+    lineHeight: 1.65
   },
   miniStatsRow: {
     display: 'flex',
@@ -1827,7 +1832,7 @@ const styles = {
     padding: 16
   },
   controlTitle: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: 800,
     color: '#0f766e'
   },
@@ -1849,8 +1854,8 @@ const styles = {
     color: '#fff',
     border: 'none',
     borderRadius: 16,
-    padding: '14px 18px',
-    fontSize: 16,
+    padding: '10px 14px',
+    fontSize: 14,
     fontWeight: 800,
     cursor: 'pointer'
   },
@@ -1859,8 +1864,8 @@ const styles = {
     color: '#23413a',
     border: '2px solid #d9c7a8',
     borderRadius: 14,
-    padding: '12px 16px',
-    fontSize: 15,
+    padding: '10px 14px',
+    fontSize: 14,
     fontWeight: 800,
     cursor: 'pointer'
   },
@@ -1907,7 +1912,7 @@ const styles = {
     padding: 16
   },
   selectorTitle: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: 800,
     color: '#0f766e'
   },
@@ -1934,8 +1939,8 @@ const styles = {
     border: '2px solid #d3b88e',
     color: '#5f5139',
     borderRadius: 14,
-    padding: '12px 16px',
-    fontSize: 15,
+    padding: '10px 14px',
+    fontSize: 14,
     fontWeight: 800,
     cursor: 'pointer'
   },
@@ -2014,7 +2019,7 @@ const styles = {
     gap: 12
   },
   compactBetTitle: {
-    fontSize: 24,
+    fontSize: 21,
     fontWeight: 900,
     color: '#0f766e'
   },
@@ -2035,8 +2040,8 @@ const styles = {
     background: '#f0e4c8',
     border: '1px solid #d1b989',
     borderRadius: 999,
-    padding: '8px 14px',
-    fontSize: 22,
+    padding: '8px 12px',
+    fontSize: 18,
     fontWeight: 900
   },
   formalActionBar: {
@@ -2047,7 +2052,8 @@ const styles = {
   },
   formalActionHint: {
     color: '#7b6e5c',
-    fontSize: 14
+    fontSize: 13,
+    lineHeight: 1.6
   },
   groupCard: {
     background: '#f8f1e6',
@@ -2067,7 +2073,7 @@ const styles = {
     gap: 6
   },
   groupTitle: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: 900,
     color: '#0f766e'
   },
@@ -2084,12 +2090,12 @@ const styles = {
     marginBottom: 14
   },
   pickBall: {
-    width: 52,
-    height: 52,
+    width: 46,
+    height: 46,
     borderRadius: '50%',
     background: '#0f766e',
     color: '#fff',
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: 900,
     display: 'flex',
     alignItems: 'center',
@@ -2110,7 +2116,7 @@ const styles = {
     marginBottom: 16
   },
   batchCardTitle: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: 900,
     color: '#0f766e'
   },
@@ -2127,7 +2133,7 @@ const styles = {
     padding: 16
   },
   marketPanelTitle: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: 900,
     color: '#0f766e',
     marginBottom: 12
