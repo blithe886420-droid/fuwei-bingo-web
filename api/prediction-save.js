@@ -1,7 +1,7 @@
 
 import { createClient } from '@supabase/supabase-js';
 
-const API_VERSION = 'prediction-save-market-role-v11-stable-full-rewrite';
+const API_VERSION = 'prediction-save-market-role-v11-stable-full-rewrite-streak-core-v2';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -842,7 +842,7 @@ function buildMarketPools(drawRows = [], marketSnapshot = {}) {
     ...streak4,
     ...streak3,
     ...streak2.slice(0, 6),
-    ...preStreak.slice(0, 8),
+    ...preStreak.slice(0, 1),
     ...hot5Numbers.slice(0, 12),
     ...hot10Numbers.slice(0, 8)
   ]);
@@ -850,7 +850,7 @@ function buildMarketPools(drawRows = [], marketSnapshot = {}) {
   const extend = uniqueAsc([
     ...(marketSnapshot?.decision_basis?.extend_numbers || []),
     ...streak2,
-    ...preStreak.slice(0, 10),
+    ...preStreak.slice(0, 1),
     ...hot10Numbers.slice(0, 14),
     ...hot20Numbers.slice(0, 10),
     ...gap.slice(0, 8)
@@ -860,14 +860,14 @@ function buildMarketPools(drawRows = [], marketSnapshot = {}) {
     ...(marketSnapshot?.decision_basis?.guard_numbers || []),
     ...hot20Numbers.slice(0, 20),
     ...warm.slice(0, 16),
-    ...preStreak.slice(0, 6),
+    ...preStreak.slice(0, 1),
     ...cold.slice(0, 8)
   ]);
 
   const recent = uniqueAsc([
     ...(marketSnapshot?.decision_basis?.recent_focus_numbers || []),
     ...parseNums(rows[0]?.numbers || []),
-    ...preStreak.slice(0, 8),
+    ...preStreak.slice(0, 1),
     ...hot5Numbers.slice(0, 10)
   ]);
 
@@ -876,7 +876,7 @@ function buildMarketPools(drawRows = [], marketSnapshot = {}) {
     ...extend,
     ...guard,
     ...recent,
-    ...preStreak,
+    
     ...hot.slice(0, 28),
     ...warm.slice(0, 24),
     ...gap.slice(0, 18),
@@ -983,10 +983,10 @@ function scoreQualityReport(report = {}, role = 'mix', selection = {}, phaseCont
   else if (report.span >= 10 && report.span <= 70) score += 4;
   else score -= 10;
 
-  if (role === 'attack') score += report.attackCount * 8 + report.hotCount * 4 + report.streakCount * 18 + report.preStreakCount * 12;
-  if (role === 'extend') score += report.extendCount * 7 + report.gapCount * 5 + report.preStreakCount * 10 + report.streakCount * 6;
-  if (role === 'guard') score += report.guardCount * 7 + report.hotCount * 3 + report.preStreakCount * 6;
-  if (role === 'recent') score += report.hotCount * 4 + report.extendCount * 4 + report.preStreakCount * 12 + report.streakCount * 8;
+  if (role === 'attack') score += report.attackCount * 8 + report.hotCount * 4 + report.streakCount * 22 + report.preStreakCount * 4;
+  if (role === 'extend') score += report.extendCount * 7 + report.gapCount * 5 + report.preStreakCount * 4 + report.streakCount * 8;
+  if (role === 'guard') score += report.guardCount * 7 + report.hotCount * 3 + report.preStreakCount * 2;
+  if (role === 'recent') score += report.hotCount * 4 + report.extendCount * 4 + report.preStreakCount * 4 + report.streakCount * 10;
 
   if (selection.strategyMode === 'cold') score += report.gapCount * 4;
   if (selection.strategyMode === 'hot') score += report.hotCount * 4;
@@ -1356,11 +1356,11 @@ function scoreGroupForMode(group, role = 'mix', strategyMode = 'mix', riskMode =
   if (riskModeHint === 'aggressive' && role === 'attack') score += 18;
   if (riskModeHint === 'safe' && role === 'guard') score += 18;
 
-  score += report.streakCount * 26;
-  score += report.preStreakCount * 18;
+  score += report.streakCount * 34;
+  score += report.preStreakCount * 4;
   if (role === 'attack' && report.streakCount === 0 && report.preStreakCount === 0) score -= 110;
-  if (role === 'extend' && report.preStreakCount === 0) score -= 35;
-  if (role === 'recent' && report.preStreakCount === 0 && report.streakCount === 0) score -= 40;
+  if (role === 'extend' && report.preStreakCount === 0 && report.streakCount === 0) score -= 18;
+  if (role === 'recent' && report.preStreakCount === 0 && report.streakCount === 0) score -= 24;
 
   return round4(score);
 }
@@ -1369,18 +1369,18 @@ function getRoleSeedPools(role = 'mix', pools = {}, phaseContext = null) {
   const marketPhase = String(phaseContext?.marketPhase || '').toLowerCase();
 
   if (marketPhase === 'rotation') {
-    if (role === 'attack') return [pools.streak2, pools.preStreak, pools.attack, pools.recent, pools.hot10 || pools.hot, pools.all];
-    if (role === 'extend') return [pools.preStreak, pools.extend, pools.guard, pools.hot10 || pools.hot, pools.recent, pools.all];
-    if (role === 'guard') return [pools.guard, pools.preStreak, pools.extend, pools.hot20 || pools.warm, pools.cold, pools.all];
-    if (role === 'recent') return [pools.preStreak, pools.recent, pools.extend, pools.guard, pools.hot5 || pools.hot, pools.all];
-    return [pools.preStreak, pools.extend, pools.guard, pools.hot, pools.all];
+    if (role === 'attack') return [pools.streak4, pools.streak3, pools.streak2, pools.attack, pools.recent, pools.hot10 || pools.hot, pools.preStreak, pools.all];
+    if (role === 'extend') return [pools.streak2, pools.extend, pools.guard, pools.hot10 || pools.hot, pools.preStreak, pools.recent, pools.all];
+    if (role === 'guard') return [pools.guard, pools.streak2, pools.extend, pools.hot20 || pools.warm, pools.preStreak, pools.cold, pools.all];
+    if (role === 'recent') return [pools.streak2, pools.recent, pools.extend, pools.hot5 || pools.hot, pools.preStreak, pools.guard, pools.all];
+    return [pools.streak2, pools.extend, pools.guard, pools.hot, pools.preStreak, pools.all];
   }
 
-  if (role === 'attack') return [pools.streak2, pools.preStreak, pools.attack, pools.hot5 || pools.hot, pools.hot10 || pools.hot, pools.recent, pools.all];
-  if (role === 'extend') return [pools.preStreak, pools.extend, pools.hot10 || pools.hot, pools.hot20 || pools.hot, pools.guard, pools.all];
-  if (role === 'guard') return [pools.guard, pools.preStreak, pools.hot20 || pools.hot, pools.warm, pools.cold, pools.all];
-  if (role === 'recent') return [pools.preStreak, pools.recent, pools.attack, pools.hot5 || pools.hot, pools.extend, pools.all];
-  return [pools.preStreak, pools.hot, pools.extend, pools.guard, pools.all];
+  if (role === 'attack') return [pools.streak4, pools.streak3, pools.streak2, pools.attack, pools.hot5 || pools.hot, pools.hot10 || pools.hot, pools.preStreak, pools.recent, pools.all];
+  if (role === 'extend') return [pools.streak2, pools.extend, pools.hot10 || pools.hot, pools.hot20 || pools.hot, pools.preStreak, pools.guard, pools.all];
+  if (role === 'guard') return [pools.guard, pools.streak2, pools.hot20 || pools.hot, pools.warm, pools.preStreak, pools.cold, pools.all];
+  if (role === 'recent') return [pools.streak2, pools.recent, pools.attack, pools.hot5 || pools.hot, pools.preStreak, pools.extend, pools.all];
+  return [pools.streak2, pools.hot, pools.extend, pools.guard, pools.preStreak, pools.all];
 }
 
 function evaluateFormalCandidateScore(sourceGroup, nums, slotRole, selection, pools, phaseContext, existingGroups = []) {
@@ -1503,9 +1503,11 @@ function buildVariantFromSourceGroup(sourceGroup, slotRole, slotNo, pools, exist
       fillToFour(
         uniqueAsc([
           ...keepNums,
+          ...(pools.streak4 || []).slice(0, 1),
+          ...(pools.streak3 || []).slice(0, 1),
           ...(pools.streak2 || []).slice(0, 2),
-          ...(pools.preStreak || []).slice(0, 2),
-          ...(pools.attack || []).slice(0, 3)
+          ...(pools.preStreak || []).slice(0, 1),
+          ...(pools.attack || []).slice(0, 2)
         ]),
         fallbackPools,
         seedBase + 23
@@ -1520,7 +1522,7 @@ function buildVariantFromSourceGroup(sourceGroup, slotRole, slotNo, pools, exist
       fillToFour(
         uniqueAsc([
           ...keepNums,
-          ...(pools.preStreak || []).slice(0, 2),
+          ...(pools.preStreak || []).slice(0, 1),
           ...(pools.extend || []).slice(0, 3),
           ...(pools.gap || []).slice(0, 1)
         ]),
@@ -1537,7 +1539,7 @@ function buildVariantFromSourceGroup(sourceGroup, slotRole, slotNo, pools, exist
       fillToFour(
         uniqueAsc([
           ...keepNums,
-          ...(pools.preStreak || []).slice(0, 2),
+          ...(pools.preStreak || []).slice(0, 1),
           ...(pools.recent || []).slice(0, 3),
           ...(pools.hot5 || []).slice(0, 2)
         ]),
