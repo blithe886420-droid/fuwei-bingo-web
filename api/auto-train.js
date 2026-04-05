@@ -35,13 +35,13 @@ const MAX_CREATED_PREDICTIONS = 20;
 const ALLOW_CREATE_WHEN_EXISTING = true;
 
 const DECISION_CONFIG = {
-  hardRejectRoi: -0.95,
-  hardRejectScore: -420,
-  softRejectRoi: -0.65,
-  minAvgHitPreferred: 1.0,
-  minRoundsForTrust: 5,
-  strongScoreFloor: 72,
-  usableScoreFloor: 8
+  hardRejectRoi: -0.85,
+  hardRejectScore: -400,
+  softRejectRoi: -0.5,
+  minAvgHitPreferred: 1.2,
+  minRoundsForTrust: 6,
+  strongScoreFloor: 80,
+  usableScoreFloor: 10
 };
 
 const STRATEGY_STATS_TABLE = 'strategy_stats';
@@ -948,9 +948,6 @@ function buildStrategyNums(strategyKey = '', market = {}, marketSnapshot = {}, s
 
 function calcMarketBoost(strategyKey = '', marketSnapshot = {}, market = {}) {
   const tokens = tokenizeStrategyKey(strategyKey);
-  const marketType = String(marketSnapshot?.market_type || '').trim().toLowerCase();
-  const strategyModeHint = String(marketSnapshot?.strategy_mode_hint || '').trim().toLowerCase();
-  const riskModeHint = String(marketSnapshot?.risk_mode_hint || '').trim().toLowerCase();
   const hot5 = uniqueSorted(marketSnapshot?.hot_windows?.hot_5?.numbers || marketSnapshot?.hot_5_numbers || []);
   const hot10 = uniqueSorted(marketSnapshot?.hot_windows?.hot_10?.numbers || marketSnapshot?.hot_10_numbers || []);
   const hot20 = uniqueSorted(marketSnapshot?.hot_windows?.hot_20?.numbers || marketSnapshot?.hot_20_numbers || []);
@@ -976,38 +973,6 @@ function calcMarketBoost(strategyKey = '', marketSnapshot = {}, market = {}) {
   const hot20Hits = scorePoolHits(nums, hot20, 0.03);
 
   boost += attackHits + extendHits + guardHits + recentHits + streak3Hits + streak2Hits + hot5Hits + hot10Hits + hot20Hits;
-
-  if (marketType === 'strong_trend') {
-    if (tokens.includes('hot') || tokens.includes('repeat') || tokens.includes('zone') || tokens.includes('chase')) {
-      boost += 0.42;
-      reasons.push('strong_trend_focus');
-    }
-    if (riskModeHint === 'aggressive' && (tokens.includes('attack') || tokens.includes('balanced'))) {
-      boost += 0.12;
-      reasons.push('aggressive_fit');
-    }
-  } else if (marketType === 'weak_trend') {
-    if (tokens.includes('mix') || tokens.includes('balanced') || tokens.includes('extend') || tokens.includes('gap')) {
-      boost += 0.18;
-      reasons.push('weak_trend_balance');
-    }
-  } else {
-    if (tokens.includes('guard') || tokens.includes('cold') || tokens.includes('skip') || tokens.includes('reverse')) {
-      boost += 0.22;
-      reasons.push('random_guard');
-    }
-  }
-
-  if (strategyModeHint === 'hot' && tokens.includes('hot')) {
-    boost += 0.08;
-    reasons.push('hot_hint');
-  } else if (strategyModeHint === 'cold' && tokens.includes('cold')) {
-    boost += 0.08;
-    reasons.push('cold_hint');
-  } else if (strategyModeHint === 'mix' && (tokens.includes('mix') || tokens.includes('balanced'))) {
-    boost += 0.06;
-    reasons.push('mix_hint');
-  }
 
   if (streak3Hits > 0) reasons.push('streak3_core');
   if (streak2Hits > 0) reasons.push('streak2_support');
@@ -1239,26 +1204,6 @@ function sortByFormalSelection(a, b) {
 function assignPreferredRole(row = {}, marketSnapshot = {}) {
   const marketReason = String(row?.market_reason || '');
   const key = String(row?.strategy_key || '');
-  const marketType = String(marketSnapshot?.market_type || '').trim().toLowerCase();
-  const riskModeHint = String(marketSnapshot?.risk_mode_hint || '').trim().toLowerCase();
-
-  if (marketType === 'strong_trend' || riskModeHint === 'aggressive') {
-    if (marketReason.includes('streak3') || marketReason.includes('attack_core') || key.includes('hot') || key.includes('repeat') || key.includes('zone')) {
-      return 'attack';
-    }
-    if (key.includes('gap') || key.includes('chase') || key.includes('jump')) {
-      return 'extend';
-    }
-  }
-
-  if (marketType === 'random' || riskModeHint === 'safe') {
-    if (marketReason.includes('guard') || key.includes('guard') || key.includes('balanced') || key.includes('mix') || key.includes('cold')) {
-      return 'guard';
-    }
-    if (marketReason.includes('recent') || key.includes('tail') || key.includes('rotation') || key.includes('split')) {
-      return 'recent';
-    }
-  }
 
   if (marketReason.includes('streak3') || marketReason.includes('attack_core') || key.includes('hot') || key.includes('repeat')) {
     return 'attack';
@@ -2043,8 +1988,12 @@ export default async function handler(req, res) {
     const latestDrawNo = toNum(latestDraw?.draw_no, 0);
 
     const marketRows = await fetchMarketRows(db);
-    const marketSnapshot = buildRecentMarketSignalSnapshot(marketRows, 'numbers');
-    const marketDecision = buildStrategyDecisionFromSnapshot(marketSnapshot);
+    const baseMarketSnapshot = buildRecentMarketSignalSnapshot(marketRows, 'numbers');
+    const marketDecision = buildStrategyDecisionFromSnapshot(baseMarketSnapshot);
+    const marketSnapshot = {
+      ...baseMarketSnapshot,
+      ...marketDecision
+    };
     const market = buildMarketState(marketRows);
 
     const spawn = await spawnStrategiesIfNeeded(db, latestDrawNo);
@@ -2068,7 +2017,7 @@ export default async function handler(req, res) {
       compared_count:
         toNum(compareBeforeCreate?.processed, 0) + toNum(compareAfterCreate?.processed, 0),
       market_snapshot: marketSnapshot,
-      market_decision: marketDecision,
+      market_decision: buildStrategyDecisionFromSnapshot(marketSnapshot),
       top_strategies: buildTopStrategiesSummary(strategyCandidates),
       active_created_prediction: activeCreatedPrediction
         ? {
