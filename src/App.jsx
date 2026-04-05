@@ -1246,7 +1246,7 @@ export default function App() {
 
             <Card
               title="正式下注"
-              subtitle="用現在選定的條件，直接產生一批正式下注四組號碼。"
+              subtitle="用現在選定的條件建立正式下注；下方會累積顯示同一期最多三批，共十二組。"
               right={
                 <div style={styles.metaChipRow}>
                   <MetaChip label="每組" value={fmtMoney(COST_PER_GROUP)} />
@@ -1272,15 +1272,21 @@ export default function App() {
                 </div>
               </div>
 
-              <div style={styles.groupGrid}>
-                {formalDisplayGroups.length ? (
-                  formalDisplayGroups.slice(0, 4).map((group, idx) => (
-                    <CompactBetCard
-                      key={`${group?.key || idx}_${idx}`}
-                      group={group}
-                      idx={idx}
-                    />
+              <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
+                {formalBatches.length ? (
+                  formalBatches.map((batch, idx) => (
+                    <FormalBatchCard key={batch?.id || idx} batch={batch} idx={idx} />
                   ))
+                ) : formalDisplayGroups.length ? (
+                  <div style={styles.groupGrid}>
+                    {formalDisplayGroups.slice(0, 4).map((group, idx) => (
+                      <CompactBetCard
+                        key={`${group?.key || idx}_${idx}`}
+                        group={group}
+                        idx={idx}
+                      />
+                    ))}
+                  </div>
                 ) : (
                   <div style={styles.emptyBox}>尚未產生正式下注四組，先按上方按鈕建立一批。</div>
                 )}
