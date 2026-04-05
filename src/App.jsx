@@ -535,6 +535,71 @@ function getRiskModeLabel(mode) {
   return found ? found.label : mode;
 }
 
+function extractRowDecisionSettings(row) {
+  const groups = getPredictionGroups(row);
+  const firstMeta = groups[0]?.meta && typeof groups[0].meta === 'object' ? groups[0].meta : {};
+
+  return {
+    strategyMode:
+      firstMeta.strategy_mode ||
+      row?.strategy_mode ||
+      row?.strategyMode ||
+      null,
+    riskMode:
+      firstMeta.risk_mode ||
+      row?.risk_mode ||
+      row?.riskMode ||
+      null,
+    marketPhase:
+      firstMeta.market_phase ||
+      row?.market_phase ||
+      row?.marketPhase ||
+      null,
+    confidenceScore:
+      toNum(
+        firstMeta.confidence_score ??
+          row?.confidence_score ??
+          row?.confidenceScore,
+        0
+      )
+  };
+}
+
+function resolveDisplayedSelection(predictionSummary, trainingLatest, formalLatest, fallbackStrategyMode, fallbackRiskMode) {
+  const formalDecision = extractRowDecisionSettings(formalLatest);
+  const trainingDecision = extractRowDecisionSettings(trainingLatest);
+
+  const strategyMode =
+    formalDecision.strategyMode ||
+    trainingDecision.strategyMode ||
+    fallbackStrategyMode;
+
+  const riskMode =
+    formalDecision.riskMode ||
+    trainingDecision.riskMode ||
+    fallbackRiskMode;
+
+  const marketPhase =
+    formalDecision.marketPhase ||
+    trainingDecision.marketPhase ||
+    null;
+
+  const confidenceScore = Math.max(
+    formalDecision.confidenceScore,
+    trainingDecision.confidenceScore,
+    0
+  );
+
+  return {
+    strategyMode,
+    riskMode,
+    marketPhase,
+    confidenceScore,
+    summaryLabel: predictionSummary?.summaryLabel || '--',
+    summaryText: predictionSummary?.summaryText || ''
+  };
+}
+
 function Card({ title, subtitle, right, children }) {
   return (
     <div style={styles.card}>
@@ -790,7 +855,7 @@ export default function App() {
 
      const normalizedPrediction = normalizePredictionLatest(predictionRes);
       setTrainingLatest(normalizedPrediction.trainingRow || null);
-      setFormalLatest(normalizedPrediction.displayFormalRow || null);
+      setFormalLatest(normalizedPrediction.formalRow || null);
       setLeaderboard(normalizedPrediction.leaderboard || []);
       setPredictionSummary({
         apiVersion: normalizedPrediction.apiVersion,
@@ -1127,9 +1192,21 @@ export default function App() {
     )
   );
 
+  const displayedSelection = useMemo(
+    () =>
+      resolveDisplayedSelection(
+        predictionSummary,
+        trainingLatest,
+        formalLatest,
+        strategyMode,
+        riskMode
+      ),
+    [predictionSummary, trainingLatest, formalLatest, strategyMode, riskMode]
+  );
+
   const decisionTitle = canFormalBet ? '可小試' : '暫不建議正式下注';
   const decisionColor = canFormalBet ? '#0f766e' : '#b45309';
-  const decisionSubtitle = predictionSummary.summaryText || aiPlayer.statusText || '先觀察再行動。';
+  const decisionSubtitle = displayedSelection.summaryText || predictionSummary.summaryText || aiPlayer.statusText || '先觀察再行動。';
 
   return (
     <div style={styles.page}>
@@ -1385,8 +1462,8 @@ export default function App() {
                   <div style={styles.selectionSummaryTitle}>目前選擇摘要</div>
                   <div style={styles.metaChipRow}>
                     <MetaChip label="分析期數" value={`${analysisPeriod} 期`} />
-                    <MetaChip label="策略模式" value={getStrategyModeLabel(strategyMode)} />
-                    <MetaChip label="下注風格" value={getRiskModeLabel(riskMode)} />
+                    <MetaChip label="策略模式" value={getStrategyModeLabel(displayedSelection.strategyMode)} />
+                    <MetaChip label="下注風格" value={getRiskModeLabel(displayedSelection.riskMode)} />
                     <MetaChip label="最新期數" value={fmtText(latestDrawNo)} />
                   </div>
                 </div>
@@ -1421,7 +1498,7 @@ export default function App() {
                 <StatBox
                   label="策略模式"
                   value={getStrategyModeLabel(strategyMode)}
-                  hint="目前只影響前端顯示偏好"
+                  hint={displayedSelection.marketPhase ? `盤相：${fmtText(displayedSelection.marketPhase)} / 信心 ${displayedSelection.confidenceScore || '--'}` : '後端會依盤面自動微調'}
                 />
                 <StatBox
                   label="下注風格"
