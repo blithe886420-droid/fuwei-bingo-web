@@ -617,6 +617,31 @@ function GroupCard({ group, idx, showRank = false }) {
   );
 }
 
+function CompactBetCard({ group, idx }) {
+  if (!group) return null;
+  return (
+    <div style={styles.compactBetCard}>
+      <div style={styles.compactBetHead}>
+        <div style={styles.compactBetTitle}>第 {idx + 1} 組</div>
+        <div style={styles.compactBetSub}>正式下注</div>
+      </div>
+
+      <div style={styles.groupBalls}>
+        {toArray(group?.nums).map((n) => (
+          <div key={`${group?.key || idx}_${n}`} style={styles.pickBall}>
+            {formatBallNumber(n)}
+          </div>
+        ))}
+      </div>
+
+      <div style={styles.metaChipRow}>
+        <MetaChip label="每組" value={fmtMoney(COST_PER_GROUP)} />
+        <MetaChip label="來源期數" value={fmtText(group?.meta?.source_draw_no || '--')} />
+      </div>
+    </div>
+  );
+}
+
 function FormalBatchCard({ batch, idx }) {
   const groups = getPredictionGroups(batch);
 
@@ -1049,6 +1074,34 @@ export default function App() {
       ? '本期已達 3 批上限'
       : '手動產生一批正式下注';
 
+  const strategyStabilityScore = Math.max(
+    0,
+    Math.min(
+      100,
+      Math.round(
+        aiPlayer.activeCount * 0.8 +
+          Math.min(30, formalBatchCount * 8) +
+          Math.max(0, toNum(aiPlayer.topStrategyRecent50Roi, 0) * 100 * 0.6)
+      )
+    )
+  );
+
+  const marketFitScore = Math.max(
+    0,
+    Math.min(
+      100,
+      Math.round(
+        toNum(aiPlayer.trainingStrength, 0) * 0.7 +
+          (predictionSummary.readyForFormal ? 18 : 0) +
+          (aiPlayer.decisionPhase === 'good' ? 10 : 0)
+      )
+    )
+  );
+
+  const decisionTitle = canFormalBet ? '可小試' : '暫不建議正式下注';
+  const decisionColor = canFormalBet ? '#0f766e' : '#b45309';
+  const decisionSubtitle = predictionSummary.summaryText || aiPlayer.statusText || '先觀察再行動。';
+
   return (
     <div style={styles.page}>
       <div style={styles.app}>
@@ -1065,6 +1118,17 @@ export default function App() {
               disabled={busyKey !== ''}
             >
               重新整理
+            </button>
+            <button
+              style={{
+                ...styles.primaryButton,
+                marginTop: 0,
+                ...(autoTrainEnabled ? styles.stopButton : {})
+              }}
+              onClick={handleToggleAutoTrain}
+              disabled={busyKey !== '' && busyKey !== 'toggleAutoTrain'}
+            >
+              {autoTrainEnabled ? '停止訓練' : '啟動訓練'}
             </button>
           </div>
         </header>
@@ -1094,140 +1158,134 @@ export default function App() {
         {!loading && activeTab === TABS.DASHBOARD && (
           <div style={styles.sectionStack}>
             <Card
-              title="決策總覽"
-              subtitle="這裡不是看 AI 有沒有做夢，而是看現在能不能小試。"
+              title="首頁決策"
+              subtitle="先看雙分數，再決定要不要直接產生正式下注。"
             >
-              <div style={styles.statsGrid4}>
+              <div style={styles.statsGrid2}>
                 <StatBox
-                  label="目前判斷"
-                  value={fmtText(aiPlayer.statusLabel)}
-                  hint={fmtText(aiPlayer.decisionPhase)}
-                  valueStyle={{ color: aiPlayer.statusColor }}
-                />
-                <StatBox
-                  label="決策準備度"
-                  value={`${aiPlayer.trainingStrength} / 100`}
-                  hint="依近期比對、策略品質與活躍數估算"
-                  valueStyle={{ color: aiPlayer.statusColor }}
-                />
-                <StatBox
-                  label="第一名策略"
-                  value={fmtText(aiPlayer.topStrategyKey)}
-                  hint={`平均命中 ${Number.isFinite(aiPlayer.topStrategyAvgHit) ? aiPlayer.topStrategyAvgHit.toFixed(1) : '--'} / 近50 ROI ${fmtPercent(aiPlayer.topStrategyRecent50Roi)}`}
-                />
-                <StatBox
-                  label="是否建議正式下注"
-                  value={canFormalBet ? '可小試' : '先觀察'}
+                  label="策略穩定度"
+                  value={`${strategyStabilityScore} / 100`}
                   hint={`活躍策略 ${aiPlayer.activeCount} / 策略池 ${aiPlayer.totalPoolCount}`}
-                  valueStyle={{ color: canFormalBet ? '#0f766e' : '#b45309' }}
+                  valueStyle={{ color: '#0f766e' }}
+                />
+                <StatBox
+                  label="市場適應度"
+                  value={`${marketFitScore} / 100`}
+                  hint={`最新期數 ${fmtText(latestDrawNo)} / ${fmtText(latestDrawTime)}`}
+                  valueStyle={{ color: decisionColor }}
                 />
               </div>
 
               <div style={styles.resultPanel}>
-                <div style={styles.resultTitle}>系統狀態</div>
-                <div style={styles.resultText}>
-                  {aiPlayer.statusArrow} {aiPlayer.statusText}
+                <div style={styles.resultTitle}>綜合建議</div>
+                <div style={styles.decisionHeadline}>
+                  <span style={{ ...styles.decisionBadge, color: decisionColor }}>
+                    {decisionTitle}
+                  </span>
                 </div>
-                <div style={{ ...styles.resultText, marginTop: 8, color: '#8a7d66' }}>
-                  最近一輪摘要：{lastCycleSummary}
-                </div>
-              </div>
-
-              <div style={styles.resultPanel}>
-                <div style={styles.resultTitle}>本小時動作</div>
-                <div style={styles.miniStatsRow}>
-                  <MetaChip label="Compare" value={aiPlayer.comparedLastHour} />
-                  <MetaChip label="Create" value={aiPlayer.createdLastHour} />
-                  <MetaChip label="停用" value={aiPlayer.disabledLastHour} />
-                  <MetaChip label="最新期數" value={fmtText(latestDrawNo)} />
+                <div style={styles.resultText}>{decisionSubtitle}</div>
+                <div style={{ ...styles.metaChipRow, marginTop: 12 }}>
+                  <MetaChip label="本輪摘要" value={lastCycleSummary} />
+                  <MetaChip label="formal 批次" value={formalBatchProgressText} />
+                  <MetaChip label="自動訓練" value={autoTrainEnabled ? '運行中' : '停止'} />
                 </div>
               </div>
 
-              <div style={styles.resultPanel}>
-                <div style={styles.resultTitle}>目前前四策略</div>
-                <div style={styles.groupGrid}>
-                  {currentTopStrategies.length ? (
-                    currentTopStrategies.slice(0, 4).map((row, idx) => (
-                      <div key={row?.strategy_key || idx} style={styles.groupCard}>
-                        <div style={styles.groupTitle}>第 {idx + 1} 名｜{fmtText(row?.strategy_key)}</div>
-                        <div style={styles.metaChipRow}>
-                          <MetaChip label="平均命中" value={Number.isFinite(Number(row?.avg_hit)) ? Number(row.avg_hit).toFixed(2) : '--'} />
-                          <MetaChip label="ROI" value={fmtPercent(row?.recent_50_roi ?? row?.roi)} />
-                          <MetaChip label="回合" value={fmtText(row?.total_rounds)} />
-                          <MetaChip label="分數" value={Number.isFinite(Number(row?.strategy_score ?? row?.score)) ? Number(row?.strategy_score ?? row?.score).toFixed(1) : '--'} />
-                        </div>
-                      </div>
-                    ))
-                  ) : (
-                    <div style={styles.emptyBox}>目前沒有前四策略資料。</div>
-                  )}
+              <div style={styles.predictControlStack}>
+                <div style={styles.selectorBlock}>
+                  <div style={styles.selectorTitle}>分析期數</div>
+                  <div style={styles.selectorRow}>
+                    {ANALYSIS_PERIOD_OPTIONS.map((period) => (
+                      <SelectorButton
+                        key={period}
+                        active={analysisPeriod === period}
+                        onClick={() => setAnalysisPeriod(period)}
+                      >
+                        {period} 期
+                      </SelectorButton>
+                    ))}
+                  </div>
+                </div>
+
+                <div style={styles.selectorBlock}>
+                  <div style={styles.selectorTitle}>策略模式</div>
+                  <div style={styles.selectorGrid}>
+                    {STRATEGY_MODE_OPTIONS.map((item) => (
+                      <SelectorCard
+                        key={item.key}
+                        active={strategyMode === item.key}
+                        onClick={() => setStrategyMode(item.key)}
+                        title={item.label}
+                        desc={item.desc}
+                      />
+                    ))}
+                  </div>
+                </div>
+
+                <div style={styles.selectorBlock}>
+                  <div style={styles.selectorTitle}>下注風格</div>
+                  <div style={styles.selectorGrid}>
+                    {RISK_MODE_OPTIONS.map((item) => (
+                      <SelectorCard
+                        key={item.key}
+                        active={riskMode === item.key}
+                        onClick={() => setRiskMode(item.key)}
+                        title={item.label}
+                        desc={item.desc}
+                      />
+                    ))}
+                  </div>
                 </div>
               </div>
             </Card>
 
             <Card
-              title="策略模擬控制"
-              subtitle="這裡是模擬系統，不是無腦長開鍋爐房。"
-            >
-              <div style={styles.controlGrid}>
-                <div style={styles.controlBox}>
-                  <div style={styles.controlTitle}>自動模擬</div>
-                  <div style={styles.controlDesc}>
-                    夜間 00:00～07:30 暫停，平常每 3 分鐘循環一次。
-                  </div>
-                  <button
-                    style={{
-                      ...styles.primaryButton,
-                      ...(autoTrainEnabled ? styles.stopButton : {})
-                    }}
-                    onClick={handleToggleAutoTrain}
-                    disabled={busyKey !== '' && busyKey !== 'toggleAutoTrain'}
-                  >
-                    {autoTrainEnabled ? '停止模擬' : '啟動模擬'}
-                  </button>
+              title="正式下注"
+              subtitle="用現在選定的條件，直接產生一批正式下注四組號碼。"
+              right={
+                <div style={styles.metaChipRow}>
+                  <MetaChip label="每組" value={fmtMoney(COST_PER_GROUP)} />
+                  <MetaChip label="剩餘批次" value={formalRemainingBatchCount} />
                 </div>
+              }
+            >
+              <div style={styles.formalActionBar}>
+                <button
+                  style={{
+                    ...styles.primaryButton,
+                    marginTop: 0,
+                    opacity: formalButtonDisabled ? 0.6 : 1
+                  }}
+                  onClick={handleFormalBet}
+                  disabled={formalButtonDisabled}
+                >
+                  {formalButtonLabel}
+                </button>
 
-                <div style={styles.controlBox}>
-                  <div style={styles.controlTitle}>資料同步</div>
-                  <div style={styles.controlDesc}>同步最新期數與補抓遺漏資料。</div>
-                  <div style={styles.inlineButtonRow}>
-                    <button
-                      style={styles.secondaryButton}
-                      onClick={handleSync}
-                      disabled={busyKey !== ''}
-                    >
-                      同步最新期數
-                    </button>
-                    <button
-                      style={styles.secondaryButton}
-                      onClick={handleCatchup}
-                      disabled={busyKey !== ''}
-                    >
-                      補抓期數
-                    </button>
-                  </div>
+                <div style={styles.formalActionHint}>
+                  條件：{analysisPeriod}期｜{getStrategyModeLabel(strategyMode)}｜{getRiskModeLabel(riskMode)}
                 </div>
               </div>
 
-              <div style={styles.pipelineRow}>
-                <span style={styles.pipelineBadge}>
-                  同步：{pipelineStatusText(lastAutoTrainResult, 'sync')}
-                </span>
-                <span style={styles.pipelineBadge}>
-                  補抓：{pipelineStatusText(lastAutoTrainResult, 'catchup')}
-                </span>
-                <span style={styles.pipelineBadge}>
-                  比對：{pipelineStatusText(lastAutoTrainResult, 'compare_before_create')}
-                </span>
-                <span style={styles.pipelineBadge}>
-                  建立後比對：{pipelineStatusText(lastAutoTrainResult, 'compare_after_create')}
-                </span>
+              <div style={styles.groupGrid}>
+                {formalGroups.length ? (
+                  formalGroups.slice(0, 4).map((group, idx) => (
+                    <CompactBetCard
+                      key={`${group?.key || idx}_${idx}`}
+                      group={group}
+                      idx={idx}
+                    />
+                  ))
+                ) : (
+                  <div style={styles.emptyBox}>尚未產生正式下注四組，先按上方按鈕建立一批。</div>
+                )}
               </div>
             </Card>
           </div>
         )}
 
         {!loading && activeTab === TABS.PREDICT && (
+
           <div style={styles.sectionStack}>
             <Card
               title="預測控制面板"
@@ -1684,6 +1742,11 @@ const styles = {
     gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
     gap: 16
   },
+  statsGrid2: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+    gap: 16
+  },
   statBox: {
     background: '#f8f1e6',
     border: '2px solid #d9c7a8',
@@ -1937,6 +2000,54 @@ const styles = {
     display: 'grid',
     gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
     gap: 16
+  },
+  compactBetCard: {
+    background: '#f8f1e6',
+    border: '2px solid #d9c7a8',
+    borderRadius: 18,
+    padding: 16
+  },
+  compactBetHead: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 12
+  },
+  compactBetTitle: {
+    fontSize: 24,
+    fontWeight: 900,
+    color: '#0f766e'
+  },
+  compactBetSub: {
+    color: '#8a7d66',
+    fontSize: 13,
+    fontWeight: 700
+  },
+  decisionHeadline: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 12
+  },
+  decisionBadge: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: '#f0e4c8',
+    border: '1px solid #d1b989',
+    borderRadius: 999,
+    padding: '8px 14px',
+    fontSize: 22,
+    fontWeight: 900
+  },
+  formalActionBar: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 12,
+    marginBottom: 16
+  },
+  formalActionHint: {
+    color: '#7b6e5c',
+    fontSize: 14
   },
   groupCard: {
     background: '#f8f1e6',
