@@ -29,7 +29,7 @@ const FORMAL_CANDIDATE_MODE = 'formal_candidate';
 const COST_PER_GROUP = 25;
 const FORMAL_BATCH_LIMIT = 3;
 const GROUP_COUNT = 4;
-const MAX_GROUPS_PER_STRATEGY = 2;
+const MAX_GROUPS_PER_STRATEGY = 1;
 
 const DEFAULT_ANALYSIS_PERIOD = 20;
 const ALLOWED_ANALYSIS_PERIODS = new Set([5, 10, 20, 50]);
@@ -1718,8 +1718,7 @@ function pickRoleOrderedGroups(ranked = [], selection = {}, pools = {}, phaseCon
       const isPool = isStrategyPoolGroup(rankedRow.group);
 
       if (slotNo <= 3 && isFallbackStrategyKey(strategyKey)) continue;
-      if (strategyKey && usedCount >= MAX_GROUPS_PER_STRATEGY) continue;
-      if (slotNo <= 2 && strategyKey && usedCount >= 1) continue;
+      if (strategyKey && usedCount >= 1) continue;
 
       const score = scoreGroupForMode(
         rankedRow.group,
@@ -1769,8 +1768,7 @@ function pickRoleOrderedGroups(ranked = [], selection = {}, pools = {}, phaseCon
       const rankedRow = ranked[j];
       const strategyKey = getStrategyKey(rankedRow.group);
       const usedCount = toInt(strategyUseCount.get(strategyKey), 0);
-      if (strategyKey && usedCount >= MAX_GROUPS_PER_STRATEGY) continue;
-      if (slotNo <= 2 && strategyKey && usedCount >= 1) continue;
+      if (strategyKey && usedCount >= 1) continue;
       if (!meetsMinTier(rankedRow.tier, requiredTier)) continue;
 
       usedIndexes.add(j);
@@ -1850,10 +1848,9 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
     const tier = getCandidateTier(sourceGroup, candidateScore, slotRole, selection, phaseContext);
     const overlapTooHigh = groups.some((g) => countOverlap(nums, g?.nums || []) > MAX_GROUP_OVERLAP);
 
-    const canUseStrategy = !strategyKey || currentStrategyCount < MAX_GROUPS_PER_STRATEGY;
+    const canUseStrategy = !strategyKey || currentStrategyCount < 1;
     const canUseByTier = isPool ? true : meetsMinTier(tier, requiredTier);
-    const mustSpreadTopSlots = nextSlotNo <= 2;
-    const violatesTopSpread = mustSpreadTopSlots && strategyKey && currentStrategyCount >= 1;
+    const violatesTopSpread = strategyKey && currentStrategyCount >= 1;
 
     const safeKey = `${sourceGroup.key}_${slotRole}_${nums.join('_')}`;
     if (usedKeys.has(safeKey)) return false;
@@ -1953,7 +1950,18 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
     );
   }
 
-  return normalizeGroups(groups, sourceDraw).slice(0, GROUP_COUNT);
+  const uniqueGroups = [];
+  const finalUsedStrategyKeys = new Set();
+
+  for (const group of normalizeGroups(groups, sourceDraw)) {
+    const strategyKey = getStrategyKey(group);
+    if (strategyKey && finalUsedStrategyKeys.has(strategyKey)) continue;
+    if (strategyKey) finalUsedStrategyKeys.add(strategyKey);
+    uniqueGroups.push(group);
+    if (uniqueGroups.length >= GROUP_COUNT) break;
+  }
+
+  return uniqueGroups.slice(0, GROUP_COUNT);
 }
 
 async function buildFormalPrediction(selection = {}, triggerSource = 'unknown') {
