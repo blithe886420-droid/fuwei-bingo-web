@@ -307,6 +307,11 @@ function calcZoneCounts(nums = []) {
   return zones;
 }
 
+
+function uniqueNumbers(input = []) {
+  return [...new Set(toArray(input).map(Number).filter(Number.isFinite))].sort((a, b) => a - b);
+}
+
 function normalizeAiPlayer(data) {
   return {
     assistantMode: data?.assistantMode || 'decision_support',
@@ -1455,10 +1460,33 @@ export default function App() {
 
           <div style={styles.sectionStack}>
             <Card
-              title="預測控制面板"
-              subtitle="這一頁只保留條件設定；正式下注按鈕與正式下注四組已移到第一頁。"
+              title="下注策略控制中心"
+              subtitle="第二頁改成決策層：不是重複顯示資料，而是用來決定這一期要怎麼打。"
             >
               <div style={styles.predictControlStack}>
+                <div style={styles.decisionHeroGrid}>
+                  <div style={styles.decisionHeroMain}>
+                    <div style={styles.decisionHeroTitle}>本期決策模式：{decisionPreset.label}</div>
+                    <div style={styles.decisionHeroDesc}>{decisionPreset.desc}</div>
+                    <div style={styles.metaChipRow}>
+                      {decisionPreset.chips.map((chip) => (
+                        <MetaChip key={chip} label="配置" value={chip} />
+                      ))}
+                    </div>
+                  </div>
+
+                  <div style={styles.decisionHeroSide}>
+                    <div style={styles.decisionSignalGrid}>
+                      {decisionSignals.map((item) => (
+                        <div key={item.label} style={styles.decisionSignalBox}>
+                          <div style={styles.decisionSignalLabel}>{item.label}</div>
+                          <div style={styles.decisionSignalValue}>{item.value}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
                 <div style={styles.selectorBlock}>
                   <div style={styles.selectorTitle}>分析期數</div>
                   <div style={styles.selectorDesc}>
@@ -1480,7 +1508,7 @@ export default function App() {
                 <div style={styles.selectorBlock}>
                   <div style={styles.selectorTitle}>策略模式</div>
                   <div style={styles.selectorDesc}>
-                    目前先作為前端操作條件，會同步帶到第一頁正式下注。
+                    這裡不是裝飾，會決定正式下注時主攻熱號、補冷或均衡的抽法。
                   </div>
                   <div style={styles.selectorGrid}>
                     {STRATEGY_MODE_OPTIONS.map((item) => (
@@ -1498,7 +1526,7 @@ export default function App() {
                 <div style={styles.selectorBlock}>
                   <div style={styles.selectorTitle}>下注風格</div>
                   <div style={styles.selectorDesc}>
-                    對應目前四組分工：保守、平衡、進攻、衝高。
+                    用來控制四組分工的重心：先求中 2，還是拉高拚中 3 的比例。
                   </div>
                   <div style={styles.selectorGrid}>
                     {RISK_MODE_OPTIONS.map((item) => (
@@ -1513,19 +1541,50 @@ export default function App() {
                   </div>
                 </div>
 
-                <div style={styles.selectionSummaryBox}>
-                  <div style={styles.selectionSummaryTitle}>目前選擇摘要</div>
-                  <div style={styles.metaChipRow}>
-                    <MetaChip label="分析期數" value={`${analysisPeriod} 期`} />
-                    <MetaChip label="策略模式" value={getStrategyModeLabel(displayedSelection.strategyMode)} />
-                    <MetaChip label="下注風格" value={getRiskModeLabel(displayedSelection.riskMode)} />
-                    <MetaChip label="最新期數" value={fmtText(latestDrawNo)} />
+                <div style={styles.decisionPanelGrid}>
+                  <div style={styles.selectionSummaryBox}>
+                    <div style={styles.selectionSummaryTitle}>目前選擇摘要</div>
+                    <div style={styles.metaChipRow}>
+                      <MetaChip label="分析期數" value={`${analysisPeriod} 期`} />
+                      <MetaChip label="策略模式" value={getStrategyModeLabel(displayedSelection.strategyMode)} />
+                      <MetaChip label="下注風格" value={getRiskModeLabel(displayedSelection.riskMode)} />
+                      <MetaChip label="最新期數" value={fmtText(latestDrawNo)} />
+                    </div>
+                    <div style={styles.decisionSummaryText}>
+                      策略模式：{selectedStrategyOption.desc}｜下注風格：{selectedRiskOption.desc}
+                    </div>
+                  </div>
+
+                  <div style={styles.selectionSummaryBox}>
+                    <div style={styles.selectionSummaryTitle}>本期核心號碼</div>
+                    <div style={styles.marketBallsWrap}>
+                      {decisionCoreNumbers.length ? (
+                        decisionCoreNumbers.map((n) => <MarketBall key={`decision_core_${n}`} n={n} highlight />)
+                      ) : (
+                        <div style={styles.emptyBox}>目前尚未產生可用的核心號碼。</div>
+                      )}
+                    </div>
+                    <div style={styles.decisionSummaryText}>
+                      這裡優先顯示連莊與短期熱門，後續可再接成正式下注的強制帶入依據。
+                    </div>
                   </div>
                 </div>
 
-                <div style={styles.predictOnlyHint}>
-                  第二頁現在只負責設定條件。
-                  正式下注按鈕、正式下注四組、批次狀態與下注建議，都已集中到第一頁顯示。
+                <div style={styles.decisionActionRow}>
+                  <div style={styles.predictOnlyHint}>
+                    第二頁現在改成策略控制中心。第一頁看狀態、第三頁看盤，第二頁專門決定這一期怎麼打。
+                  </div>
+
+                  <button
+                    style={{
+                      ...styles.primaryButton,
+                      ...(formalButtonDisabled ? styles.disabledButton : {})
+                    }}
+                    onClick={handleFormalBet}
+                    disabled={formalButtonDisabled}
+                  >
+                    {busyKey === 'formalBet' ? '建立中...' : `用目前配置建立正式下注（剩 ${formalRemainingBatchCount} 批）`}
+                  </button>
                 </div>
               </div>
             </Card>
@@ -2007,6 +2066,73 @@ const styles = {
     fontSize: 13,
     color: '#7b6e5c',
     lineHeight: 1.6
+  },
+  decisionHeroGrid: {
+    display: 'grid',
+    gridTemplateColumns: '1.4fr 1fr',
+    gap: 16
+  },
+  decisionHeroMain: {
+    background: '#fbf6ee',
+    border: '1px solid #ddcfbb',
+    borderRadius: 16,
+    padding: 18,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 12
+  },
+  decisionHeroTitle: {
+    fontSize: 20,
+    fontWeight: 900,
+    color: '#0f766e'
+  },
+  decisionHeroDesc: {
+    fontSize: 14,
+    lineHeight: 1.7,
+    color: '#6e6250'
+  },
+  decisionHeroSide: {
+    background: '#fbf6ee',
+    border: '1px solid #ddcfbb',
+    borderRadius: 16,
+    padding: 18
+  },
+  decisionSignalGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+    gap: 12
+  },
+  decisionSignalBox: {
+    background: '#fffaf2',
+    border: '1px solid #ddcfbb',
+    borderRadius: 14,
+    padding: 14
+  },
+  decisionSignalLabel: {
+    fontSize: 12,
+    color: '#7b6e5c',
+    marginBottom: 6
+  },
+  decisionSignalValue: {
+    fontSize: 20,
+    fontWeight: 900,
+    color: '#184e4a'
+  },
+  decisionPanelGrid: {
+    display: 'grid',
+    gridTemplateColumns: '1fr 1fr',
+    gap: 16
+  },
+  decisionSummaryText: {
+    marginTop: 12,
+    fontSize: 13,
+    lineHeight: 1.7,
+    color: '#6e6250'
+  },
+  decisionActionRow: {
+    display: 'flex',
+    gap: 16,
+    alignItems: 'stretch'
   },
   selectionSummaryBox: {
     background: '#f8f1e6',
