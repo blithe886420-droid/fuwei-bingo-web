@@ -814,10 +814,35 @@ function buildMarketPools(drawRows = [], marketSnapshot = {}) {
   const streak3 = uniqueAsc(marketSnapshot?.streak3 || marketSnapshot?.streaks?.streak3 || []);
   const streak4 = uniqueAsc(marketSnapshot?.streak4 || marketSnapshot?.streaks?.streak4 || []);
 
+  const recent3Rows = rows.slice(0, 3);
+  const recent3CountMap = new Map();
+  recent3Rows.forEach((row) => {
+    parseNums(row?.numbers).forEach((n) => {
+      recent3CountMap.set(n, toNum(recent3CountMap.get(n), 0) + 1);
+    });
+  });
+
+  const latestNumsSet = new Set(parseNums(rows[0]?.numbers || []));
+  const prevNumsSet = new Set(parseNums(rows[1]?.numbers || []));
+  const streakSet = new Set([...streak2, ...streak3, ...streak4]);
+
+  const preStreak = uniqueAsc(
+    [...recent3CountMap.entries()]
+      .filter(([n, count]) => {
+        if (count < 2) return false;
+        if (streakSet.has(n)) return false;
+        return latestNumsSet.has(n) || prevNumsSet.has(n);
+      })
+      .sort((a, b) => b[1] - a[1] || a[0] - b[0])
+      .map(([n]) => n)
+  );
+
   const attack = uniqueAsc([
     ...(marketSnapshot?.decision_basis?.attack_core_numbers || []),
     ...streak4,
     ...streak3,
+    ...streak2.slice(0, 6),
+    ...preStreak.slice(0, 8),
     ...hot5Numbers.slice(0, 12),
     ...hot10Numbers.slice(0, 8)
   ]);
@@ -825,6 +850,7 @@ function buildMarketPools(drawRows = [], marketSnapshot = {}) {
   const extend = uniqueAsc([
     ...(marketSnapshot?.decision_basis?.extend_numbers || []),
     ...streak2,
+    ...preStreak.slice(0, 10),
     ...hot10Numbers.slice(0, 14),
     ...hot20Numbers.slice(0, 10),
     ...gap.slice(0, 8)
@@ -834,12 +860,14 @@ function buildMarketPools(drawRows = [], marketSnapshot = {}) {
     ...(marketSnapshot?.decision_basis?.guard_numbers || []),
     ...hot20Numbers.slice(0, 20),
     ...warm.slice(0, 16),
+    ...preStreak.slice(0, 6),
     ...cold.slice(0, 8)
   ]);
 
   const recent = uniqueAsc([
     ...(marketSnapshot?.decision_basis?.recent_focus_numbers || []),
     ...parseNums(rows[0]?.numbers || []),
+    ...preStreak.slice(0, 8),
     ...hot5Numbers.slice(0, 10)
   ]);
 
@@ -848,6 +876,7 @@ function buildMarketPools(drawRows = [], marketSnapshot = {}) {
     ...extend,
     ...guard,
     ...recent,
+    ...preStreak,
     ...hot.slice(0, 28),
     ...warm.slice(0, 24),
     ...gap.slice(0, 18),
@@ -869,6 +898,7 @@ function buildMarketPools(drawRows = [], marketSnapshot = {}) {
     streak2,
     streak3,
     streak4,
+    preStreak,
     all: allNums,
     qualityAll
   };
@@ -904,6 +934,8 @@ function buildGroupQualityReport(nums = [], pools = {}) {
   const extendCount = arr.filter((n) => (pools.extend || []).slice(0, 18).includes(n)).length;
   const guardCount = arr.filter((n) => (pools.guard || []).slice(0, 18).includes(n)).length;
   const gapCount = arr.filter((n) => (pools.gap || []).slice(0, 18).includes(n)).length;
+  const streakCount = arr.filter((n) => (pools.streak2 || []).includes(n) || (pools.streak3 || []).includes(n) || (pools.streak4 || []).includes(n)).length;
+  const preStreakCount = arr.filter((n) => (pools.preStreak || []).includes(n)).length;
 
   return {
     nums: arr,
@@ -917,7 +949,9 @@ function buildGroupQualityReport(nums = [], pools = {}) {
     attackCount,
     extendCount,
     guardCount,
-    gapCount
+    gapCount,
+    streakCount,
+    preStreakCount
   };
 }
 
@@ -949,10 +983,10 @@ function scoreQualityReport(report = {}, role = 'mix', selection = {}, phaseCont
   else if (report.span >= 10 && report.span <= 70) score += 4;
   else score -= 10;
 
-  if (role === 'attack') score += report.attackCount * 8 + report.hotCount * 4;
-  if (role === 'extend') score += report.extendCount * 7 + report.gapCount * 5;
-  if (role === 'guard') score += report.guardCount * 7 + report.hotCount * 3;
-  if (role === 'recent') score += report.hotCount * 4 + report.extendCount * 4;
+  if (role === 'attack') score += report.attackCount * 8 + report.hotCount * 4 + report.streakCount * 18 + report.preStreakCount * 12;
+  if (role === 'extend') score += report.extendCount * 7 + report.gapCount * 5 + report.preStreakCount * 10 + report.streakCount * 6;
+  if (role === 'guard') score += report.guardCount * 7 + report.hotCount * 3 + report.preStreakCount * 6;
+  if (role === 'recent') score += report.hotCount * 4 + report.extendCount * 4 + report.preStreakCount * 12 + report.streakCount * 8;
 
   if (selection.strategyMode === 'cold') score += report.gapCount * 4;
   if (selection.strategyMode === 'hot') score += report.hotCount * 4;
@@ -1322,6 +1356,12 @@ function scoreGroupForMode(group, role = 'mix', strategyMode = 'mix', riskMode =
   if (riskModeHint === 'aggressive' && role === 'attack') score += 18;
   if (riskModeHint === 'safe' && role === 'guard') score += 18;
 
+  score += report.streakCount * 26;
+  score += report.preStreakCount * 18;
+  if (role === 'attack' && report.streakCount === 0 && report.preStreakCount === 0) score -= 110;
+  if (role === 'extend' && report.preStreakCount === 0) score -= 35;
+  if (role === 'recent' && report.preStreakCount === 0 && report.streakCount === 0) score -= 40;
+
   return round4(score);
 }
 
@@ -1329,18 +1369,18 @@ function getRoleSeedPools(role = 'mix', pools = {}, phaseContext = null) {
   const marketPhase = String(phaseContext?.marketPhase || '').toLowerCase();
 
   if (marketPhase === 'rotation') {
-    if (role === 'attack') return [pools.extend, pools.attack, pools.recent, pools.hot10 || pools.hot, pools.all];
-    if (role === 'extend') return [pools.extend, pools.guard, pools.hot10 || pools.hot, pools.recent, pools.all];
-    if (role === 'guard') return [pools.guard, pools.extend, pools.hot20 || pools.warm, pools.cold, pools.all];
-    if (role === 'recent') return [pools.recent, pools.extend, pools.guard, pools.hot5 || pools.hot, pools.all];
-    return [pools.extend, pools.guard, pools.hot, pools.all];
+    if (role === 'attack') return [pools.streak2, pools.preStreak, pools.attack, pools.recent, pools.hot10 || pools.hot, pools.all];
+    if (role === 'extend') return [pools.preStreak, pools.extend, pools.guard, pools.hot10 || pools.hot, pools.recent, pools.all];
+    if (role === 'guard') return [pools.guard, pools.preStreak, pools.extend, pools.hot20 || pools.warm, pools.cold, pools.all];
+    if (role === 'recent') return [pools.preStreak, pools.recent, pools.extend, pools.guard, pools.hot5 || pools.hot, pools.all];
+    return [pools.preStreak, pools.extend, pools.guard, pools.hot, pools.all];
   }
 
-  if (role === 'attack') return [pools.attack, pools.hot5 || pools.hot, pools.hot10 || pools.hot, pools.recent, pools.all];
-  if (role === 'extend') return [pools.extend, pools.hot10 || pools.hot, pools.hot20 || pools.hot, pools.guard, pools.all];
-  if (role === 'guard') return [pools.guard, pools.hot20 || pools.hot, pools.warm, pools.cold, pools.all];
-  if (role === 'recent') return [pools.recent, pools.attack, pools.hot5 || pools.hot, pools.extend, pools.all];
-  return [pools.hot, pools.extend, pools.guard, pools.all];
+  if (role === 'attack') return [pools.streak2, pools.preStreak, pools.attack, pools.hot5 || pools.hot, pools.hot10 || pools.hot, pools.recent, pools.all];
+  if (role === 'extend') return [pools.preStreak, pools.extend, pools.hot10 || pools.hot, pools.hot20 || pools.hot, pools.guard, pools.all];
+  if (role === 'guard') return [pools.guard, pools.preStreak, pools.hot20 || pools.hot, pools.warm, pools.cold, pools.all];
+  if (role === 'recent') return [pools.preStreak, pools.recent, pools.attack, pools.hot5 || pools.hot, pools.extend, pools.all];
+  return [pools.preStreak, pools.hot, pools.extend, pools.guard, pools.all];
 }
 
 function evaluateFormalCandidateScore(sourceGroup, nums, slotRole, selection, pools, phaseContext, existingGroups = []) {
@@ -1370,6 +1410,8 @@ function evaluateFormalCandidateScore(sourceGroup, nums, slotRole, selection, po
 function forceGroupDifference(nums = [], existingGroups = [], pools = {}, seed = 0) {
   let result = uniqueAsc(nums).slice(0, 4);
   const backupPools = [
+    pools.streak2,
+    pools.preStreak,
     pools.attack,
     pools.extend,
     pools.guard,
@@ -1453,6 +1495,57 @@ function buildVariantFromSourceGroup(sourceGroup, slotRole, slotNo, pools, exist
       ),
       'attack_continuation',
       14
+    );
+  }
+
+  if (slotRole === 'attack') {
+    addCandidate(
+      fillToFour(
+        uniqueAsc([
+          ...keepNums,
+          ...(pools.streak2 || []).slice(0, 2),
+          ...(pools.preStreak || []).slice(0, 2),
+          ...(pools.attack || []).slice(0, 3)
+        ]),
+        fallbackPools,
+        seedBase + 23
+      ),
+      'attack_streak_pre',
+      22
+    );
+  }
+
+  if (slotRole === 'extend') {
+    addCandidate(
+      fillToFour(
+        uniqueAsc([
+          ...keepNums,
+          ...(pools.preStreak || []).slice(0, 2),
+          ...(pools.extend || []).slice(0, 3),
+          ...(pools.gap || []).slice(0, 1)
+        ]),
+        fallbackPools,
+        seedBase + 29
+      ),
+      'extend_pre_streak',
+      13
+    );
+  }
+
+  if (slotRole === 'recent') {
+    addCandidate(
+      fillToFour(
+        uniqueAsc([
+          ...keepNums,
+          ...(pools.preStreak || []).slice(0, 2),
+          ...(pools.recent || []).slice(0, 3),
+          ...(pools.hot5 || []).slice(0, 2)
+        ]),
+        fallbackPools,
+        seedBase + 37
+      ),
+      'recent_pre_streak',
+      11
     );
   }
 
@@ -1788,140 +1881,6 @@ function pickRoleOrderedGroups(ranked = [], selection = {}, pools = {}, phaseCon
   return picked.slice(0, GROUP_COUNT);
 }
 
-
-function getCoreOverlapTargetCount(selection = {}, phaseContext = null) {
-  const marketPhase = String(phaseContext?.marketPhase || '').toLowerCase();
-  const riskMode = String(selection?.riskMode || '').toLowerCase();
-
-  if (marketPhase === 'continuation') return 2;
-  if (marketPhase === 'rotation' && riskMode === 'balanced') return 2;
-  if (marketPhase === 'rotation' && riskMode === 'aggressive') return 2;
-  return 2;
-}
-
-function getCorePriorityScore(num, pools = {}, phaseContext = null) {
-  const marketPhase = String(phaseContext?.marketPhase || '').toLowerCase();
-  let score = 0;
-
-  if ((pools.attack || []).includes(num)) score += 48;
-  if ((pools.hot5 || []).includes(num)) score += 40;
-  if ((pools.hot10 || []).includes(num)) score += 28;
-  if ((pools.recent || []).includes(num)) score += 22;
-  if ((pools.hot20 || []).includes(num)) score += 16;
-  if ((pools.extend || []).includes(num)) score += 10;
-  if ((pools.guard || []).includes(num)) score += 8;
-  if ((pools.gap || []).includes(num)) score += marketPhase === 'rotation' ? 6 : 2;
-  return score;
-}
-
-function pickCoreSharedNums(primaryGroup = {}, pools = {}, selection = {}, phaseContext = null) {
-  const nums = uniqueAsc(primaryGroup?.nums || []);
-  const targetCount = getCoreOverlapTargetCount(selection, phaseContext);
-
-  return nums
-    .map((num, idx) => ({
-      num,
-      score: getCorePriorityScore(num, pools, phaseContext) + (nums.length - idx) * 0.01
-    }))
-    .sort((a, b) => b.score - a.score || a.num - b.num)
-    .slice(0, targetCount)
-    .map((item) => item.num)
-    .sort((a, b) => a - b);
-}
-
-function rebuildGroupWithSharedCore(targetGroup = {}, coreNums = [], anchorGroup = {}, pools = {}, selection = {}, phaseContext = null, existingGroups = []) {
-  const normalizedCore = uniqueAsc(coreNums).slice(0, 2);
-  if (normalizedCore.length < 2) return null;
-
-  const role = inferRoleFromGroup(targetGroup) || 'attack';
-  const anchorNums = uniqueAsc(anchorGroup?.nums || []);
-  const sourceNums = uniqueAsc(targetGroup?.nums || []);
-  const blockedFromAnchor = new Set(anchorNums.filter((n) => !normalizedCore.includes(n)));
-
-  const preferredOwn = uniqueAsc(
-    sourceNums.filter((n) => !normalizedCore.includes(n) && !blockedFromAnchor.has(n))
-  );
-
-  const rolePools = getRoleSeedPools(role, pools, phaseContext).map((pool) =>
-    uniqueAsc(pool || []).filter((n) => !blockedFromAnchor.has(n))
-  );
-
-  const qualityPool = uniqueAsc((pools.qualityAll || []).filter((n) => !blockedFromAnchor.has(n)));
-  const allPool = uniqueAsc((pools.all || []).filter((n) => !blockedFromAnchor.has(n)));
-
-  const seedBase =
-    (toNum(targetGroup?.meta?.slot_no, 0) || 0) * 131 +
-    (toNum(targetGroup?.meta?.selection_rank, 0) || 0) * 17 +
-    normalizedCore.reduce((acc, n) => acc + n, 0);
-
-  let nums = fillToFour(
-    [...normalizedCore, ...preferredOwn.slice(0, 2)],
-    [preferredOwn, ...rolePools, qualityPool, allPool],
-    seedBase
-  );
-
-  nums = uniqueAsc([...normalizedCore, ...nums]).slice(0, 4);
-
-  if (nums.length !== 4) return null;
-  if (countOverlap(nums, normalizedCore) < normalizedCore.length) return null;
-
-  const anchorOverlap = countOverlap(nums, anchorNums);
-  if (anchorOverlap > normalizedCore.length) {
-    const safeBase = nums.filter((n) => normalizedCore.includes(n) || !anchorNums.includes(n));
-    nums = fillToFour(
-      safeBase,
-      [preferredOwn, ...rolePools, qualityPool, allPool],
-      seedBase + 29
-    );
-    nums = uniqueAsc([...normalizedCore, ...nums]).slice(0, 4);
-  }
-
-  if (nums.length !== 4) return null;
-  if (countOverlap(nums, anchorNums) > normalizedCore.length) return null;
-  if (!isAcceptableGroup(nums, pools, role, selection, phaseContext)) return null;
-
-  const compareGroups = (Array.isArray(existingGroups) ? existingGroups : []).filter(Boolean);
-  const overlapTooHigh = compareGroups.some((group) => countOverlap(nums, group?.nums || []) > MAX_GROUP_OVERLAP);
-  if (overlapTooHigh) return null;
-
-  return {
-    ...targetGroup,
-    nums,
-    reason: `${targetGroup.reason || ''} / 核心重疊`,
-    meta: {
-      ...(targetGroup.meta || {}),
-      core_overlap: true,
-      core_nums: normalizedCore
-    }
-  };
-}
-
-function applyCoreOverlapToGroups(groups = [], pools = {}, selection = {}, phaseContext = null, sourceDraw = null) {
-  const normalizedGroups = normalizeGroups(groups, sourceDraw);
-  if (normalizedGroups.length < 2) return normalizedGroups;
-
-  const primaryGroup = normalizedGroups[0];
-  const secondaryGroup = normalizedGroups[1];
-  const coreNums = pickCoreSharedNums(primaryGroup, pools, selection, phaseContext);
-
-  if (coreNums.length < 2) return normalizedGroups;
-
-  const rebuiltSecondary = rebuildGroupWithSharedCore(
-    secondaryGroup,
-    coreNums,
-    primaryGroup,
-    pools,
-    selection,
-    phaseContext,
-    normalizedGroups.slice(2)
-  );
-
-  if (!rebuiltSecondary) return normalizedGroups;
-
-  return normalizeGroups([primaryGroup, rebuiltSecondary, ...normalizedGroups.slice(2)], sourceDraw);
-}
-
-
 function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDraw = null, selection = {}, pools = {}, phaseContext = null) {
   const groups = [];
   const usedKeys = new Set();
@@ -2084,18 +2043,10 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
     );
   }
 
-  const adjustedGroups = applyCoreOverlapToGroups(
-    groups,
-    pools,
-    selection,
-    phaseContext,
-    sourceDraw
-  );
-
   const uniqueGroups = [];
   const finalUsedStrategyKeys = new Set();
 
-  for (const group of normalizeGroups(adjustedGroups, sourceDraw)) {
+  for (const group of normalizeGroups(groups, sourceDraw)) {
     const strategyKey = getStrategyKey(group);
     if (strategyKey && finalUsedStrategyKeys.has(strategyKey)) continue;
     if (strategyKey) finalUsedStrategyKeys.add(strategyKey);
