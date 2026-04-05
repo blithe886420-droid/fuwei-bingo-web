@@ -616,7 +616,7 @@ function inferMarketPhase(sourcePrediction = null, marketSnapshot = {}) {
   return streak4 > 0 || streak3 >= 2 ? 'continuation' : 'rotation';
 }
 
-function buildWeightProfile(marketPhase = 'rotation', lastHitLevel = 'neutral') {
+function buildWeightProfile(marketPhase = 'rotation', lastHitLevel = 'neutral', marketType = 'random', riskModeHint = 'balanced') {
   const profile = { attack: 1, extend: 1, guard: 1, recent: 1 };
 
   if (marketPhase === 'rotation') {
@@ -629,6 +629,27 @@ function buildWeightProfile(marketPhase = 'rotation', lastHitLevel = 'neutral') 
     profile.guard = 0.96;
     profile.recent = 0.96;
     profile.extend = 1.02;
+  }
+
+  if (marketType === 'strong_trend') {
+    profile.attack += 0.14;
+    profile.extend += 0.08;
+    profile.guard -= 0.06;
+  } else if (marketType === 'weak_trend') {
+    profile.attack += 0.05;
+    profile.extend += 0.06;
+  } else {
+    profile.guard += 0.10;
+    profile.extend += 0.04;
+    profile.attack -= 0.06;
+  }
+
+  if (riskModeHint === 'aggressive') {
+    profile.attack += 0.08;
+    profile.extend += 0.03;
+  } else if (riskModeHint === 'safe') {
+    profile.guard += 0.08;
+    profile.attack -= 0.05;
   }
 
   if (lastHitLevel === 'good') {
@@ -656,12 +677,31 @@ function buildPhaseContext(sourcePrediction = null, lastComparedPrediction = nul
       : safeJsonParse(sourcePrediction?.market_snapshot_json, {}) || {};
 
   const marketPhase = inferMarketPhase(sourcePrediction, marketSnapshot);
+  const marketType = String(
+    sourcePrediction?.market_type ||
+      sourcePrediction?.marketType ||
+      marketSnapshot?.market_type ||
+      'random'
+  ).trim().toLowerCase();
+  const strategyModeHint = String(
+    sourcePrediction?.strategy_mode ||
+      sourcePrediction?.strategyMode ||
+      marketSnapshot?.strategy_mode_hint ||
+      'mix'
+  ).trim().toLowerCase();
+  const riskModeHint = String(
+    sourcePrediction?.risk_mode ||
+      sourcePrediction?.riskMode ||
+      marketSnapshot?.risk_mode_hint ||
+      'balanced'
+  ).trim().toLowerCase();
   const lastHitLevel = inferLastHitLevel(lastComparedPrediction);
   const confidenceScore = clamp(
     toNum(
       sourcePrediction?.confidence_score ||
         sourcePrediction?.meta?.confidence_score ||
-        sourcePrediction?.market_signal_json?.confidence_score,
+        sourcePrediction?.market_signal_json?.confidence_score ||
+        marketSnapshot?.confidence_score,
       45
     ),
     0,
@@ -670,9 +710,12 @@ function buildPhaseContext(sourcePrediction = null, lastComparedPrediction = nul
 
   return {
     marketPhase,
+    marketType,
+    strategyModeHint,
+    riskModeHint,
     lastHitLevel,
     confidenceScore,
-    weightProfile: buildWeightProfile(marketPhase, lastHitLevel)
+    weightProfile: buildWeightProfile(marketPhase, lastHitLevel, marketType, riskModeHint)
   };
 }
 
@@ -1185,6 +1228,10 @@ function scoreGroupForMode(group, role = 'mix', strategyMode = 'mix', riskMode =
             ? toNum(phaseContext?.weightProfile?.recent, 1)
             : 1;
 
+  const marketType = String(phaseContext?.marketType || '').trim().toLowerCase();
+  const strategyModeHint = String(phaseContext?.strategyModeHint || '').trim().toLowerCase();
+  const riskModeHint = String(phaseContext?.riskModeHint || '').trim().toLowerCase();
+
   let score = scoreQualityReport(report, role, { strategyMode, riskMode }, phaseContext);
   score += blendedRoi * 260;
   score += recent50Roi * 340;
@@ -1207,6 +1254,26 @@ function scoreGroupForMode(group, role = 'mix', strategyMode = 'mix', riskMode =
   if (strategyMode === 'cold') score += report.gapCount * 8;
   if (strategyMode === 'hot') score += report.hotCount * 8;
   if (strategyMode === 'burst') score += report.attackCount * 12;
+
+  if (marketType === 'strong_trend') {
+    if (role === 'attack') score += 48;
+    if (role === 'extend') score += 24;
+    score += report.hotCount * 12;
+    score += report.attackCount * 15;
+  } else if (marketType === 'weak_trend') {
+    if (role === 'extend') score += 24;
+    if (role === 'attack') score += 12;
+    score += report.hotCount * 6;
+    score += report.gapCount * 4;
+  } else {
+    if (role === 'guard') score += 30;
+    score += report.gapCount * 9;
+  }
+
+  if (strategyModeHint === 'hot') score += report.hotCount * 4;
+  if (strategyModeHint === 'cold') score += report.gapCount * 4;
+  if (riskModeHint === 'aggressive' && role === 'attack') score += 18;
+  if (riskModeHint === 'safe' && role === 'guard') score += 18;
 
   return round4(score);
 }
