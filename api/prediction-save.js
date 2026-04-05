@@ -1788,6 +1788,140 @@ function pickRoleOrderedGroups(ranked = [], selection = {}, pools = {}, phaseCon
   return picked.slice(0, GROUP_COUNT);
 }
 
+
+function getCoreOverlapTargetCount(selection = {}, phaseContext = null) {
+  const marketPhase = String(phaseContext?.marketPhase || '').toLowerCase();
+  const riskMode = String(selection?.riskMode || '').toLowerCase();
+
+  if (marketPhase === 'continuation') return 2;
+  if (marketPhase === 'rotation' && riskMode === 'balanced') return 2;
+  if (marketPhase === 'rotation' && riskMode === 'aggressive') return 2;
+  return 2;
+}
+
+function getCorePriorityScore(num, pools = {}, phaseContext = null) {
+  const marketPhase = String(phaseContext?.marketPhase || '').toLowerCase();
+  let score = 0;
+
+  if ((pools.attack || []).includes(num)) score += 48;
+  if ((pools.hot5 || []).includes(num)) score += 40;
+  if ((pools.hot10 || []).includes(num)) score += 28;
+  if ((pools.recent || []).includes(num)) score += 22;
+  if ((pools.hot20 || []).includes(num)) score += 16;
+  if ((pools.extend || []).includes(num)) score += 10;
+  if ((pools.guard || []).includes(num)) score += 8;
+  if ((pools.gap || []).includes(num)) score += marketPhase === 'rotation' ? 6 : 2;
+  return score;
+}
+
+function pickCoreSharedNums(primaryGroup = {}, pools = {}, selection = {}, phaseContext = null) {
+  const nums = uniqueAsc(primaryGroup?.nums || []);
+  const targetCount = getCoreOverlapTargetCount(selection, phaseContext);
+
+  return nums
+    .map((num, idx) => ({
+      num,
+      score: getCorePriorityScore(num, pools, phaseContext) + (nums.length - idx) * 0.01
+    }))
+    .sort((a, b) => b.score - a.score || a.num - b.num)
+    .slice(0, targetCount)
+    .map((item) => item.num)
+    .sort((a, b) => a - b);
+}
+
+function rebuildGroupWithSharedCore(targetGroup = {}, coreNums = [], anchorGroup = {}, pools = {}, selection = {}, phaseContext = null, existingGroups = []) {
+  const normalizedCore = uniqueAsc(coreNums).slice(0, 2);
+  if (normalizedCore.length < 2) return null;
+
+  const role = inferRoleFromGroup(targetGroup) || 'attack';
+  const anchorNums = uniqueAsc(anchorGroup?.nums || []);
+  const sourceNums = uniqueAsc(targetGroup?.nums || []);
+  const blockedFromAnchor = new Set(anchorNums.filter((n) => !normalizedCore.includes(n)));
+
+  const preferredOwn = uniqueAsc(
+    sourceNums.filter((n) => !normalizedCore.includes(n) && !blockedFromAnchor.has(n))
+  );
+
+  const rolePools = getRoleSeedPools(role, pools, phaseContext).map((pool) =>
+    uniqueAsc(pool || []).filter((n) => !blockedFromAnchor.has(n))
+  );
+
+  const qualityPool = uniqueAsc((pools.qualityAll || []).filter((n) => !blockedFromAnchor.has(n)));
+  const allPool = uniqueAsc((pools.all || []).filter((n) => !blockedFromAnchor.has(n)));
+
+  const seedBase =
+    (toNum(targetGroup?.meta?.slot_no, 0) || 0) * 131 +
+    (toNum(targetGroup?.meta?.selection_rank, 0) || 0) * 17 +
+    normalizedCore.reduce((acc, n) => acc + n, 0);
+
+  let nums = fillToFour(
+    [...normalizedCore, ...preferredOwn.slice(0, 2)],
+    [preferredOwn, ...rolePools, qualityPool, allPool],
+    seedBase
+  );
+
+  nums = uniqueAsc([...normalizedCore, ...nums]).slice(0, 4);
+
+  if (nums.length !== 4) return null;
+  if (countOverlap(nums, normalizedCore) < normalizedCore.length) return null;
+
+  const anchorOverlap = countOverlap(nums, anchorNums);
+  if (anchorOverlap > normalizedCore.length) {
+    const safeBase = nums.filter((n) => normalizedCore.includes(n) || !anchorNums.includes(n));
+    nums = fillToFour(
+      safeBase,
+      [preferredOwn, ...rolePools, qualityPool, allPool],
+      seedBase + 29
+    );
+    nums = uniqueAsc([...normalizedCore, ...nums]).slice(0, 4);
+  }
+
+  if (nums.length !== 4) return null;
+  if (countOverlap(nums, anchorNums) > normalizedCore.length) return null;
+  if (!isAcceptableGroup(nums, pools, role, selection, phaseContext)) return null;
+
+  const compareGroups = (Array.isArray(existingGroups) ? existingGroups : []).filter(Boolean);
+  const overlapTooHigh = compareGroups.some((group) => countOverlap(nums, group?.nums || []) > MAX_GROUP_OVERLAP);
+  if (overlapTooHigh) return null;
+
+  return {
+    ...targetGroup,
+    nums,
+    reason: `${targetGroup.reason || ''} / 核心重疊`,
+    meta: {
+      ...(targetGroup.meta || {}),
+      core_overlap: true,
+      core_nums: normalizedCore
+    }
+  };
+}
+
+function applyCoreOverlapToGroups(groups = [], pools = {}, selection = {}, phaseContext = null, sourceDraw = null) {
+  const normalizedGroups = normalizeGroups(groups, sourceDraw);
+  if (normalizedGroups.length < 2) return normalizedGroups;
+
+  const primaryGroup = normalizedGroups[0];
+  const secondaryGroup = normalizedGroups[1];
+  const coreNums = pickCoreSharedNums(primaryGroup, pools, selection, phaseContext);
+
+  if (coreNums.length < 2) return normalizedGroups;
+
+  const rebuiltSecondary = rebuildGroupWithSharedCore(
+    secondaryGroup,
+    coreNums,
+    primaryGroup,
+    pools,
+    selection,
+    phaseContext,
+    normalizedGroups.slice(2)
+  );
+
+  if (!rebuiltSecondary) return normalizedGroups;
+
+  return normalizeGroups([primaryGroup, rebuiltSecondary, ...normalizedGroups.slice(2)], sourceDraw);
+}
+
+
 function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDraw = null, selection = {}, pools = {}, phaseContext = null) {
   const groups = [];
   const usedKeys = new Set();
@@ -1950,10 +2084,18 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
     );
   }
 
+  const adjustedGroups = applyCoreOverlapToGroups(
+    groups,
+    pools,
+    selection,
+    phaseContext,
+    sourceDraw
+  );
+
   const uniqueGroups = [];
   const finalUsedStrategyKeys = new Set();
 
-  for (const group of normalizeGroups(groups, sourceDraw)) {
+  for (const group of normalizeGroups(adjustedGroups, sourceDraw)) {
     const strategyKey = getStrategyKey(group);
     if (strategyKey && finalUsedStrategyKeys.has(strategyKey)) continue;
     if (strategyKey) finalUsedStrategyKeys.add(strategyKey);
