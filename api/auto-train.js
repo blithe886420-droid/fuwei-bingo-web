@@ -2040,3 +2040,6 @@ export default async function handler(req, res) {
     });
   }
 }
+
+// 進攻型decision
+function calcDecisionScore(meta={}){const h3=Number(meta.recent_50_hit3_rate||0); const h2=Number(meta.hit2_rate||0); const roi=Number(meta.recent_50_roi||0); return h3*60+h2*25+Math.max(roi,-1)*15;}
