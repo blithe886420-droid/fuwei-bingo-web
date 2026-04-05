@@ -1168,26 +1168,81 @@ export default function App() {
       ? '本期已達 3 批上限'
       : '手動產生一批正式下注';
 
+  const formalDecisionSettings = extractRowDecisionSettings(formalLatest);
+  const trainingDecisionSettings = extractRowDecisionSettings(trainingLatest);
+
+  const scoreCandidates = [
+    ...trainingGroups,
+    ...formalGroups,
+    ...formalDisplayGroups,
+    ...toArray(currentTopStrategies)
+  ]
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null;
+      const meta = item?.meta && typeof item.meta === 'object' ? item.meta : {};
+      const score = toNum(meta?.score ?? item?.score, NaN);
+      return Number.isFinite(score) ? score : null;
+    })
+    .filter((v) => Number.isFinite(v));
+
+  const sortedScores = scoreCandidates.slice().sort((a, b) => b - a);
+  const topThreeScores = sortedScores.slice(0, 3);
+  const avgTopScore = topThreeScores.length
+    ? topThreeScores.reduce((sum, v) => sum + v, 0) / topThreeScores.length
+    : 0;
+  const negativeScoreCount = sortedScores.filter((v) => v < 0).length;
+
+  const scoreBandBase =
+    avgTopScore >= 1800 ? 94 :
+    avgTopScore >= 1400 ? 88 :
+    avgTopScore >= 1000 ? 80 :
+    avgTopScore >= 700 ? 72 :
+    avgTopScore >= 450 ? 64 :
+    avgTopScore >= 250 ? 56 :
+    avgTopScore >= 80 ? 48 : 40;
+
   const strategyStabilityScore = Math.max(
     0,
     Math.min(
       100,
       Math.round(
-        aiPlayer.activeCount * 0.8 +
-          Math.min(30, formalBatchCount * 8) +
-          Math.max(0, toNum(aiPlayer.topStrategyRecent50Roi, 0) * 100 * 0.6)
+        scoreBandBase +
+          Math.min(6, formalBatchCount * 2) +
+          (lastAutoTrainResult?.ok ? 4 : 0) -
+          Math.min(10, negativeScoreCount * 2)
       )
     )
   );
+
+  const derivedMarketPhase = String(
+    formalDecisionSettings.marketPhase ||
+      trainingDecisionSettings.marketPhase ||
+      aiPlayer.decisionPhase ||
+      'neutral'
+  ).toLowerCase();
+
+  const derivedConfidenceScore = Math.max(
+    toNum(formalDecisionSettings.confidenceScore, 0),
+    toNum(trainingDecisionSettings.confidenceScore, 0),
+    0
+  );
+
+  const marketPhaseBase =
+    derivedMarketPhase === 'rotation' ? 66 :
+    derivedMarketPhase === 'continuation' ? 74 :
+    derivedMarketPhase === 'strong_trend' ? 78 :
+    derivedMarketPhase === 'weak_trend' ? 68 :
+    derivedMarketPhase === 'random' ? 56 : 52;
 
   const marketFitScore = Math.max(
     0,
     Math.min(
       100,
       Math.round(
-        toNum(aiPlayer.trainingStrength, 0) * 0.7 +
-          (predictionSummary.readyForFormal ? 18 : 0) +
-          (aiPlayer.decisionPhase === 'good' ? 10 : 0)
+        marketPhaseBase +
+          Math.min(18, derivedConfidenceScore * 0.18) +
+          (predictionSummary.readyForFormal ? 6 : 0) +
+          (lastAutoTrainResult?.ok ? 4 : 0)
       )
     )
   );
