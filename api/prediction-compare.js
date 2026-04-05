@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import { recordStrategyCompareResult } from '../lib/strategyStatsRecorder.js';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -13,7 +14,6 @@ const SUPABASE_KEY =
 
 const DRAWS_TABLE = 'bingo_draws';
 const PREDICTIONS_TABLE = 'bingo_predictions';
-const STRATEGY_STATS_TABLE = 'strategy_stats';
 
 if (!SUPABASE_URL || !SUPABASE_KEY) {
   throw new Error('Missing SUPABASE env');
@@ -33,9 +33,21 @@ function parseNumbers(value) {
 
   if (typeof value === 'string') {
     return value
-      .split(',')
-      .map((n) => Number(n.trim()))
+      .replace(/[{}[\]]/g, ' ')
+      .split(/[,\s|/]+/)
+      .map((n) => Number(String(n).trim()))
       .filter(Number.isFinite);
+  }
+
+  if (value && typeof value === 'object') {
+    return parseNumbers(
+      value.numbers ||
+      value.draw_numbers ||
+      value.result_numbers ||
+      value.open_numbers ||
+      value.nums ||
+      []
+    );
   }
 
   return [];
@@ -69,40 +81,8 @@ function calcReward(hit) {
   return 0;
 }
 
-async function upsertStrategyStat(strategyKey, hit, cost, reward) {
-  const { data: existing } = await supabase
-    .from(STRATEGY_STATS_TABLE)
-    .select('*')
-    .eq('strategy_key', strategyKey)
-    .maybeSingle();
-
-  const prevRounds = toNum(existing?.total_rounds, 0);
-  const prevHits = toNum(existing?.total_hits, 0);
-  const prevCost = toNum(existing?.total_cost, 0);
-  const prevReward = toNum(existing?.total_reward, 0);
-
-  const newRounds = prevRounds + 1;
-  const newHits = prevHits + hit;
-  const newCost = prevCost + cost;
-  const newReward = prevReward + reward;
-
-  const avgHit = newHits / newRounds;
-  const roi = newCost > 0 ? (newReward - newCost) / newCost : 0;
-
-  await supabase.from(STRATEGY_STATS_TABLE).upsert({
-    strategy_key: strategyKey,
-    total_rounds: newRounds,
-    total_hits: newHits,
-    total_cost: newCost,
-    total_reward: newReward,
-    avg_hit: avgHit,
-    roi: roi,
-    updated_at: new Date().toISOString()
-  });
-}
-
 async function processPrediction(prediction, draw) {
-  const groups = parseGroups(prediction.groups_json);
+  const groups = parseGroups(prediction.groups_json || prediction.groups || []);
   const drawNums = parseNumbers(draw.numbers);
 
   let totalHit = 0;
@@ -122,8 +102,6 @@ async function processPrediction(prediction, draw) {
     totalReward += reward;
 
     const strategyKey = g.meta?.strategy_key || g.key || 'unknown';
-
-    await upsertStrategyStat(strategyKey, hit, cost, reward);
 
     detail.push({
       nums,
@@ -149,13 +127,16 @@ async function processPrediction(prediction, draw) {
 
 export default async function handler(req, res) {
   try {
-    // 1️⃣ 找尚未 compare 的 prediction
-    const { data: predictions } = await supabase
+    const { data: predictions, error: predictionError } = await supabase
       .from(PREDICTIONS_TABLE)
       .select('*')
       .eq('status', 'created')
       .order('created_at', { ascending: true })
       .limit(5);
+
+    if (predictionError) {
+      throw predictionError;
+    }
 
     if (!predictions || predictions.length === 0) {
       return res.status(200).json({
@@ -165,24 +146,30 @@ export default async function handler(req, res) {
     }
 
     let processed = 0;
+    const statsUpdatedKeys = [];
+    const statsDisabledKeys = [];
 
     for (const p of predictions) {
-      const targetDrawNo =
-        toNum(p.source_draw_no) + toNum(p.target_periods);
+      const targetDrawNo = toNum(p.source_draw_no) + toNum(p.target_periods, 1);
 
-      // 2️⃣ 找開獎
-      const { data: draw } = await supabase
+      const { data: draw, error: drawError } = await supabase
         .from(DRAWS_TABLE)
         .select('*')
         .eq('draw_no', targetDrawNo)
         .maybeSingle();
 
+      if (drawError) {
+        throw drawError;
+      }
+
       if (!draw) continue;
 
-      // 3️⃣ 計算 compare
       const result = await processPrediction(p, draw);
 
-      // 4️⃣ 寫回 prediction
+      const statsResult = await recordStrategyCompareResult({
+        detail: result.detail
+      });
+
       await supabase
         .from(PREDICTIONS_TABLE)
         .update({
@@ -190,17 +177,27 @@ export default async function handler(req, res) {
           compare_status: 'done',
           compared_at: new Date().toISOString(),
           compare_result: result,
+          compare_result_json: result,
           hit_count: result.total_hit,
           verdict: result.total_profit >= 0 ? 'good' : 'bad'
         })
         .eq('id', p.id);
 
-      processed++;
+      if (Array.isArray(statsResult?.updated_keys)) {
+        statsUpdatedKeys.push(...statsResult.updated_keys);
+      }
+      if (Array.isArray(statsResult?.disabled_keys)) {
+        statsDisabledKeys.push(...statsResult.disabled_keys);
+      }
+
+      processed += 1;
     }
 
     return res.status(200).json({
       ok: true,
-      processed
+      processed,
+      updated_keys: [...new Set(statsUpdatedKeys)],
+      disabled_keys: [...new Set(statsDisabledKeys)]
     });
   } catch (err) {
     return res.status(500).json({
@@ -209,6 +206,3 @@ export default async function handler(req, res) {
     });
   }
 }
-
-// 短期命中分數
-function calcShortTermScore(history=[]){const recent=history.slice(-20); let h=0,c=0,r=0; for(const x of recent){h+=x.hit;c+=x.cost;r+=x.reward;} const avg=h/(recent.length||1); const roi=c>0?(r-c)/c:0; return avg*50+Math.max(roi,-1)*30;}
