@@ -93,11 +93,32 @@ function parseNums(input) {
 function normalizePredictionRow(row) {
   if (!row || typeof row !== 'object') return null;
 
+  const compareResult =
+    safeJsonParse(row?.compare_result_json, null) ||
+    safeJsonParse(row?.compare_result, null) ||
+    null;
+
+  const compareHistory =
+    safeJsonParse(row?.compare_history_json, null) ||
+    safeJsonParse(row?.compare_history, null) ||
+    safeJsonParse(row?.recent_compare_history_json, null) ||
+    safeJsonParse(row?.recent_compare_history, null) ||
+    [];
+
   return {
     ...row,
     source_draw_no: toNum(row?.source_draw_no, 0),
     target_periods: toNum(row?.target_periods, 1),
-    hit_count: toNum(row?.hit_count, 0),
+    hit_count: toNum(
+      row?.hit_count ??
+        compareResult?.hit_count ??
+        row?.best_single_hit ??
+        compareResult?.best_single_hit,
+      0
+    ),
+    compared_at: row?.compared_at || compareResult?.compared_at || null,
+    compare_result_json: compareResult,
+    compare_history_json: Array.isArray(compareHistory) ? compareHistory : [],
     groups_json: normalizeGroups(
       row?.groups_json ||
       row?.groups ||
@@ -366,7 +387,13 @@ function normalizePredictionLatest(data) {
   const recentPredictionRows = [
     ...(Array.isArray(latest?.rows) ? latest.rows : []),
     ...(Array.isArray(latest?.predictions) ? latest.predictions : []),
-    ...(Array.isArray(latest?.data) ? latest.data : [])
+    ...(Array.isArray(latest?.data) ? latest.data : []),
+    ...(Array.isArray(latest?.recent_prediction_rows) ? latest.recent_prediction_rows : []),
+    ...(Array.isArray(latest?.recentPredictionRows) ? latest.recentPredictionRows : []),
+    ...(Array.isArray(latest?.recent_compared_rows) ? latest.recent_compared_rows : []),
+    ...(Array.isArray(latest?.recentComparedRows) ? latest.recentComparedRows : []),
+    ...(Array.isArray(latest?.compare_history_rows) ? latest.compare_history_rows : []),
+    ...(Array.isArray(latest?.compareHistoryRows) ? latest.compareHistoryRows : [])
   ]
     .map(normalizePredictionRow)
     .filter(Boolean);
@@ -618,20 +645,65 @@ function buildRecentHitFeedback(rows = []) {
   const normalizedRows = toArray(rows).filter(Boolean);
   const grouped = new Map();
 
-  normalizedRows.forEach((row) => {
-    const sourceDrawNo = toNum(row?.source_draw_no, 0);
+  function pushSample(sample) {
+    const sourceDrawNo = toNum(
+      sample?.source_draw_no ??
+        sample?.sourceDrawNo ??
+        sample?.draw_no ??
+        sample?.drawNo,
+      0
+    );
     if (!sourceDrawNo) return;
 
-    const hitCount = toNum(row?.hit_count, 0);
+    const hitCount = toNum(
+      sample?.hit_count ??
+        sample?.hitCount ??
+        sample?.best_single_hit ??
+        sample?.bestHit ??
+        sample?.compare_result_json?.hit_count ??
+        sample?.compare_result?.hit_count,
+      0
+    );
+
     const current = grouped.get(sourceDrawNo);
 
     if (!current || hitCount > current.hit_count) {
       grouped.set(sourceDrawNo, {
         source_draw_no: sourceDrawNo,
         hit_count: hitCount,
-        created_at: row?.created_at || null,
-        mode: row?.mode || '--'
+        created_at:
+          sample?.compared_at ||
+          sample?.created_at ||
+          sample?.updated_at ||
+          null,
+        mode: sample?.mode || '--'
       });
+    }
+  }
+
+  normalizedRows.forEach((row) => {
+    const historyRows = Array.isArray(row?.compare_history_json)
+      ? row.compare_history_json
+      : [];
+
+    historyRows.forEach((item) => pushSample(item));
+
+    const rowLooksCompared =
+      String(row?.status || '').toLowerCase() === 'compared' ||
+      Boolean(row?.compared_at) ||
+      row?.hit_count > 0 ||
+      Boolean(row?.compare_result_json);
+
+    if (rowLooksCompared) {
+      pushSample(row);
+      if (row?.compare_result_json && typeof row.compare_result_json === 'object') {
+        pushSample({
+          ...row.compare_result_json,
+          source_draw_no: row?.source_draw_no,
+          mode: row?.mode,
+          compared_at: row?.compared_at || row?.created_at
+        });
+      }
     }
   });
 
@@ -1225,8 +1297,14 @@ export default function App() {
     : getPredictionGroups(latestFormalBatch);
 
   const recentHitFeedback = useMemo(
-    () => buildRecentHitFeedback(predictionSummary.recentPredictionRows || []),
-    [predictionSummary]
+    () =>
+      buildRecentHitFeedback([
+        ...(predictionSummary.recentPredictionRows || []),
+        ...(predictionSummary.formalBatches || []),
+        formalLatest,
+        trainingLatest
+      ]),
+    [predictionSummary, formalLatest, trainingLatest]
   );
 
   const formalButtonDisabled =
