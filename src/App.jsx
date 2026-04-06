@@ -363,6 +363,14 @@ function normalizePredictionLatest(data) {
         ? [formalRow]
         : [];
 
+  const recentPredictionRows = [
+    ...(Array.isArray(latest?.rows) ? latest.rows : []),
+    ...(Array.isArray(latest?.predictions) ? latest.predictions : []),
+    ...(Array.isArray(latest?.data) ? latest.data : [])
+  ]
+    .map(normalizePredictionRow)
+    .filter(Boolean);
+
   const leaderboard = Array.isArray(latest?.leaderboard) ? latest.leaderboard : [];
   const currentTopStrategies = Array.isArray(latest?.current_top_strategies)
     ? latest.current_top_strategies
@@ -437,6 +445,7 @@ function normalizePredictionLatest(data) {
     leaderboard,
     currentTopStrategies,
     marketStreakBuckets,
+    recentPredictionRows,
 
     summaryLabel,
     summaryText,
@@ -602,6 +611,57 @@ function resolveDisplayedSelection(predictionSummary, trainingLatest, formalLate
     confidenceScore,
     summaryLabel: predictionSummary?.summaryLabel || '--',
     summaryText: predictionSummary?.summaryText || ''
+  };
+}
+
+function buildRecentHitFeedback(rows = []) {
+  const normalizedRows = toArray(rows).filter(Boolean);
+  const grouped = new Map();
+
+  normalizedRows.forEach((row) => {
+    const sourceDrawNo = toNum(row?.source_draw_no, 0);
+    if (!sourceDrawNo) return;
+
+    const hitCount = toNum(row?.hit_count, 0);
+    const current = grouped.get(sourceDrawNo);
+
+    if (!current || hitCount > current.hit_count) {
+      grouped.set(sourceDrawNo, {
+        source_draw_no: sourceDrawNo,
+        hit_count: hitCount,
+        created_at: row?.created_at || null,
+        mode: row?.mode || '--'
+      });
+    }
+  });
+
+  const recent = [...grouped.values()]
+    .sort((a, b) => b.source_draw_no - a.source_draw_no)
+    .slice(0, 10);
+
+  const distribution = { hit0: 0, hit1: 0, hit2: 0, hit3: 0, hit4: 0 };
+
+  recent.forEach((item) => {
+    const hit = Math.max(0, Math.min(4, toNum(item.hit_count, 0)));
+    if (hit === 0) distribution.hit0 += 1;
+    else if (hit === 1) distribution.hit1 += 1;
+    else if (hit === 2) distribution.hit2 += 1;
+    else if (hit === 3) distribution.hit3 += 1;
+    else distribution.hit4 += 1;
+  });
+
+  const total = recent.length;
+  const hit2Plus = distribution.hit2 + distribution.hit3 + distribution.hit4;
+  const hit3Plus = distribution.hit3 + distribution.hit4;
+
+  return {
+    total,
+    distribution,
+    hit2Plus,
+    hit3Plus,
+    hit2PlusRate: total ? Number(((hit2Plus / total) * 100).toFixed(1)) : 0,
+    hit3PlusRate: total ? Number(((hit3Plus / total) * 100).toFixed(1)) : 0,
+    latestSourceDrawNo: recent[0]?.source_draw_no || null
   };
 }
 
@@ -814,6 +874,7 @@ export default function App() {
     formalRemainingBatchCount: FORMAL_BATCH_LIMIT,
     formalSourceDrawNo: null,
     formalBatches: [],
+    recentPredictionRows: [],
     marketStreakBuckets: {
       streak2: [],
       streak3: [],
@@ -873,6 +934,7 @@ export default function App() {
         formalRemainingBatchCount: normalizedPrediction.formalRemainingBatchCount,
         formalSourceDrawNo: normalizedPrediction.formalSourceDrawNo,
         formalBatches: normalizedPrediction.formalBatches,
+        recentPredictionRows: normalizedPrediction.recentPredictionRows,
         marketStreakBuckets: normalizedPrediction.marketStreakBuckets
       });
 
@@ -1162,6 +1224,11 @@ export default function App() {
     ? formalGroups
     : getPredictionGroups(latestFormalBatch);
 
+  const recentHitFeedback = useMemo(
+    () => buildRecentHitFeedback(predictionSummary.recentPredictionRows || []),
+    [predictionSummary]
+  );
+
   const formalButtonDisabled =
     busyKey !== '' ||
     !canFormalBet ||
@@ -1428,6 +1495,21 @@ export default function App() {
                 </div>
               </div>
 
+              <div style={styles.resultPanel}>
+                <div style={styles.resultTitle}>最近 10 期命中回饋</div>
+                <div style={styles.statsGrid4}>
+                  <StatBox label="中1" value={`${recentHitFeedback.distribution.hit1} 期`} hint="單組命中 1" valueStyle={{ color: '#886f46' }} />
+                  <StatBox label="中2" value={`${recentHitFeedback.distribution.hit2} 期`} hint={`中2+ ${recentHitFeedback.hit2PlusRate}%`} valueStyle={{ color: '#0f766e' }} />
+                  <StatBox label="中3" value={`${recentHitFeedback.distribution.hit3} 期`} hint={`中3+ ${recentHitFeedback.hit3PlusRate}%`} valueStyle={{ color: '#d2534f' }} />
+                  <StatBox label="中0 / 中4+" value={`${recentHitFeedback.distribution.hit0} / ${recentHitFeedback.distribution.hit4}`} hint={`樣本 ${recentHitFeedback.total} 期`} valueStyle={{ color: '#23413a' }} />
+                </div>
+                <div style={{ ...styles.metaChipRow, marginTop: 12 }}>
+                  <MetaChip label="最近樣本" value={`${recentHitFeedback.total} 期`} />
+                  <MetaChip label="最新來源期數" value={fmtText(recentHitFeedback.latestSourceDrawNo)} />
+                  <MetaChip label="加碼建議" value={recentHitFeedback.hit3Plus >= 2 ? '可評估加碼' : recentHitFeedback.hit2Plus >= 4 ? '平穩觀察' : '先保守'} />
+                </div>
+              </div>
+
               <div style={styles.predictControlStack}>
                 <div style={styles.selectorBlock}>
                   <div style={styles.selectorTitle}>分析期數</div>
@@ -1638,6 +1720,19 @@ export default function App() {
                     <div style={styles.decisionSummaryText}>
                       這裡優先顯示連莊與短期熱門，後續可再接成正式下注的強制帶入依據。
                     </div>
+                  </div>
+                </div>
+
+                <div style={styles.selectionSummaryBox}>
+                  <div style={styles.selectionSummaryTitle}>最近 10 期即時命中回饋</div>
+                  <div style={styles.statsGrid4}>
+                    <StatBox label="中1" value={`${recentHitFeedback.distribution.hit1} 期`} hint="偏保守命中" valueStyle={{ color: '#886f46' }} />
+                    <StatBox label="中2" value={`${recentHitFeedback.distribution.hit2} 期`} hint={`中2+ ${recentHitFeedback.hit2PlusRate}%`} valueStyle={{ color: '#0f766e' }} />
+                    <StatBox label="中3" value={`${recentHitFeedback.distribution.hit3} 期`} hint={`中3+ ${recentHitFeedback.hit3PlusRate}%`} valueStyle={{ color: '#d2534f' }} />
+                    <StatBox label="樣本" value={`${recentHitFeedback.total} 期`} hint={`中0 ${recentHitFeedback.distribution.hit0} / 中4+ ${recentHitFeedback.distribution.hit4}`} valueStyle={{ color: '#23413a' }} />
+                  </div>
+                  <div style={styles.decisionSummaryText}>
+                    用最近 10 期的中1 / 中2 / 中3 分布快速判斷現在該不該加碼；中3持續出現時才適合放大攻擊組。
                   </div>
                 </div>
 
