@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
-const API_VERSION = 'prediction-latest-market-role-v6-ui-compare-bridge-v3';
+const API_VERSION = 'prediction-latest-market-role-v6-ui-compare-bridge-v4-appsync';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -265,22 +265,114 @@ async function getFormalRowsBySourceDrawNo(sourceDrawNo) {
 }
 
 
+function getCompareTargetDrawNo(row) {
+  if (!row || typeof row !== 'object') return 0;
+
+  const compareResult =
+    row.compare_result_json && typeof row.compare_result_json === 'object'
+      ? row.compare_result_json
+      : safeJsonParse(row.compare_result_json, null);
+
+  const compareHistory = Array.isArray(row.compare_history_json)
+    ? row.compare_history_json
+    : normalizeCompareHistory(row.compare_history_json);
+
+  const firstHistory = compareHistory[0] && typeof compareHistory[0] === 'object'
+    ? compareHistory[0]
+    : null;
+
+  return (
+    toInt(row.target_draw_no, 0) ||
+    toInt(row.compare_target_draw_no, 0) ||
+    toInt(compareResult?.target_draw_no, 0) ||
+    toInt(compareResult?.compare_target_draw_no, 0) ||
+    toInt(compareResult?.draw_no, 0) ||
+    toInt(compareResult?.result_draw_no, 0) ||
+    toInt(firstHistory?.target_draw_no, 0) ||
+    toInt(firstHistory?.compare_target_draw_no, 0) ||
+    toInt(firstHistory?.draw_no, 0) ||
+    toInt(firstHistory?.result_draw_no, 0) ||
+    0
+  );
+}
+
+function getCompareRowModeRank(mode) {
+  if (mode === FORMAL_MODE) return 3;
+  if (mode === TEST_MODE) return 2;
+  if (mode === FORMAL_CANDIDATE_MODE) return 1;
+  return 0;
+}
+
+function pickBetterComparedRow(currentRow, nextRow) {
+  if (!currentRow) return nextRow;
+  if (!nextRow) return currentRow;
+
+  const currentModeRank = getCompareRowModeRank(currentRow.mode);
+  const nextModeRank = getCompareRowModeRank(nextRow.mode);
+
+  if (nextModeRank !== currentModeRank) {
+    return nextModeRank > currentModeRank ? nextRow : currentRow;
+  }
+
+  const currentCreatedAt = new Date(currentRow.created_at || 0).getTime();
+  const nextCreatedAt = new Date(nextRow.created_at || 0).getTime();
+
+  if (nextCreatedAt !== currentCreatedAt) {
+    return nextCreatedAt > currentCreatedAt ? nextRow : currentRow;
+  }
+
+  const currentHit = toInt(currentRow.hit_count, 0);
+  const nextHit = toInt(nextRow.hit_count, 0);
+
+  if (nextHit !== currentHit) {
+    return nextHit > currentHit ? nextRow : currentRow;
+  }
+
+  return currentRow;
+}
+
+function dedupeComparedRows(rows = [], limit = 10) {
+  const bucket = new Map();
+
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (!row) continue;
+
+    const targetDrawNo = getCompareTargetDrawNo(row);
+    const key = targetDrawNo > 0 ? `target_${targetDrawNo}` : `fallback_${row.mode}_${row.created_at || ''}`;
+    const current = bucket.get(key) || null;
+
+    bucket.set(key, pickBetterComparedRow(current, row));
+  }
+
+  return [...bucket.values()]
+    .filter(Boolean)
+    .sort((a, b) => {
+      const aTime = new Date(a?.created_at || 0).getTime();
+      const bTime = new Date(b?.created_at || 0).getTime();
+      return bTime - aTime;
+    })
+    .slice(0, Math.max(1, toInt(limit, 10)));
+}
+
 async function getRecentComparedRows(limit = 12) {
   const safeLimit = Math.max(5, Math.min(30, toInt(limit, 12)));
+  const fetchLimit = Math.max(safeLimit * 4, 24);
 
   const { data, error } = await supabase
     .from(PREDICTIONS_TABLE)
     .select('*')
     .eq('status', 'compared')
-    .in('mode', [FORMAL_MODE, TEST_MODE, FORMAL_CANDIDATE_MODE])
+    .in('mode', [FORMAL_MODE, TEST_MODE])
     .order('created_at', { ascending: false })
-    .limit(safeLimit);
+    .limit(fetchLimit);
 
   if (error) throw error;
 
-  return (Array.isArray(data) ? data : [])
+  const normalizedRows = (Array.isArray(data) ? data : [])
     .map(normalizePredictionRow)
     .filter(Boolean);
+
+  return dedupeComparedRows(normalizedRows, safeLimit);
 }
 
 async function getStrategyLeaderboard(limit = 50) {
