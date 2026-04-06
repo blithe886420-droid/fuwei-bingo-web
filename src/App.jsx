@@ -90,6 +90,18 @@ function parseNums(input) {
 
   return [];
 }
+
+function safeJsonParse(value, fallback = null) {
+  if (value == null) return fallback;
+  if (typeof value === 'object') return value;
+  if (typeof value !== 'string') return fallback;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
 function normalizePredictionRow(row) {
   if (!row || typeof row !== 'object') return null;
 
@@ -98,27 +110,19 @@ function normalizePredictionRow(row) {
     safeJsonParse(row?.compare_result, null) ||
     null;
 
-  const compareHistory =
-    safeJsonParse(row?.compare_history_json, null) ||
-    safeJsonParse(row?.compare_history, null) ||
-    safeJsonParse(row?.recent_compare_history_json, null) ||
-    safeJsonParse(row?.recent_compare_history, null) ||
-    [];
+  const compareHistoryRaw = safeJsonParse(row?.compare_history_json, []);
+  const compareHistory = Array.isArray(compareHistoryRaw) ? compareHistoryRaw : [];
 
   return {
     ...row,
     source_draw_no: toNum(row?.source_draw_no, 0),
     target_periods: toNum(row?.target_periods, 1),
     hit_count: toNum(
-      row?.hit_count ??
-        compareResult?.hit_count ??
-        row?.best_single_hit ??
-        compareResult?.best_single_hit,
-      0
+      row?.hit_count,
+      toNum(compareResult?.hit_count, 0)
     ),
-    compared_at: row?.compared_at || compareResult?.compared_at || null,
     compare_result_json: compareResult,
-    compare_history_json: Array.isArray(compareHistory) ? compareHistory : [],
+    compare_history_json: compareHistory,
     groups_json: normalizeGroups(
       row?.groups_json ||
       row?.groups ||
@@ -328,11 +332,6 @@ function calcZoneCounts(nums = []) {
   return zones;
 }
 
-
-function uniqueNumbers(input = []) {
-  return [...new Set(toArray(input).map(Number).filter(Number.isFinite))].sort((a, b) => a - b);
-}
-
 function normalizeAiPlayer(data) {
   return {
     assistantMode: data?.assistantMode || 'decision_support',
@@ -383,20 +382,6 @@ function normalizePredictionLatest(data) {
       : formalRow
         ? [formalRow]
         : [];
-
-  const recentPredictionRows = [
-    ...(Array.isArray(latest?.rows) ? latest.rows : []),
-    ...(Array.isArray(latest?.predictions) ? latest.predictions : []),
-    ...(Array.isArray(latest?.data) ? latest.data : []),
-    ...(Array.isArray(latest?.recent_prediction_rows) ? latest.recent_prediction_rows : []),
-    ...(Array.isArray(latest?.recentPredictionRows) ? latest.recentPredictionRows : []),
-    ...(Array.isArray(latest?.recent_compared_rows) ? latest.recent_compared_rows : []),
-    ...(Array.isArray(latest?.recentComparedRows) ? latest.recentComparedRows : []),
-    ...(Array.isArray(latest?.compare_history_rows) ? latest.compare_history_rows : []),
-    ...(Array.isArray(latest?.compareHistoryRows) ? latest.compareHistoryRows : [])
-  ]
-    .map(normalizePredictionRow)
-    .filter(Boolean);
 
   const leaderboard = Array.isArray(latest?.leaderboard) ? latest.leaderboard : [];
   const currentTopStrategies = Array.isArray(latest?.current_top_strategies)
@@ -462,8 +447,18 @@ function normalizePredictionLatest(data) {
     latest?.assistantMode ??
     'decision_support';
 
+  const recentComparedRows = [
+    ...(Array.isArray(latest?.recent_compared_rows) ? latest.recent_compared_rows : []),
+    ...(Array.isArray(latest?.recent_prediction_rows) ? latest.recent_prediction_rows : []),
+    ...(Array.isArray(latest?.compare_history_rows) ? latest.compare_history_rows : []),
+    ...(Array.isArray(latest?.predictions) ? latest.predictions : [])
+  ]
+    .map(normalizePredictionRow)
+    .filter(Boolean);
+
   return {
     raw: latest,
+    apiVersion: latest?.api_version || latest?.apiVersion || '--',
 
     trainingRow,
     formalRow,
@@ -472,7 +467,7 @@ function normalizePredictionLatest(data) {
     leaderboard,
     currentTopStrategies,
     marketStreakBuckets,
-    recentPredictionRows,
+    recentComparedRows,
 
     summaryLabel,
     summaryText,
@@ -638,102 +633,6 @@ function resolveDisplayedSelection(predictionSummary, trainingLatest, formalLate
     confidenceScore,
     summaryLabel: predictionSummary?.summaryLabel || '--',
     summaryText: predictionSummary?.summaryText || ''
-  };
-}
-
-function buildRecentHitFeedback(rows = []) {
-  const normalizedRows = toArray(rows).filter(Boolean);
-  const grouped = new Map();
-
-  function pushSample(sample) {
-    const sourceDrawNo = toNum(
-      sample?.source_draw_no ??
-        sample?.sourceDrawNo ??
-        sample?.draw_no ??
-        sample?.drawNo,
-      0
-    );
-    if (!sourceDrawNo) return;
-
-    const hitCount = toNum(
-      sample?.hit_count ??
-        sample?.hitCount ??
-        sample?.best_single_hit ??
-        sample?.bestHit ??
-        sample?.compare_result_json?.hit_count ??
-        sample?.compare_result?.hit_count,
-      0
-    );
-
-    const current = grouped.get(sourceDrawNo);
-
-    if (!current || hitCount > current.hit_count) {
-      grouped.set(sourceDrawNo, {
-        source_draw_no: sourceDrawNo,
-        hit_count: hitCount,
-        created_at:
-          sample?.compared_at ||
-          sample?.created_at ||
-          sample?.updated_at ||
-          null,
-        mode: sample?.mode || '--'
-      });
-    }
-  }
-
-  normalizedRows.forEach((row) => {
-    const historyRows = Array.isArray(row?.compare_history_json)
-      ? row.compare_history_json
-      : [];
-
-    historyRows.forEach((item) => pushSample(item));
-
-    const rowLooksCompared =
-      String(row?.status || '').toLowerCase() === 'compared' ||
-      Boolean(row?.compared_at) ||
-      row?.hit_count > 0 ||
-      Boolean(row?.compare_result_json);
-
-    if (rowLooksCompared) {
-      pushSample(row);
-      if (row?.compare_result_json && typeof row.compare_result_json === 'object') {
-        pushSample({
-          ...row.compare_result_json,
-          source_draw_no: row?.source_draw_no,
-          mode: row?.mode,
-          compared_at: row?.compared_at || row?.created_at
-        });
-      }
-    }
-  });
-
-  const recent = [...grouped.values()]
-    .sort((a, b) => b.source_draw_no - a.source_draw_no)
-    .slice(0, 10);
-
-  const distribution = { hit0: 0, hit1: 0, hit2: 0, hit3: 0, hit4: 0 };
-
-  recent.forEach((item) => {
-    const hit = Math.max(0, Math.min(4, toNum(item.hit_count, 0)));
-    if (hit === 0) distribution.hit0 += 1;
-    else if (hit === 1) distribution.hit1 += 1;
-    else if (hit === 2) distribution.hit2 += 1;
-    else if (hit === 3) distribution.hit3 += 1;
-    else distribution.hit4 += 1;
-  });
-
-  const total = recent.length;
-  const hit2Plus = distribution.hit2 + distribution.hit3 + distribution.hit4;
-  const hit3Plus = distribution.hit3 + distribution.hit4;
-
-  return {
-    total,
-    distribution,
-    hit2Plus,
-    hit3Plus,
-    hit2PlusRate: total ? Number(((hit2Plus / total) * 100).toFixed(1)) : 0,
-    hit3PlusRate: total ? Number(((hit3Plus / total) * 100).toFixed(1)) : 0,
-    latestSourceDrawNo: recent[0]?.source_draw_no || null
   };
 }
 
@@ -946,14 +845,14 @@ export default function App() {
     formalRemainingBatchCount: FORMAL_BATCH_LIMIT,
     formalSourceDrawNo: null,
     formalBatches: [],
-    recentPredictionRows: [],
     marketStreakBuckets: {
       streak2: [],
       streak3: [],
       streak4: [],
       lookback: 0,
       latestDrawNo: null
-    }
+    },
+    recentComparedRows: []
   });
   const [aiPlayer, setAiPlayer] = useState(normalizeAiPlayer({}));
   const [lastAutoTrainResult, setLastAutoTrainResult] = useState(null);
@@ -1006,8 +905,8 @@ export default function App() {
         formalRemainingBatchCount: normalizedPrediction.formalRemainingBatchCount,
         formalSourceDrawNo: normalizedPrediction.formalSourceDrawNo,
         formalBatches: normalizedPrediction.formalBatches,
-        recentPredictionRows: normalizedPrediction.recentPredictionRows,
-        marketStreakBuckets: normalizedPrediction.marketStreakBuckets
+        marketStreakBuckets: normalizedPrediction.marketStreakBuckets,
+        recentComparedRows: normalizedPrediction.recentComparedRows
       });
 
       setAiPlayer(normalizeAiPlayer(aiPlayerRes));
@@ -1284,6 +1183,83 @@ export default function App() {
     ? predictionSummary.currentTopStrategies
     : aiPlayer.currentTopStrategies;
 
+  const comparedRows = useMemo(() => {
+    const rows = toArray(predictionSummary?.recentComparedRows)
+      .map(normalizePredictionRow)
+      .filter(Boolean);
+
+    const seen = new Set();
+    return rows.filter((row) => {
+      const key = `${row?.id || ''}_${row?.created_at || ''}_${row?.source_draw_no || ''}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }).slice(0, 10);
+  }, [predictionSummary]);
+
+  const hitFeedback = useMemo(() => {
+    const summary = {
+      sampleCount: 0,
+      hit0: 0,
+      hit1: 0,
+      hit2: 0,
+      hit3: 0,
+      hit4Plus: 0,
+      latestSourceDrawNo: '--',
+      addBetAdvice: '先觀察',
+      note: '最近樣本不足，先觀察。'
+    };
+
+    const rows = comparedRows;
+    if (!rows.length) return summary;
+
+    rows.forEach((row) => {
+      const compareResult = row?.compare_result_json && typeof row.compare_result_json === 'object'
+        ? row.compare_result_json
+        : null;
+
+      const compareHistory = Array.isArray(row?.compare_history_json)
+        ? row.compare_history_json
+        : [];
+
+      let hit = toNum(row?.hit_count, NaN);
+      if (!Number.isFinite(hit) && Number.isFinite(Number(compareResult?.hit_count))) {
+        hit = Number(compareResult.hit_count);
+      }
+      if (!Number.isFinite(hit) && compareHistory.length) {
+        const maxHit = Math.max(
+          ...compareHistory.map((item) => toNum(item?.hit_count ?? item?.hit ?? item?.matched, 0))
+        );
+        hit = maxHit;
+      }
+      if (!Number.isFinite(hit)) hit = 0;
+
+      summary.sampleCount += 1;
+      if (hit <= 0) summary.hit0 += 1;
+      else if (hit === 1) summary.hit1 += 1;
+      else if (hit === 2) summary.hit2 += 1;
+      else if (hit === 3) summary.hit3 += 1;
+      else summary.hit4Plus += 1;
+    });
+
+    summary.latestSourceDrawNo = fmtText(rows[0]?.source_draw_no || '--');
+    const hit2PlusRate = summary.sampleCount ? ((summary.hit2 + summary.hit3 + summary.hit4Plus) / summary.sampleCount) * 100 : 0;
+    const hit3PlusRate = summary.sampleCount ? ((summary.hit3 + summary.hit4Plus) / summary.sampleCount) * 100 : 0;
+
+    if (hit3PlusRate >= 20 || (summary.hit3 >= 2 && summary.sampleCount >= 5)) {
+      summary.addBetAdvice = '可加碼';
+      summary.note = '近期中3以上有感，可考慮放大攻擊組。';
+    } else if (hit2PlusRate >= 40) {
+      summary.addBetAdvice = '小試';
+      summary.note = '近期中2以上有延續，可維持平衡下注。';
+    } else {
+      summary.addBetAdvice = '先保守';
+      summary.note = '最近中1偏多，先保守觀察。';
+    }
+
+    return summary;
+  }, [comparedRows]);
+
   const canFormalBet = predictionSummary.readyForFormal || aiPlayer.readyForFormal;
   const formalBatchCount = predictionSummary.formalBatchCount;
   const formalRemainingBatchCount = predictionSummary.formalRemainingBatchCount;
@@ -1295,17 +1271,6 @@ export default function App() {
   const formalDisplayGroups = formalGroups.length
     ? formalGroups
     : getPredictionGroups(latestFormalBatch);
-
-  const recentHitFeedback = useMemo(
-    () =>
-      buildRecentHitFeedback([
-        ...(predictionSummary.recentPredictionRows || []),
-        ...(predictionSummary.formalBatches || []),
-        formalLatest,
-        trainingLatest
-      ]),
-    [predictionSummary, formalLatest, trainingLatest]
-  );
 
   const formalButtonDisabled =
     busyKey !== '' ||
@@ -1413,77 +1378,6 @@ export default function App() {
   const decisionColor = canFormalBet ? '#0f766e' : '#b45309';
   const decisionSubtitle = displayedSelection.summaryText || predictionSummary.summaryText || aiPlayer.statusText || '先觀察再行動。';
 
-
-  const selectedStrategyOption =
-    STRATEGY_MODE_OPTIONS.find((item) => item.key === strategyMode) ||
-    STRATEGY_MODE_OPTIONS.find((item) => item.key === displayedSelection.strategyMode) ||
-    STRATEGY_MODE_OPTIONS[2];
-
-  const selectedRiskOption =
-    RISK_MODE_OPTIONS.find((item) => item.key === riskMode) ||
-    RISK_MODE_OPTIONS.find((item) => item.key === displayedSelection.riskMode) ||
-    RISK_MODE_OPTIONS[1];
-
-  const decisionCoreNumbers = useMemo(() => {
-    const core = uniqueNumbers([
-      ...streakNumbers.map((item) => item?.num),
-      ...streak4Buckets,
-      ...streak3Buckets,
-      ...streak2Buckets,
-      ...hotNumbers.slice(0, 4).map((item) => item?.num),
-      ...latestNumbers.slice(0, 4)
-    ]);
-    return core.slice(0, 10);
-  }, [streakNumbers, streak4Buckets, streak3Buckets, streak2Buckets, hotNumbers, latestNumbers]);
-
-  const decisionPreset = useMemo(() => {
-    const marketPhase = String(displayedSelection.marketPhase || '').toLowerCase();
-    const confidence = toNum(displayedSelection.confidenceScore, 0);
-
-    if (selectedRiskOption?.key === 'aggressive' || marketPhase === 'continuation' || confidence >= 85) {
-      return {
-        label: '進攻壓制',
-        desc: '這一期優先鎖核心與高動能號碼，讓中 3 的機會不要被分散。',
-        chips: ['進攻', '核心重疊', '主攻中3']
-      };
-    }
-
-    if (selectedRiskOption?.key === 'safe' || confidence <= 45) {
-      return {
-        label: '保守防守',
-        desc: '這一期優先控制波動與守住中 2，避免全部攤平後被市場咬走。',
-        chips: ['保守', '守中2', '避免擴散']
-      };
-    }
-
-    return {
-      label: '平衡推進',
-      desc: '這一期採用中 2 與中 3 並重的結構，先穩住命中，再觀察是否放大攻擊。',
-      chips: ['平衡', '兼顧中2中3', '動態調整']
-    };
-  }, [displayedSelection.marketPhase, displayedSelection.confidenceScore, selectedRiskOption]);
-
-  const decisionSignals = useMemo(() => {
-    return [
-      {
-        label: '盤相',
-        value: fmtText(displayedSelection.marketPhase || aiPlayer.decisionPhase || '--')
-      },
-      {
-        label: '信心',
-        value: `${toNum(displayedSelection.confidenceScore, 0)}/100`
-      },
-      {
-        label: '剩餘批次',
-        value: `${formalRemainingBatchCount}/${formalBatchLimit}`
-      },
-      {
-        label: '自動訓練',
-        value: autoTrainEnabled ? '運行中' : '待命'
-      }
-    ];
-  }, [displayedSelection.marketPhase, displayedSelection.confidenceScore, aiPlayer.decisionPhase, formalRemainingBatchCount, formalBatchLimit, autoTrainEnabled]);
-
   return (
     <div style={styles.page}>
       <div style={styles.app}>
@@ -1574,18 +1468,19 @@ export default function App() {
               </div>
 
               <div style={styles.resultPanel}>
-                <div style={styles.resultTitle}>最近 10 期命中回饋</div>
+                <div style={styles.resultTitle}>最近 10 期即時命中回饋</div>
                 <div style={styles.statsGrid4}>
-                  <StatBox label="中1" value={`${recentHitFeedback.distribution.hit1} 期`} hint="單組命中 1" valueStyle={{ color: '#886f46' }} />
-                  <StatBox label="中2" value={`${recentHitFeedback.distribution.hit2} 期`} hint={`中2+ ${recentHitFeedback.hit2PlusRate}%`} valueStyle={{ color: '#0f766e' }} />
-                  <StatBox label="中3" value={`${recentHitFeedback.distribution.hit3} 期`} hint={`中3+ ${recentHitFeedback.hit3PlusRate}%`} valueStyle={{ color: '#d2534f' }} />
-                  <StatBox label="中0 / 中4+" value={`${recentHitFeedback.distribution.hit0} / ${recentHitFeedback.distribution.hit4}`} hint={`樣本 ${recentHitFeedback.total} 期`} valueStyle={{ color: '#23413a' }} />
+                  <StatBox label="中1" value={`${hitFeedback.hit1} 期`} hint="單組命中 1" valueStyle={{ color: '#b45309' }} />
+                  <StatBox label="中2" value={`${hitFeedback.hit2} 期`} hint={`中2+ ${hitFeedback.sampleCount ? Math.round(((hitFeedback.hit2 + hitFeedback.hit3 + hitFeedback.hit4Plus) / hitFeedback.sampleCount) * 100) : 0}%`} valueStyle={{ color: '#0f766e' }} />
+                  <StatBox label="中3" value={`${hitFeedback.hit3} 期`} hint={`中3+ ${hitFeedback.sampleCount ? Math.round(((hitFeedback.hit3 + hitFeedback.hit4Plus) / hitFeedback.sampleCount) * 100) : 0}%`} valueStyle={{ color: '#dc2626' }} />
+                  <StatBox label="樣本" value={`${hitFeedback.sampleCount} 期`} hint={`中0 ${hitFeedback.hit0} / 中4+ ${hitFeedback.hit4Plus}`} />
                 </div>
                 <div style={{ ...styles.metaChipRow, marginTop: 12 }}>
-                  <MetaChip label="最近樣本" value={`${recentHitFeedback.total} 期`} />
-                  <MetaChip label="最新來源期數" value={fmtText(recentHitFeedback.latestSourceDrawNo)} />
-                  <MetaChip label="加碼建議" value={recentHitFeedback.hit3Plus >= 2 ? '可評估加碼' : recentHitFeedback.hit2Plus >= 4 ? '平穩觀察' : '先保守'} />
+                  <MetaChip label="最近樣本" value={`${hitFeedback.sampleCount} 期`} />
+                  <MetaChip label="最新來源期數" value={hitFeedback.latestSourceDrawNo} />
+                  <MetaChip label="加碼建議" value={hitFeedback.addBetAdvice} />
                 </div>
+                <div style={{ ...styles.resultText, marginTop: 10 }}>{hitFeedback.note}</div>
               </div>
 
               <div style={styles.predictControlStack}>
@@ -1691,33 +1586,10 @@ export default function App() {
 
           <div style={styles.sectionStack}>
             <Card
-              title="下注策略控制中心"
-              subtitle="第二頁改成決策層：不是重複顯示資料，而是用來決定這一期要怎麼打。"
+              title="預測控制面板"
+              subtitle="這一頁只保留條件設定；正式下注按鈕與正式下注四組已移到第一頁。"
             >
               <div style={styles.predictControlStack}>
-                <div style={styles.decisionHeroGrid}>
-                  <div style={styles.decisionHeroMain}>
-                    <div style={styles.decisionHeroTitle}>本期決策模式：{decisionPreset.label}</div>
-                    <div style={styles.decisionHeroDesc}>{decisionPreset.desc}</div>
-                    <div style={styles.metaChipRow}>
-                      {decisionPreset.chips.map((chip) => (
-                        <MetaChip key={chip} label="配置" value={chip} />
-                      ))}
-                    </div>
-                  </div>
-
-                  <div style={styles.decisionHeroSide}>
-                    <div style={styles.decisionSignalGrid}>
-                      {decisionSignals.map((item) => (
-                        <div key={item.label} style={styles.decisionSignalBox}>
-                          <div style={styles.decisionSignalLabel}>{item.label}</div>
-                          <div style={styles.decisionSignalValue}>{item.value}</div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-
                 <div style={styles.selectorBlock}>
                   <div style={styles.selectorTitle}>分析期數</div>
                   <div style={styles.selectorDesc}>
@@ -1739,7 +1611,7 @@ export default function App() {
                 <div style={styles.selectorBlock}>
                   <div style={styles.selectorTitle}>策略模式</div>
                   <div style={styles.selectorDesc}>
-                    這裡不是裝飾，會決定正式下注時主攻熱號、補冷或均衡的抽法。
+                    目前先作為前端操作條件，會同步帶到第一頁正式下注。
                   </div>
                   <div style={styles.selectorGrid}>
                     {STRATEGY_MODE_OPTIONS.map((item) => (
@@ -1757,7 +1629,7 @@ export default function App() {
                 <div style={styles.selectorBlock}>
                   <div style={styles.selectorTitle}>下注風格</div>
                   <div style={styles.selectorDesc}>
-                    用來控制四組分工的重心：先求中 2，還是拉高拚中 3 的比例。
+                    對應目前四組分工：保守、平衡、進攻、衝高。
                   </div>
                   <div style={styles.selectorGrid}>
                     {RISK_MODE_OPTIONS.map((item) => (
@@ -1772,63 +1644,19 @@ export default function App() {
                   </div>
                 </div>
 
-                <div style={styles.decisionPanelGrid}>
-                  <div style={styles.selectionSummaryBox}>
-                    <div style={styles.selectionSummaryTitle}>目前選擇摘要</div>
-                    <div style={styles.metaChipRow}>
-                      <MetaChip label="分析期數" value={`${analysisPeriod} 期`} />
-                      <MetaChip label="策略模式" value={getStrategyModeLabel(displayedSelection.strategyMode)} />
-                      <MetaChip label="下注風格" value={getRiskModeLabel(displayedSelection.riskMode)} />
-                      <MetaChip label="最新期數" value={fmtText(latestDrawNo)} />
-                    </div>
-                    <div style={styles.decisionSummaryText}>
-                      策略模式：{selectedStrategyOption.desc}｜下注風格：{selectedRiskOption.desc}
-                    </div>
-                  </div>
-
-                  <div style={styles.selectionSummaryBox}>
-                    <div style={styles.selectionSummaryTitle}>本期核心號碼</div>
-                    <div style={styles.marketBallsWrap}>
-                      {decisionCoreNumbers.length ? (
-                        decisionCoreNumbers.map((n) => <MarketBall key={`decision_core_${n}`} n={n} highlight />)
-                      ) : (
-                        <div style={styles.emptyBox}>目前尚未產生可用的核心號碼。</div>
-                      )}
-                    </div>
-                    <div style={styles.decisionSummaryText}>
-                      這裡優先顯示連莊與短期熱門，後續可再接成正式下注的強制帶入依據。
-                    </div>
-                  </div>
-                </div>
-
                 <div style={styles.selectionSummaryBox}>
-                  <div style={styles.selectionSummaryTitle}>最近 10 期即時命中回饋</div>
-                  <div style={styles.statsGrid4}>
-                    <StatBox label="中1" value={`${recentHitFeedback.distribution.hit1} 期`} hint="偏保守命中" valueStyle={{ color: '#886f46' }} />
-                    <StatBox label="中2" value={`${recentHitFeedback.distribution.hit2} 期`} hint={`中2+ ${recentHitFeedback.hit2PlusRate}%`} valueStyle={{ color: '#0f766e' }} />
-                    <StatBox label="中3" value={`${recentHitFeedback.distribution.hit3} 期`} hint={`中3+ ${recentHitFeedback.hit3PlusRate}%`} valueStyle={{ color: '#d2534f' }} />
-                    <StatBox label="樣本" value={`${recentHitFeedback.total} 期`} hint={`中0 ${recentHitFeedback.distribution.hit0} / 中4+ ${recentHitFeedback.distribution.hit4}`} valueStyle={{ color: '#23413a' }} />
-                  </div>
-                  <div style={styles.decisionSummaryText}>
-                    用最近 10 期的中1 / 中2 / 中3 分布快速判斷現在該不該加碼；中3持續出現時才適合放大攻擊組。
+                  <div style={styles.selectionSummaryTitle}>目前選擇摘要</div>
+                  <div style={styles.metaChipRow}>
+                    <MetaChip label="分析期數" value={`${analysisPeriod} 期`} />
+                    <MetaChip label="策略模式" value={getStrategyModeLabel(displayedSelection.strategyMode)} />
+                    <MetaChip label="下注風格" value={getRiskModeLabel(displayedSelection.riskMode)} />
+                    <MetaChip label="最新期數" value={fmtText(latestDrawNo)} />
                   </div>
                 </div>
 
-                <div style={styles.decisionActionRow}>
-                  <div style={styles.predictOnlyHint}>
-                    第二頁現在改成策略控制中心。第一頁看狀態、第三頁看盤，第二頁專門決定這一期怎麼打。
-                  </div>
-
-                  <button
-                    style={{
-                      ...styles.primaryButton,
-                      ...(formalButtonDisabled ? styles.disabledButton : {})
-                    }}
-                    onClick={handleFormalBet}
-                    disabled={formalButtonDisabled}
-                  >
-                    {busyKey === 'formalBet' ? '建立中...' : `用目前配置建立正式下注（剩 ${formalRemainingBatchCount} 批）`}
-                  </button>
+                <div style={styles.predictOnlyHint}>
+                  第二頁現在只負責設定條件。
+                  正式下注按鈕、正式下注四組、批次狀態與下注建議，都已集中到第一頁顯示。
                 </div>
               </div>
             </Card>
@@ -2310,73 +2138,6 @@ const styles = {
     fontSize: 13,
     color: '#7b6e5c',
     lineHeight: 1.6
-  },
-  decisionHeroGrid: {
-    display: 'grid',
-    gridTemplateColumns: '1.4fr 1fr',
-    gap: 16
-  },
-  decisionHeroMain: {
-    background: '#fbf6ee',
-    border: '1px solid #ddcfbb',
-    borderRadius: 16,
-    padding: 18,
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 12
-  },
-  decisionHeroTitle: {
-    fontSize: 20,
-    fontWeight: 900,
-    color: '#0f766e'
-  },
-  decisionHeroDesc: {
-    fontSize: 14,
-    lineHeight: 1.7,
-    color: '#6e6250'
-  },
-  decisionHeroSide: {
-    background: '#fbf6ee',
-    border: '1px solid #ddcfbb',
-    borderRadius: 16,
-    padding: 18
-  },
-  decisionSignalGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-    gap: 12
-  },
-  decisionSignalBox: {
-    background: '#fffaf2',
-    border: '1px solid #ddcfbb',
-    borderRadius: 14,
-    padding: 14
-  },
-  decisionSignalLabel: {
-    fontSize: 12,
-    color: '#7b6e5c',
-    marginBottom: 6
-  },
-  decisionSignalValue: {
-    fontSize: 20,
-    fontWeight: 900,
-    color: '#184e4a'
-  },
-  decisionPanelGrid: {
-    display: 'grid',
-    gridTemplateColumns: '1fr 1fr',
-    gap: 16
-  },
-  decisionSummaryText: {
-    marginTop: 12,
-    fontSize: 13,
-    lineHeight: 1.7,
-    color: '#6e6250'
-  },
-  decisionActionRow: {
-    display: 'flex',
-    gap: 16,
-    alignItems: 'stretch'
   },
   selectionSummaryBox: {
     background: '#f8f1e6',
