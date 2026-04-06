@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
-const API_VERSION = 'prediction-latest-market-role-v6-ui-compare-bridge-v4-appsync';
+const API_VERSION = 'prediction-latest-market-role-v6-ui-compare-bridge-v6-fill-10';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -144,7 +144,6 @@ function parseGroupsJson(value) {
   return [];
 }
 
-
 function safeJsonParse(value, fallback = null) {
   if (value == null) return fallback;
   if (typeof value === 'object') return value;
@@ -264,7 +263,6 @@ async function getFormalRowsBySourceDrawNo(sourceDrawNo) {
     }));
 }
 
-
 function getCompareTargetDrawNo(row) {
   if (!row || typeof row !== 'object') return 0;
 
@@ -347,6 +345,10 @@ function dedupeComparedRows(rows = [], limit = 10) {
   return [...bucket.values()]
     .filter(Boolean)
     .sort((a, b) => {
+      const aTarget = getCompareTargetDrawNo(a);
+      const bTarget = getCompareTargetDrawNo(b);
+      if (bTarget !== aTarget) return bTarget - aTarget;
+
       const aTime = new Date(a?.created_at || 0).getTime();
       const bTime = new Date(b?.created_at || 0).getTime();
       return bTime - aTime;
@@ -354,9 +356,46 @@ function dedupeComparedRows(rows = [], limit = 10) {
     .slice(0, Math.max(1, toInt(limit, 10)));
 }
 
-async function getRecentComparedRows(limit = 12) {
-  const safeLimit = Math.max(5, Math.min(30, toInt(limit, 12)));
-  const fetchLimit = Math.max(safeLimit * 4, 24);
+function fillComparedRows(rows = [], limit = 10) {
+  const safeLimit = Math.max(1, toInt(limit, 10));
+  const deduped = dedupeComparedRows(rows, safeLimit);
+
+  if (deduped.length >= safeLimit) {
+    return deduped.slice(0, safeLimit);
+  }
+
+  const usedKeys = new Set(
+    deduped.map((row) => `${row?.id || ''}__${row?.created_at || ''}__${row?.mode || ''}`)
+  );
+
+  const sortedRows = (Array.isArray(rows) ? rows : [])
+    .filter(Boolean)
+    .sort((a, b) => {
+      const aTarget = getCompareTargetDrawNo(a);
+      const bTarget = getCompareTargetDrawNo(b);
+      if (bTarget !== aTarget) return bTarget - aTarget;
+
+      const aTime = new Date(a?.created_at || 0).getTime();
+      const bTime = new Date(b?.created_at || 0).getTime();
+      return bTime - aTime;
+    });
+
+  for (const row of sortedRows) {
+    if (deduped.length >= safeLimit) break;
+
+    const key = `${row?.id || ''}__${row?.created_at || ''}__${row?.mode || ''}`;
+    if (usedKeys.has(key)) continue;
+
+    deduped.push(row);
+    usedKeys.add(key);
+  }
+
+  return deduped.slice(0, safeLimit);
+}
+
+async function getRecentComparedRows(limit = 10) {
+  const safeLimit = Math.max(10, Math.min(30, toInt(limit, 10)));
+  const fetchLimit = Math.max(safeLimit * 8, 80);
 
   const { data, error } = await supabase
     .from(PREDICTIONS_TABLE)
@@ -372,7 +411,7 @@ async function getRecentComparedRows(limit = 12) {
     .map(normalizePredictionRow)
     .filter(Boolean);
 
-  return dedupeComparedRows(normalizedRows, safeLimit);
+  return fillComparedRows(normalizedRows, safeLimit);
 }
 
 async function getStrategyLeaderboard(limit = 50) {
@@ -597,7 +636,7 @@ export default async function handler(req, res) {
       getLatestRowByMode(FORMAL_CANDIDATE_MODE),
       getStrategyLeaderboard(50),
       getRecentDrawRows(20),
-      getRecentComparedRows(12)
+      getRecentComparedRows(10)
     ]);
 
     const formalSourceDrawNo =
@@ -667,5 +706,4 @@ export default async function handler(req, res) {
   }
 }
 
-// 修正最新期延遲
 async function getLatestDrawFixed(supabase){const {data}=await supabase.from('bingo_draws').select('*').order('draw_time',{ascending:false}).limit(2); if(!data||!data.length)return null; const now=Date.now(); const latest=data[0]; const second=data[1]; const diff=now-new Date(latest.draw_time).getTime(); if(diff<120000&&second)return second; return latest;}
