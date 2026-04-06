@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
-const API_VERSION = 'prediction-latest-market-role-v6';
+const API_VERSION = 'prediction-latest-market-role-v6-ui-compare-bridge';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -144,6 +144,23 @@ function parseGroupsJson(value) {
   return [];
 }
 
+
+function safeJsonParse(value, fallback = null) {
+  if (value == null) return fallback;
+  if (typeof value === 'object') return value;
+  if (typeof value !== 'string') return fallback;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function normalizeCompareHistory(value) {
+  const parsed = safeJsonParse(value, []);
+  return Array.isArray(parsed) ? parsed : [];
+}
+
 function normalizePredictionRow(row) {
   if (!row || typeof row !== 'object') return null;
 
@@ -155,15 +172,27 @@ function normalizePredictionRow(row) {
       []
   );
 
+  const compareResult =
+    safeJsonParse(row.compare_result_json, null) ||
+    safeJsonParse(row.compare_result, null) ||
+    null;
+
+  const compareHistory = normalizeCompareHistory(row.compare_history_json);
+
   return {
     ...row,
     mode: String(row.mode || '').trim().toLowerCase(),
     status: String(row.status || '').trim().toLowerCase() || 'created',
     source_draw_no: toInt(row.source_draw_no, 0),
     target_periods: toInt(row.target_periods, 1),
-    hit_count: toInt(row.hit_count, 0),
+    hit_count: toInt(
+      row.hit_count,
+      toInt(compareResult?.hit_count, 0)
+    ),
     compare_status: row.compare_status || null,
     verdict: row.verdict || null,
+    compare_result_json: compareResult,
+    compare_history_json: compareHistory,
     groups_json: groups,
     groups,
     prediction_groups: groups,
@@ -236,6 +265,25 @@ async function getFormalRowsBySourceDrawNo(sourceDrawNo) {
       ...row,
       formal_batch_no: idx + 1
     }));
+}
+
+
+async function getRecentComparedRows(limit = 12) {
+  const safeLimit = Math.max(5, Math.min(30, toInt(limit, 12)));
+
+  const { data, error } = await supabase
+    .from(PREDICTIONS_TABLE)
+    .select('*')
+    .eq('status', 'compared')
+    .in('mode', [FORMAL_MODE, TEST_MODE, FORMAL_CANDIDATE_MODE])
+    .order('created_at', { ascending: false })
+    .limit(safeLimit);
+
+  if (error) throw error;
+
+  return (Array.isArray(data) ? data : [])
+    .map(normalizePredictionRow)
+    .filter(Boolean);
 }
 
 async function getStrategyLeaderboard(limit = 50) {
@@ -454,12 +502,13 @@ export default async function handler(req, res) {
   }
 
   try {
-    const [trainingRow, latestFormalRow, formalCandidateRow, leaderboard, recentDrawRows] = await Promise.all([
+    const [trainingRow, latestFormalRow, formalCandidateRow, leaderboard, recentDrawRows, recentComparedRows] = await Promise.all([
       getLatestRowByMode(TEST_MODE),
       getLatestRowByMode(FORMAL_MODE),
       getLatestRowByMode(FORMAL_CANDIDATE_MODE),
       getStrategyLeaderboard(50),
-      getRecentDrawRows(20)
+      getRecentDrawRows(20),
+      getRecentComparedRows(12)
     ]);
 
     const formalSourceDrawNo =
@@ -507,6 +556,16 @@ export default async function handler(req, res) {
 
       market_streak_buckets: marketStreakBuckets,
       recent_draw_rows: recentDrawRows,
+
+      rows: [
+        ...(displayFormalRow ? [displayFormalRow] : []),
+        ...(trainingRow ? [trainingRow] : []),
+        ...(formalCandidateRow ? [formalCandidateRow] : [])
+      ],
+      predictions: recentComparedRows,
+      recent_prediction_rows: recentComparedRows,
+      recent_compared_rows: recentComparedRows,
+      compare_history_rows: recentComparedRows,
 
       auto_train_result: null
     });
