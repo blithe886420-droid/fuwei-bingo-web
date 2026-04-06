@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
-const API_VERSION = 'prediction-latest-market-role-v6-ui-compare-bridge';
+const API_VERSION = 'prediction-latest-market-role-v6-ui-compare-bridge-v3';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -185,10 +185,7 @@ function normalizePredictionRow(row) {
     status: String(row.status || '').trim().toLowerCase() || 'created',
     source_draw_no: toInt(row.source_draw_no, 0),
     target_periods: toInt(row.target_periods, 1),
-    hit_count: toInt(
-      row.hit_count,
-      toInt(compareResult?.hit_count, 0)
-    ),
+    hit_count: toInt(row.hit_count, toInt(compareResult?.hit_count, 0)),
     compare_status: row.compare_status || null,
     verdict: row.verdict || null,
     compare_result_json: compareResult,
