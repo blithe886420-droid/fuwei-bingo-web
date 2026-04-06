@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
-const API_VERSION = 'prediction-latest-market-role-v6-ui-compare-bridge-v4-appsync-fixed';
+const API_VERSION = 'prediction-latest-market-role-v6-ui-compare-bridge-v4-appsync';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -272,7 +272,6 @@ async function getRecentComparedRows(limit = 10) {
     .from(PREDICTIONS_TABLE)
     .select('*')
     .eq('status', 'compared')
-    .in('mode', [FORMAL_MODE, TEST_MODE, FORMAL_CANDIDATE_MODE])
     .order('created_at', { ascending: false })
     .limit(safeLimit);
 
