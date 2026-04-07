@@ -265,22 +265,17 @@ async function getFormalRowsBySourceDrawNo(sourceDrawNo) {
 }
 
 
-async function getRecentComparedRows(limit = 10) {
-  const safeLimit = Math.max(10, Math.min(30, toInt(limit, 10)));
-
+async function getRecentComparedRows() {
   const { data, error } = await supabase
-    .from(PREDICTIONS_TABLE)
+    .from('bingo_predictions')
     .select('*')
     .eq('status', 'compared')
     .order('created_at', { ascending: false })
-    .limit(safeLimit);
+    .limit(10);
 
   if (error) throw error;
 
-  return (Array.isArray(data) ? data : [])
-    .map(normalizePredictionRow)
-    .filter(Boolean)
-    .slice(0, safeLimit);
+  return data || [];
 }
 
 async function getStrategyLeaderboard(limit = 50) {
