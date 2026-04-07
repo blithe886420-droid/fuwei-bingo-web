@@ -23,6 +23,11 @@ const TEST_MODE = 'test';
 const FORMAL_MODE = 'formal';
 const FORMAL_CANDIDATE_MODE = 'formal_candidate';
 
+const FORMAL_MIN_TOTAL_ROUNDS = 8;
+const FORMAL_MIN_RECENT_50_HIT_RATE = 0.25;
+const FORMAL_MIN_HIT2_RATE = 0.25;
+const FORMAL_MIN_DECISION_SCORE = 0;
+
 if (!SUPABASE_URL || !SUPABASE_KEY) {
   throw new Error('Missing SUPABASE_URL or SUPABASE key');
 }
@@ -260,6 +265,35 @@ function buildRecentDrawSummary(rows = [], limit = 10) {
   return [...summaryMap.values()]
     .sort((a, b) => b.draw_no - a.draw_no)
     .slice(0, safeLimit);
+}
+
+
+function isValidFormalDisplayGroup(group = {}) {
+  const meta = group?.meta && typeof group.meta === 'object' ? group.meta : {};
+  return (
+    toNum(meta.total_rounds, 0) >= FORMAL_MIN_TOTAL_ROUNDS &&
+    toNum(meta.recent_50_hit_rate, 0) >= FORMAL_MIN_RECENT_50_HIT_RATE &&
+    toNum(meta.hit2_rate, 0) >= FORMAL_MIN_HIT2_RATE &&
+    toNum(meta.decision_score, 0) > FORMAL_MIN_DECISION_SCORE &&
+    String(meta.decision || '').trim().toLowerCase() !== 'reject' &&
+    String(meta.decision || '').trim().toLowerCase() !== 'candidate'
+  );
+}
+
+function filterValidFormalDisplayGroups(groups = []) {
+  return (Array.isArray(groups) ? groups : []).filter((group) => isValidFormalDisplayGroup(group));
+}
+
+function applyFormalDisplayFilterToRow(row) {
+  if (!row || typeof row !== 'object') return row;
+  const filteredGroups = filterValidFormalDisplayGroups(row.groups_json || row.groups || row.prediction_groups || []);
+  return {
+    ...row,
+    groups_json: filteredGroups,
+    groups: filteredGroups,
+    prediction_groups: filteredGroups,
+    group_count: filteredGroups.length
+  };
 }
 
 function normalizeLeaderboardRow(row, poolRow = null) {
@@ -581,7 +615,7 @@ export default async function handler(req, res) {
     const recentDrawSummary = buildRecentDrawSummary(allRecentComparedRows, 10);
     const recentComparedRows = allRecentComparedRows.slice(0, 10);
     const formalBatches = await getFormalRowsBySourceDrawNo(formalSourceDrawNo);
-    const displayFormalRow = buildFormalDisplayRow(formalBatches) || latestFormalRow || null;
+    const displayFormalRow = applyFormalDisplayFilterToRow(buildFormalDisplayRow(formalBatches) || latestFormalRow || null);
     const marketStreakBuckets = buildMarketStreakBuckets(recentDrawRows);
     const decisionSummary = buildDecisionSummary(
       leaderboard,
@@ -602,7 +636,7 @@ export default async function handler(req, res) {
       ...latestRowsPayload,
 
       display_formal_row: displayFormalRow || null,
-      formal_batches: formalBatches,
+      formal_batches: formalBatches.map((row) => applyFormalDisplayFilterToRow(row)),
 
       leaderboard,
       current_top_strategies: decisionSummary.currentTopStrategies,
