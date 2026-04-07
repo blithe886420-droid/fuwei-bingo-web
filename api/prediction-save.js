@@ -40,6 +40,12 @@ const MIN_TIER_A_ROUNDS = 20;
 const MIN_TIER_B_ROUNDS = 10;
 const MAX_GROUP_OVERLAP = 2;
 
+const FORMAL_MIN_RECENT_50_HIT_RATE = 0.25;
+const FORMAL_MIN_HIT2_RATE = 0.25;
+const FORMAL_MIN_RECENT_50_HIT3_RATE = 0.02;
+const FORMAL_STRONG_RECENT_50_HIT3_RATE = 0.05;
+const FORMAL_MIN_RECENT_50_ROI = -0.6;
+
 let supabase = null;
 
 function getSupabase() {
@@ -392,6 +398,58 @@ function pickMetric(preferredValue, fallbackValue) {
   return Number.isFinite(fallback) ? fallback : 0;
 }
 
+function getFormalStabilitySnapshot(group = {}) {
+  const meta = group?.meta && typeof group.meta === 'object' ? group.meta : {};
+  return {
+    totalRounds: toNum(meta.total_rounds, 0),
+    recent50HitRate: toNum(meta.recent_50_hit_rate, 0),
+    hit2Rate: toNum(meta.hit2_rate, 0),
+    recent50Hit3Rate: toNum(meta.recent_50_hit3_rate, 0),
+    hit3Rate: toNum(meta.hit3_rate, 0),
+    recent50Roi: toNum(meta.recent_50_roi, 0),
+    roi: toNum(meta.roi, 0)
+  };
+}
+
+function isStableFormalCandidate(group = {}, slotNo = 1) {
+  const stats = getFormalStabilitySnapshot(group);
+  const totalRounds = stats.totalRounds;
+
+  if (totalRounds <= 0) return false;
+
+  if (totalRounds >= 8) {
+    if (stats.recent50HitRate < FORMAL_MIN_RECENT_50_HIT_RATE) return false;
+    if (stats.hit2Rate < FORMAL_MIN_HIT2_RATE) return false;
+    if (stats.recent50Roi < FORMAL_MIN_RECENT_50_ROI) return false;
+  }
+
+  if (slotNo <= 2 && totalRounds >= 12) {
+    if (stats.recent50Hit3Rate < FORMAL_MIN_RECENT_50_HIT3_RATE && stats.hit3Rate < FORMAL_MIN_RECENT_50_HIT3_RATE) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function getFormalStabilityBonus(group = {}, slotNo = 1) {
+  const stats = getFormalStabilitySnapshot(group);
+  let bonus = 0;
+
+  bonus += stats.recent50HitRate * 2600;
+  bonus += stats.hit2Rate * 2200;
+  bonus += Math.max(stats.recent50Hit3Rate, stats.hit3Rate) * 4200;
+  bonus += Math.max(stats.recent50Roi, stats.roi) * 180;
+
+  if (stats.recent50HitRate >= 0.35) bonus += 260;
+  if (stats.hit2Rate >= 0.3) bonus += 220;
+  if (stats.recent50Hit3Rate >= FORMAL_STRONG_RECENT_50_HIT3_RATE) bonus += 320;
+  if (slotNo <= 2 && stats.recent50Hit3Rate >= FORMAL_STRONG_RECENT_50_HIT3_RATE) bonus += 180;
+  if (stats.recent50Roi >= 0) bonus += 120;
+
+  return round4(bonus);
+}
+
 function mergeStrategyStatsIntoGroup(group = {}, statsMap = new Map()) {
   const strategyKey = getStrategyKey(group);
   if (!strategyKey || !statsMap.has(strategyKey)) return group;
@@ -524,6 +582,17 @@ function buildStrategyPoolGroups(poolRows = [], statsRows = [], pools = {}, sele
 
     const totalRounds = toNum(stats.total_rounds, 0);
     if (totalRounds < 3) continue;
+
+    const recent50HitRate = toNum(stats.recent_50_hit_rate, 0);
+    const hit2Rate = toNum(stats.hit2_rate, 0);
+    const recent50Hit3Rate = toNum(stats.recent_50_hit3_rate, 0);
+    const hit3Rate = toNum(stats.hit3_rate, 0);
+    const recent50Roi = toNum(stats.recent_50_roi, 0);
+
+    if (totalRounds >= 8 && recent50HitRate < FORMAL_MIN_RECENT_50_HIT_RATE) continue;
+    if (totalRounds >= 8 && hit2Rate < FORMAL_MIN_HIT2_RATE) continue;
+    if (totalRounds >= 8 && recent50Roi < FORMAL_MIN_RECENT_50_ROI) continue;
+    if (totalRounds >= 12 && recent50Hit3Rate < FORMAL_MIN_RECENT_50_HIT3_RATE && hit3Rate < FORMAL_MIN_RECENT_50_HIT3_RATE) continue;
 
     const role = inferRoleFromGroup({
       key: strategyKey,
@@ -1772,10 +1841,12 @@ function buildRankedSourceGroups(sourceGroups = [], selection = {}, pools = {}, 
 
       const isPool = isStrategyPoolGroup(group);
 
+      const stabilityBonus = getFormalStabilityBonus(group, 1);
+
       return {
         group,
         role,
-        score: isPool ? round4(score + 120) : score,
+        score: isPool ? round4(score + 120 + stabilityBonus) : round4(score + stabilityBonus),
         tier,
         strategyKey: getStrategyKey(group),
         totalRounds: toNum(group?.meta?.total_rounds, 0),
@@ -1922,6 +1993,14 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
     const roi = getBlendedRoi(sourceGroup);
     const hit3 = getBlendedHit3Rate(sourceGroup);
     const totalRounds = toNum(sourceGroup?.meta?.total_rounds, 0);
+    const recent50HitRate = toNum(sourceGroup?.meta?.recent_50_hit_rate, 0);
+    const hit2Rate = toNum(sourceGroup?.meta?.hit2_rate, 0);
+    const recent50Hit3Rate = toNum(sourceGroup?.meta?.recent_50_hit3_rate, 0);
+    const recent50Roi = toNum(sourceGroup?.meta?.recent_50_roi, 0);
+
+    if (!isStableFormalCandidate(sourceGroup, nextSlotNo)) {
+      return false;
+    }
 
     // 階段式 gate：先 rounds，再 roi，最後 hit3（放鬆版，避免全部被殺光）
     if (isPool) {
@@ -1940,7 +2019,23 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
       return false;
     }
 
-    const tier = getCandidateTier(sourceGroup, candidateScore, slotRole, selection, phaseContext);
+    if (totalRounds >= 8 && recent50HitRate < FORMAL_MIN_RECENT_50_HIT_RATE) {
+      return false;
+    }
+
+    if (totalRounds >= 8 && hit2Rate < FORMAL_MIN_HIT2_RATE) {
+      return false;
+    }
+
+    if (totalRounds >= 8 && recent50Roi < FORMAL_MIN_RECENT_50_ROI) {
+      return false;
+    }
+
+    if (nextSlotNo <= 2 && totalRounds >= 12 && recent50Hit3Rate < FORMAL_MIN_RECENT_50_HIT3_RATE && hit3 < FORMAL_MIN_RECENT_50_HIT3_RATE) {
+      return false;
+    }
+
+    const tier = getCandidateTier(sourceGroup, candidateScore + getFormalStabilityBonus(sourceGroup, nextSlotNo), slotRole, selection, phaseContext);
     const overlapTooHigh = groups.some((g) => countOverlap(nums, g?.nums || []) > MAX_GROUP_OVERLAP);
 
     const canUseStrategy = !strategyKey || currentStrategyCount < 1;
@@ -1961,7 +2056,7 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
       reason: `正式下注分工：${slotRole.toUpperCase()} / ${strategyModeLabel(selection.strategyMode)} / ${roleLabelOf(selection.riskMode)} / ${phaseContext.marketPhase} / ${phaseContext.lastHitLevel}`,
       meta: {
         ...buildFormalMeta(sourceGroup, slotRole, nextSlotNo, sourcePrediction, selection, phaseContext),
-        decision_score: round4(candidateScore),
+        decision_score: round4(candidateScore + getFormalStabilityBonus(sourceGroup, nextSlotNo)),
         decision_gate: getDecisionScoreFloor(slotRole, selection, phaseContext),
         roi_gate: getRecentRoiFloor(slotRole, selection, phaseContext),
         hit3_gate: getHit3RateFloor(slotRole, selection, phaseContext),
@@ -1994,14 +2089,14 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
       const currentStrategyCount = toInt(strategyUseCount.get(strategyKey), 0);
 
       for (const role of fallbackRoles) {
-        const baseScore = scoreGroupForMode(
+        const baseScore = round4(scoreGroupForMode(
           sourceGroup,
           role,
           selection.strategyMode,
           selection.riskMode,
           pools,
           phaseContext
-        );
+        ) + getFormalStabilityBonus(sourceGroup, groups.length + 1));
         const tier = getCandidateTier(sourceGroup, baseScore, role, selection, phaseContext);
 
         fallbackMatrix.push({
