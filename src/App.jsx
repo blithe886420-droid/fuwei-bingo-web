@@ -17,7 +17,7 @@ const NIGHT_STOP_START_MINUTES = 0;
 const NIGHT_STOP_END_MINUTES = 7 * 60 + 30;
 
 const FORMAL_BATCH_LIMIT = 3;
-const FORMAL_GROUP_COUNT = 4;
+const FORMAL_GROUP_COUNT = 4; // keep constant but display uses real length
 const COST_PER_GROUP = 25;
 
 const ANALYSIS_PERIOD_OPTIONS = [5, 10, 20, 50];
