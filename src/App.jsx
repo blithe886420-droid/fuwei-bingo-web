@@ -1387,6 +1387,17 @@ export default function App() {
       ? '本期已達 3 批上限'
       : '手動產生一批正式下注';
 
+  const actualFormalGroupCount = formalDisplayGroups.length;
+  const formalGroupCoverageRatio = FORMAL_GROUP_COUNT > 0
+    ? actualFormalGroupCount / FORMAL_GROUP_COUNT
+    : 0;
+  const formalGroupCoverageText = `${actualFormalGroupCount} / ${FORMAL_GROUP_COUNT}`;
+  const formalGroupRealityText = actualFormalGroupCount >= FORMAL_GROUP_COUNT
+    ? '本批已達完整四組'
+    : actualFormalGroupCount > 0
+      ? `本批僅保留 ${actualFormalGroupCount} 組有效正式下注，採寧缺勿濫。`
+      : '本批目前沒有通過條件的正式下注組合。';
+
   const formalDecisionSettings = extractRowDecisionSettings(formalLatest);
   const trainingDecisionSettings = extractRowDecisionSettings(trainingLatest);
 
@@ -1428,7 +1439,8 @@ export default function App() {
         scoreBandBase +
           Math.min(6, formalBatchCount * 2) +
           (lastAutoTrainResult?.ok ? 4 : 0) -
-          Math.min(10, negativeScoreCount * 2)
+          Math.min(10, negativeScoreCount * 2) -
+          Math.max(0, Math.round((1 - formalGroupCoverageRatio) * 18))
       )
     )
   );
@@ -1461,7 +1473,8 @@ export default function App() {
         marketPhaseBase +
           Math.min(18, derivedConfidenceScore * 0.18) +
           (predictionSummary.readyForFormal ? 6 : 0) +
-          (lastAutoTrainResult?.ok ? 4 : 0)
+          (lastAutoTrainResult?.ok ? 4 : 0) -
+          Math.max(0, Math.round((1 - formalGroupCoverageRatio) * 16))
       )
     )
   );
@@ -1567,6 +1580,7 @@ export default function App() {
                 <div style={{ ...styles.metaChipRow, marginTop: 12 }}>
                   <MetaChip label="本輪摘要" value={lastCycleSummary} />
                   <MetaChip label="formal 批次" value={formalBatchProgressText} />
+                  <MetaChip label="有效組數" value={formalGroupCoverageText} />
                   <MetaChip label="自動訓練" value={autoTrainEnabled ? '運行中' : '停止'} />
                 </div>
               </div>
@@ -1637,10 +1651,11 @@ export default function App() {
 
             <Card
               title="正式下注"
-              subtitle="用現在選定的條件建立正式下注；下方會累積顯示同一期最多三批，共十二組。"
+              subtitle="用現在選定的條件建立正式下注；下方只顯示通過條件的有效組合，同一期最多三批，採寧缺勿濫。"
               right={
                 <div style={styles.metaChipRow}>
                   <MetaChip label="每組" value={fmtMoney(COST_PER_GROUP)} />
+                  <MetaChip label="有效組數" value={formalGroupCoverageText} />
                   <MetaChip label="剩餘批次" value={formalRemainingBatchCount} />
                 </div>
               }
@@ -1659,7 +1674,7 @@ export default function App() {
                 </button>
 
                 <div style={styles.formalActionHint}>
-                  條件：{analysisPeriod}期｜{getStrategyModeLabel(strategyMode)}｜{getRiskModeLabel(riskMode)}
+                  條件：{analysisPeriod}期｜{getStrategyModeLabel(strategyMode)}｜{getRiskModeLabel(riskMode)}｜{formalGroupRealityText}
                 </div>
               </div>
 
@@ -1670,7 +1685,7 @@ export default function App() {
                   ))
                 ) : formalDisplayGroups.length ? (
                   <div style={styles.groupGrid}>
-                    {formalDisplayGroups.slice(0, 4).map((group, idx) => (
+                    {formalDisplayGroups.map((group, idx) => (
                       <CompactBetCard
                         key={`${group?.key || idx}_${idx}`}
                         group={group}
@@ -1679,7 +1694,7 @@ export default function App() {
                     ))}
                   </div>
                 ) : (
-                  <div style={styles.emptyBox}>尚未產生正式下注四組，先按上方按鈕建立一批。</div>
+                  <div style={styles.emptyBox}>尚未產生通過條件的正式下注組合，先按上方按鈕建立一批。</div>
                 )}
               </div>
             </Card>
@@ -1733,7 +1748,7 @@ export default function App() {
                 <div style={styles.selectorBlock}>
                   <div style={styles.selectorTitle}>下注風格</div>
                   <div style={styles.selectorDesc}>
-                    對應目前四組分工：保守、平衡、進攻、衝高。
+                    對應目前有效組合分工；若不足四組，代表本期採寧缺勿濫。
                   </div>
                   <div style={styles.selectorGrid}>
                     {RISK_MODE_OPTIONS.map((item) => (
@@ -1760,7 +1775,7 @@ export default function App() {
 
                 <div style={styles.predictOnlyHint}>
                   第二頁現在只負責設定條件。
-                  正式下注按鈕、正式下注四組、批次狀態與下注建議，都已集中到第一頁顯示。
+                  正式下注按鈕、正式下注有效組合、批次狀態與下注建議，都已集中到第一頁顯示。
                 </div>
               </div>
             </Card>
