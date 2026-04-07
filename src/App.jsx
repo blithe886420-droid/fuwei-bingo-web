@@ -17,7 +17,7 @@ const NIGHT_STOP_START_MINUTES = 0;
 const NIGHT_STOP_END_MINUTES = 7 * 60 + 30;
 
 const FORMAL_BATCH_LIMIT = 3;
-const FORMAL_GROUP_COUNT = 4; // keep constant but display uses real length
+const FORMAL_GROUP_COUNT = 4;
 const COST_PER_GROUP = 25;
 
 const ANALYSIS_PERIOD_OPTIONS = [5, 10, 20, 50];
@@ -153,6 +153,25 @@ function normalizeGroups(rawGroups) {
       };
     })
     .filter(Boolean);
+}
+
+
+function isValidFormalDisplayGroup(group) {
+  const meta = group?.meta && typeof group.meta === 'object' ? group.meta : {};
+  const decision = String(meta?.decision || '').trim().toLowerCase();
+
+  return (
+    decision !== 'reject' &&
+    decision !== 'candidate' &&
+    Number(meta?.total_rounds) >= FORMAL_MIN_TOTAL_ROUNDS &&
+    Number(meta?.recent_50_hit_rate) >= FORMAL_MIN_RECENT_50_HIT_RATE &&
+    Number(meta?.hit2_rate) >= FORMAL_MIN_HIT2_RATE &&
+    Number(meta?.decision_score) > FORMAL_MIN_DECISION_SCORE
+  );
+}
+
+function getValidFormalDisplayGroups(row) {
+  return getPredictionGroups(row).filter((group) => isValidFormalDisplayGroup(group));
 }
 
 function getPredictionGroups(row) {
@@ -1243,7 +1262,7 @@ export default function App() {
   }, [recent20, analysisPeriod]);
 
   const trainingGroups = useMemo(() => getPredictionGroups(trainingLatest), [trainingLatest]);
-  const formalGroups = useMemo(() => getPredictionGroups(formalLatest), [formalLatest]);
+  const formalGroups = useMemo(() => getValidFormalDisplayGroups(formalLatest), [formalLatest]);
 
   const hotNumbers = useMemo(() => calcHotNumbers(recentRowsByPeriod, Math.min(analysisPeriod, 10)), [recentRowsByPeriod, analysisPeriod]);
   const streakNumbers = useMemo(() => calcCurrentStreakNumbers(recentRowsByPeriod, Math.min(analysisPeriod, 5)), [recentRowsByPeriod, analysisPeriod]);
@@ -1372,9 +1391,10 @@ export default function App() {
   const formalBatchProgressText = `${formalBatchCount} / ${formalBatchLimit}`;
 
   const latestFormalBatch = formalBatches.length ? formalBatches[formalBatches.length - 1] : null;
+  const latestFormalBatchGroups = useMemo(() => getValidFormalDisplayGroups(latestFormalBatch), [latestFormalBatch]);
   const formalDisplayGroups = formalGroups.length
     ? formalGroups
-    : getPredictionGroups(latestFormalBatch);
+    : latestFormalBatchGroups;
 
   const formalButtonDisabled =
     busyKey !== '' ||
