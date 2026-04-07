@@ -432,20 +432,57 @@ function isStableFormalCandidate(group = {}, slotNo = 1) {
   return true;
 }
 
+function isFormalHardRejectCandidate(group = {}, slotNo = 1) {
+  const meta = group?.meta && typeof group.meta === 'object' ? group.meta : {};
+  const stats = getFormalStabilitySnapshot(group);
+  const totalRounds = stats.totalRounds;
+  const decision = String(meta.decision || '').trim().toLowerCase();
+  const blendedHit3Rate = Math.max(stats.recent50Hit3Rate, stats.hit3Rate);
+  const blendedRoi = Math.max(stats.recent50Roi, stats.roi);
+
+  if (decision === 'reject') return true;
+  if (totalRounds <= 0) return true;
+
+  if (totalRounds >= 8) {
+    if (stats.recent50HitRate < FORMAL_MIN_RECENT_50_HIT_RATE) return true;
+    if (stats.hit2Rate < FORMAL_MIN_HIT2_RATE) return true;
+    if (stats.recent50Roi < FORMAL_MIN_RECENT_50_ROI) return true;
+  }
+
+  if (slotNo <= 2 && totalRounds >= 12 && blendedHit3Rate < FORMAL_MIN_RECENT_50_HIT3_RATE) {
+    return true;
+  }
+
+  if (slotNo <= 2 && totalRounds >= 20 && blendedHit3Rate <= 0) {
+    return true;
+  }
+
+  if (slotNo === 1 && totalRounds >= 12) {
+    if (stats.recent50HitRate < 0.28) return true;
+    if (stats.hit2Rate < 0.28) return true;
+  }
+
+  if (slotNo === 1 && totalRounds >= 20 && blendedRoi < -0.45) {
+    return true;
+  }
+
+  return false;
+}
+
 function getFormalStabilityBonus(group = {}, slotNo = 1) {
   const stats = getFormalStabilitySnapshot(group);
   let bonus = 0;
 
-  bonus += stats.recent50HitRate * 2600;
-  bonus += stats.hit2Rate * 2200;
-  bonus += Math.max(stats.recent50Hit3Rate, stats.hit3Rate) * 4200;
-  bonus += Math.max(stats.recent50Roi, stats.roi) * 180;
+  bonus += stats.recent50HitRate * 4200;
+  bonus += stats.hit2Rate * 3600;
+  bonus += Math.max(stats.recent50Hit3Rate, stats.hit3Rate) * 2600;
+  bonus += Math.max(stats.recent50Roi, stats.roi) * 140;
 
-  if (stats.recent50HitRate >= 0.35) bonus += 260;
-  if (stats.hit2Rate >= 0.3) bonus += 220;
-  if (stats.recent50Hit3Rate >= FORMAL_STRONG_RECENT_50_HIT3_RATE) bonus += 320;
-  if (slotNo <= 2 && stats.recent50Hit3Rate >= FORMAL_STRONG_RECENT_50_HIT3_RATE) bonus += 180;
-  if (stats.recent50Roi >= 0) bonus += 120;
+  if (stats.recent50HitRate >= 0.35) bonus += 360;
+  if (stats.hit2Rate >= 0.3) bonus += 280;
+  if (stats.recent50Hit3Rate >= FORMAL_STRONG_RECENT_50_HIT3_RATE) bonus += 180;
+  if (slotNo <= 2 && stats.recent50Hit3Rate >= FORMAL_STRONG_RECENT_50_HIT3_RATE) bonus += 120;
+  if (stats.recent50Roi >= 0) bonus += 100;
 
   return round4(bonus);
 }
@@ -1827,6 +1864,7 @@ function chooseSourcePrediction(latestTest, exactTest, exactFormalCandidate) {
 
 function buildRankedSourceGroups(sourceGroups = [], selection = {}, pools = {}, phaseContext = null) {
   return sourceGroups
+    .filter((group) => !isFormalHardRejectCandidate(group, 1))
     .map((group) => {
       const role = inferRoleFromGroup(group);
       const score = scoreGroupForMode(
@@ -1885,6 +1923,7 @@ function pickRoleOrderedGroups(ranked = [], selection = {}, pools = {}, phaseCon
 
       if (slotNo <= 3 && isFallbackStrategyKey(strategyKey)) continue;
       if (strategyKey && usedCount >= 1) continue;
+      if (isFormalHardRejectCandidate(rankedRow.group, slotNo)) continue;
 
       const score = scoreGroupForMode(
         rankedRow.group,
@@ -1964,6 +2003,7 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
 
   const tryAddSlot = (sourceGroup, slotRole = 'mix') => {
     if (!sourceGroup) return false;
+    if (isFormalHardRejectCandidate(sourceGroup, groups.length + 1)) return false;
 
     const strategyKey = getStrategyKey(sourceGroup);
     const currentStrategyCount = toInt(strategyUseCount.get(strategyKey), 0);
@@ -2089,6 +2129,7 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
       const currentStrategyCount = toInt(strategyUseCount.get(strategyKey), 0);
 
       for (const role of fallbackRoles) {
+        if (isFormalHardRejectCandidate(sourceGroup, groups.length + 1)) continue;
         const baseScore = round4(scoreGroupForMode(
           sourceGroup,
           role,
