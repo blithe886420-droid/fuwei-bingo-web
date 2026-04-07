@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
-const API_VERSION = 'prediction-latest-market-role-v6-ui-compare-bridge-v4-appsync-summary-sync';
+const API_VERSION = 'prediction-latest-market-role-v6-ui-compare-bridge-v4-appsync-summary-sync-v2';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -332,12 +332,13 @@ async function getFormalRowsBySourceDrawNo(sourceDrawNo) {
 
 async function getRecentComparedRows(limit = 10) {
   const safeLimit = Math.max(10, Math.min(50, toInt(limit, 10)));
-  const fetchLimit = Math.max(100, safeLimit * 12);
+  const fetchLimit = Math.max(5000, safeLimit * 100);
 
   const { data, error } = await supabase
     .from(PREDICTIONS_TABLE)
     .select('*')
     .eq('status', 'compared')
+    .not('compare_result_json', 'is', null)
     .order('created_at', { ascending: false })
     .limit(fetchLimit);
 
@@ -345,8 +346,7 @@ async function getRecentComparedRows(limit = 10) {
 
   return (Array.isArray(data) ? data : [])
     .map(normalizePredictionRow)
-    .filter(Boolean)
-    .slice(0, fetchLimit);
+    .filter(Boolean);
 }
 
 async function getStrategyLeaderboard(limit = 50) {
@@ -565,7 +565,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const [trainingRow, latestFormalRow, formalCandidateRow, leaderboard, recentDrawRows, recentComparedRows] = await Promise.all([
+    const [trainingRow, latestFormalRow, formalCandidateRow, leaderboard, recentDrawRows, allRecentComparedRows] = await Promise.all([
       getLatestRowByMode(TEST_MODE),
       getLatestRowByMode(FORMAL_MODE),
       getLatestRowByMode(FORMAL_CANDIDATE_MODE),
@@ -578,7 +578,8 @@ export default async function handler(req, res) {
       toInt(latestFormalRow?.source_draw_no, 0) ||
       await getLatestFormalSourceDrawNo();
 
-    const recentDrawSummary = buildRecentDrawSummary(recentComparedRows, 10);
+    const recentDrawSummary = buildRecentDrawSummary(allRecentComparedRows, 10);
+    const recentComparedRows = allRecentComparedRows.slice(0, 10);
     const formalBatches = await getFormalRowsBySourceDrawNo(formalSourceDrawNo);
     const displayFormalRow = buildFormalDisplayRow(formalBatches) || latestFormalRow || null;
     const marketStreakBuckets = buildMarketStreakBuckets(recentDrawRows);
