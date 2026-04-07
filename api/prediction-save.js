@@ -441,6 +441,11 @@ function isFormalHardRejectCandidate(group = {}, slotNo = 1) {
   const blendedRoi = Math.max(stats.recent50Roi, stats.roi);
 
   if (decision === 'reject') return true;
+  if (totalRounds < 8) return true;
+  if (stats.recent50HitRate < 0.25) return true;
+  if (stats.hit2Rate < 0.25) return true;
+  if (Math.max(stats.recent50Hit3Rate, stats.hit3Rate) < 0.02) return true;
+  if (stats.recent50HitRate === 0) return true;
   if (totalRounds <= 0) return true;
 
   if (totalRounds >= 8) {
