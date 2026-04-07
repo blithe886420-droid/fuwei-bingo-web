@@ -357,6 +357,23 @@ function normalizeAiPlayer(data) {
   };
 }
 
+
+function normalizeRecentDrawSummary(rows) {
+  return toArray(rows)
+    .map((row) => ({
+      draw_no: toNum(row?.draw_no, 0),
+      hit0_count: toNum(row?.hit0_count, 0),
+      hit1_count: toNum(row?.hit1_count, 0),
+      hit2_count: toNum(row?.hit2_count, 0),
+      hit3_count: toNum(row?.hit3_count, 0),
+      hit4_count: toNum(row?.hit4_count, 0),
+      row_count: toNum(row?.row_count, 0),
+      latest_created_at: row?.latest_created_at || null
+    }))
+    .filter((row) => row.draw_no > 0)
+    .sort((a, b) => b.draw_no - a.draw_no);
+}
+
 function normalizePredictionLatest(data) {
   const latest = data && typeof data === 'object' ? data : {};
 
@@ -456,6 +473,10 @@ function normalizePredictionLatest(data) {
     .map(normalizePredictionRow)
     .filter(Boolean);
 
+  const recentDrawSummary = normalizeRecentDrawSummary(
+    latest?.recent_draw_summary || latest?.recentDrawSummary || []
+  );
+
   return {
     raw: latest,
     apiVersion: latest?.api_version || latest?.apiVersion || '--',
@@ -468,6 +489,7 @@ function normalizePredictionLatest(data) {
     currentTopStrategies,
     marketStreakBuckets,
     recentComparedRows,
+    recentDrawSummary,
 
     summaryLabel,
     summaryText,
@@ -1210,39 +1232,65 @@ export default function App() {
       note: '最近樣本不足，先觀察。'
     };
 
-    const rows = comparedRows;
-    if (!rows.length) return summary;
+    const drawSummaryRows = toArray(predictionSummary?.recentDrawSummary)
+      .map((row) => ({
+        draw_no: toNum(row?.draw_no, 0),
+        hit0_count: toNum(row?.hit0_count, 0),
+        hit1_count: toNum(row?.hit1_count, 0),
+        hit2_count: toNum(row?.hit2_count, 0),
+        hit3_count: toNum(row?.hit3_count, 0),
+        hit4_count: toNum(row?.hit4_count, 0)
+      }))
+      .filter((row) => row.draw_no > 0)
+      .slice(0, 10);
 
-    rows.forEach((row) => {
-      const compareResult = row?.compare_result_json && typeof row.compare_result_json === 'object'
-        ? row.compare_result_json
-        : null;
+    if (drawSummaryRows.length) {
+      drawSummaryRows.forEach((row) => {
+        summary.sampleCount += 1;
+        if ((row.hit1_count + row.hit2_count + row.hit3_count + row.hit4_count) <= 0) summary.hit0 += 1;
+        if (row.hit1_count > 0) summary.hit1 += 1;
+        if (row.hit2_count > 0) summary.hit2 += 1;
+        if (row.hit3_count > 0) summary.hit3 += 1;
+        if (row.hit4_count > 0) summary.hit4Plus += 1;
+      });
 
-      const compareHistory = Array.isArray(row?.compare_history_json)
-        ? row.compare_history_json
-        : [];
+      summary.latestSourceDrawNo = fmtText(drawSummaryRows[0]?.draw_no || '--');
+    } else {
+      const rows = comparedRows;
+      if (!rows.length) return summary;
 
-      let hit = toNum(row?.hit_count, NaN);
-      if (!Number.isFinite(hit) && Number.isFinite(Number(compareResult?.hit_count))) {
-        hit = Number(compareResult.hit_count);
-      }
-      if (!Number.isFinite(hit) && compareHistory.length) {
-        const maxHit = Math.max(
-          ...compareHistory.map((item) => toNum(item?.hit_count ?? item?.hit ?? item?.matched, 0))
-        );
-        hit = maxHit;
-      }
-      if (!Number.isFinite(hit)) hit = 0;
+      rows.forEach((row) => {
+        const compareResult = row?.compare_result_json && typeof row.compare_result_json === 'object'
+          ? row.compare_result_json
+          : null;
 
-      summary.sampleCount += 1;
-      if (hit <= 0) summary.hit0 += 1;
-      else if (hit === 1) summary.hit1 += 1;
-      else if (hit === 2) summary.hit2 += 1;
-      else if (hit === 3) summary.hit3 += 1;
-      else summary.hit4Plus += 1;
-    });
+        const compareHistory = Array.isArray(row?.compare_history_json)
+          ? row.compare_history_json
+          : [];
 
-    summary.latestSourceDrawNo = fmtText(rows[0]?.source_draw_no || '--');
+        let hit = toNum(row?.hit_count, NaN);
+        if (!Number.isFinite(hit) && Number.isFinite(Number(compareResult?.hit_count))) {
+          hit = Number(compareResult.hit_count);
+        }
+        if (!Number.isFinite(hit) && compareHistory.length) {
+          const maxHit = Math.max(
+            ...compareHistory.map((item) => toNum(item?.hit_count ?? item?.hit ?? item?.matched, 0))
+          );
+          hit = maxHit;
+        }
+        if (!Number.isFinite(hit)) hit = 0;
+
+        summary.sampleCount += 1;
+        if (hit <= 0) summary.hit0 += 1;
+        else if (hit === 1) summary.hit1 += 1;
+        else if (hit === 2) summary.hit2 += 1;
+        else if (hit === 3) summary.hit3 += 1;
+        else summary.hit4Plus += 1;
+      });
+
+      summary.latestSourceDrawNo = fmtText(rows[0]?.source_draw_no || '--');
+    }
+
     const hit2PlusRate = summary.sampleCount ? ((summary.hit2 + summary.hit3 + summary.hit4Plus) / summary.sampleCount) * 100 : 0;
     const hit3PlusRate = summary.sampleCount ? ((summary.hit3 + summary.hit4Plus) / summary.sampleCount) * 100 : 0;
 
@@ -1258,7 +1306,7 @@ export default function App() {
     }
 
     return summary;
-  }, [comparedRows]);
+  }, [comparedRows, predictionSummary?.recentDrawSummary]);
 
   const canFormalBet = predictionSummary.readyForFormal || aiPlayer.readyForFormal;
   const formalBatchCount = predictionSummary.formalBatchCount;
