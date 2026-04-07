@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
-const API_VERSION = 'prediction-latest-market-role-v6-ui-compare-bridge-v4-appsync';
+const API_VERSION = 'prediction-latest-market-role-v6-ui-compare-bridge-v4-appsync-summary-sync';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -197,6 +197,71 @@ function normalizePredictionRow(row) {
   };
 }
 
+
+function getCompareDrawNo(row) {
+  if (!row || typeof row !== 'object') return 0;
+
+  const compareResult =
+    row.compare_result_json && typeof row.compare_result_json === 'object'
+      ? row.compare_result_json
+      : safeJsonParse(row.compare_result_json, null);
+
+  const detail = Array.isArray(compareResult?.detail) ? compareResult.detail : [];
+  const firstDetail = detail.length && detail[0] && typeof detail[0] === 'object' ? detail[0] : null;
+
+  return toInt(
+    row?.draw_no ||
+      row?.target_draw_no ||
+      compareResult?.draw_no ||
+      compareResult?.target_draw_no ||
+      firstDetail?.draw_no ||
+      firstDetail?.target_draw_no,
+    0
+  );
+}
+
+function buildRecentDrawSummary(rows = [], limit = 10) {
+  const safeLimit = Math.max(1, Math.min(30, toInt(limit, 10)));
+  const summaryMap = new Map();
+
+  (Array.isArray(rows) ? rows : []).forEach((rawRow) => {
+    const row = normalizePredictionRow(rawRow);
+    if (!row) return;
+
+    const drawNo = getCompareDrawNo(row);
+    if (!drawNo) return;
+
+    const current = summaryMap.get(drawNo) || {
+      draw_no: drawNo,
+      hit0_count: 0,
+      hit1_count: 0,
+      hit2_count: 0,
+      hit3_count: 0,
+      hit4_count: 0,
+      row_count: 0,
+      latest_created_at: row?.created_at || null
+    };
+
+    const hit = toInt(row?.hit_count, 0);
+    current.row_count += 1;
+    if (!current.latest_created_at || new Date(row?.created_at || 0).getTime() > new Date(current.latest_created_at || 0).getTime()) {
+      current.latest_created_at = row?.created_at || current.latest_created_at;
+    }
+
+    if (hit <= 0) current.hit0_count += 1;
+    else if (hit === 1) current.hit1_count += 1;
+    else if (hit === 2) current.hit2_count += 1;
+    else if (hit === 3) current.hit3_count += 1;
+    else current.hit4_count += 1;
+
+    summaryMap.set(drawNo, current);
+  });
+
+  return [...summaryMap.values()]
+    .sort((a, b) => b.draw_no - a.draw_no)
+    .slice(0, safeLimit);
+}
+
 function normalizeLeaderboardRow(row, poolRow = null) {
   if (!row || !row.strategy_key) return null;
 
@@ -265,17 +330,23 @@ async function getFormalRowsBySourceDrawNo(sourceDrawNo) {
 }
 
 
-async function getRecentComparedRows() {
+async function getRecentComparedRows(limit = 10) {
+  const safeLimit = Math.max(10, Math.min(50, toInt(limit, 10)));
+  const fetchLimit = Math.max(100, safeLimit * 12);
+
   const { data, error } = await supabase
-    .from('bingo_predictions')
+    .from(PREDICTIONS_TABLE)
     .select('*')
     .eq('status', 'compared')
     .order('created_at', { ascending: false })
-    .limit(10);
+    .limit(fetchLimit);
 
   if (error) throw error;
 
-  return data || [];
+  return (Array.isArray(data) ? data : [])
+    .map(normalizePredictionRow)
+    .filter(Boolean)
+    .slice(0, fetchLimit);
 }
 
 async function getStrategyLeaderboard(limit = 50) {
@@ -507,6 +578,7 @@ export default async function handler(req, res) {
       toInt(latestFormalRow?.source_draw_no, 0) ||
       await getLatestFormalSourceDrawNo();
 
+    const recentDrawSummary = buildRecentDrawSummary(recentComparedRows, 10);
     const formalBatches = await getFormalRowsBySourceDrawNo(formalSourceDrawNo);
     const displayFormalRow = buildFormalDisplayRow(formalBatches) || latestFormalRow || null;
     const marketStreakBuckets = buildMarketStreakBuckets(recentDrawRows);
@@ -558,6 +630,7 @@ export default async function handler(req, res) {
       recent_prediction_rows: recentComparedRows,
       recent_compared_rows: recentComparedRows,
       compare_history_rows: recentComparedRows,
+      recent_draw_summary: recentDrawSummary,
 
       auto_train_result: null
     });
