@@ -45,6 +45,8 @@ const FORMAL_MIN_HIT2_RATE = 0.25;
 const FORMAL_MIN_RECENT_50_HIT3_RATE = 0.02;
 const FORMAL_STRONG_RECENT_50_HIT3_RATE = 0.05;
 const FORMAL_MIN_RECENT_50_ROI = -0.6;
+const FORMAL_MIN_TOTAL_ROUNDS = 8;
+const FORMAL_MIN_DECISION_SCORE = 0;
 
 let supabase = null;
 
@@ -441,12 +443,9 @@ function isFormalHardRejectCandidate(group = {}, slotNo = 1) {
   const blendedRoi = Math.max(stats.recent50Roi, stats.roi);
 
   if (decision === 'reject') return true;
-  if (totalRounds < 8) return true;
-  if (stats.recent50HitRate < 0.25) return true;
-  if (stats.hit2Rate < 0.25) return true;
-  if (Math.max(stats.recent50Hit3Rate, stats.hit3Rate) < 0.02) return true;
-  if (stats.recent50HitRate === 0) return true;
-  if (totalRounds <= 0) return true;
+  if (decision === 'candidate') return true;
+  if (totalRounds < FORMAL_MIN_TOTAL_ROUNDS) return true;
+  if (toNum(meta.decision_score, 0) <= FORMAL_MIN_DECISION_SCORE) return true;
 
   if (totalRounds >= 8) {
     if (stats.recent50HitRate < FORMAL_MIN_RECENT_50_HIT_RATE) return true;
@@ -472,6 +471,25 @@ function isFormalHardRejectCandidate(group = {}, slotNo = 1) {
   }
 
   return false;
+}
+
+
+function isFormalFinalLockedCandidate(group = {}, slotNo = 1) {
+  if (isFormalHardRejectCandidate(group, slotNo)) return false;
+
+  const meta = group?.meta && typeof group.meta === 'object' ? group.meta : {};
+  const stats = getFormalStabilitySnapshot(group);
+  const blendedHit3Rate = Math.max(stats.recent50Hit3Rate, stats.hit3Rate);
+
+  if (stats.totalRounds < FORMAL_MIN_TOTAL_ROUNDS) return false;
+  if (stats.recent50HitRate < FORMAL_MIN_RECENT_50_HIT_RATE) return false;
+  if (stats.hit2Rate < FORMAL_MIN_HIT2_RATE) return false;
+  if (stats.recent50Roi < FORMAL_MIN_RECENT_50_ROI) return false;
+  if (toNum(meta.decision_score, 0) <= FORMAL_MIN_DECISION_SCORE) return false;
+
+  if (slotNo <= 2 && blendedHit3Rate < FORMAL_MIN_RECENT_50_HIT3_RATE) return false;
+
+  return true;
 }
 
 function getFormalStabilityBonus(group = {}, slotNo = 1) {
@@ -2179,6 +2197,7 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
   for (const group of normalizeGroups(groups, sourceDraw)) {
     const strategyKey = getStrategyKey(group);
     if (strategyKey && finalUsedStrategyKeys.has(strategyKey)) continue;
+    if (!isFormalFinalLockedCandidate(group, uniqueGroups.length + 1)) continue;
     if (strategyKey) finalUsedStrategyKeys.add(strategyKey);
     uniqueGroups.push(group);
     if (uniqueGroups.length >= GROUP_COUNT) break;
