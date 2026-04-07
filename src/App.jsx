@@ -374,6 +374,68 @@ function normalizeRecentDrawSummary(rows) {
     .sort((a, b) => b.draw_no - a.draw_no);
 }
 
+function getCompareDrawNoFromRow(row) {
+  const compareResult =
+    safeJsonParse(row?.compare_result_json, null) ||
+    safeJsonParse(row?.compare_result, null) ||
+    null;
+
+  const detail = Array.isArray(compareResult?.detail) ? compareResult.detail : [];
+  const firstDetail = detail.length && detail[0] && typeof detail[0] === 'object' ? detail[0] : null;
+
+  return toNum(
+    row?.draw_no ||
+      row?.target_draw_no ||
+      compareResult?.draw_no ||
+      compareResult?.target_draw_no ||
+      firstDetail?.draw_no ||
+      firstDetail?.target_draw_no,
+    0
+  );
+}
+
+function buildRecentDrawSummaryFromComparedRows(rows, limit = 10) {
+  const summaryMap = new Map();
+
+  toArray(rows).forEach((rawRow) => {
+    const row = normalizePredictionRow(rawRow);
+    if (!row) return;
+
+    const drawNo = getCompareDrawNoFromRow(row);
+    if (!drawNo) return;
+
+    const current = summaryMap.get(drawNo) || {
+      draw_no: drawNo,
+      hit0_count: 0,
+      hit1_count: 0,
+      hit2_count: 0,
+      hit3_count: 0,
+      hit4_count: 0,
+      row_count: 0,
+      latest_created_at: row?.created_at || null
+    };
+
+    const hit = toNum(row?.hit_count, 0);
+    current.row_count += 1;
+
+    if (!current.latest_created_at || new Date(row?.created_at || 0).getTime() > new Date(current.latest_created_at || 0).getTime()) {
+      current.latest_created_at = row?.created_at || current.latest_created_at;
+    }
+
+    if (hit <= 0) current.hit0_count += 1;
+    else if (hit === 1) current.hit1_count += 1;
+    else if (hit === 2) current.hit2_count += 1;
+    else if (hit === 3) current.hit3_count += 1;
+    else current.hit4_count += 1;
+
+    summaryMap.set(drawNo, current);
+  });
+
+  return [...summaryMap.values()]
+    .sort((a, b) => b.draw_no - a.draw_no)
+    .slice(0, Math.max(1, toNum(limit, 10)));
+}
+
 function normalizePredictionLatest(data) {
   const latest = data && typeof data === 'object' ? data : {};
 
@@ -1232,17 +1294,11 @@ export default function App() {
       note: '最近樣本不足，先觀察。'
     };
 
-    const drawSummaryRows = toArray(predictionSummary?.recentDrawSummary)
-      .map((row) => ({
-        draw_no: toNum(row?.draw_no, 0),
-        hit0_count: toNum(row?.hit0_count, 0),
-        hit1_count: toNum(row?.hit1_count, 0),
-        hit2_count: toNum(row?.hit2_count, 0),
-        hit3_count: toNum(row?.hit3_count, 0),
-        hit4_count: toNum(row?.hit4_count, 0)
-      }))
-      .filter((row) => row.draw_no > 0)
-      .slice(0, 10);
+    const drawSummaryRows = (
+      toArray(predictionSummary?.recentDrawSummary).length
+        ? normalizeRecentDrawSummary(predictionSummary?.recentDrawSummary)
+        : buildRecentDrawSummaryFromComparedRows(comparedRows, 10)
+    ).slice(0, 10);
 
     if (drawSummaryRows.length) {
       drawSummaryRows.forEach((row) => {
