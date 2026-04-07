@@ -1974,6 +1974,7 @@ function pickRoleOrderedGroups(ranked = [], selection = {}, pools = {}, phaseCon
       const strategyKey = getStrategyKey(rankedRow.group);
       const usedCount = toInt(strategyUseCount.get(strategyKey), 0);
       if (strategyKey && usedCount >= 1) continue;
+      if (isFormalHardRejectCandidate(rankedRow.group, slotNo)) continue;
       if (!meetsMinTier(rankedRow.tier, requiredTier)) continue;
 
       usedIndexes.add(j);
@@ -2167,20 +2168,6 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
       });
   }
 
-  while (groups.length < GROUP_COUNT) {
-    const fallbackRole = getRiskOrder(selection.riskMode, phaseContext)[groups.length] || 'mix';
-    groups.push(
-      buildFallbackGroup(
-        fallbackRole,
-        groups.length + 1,
-        pools,
-        selection,
-        phaseContext,
-        groups
-      )
-    );
-  }
-
   const uniqueGroups = [];
   const finalUsedStrategyKeys = new Set();
 
@@ -2333,7 +2320,7 @@ async function buildFormalPrediction(selection = {}, triggerSource = 'unknown') 
     mode: FORMAL_MODE,
     trigger_source: triggerSource,
     cost_per_group: COST_PER_GROUP,
-    group_count: GROUP_COUNT,
+    group_count: groups.length,
     formal_batch_limit: FORMAL_BATCH_LIMIT,
     requested_selection: controlledSelection,
     skipped: false,
