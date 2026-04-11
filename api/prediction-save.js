@@ -1900,8 +1900,43 @@ function chooseSourcePrediction(latestTest, exactTest, exactFormalCandidate) {
   return exactFormalCandidate || exactTest || latestTest || null;
 }
 
+function dedupeSourceGroupsByStrategy(sourceGroups = [], selection = {}, pools = {}, phaseContext = null) {
+  const bestByStrategy = new Map();
+  const fallbackGroups = [];
+
+  for (const group of Array.isArray(sourceGroups) ? sourceGroups : []) {
+    if (!group || typeof group !== 'object') continue;
+
+    const strategyKey = getStrategyKey(group);
+    const inferredRole = inferRoleFromGroup(group);
+    const baseScore = scoreGroupForMode(
+      group,
+      inferredRole,
+      selection.strategyMode,
+      selection.riskMode,
+      pools,
+      phaseContext
+    ) + getFormalStabilityBonus(group, 1) + getStrategySelectionPower(group);
+
+    if (!strategyKey) {
+      fallbackGroups.push({ group, inferredRole, baseScore });
+      continue;
+    }
+
+    const previous = bestByStrategy.get(strategyKey);
+    if (!previous || baseScore > previous.baseScore) {
+      bestByStrategy.set(strategyKey, { group, inferredRole, baseScore });
+    }
+  }
+
+  return [
+    ...[...bestByStrategy.values()].map((row) => row.group),
+    ...fallbackGroups.map((row) => row.group)
+  ];
+}
+
 function buildRankedSourceGroups(sourceGroups = [], selection = {}, pools = {}, phaseContext = null) {
-  return sourceGroups
+  return dedupeSourceGroupsByStrategy(sourceGroups, selection, pools, phaseContext)
     .filter((group) => !isFormalHardRejectCandidate(group, 1))
     .map((group) => {
       const role = inferRoleFromGroup(group);
@@ -2033,12 +2068,35 @@ function pickRoleOrderedGroups(ranked = [], selection = {}, pools = {}, phaseCon
   return picked.slice(0, GROUP_COUNT);
 }
 
+function getBalancedSlotRole(nextSlotNo = 1, sourceGroup = null, fallbackRole = 'mix') {
+  const inferredRole = inferRoleFromGroup(sourceGroup);
+
+  if (nextSlotNo === 1) {
+    if (inferredRole === 'extend' || inferredRole === 'guard') return inferredRole;
+    return 'extend';
+  }
+
+  if (nextSlotNo === 2) {
+    if (inferredRole === 'guard' || inferredRole === 'extend') return inferredRole;
+    return 'guard';
+  }
+
+  if (nextSlotNo === 3) {
+    if (inferredRole === 'guard' || inferredRole === 'recent' || inferredRole === 'extend') return inferredRole;
+    return 'recent';
+  }
+
+  if (inferredRole === 'attack') return 'attack';
+  return 'attack';
+}
+
 function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDraw = null, selection = {}, pools = {}, phaseContext = null) {
   const groups = [];
   const usedKeys = new Set();
   const strategyUseCount = new Map();
 
-  const ranked = buildRankedSourceGroups(sourceGroups, selection, pools, phaseContext);
+  const uniqueSourceGroups = dedupeSourceGroupsByStrategy(sourceGroups, selection, pools, phaseContext);
+  const ranked = buildRankedSourceGroups(uniqueSourceGroups, selection, pools, phaseContext);
   const roleOrdered = pickRoleOrderedGroups(ranked, selection, pools, phaseContext);
 
   const tryAddSlot = (sourceGroup, slotRole = 'mix') => {
@@ -2050,6 +2108,10 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
     const nextSlotNo = groups.length + 1;
     const requiredTier = minTierForSlot(nextSlotNo);
     const isPool = isStrategyPoolGroup(sourceGroup);
+
+    if (selection.riskMode === 'balanced') {
+      slotRole = getBalancedSlotRole(nextSlotNo, sourceGroup, slotRole);
+    }
 
     if (nextSlotNo <= 3 && isFallbackStrategyKey(strategyKey)) {
       return false;
@@ -2116,6 +2178,34 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
     }
 
     if (selection.riskMode === 'balanced') {
+      if (nextSlotNo === 1) {
+        if (!(slotRole === 'extend' || slotRole === 'guard')) return false;
+        if (totalRounds >= 8 && hit2Rate < 0.3) return false;
+        if (totalRounds >= 8 && recent50HitRate < 0.3) return false;
+        if (Math.max(recent50Roi, roi) < -0.3) return false;
+      }
+
+      if (nextSlotNo === 2) {
+        if (!(slotRole === 'guard' || slotRole === 'extend')) return false;
+        if (totalRounds >= 8 && hit2Rate < 0.28) return false;
+        if (totalRounds >= 8 && recent50HitRate < 0.26) return false;
+      }
+
+      if (nextSlotNo === 3) {
+        if (slotRole === 'attack') return false;
+        if (totalRounds >= 8 && hit2Rate < 0.22) return false;
+      }
+
+      if (nextSlotNo === 4) {
+        if (slotRole !== 'attack') {
+          slotRole = 'attack';
+        }
+        if (totalRounds >= 8) {
+          if (Math.max(hit3, recent50Hit3Rate) < 0.018) return false;
+          if (Math.max(recent50Roi, roi) < -0.35) return false;
+        }
+      }
+
       if ((slotRole === 'extend' || slotRole === 'guard') && totalRounds >= 8) {
         if (hit2Rate < 0.28) return false;
         if (recent50HitRate < 0.24) return false;
@@ -2176,7 +2266,7 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
     const fallbackRoles = getRiskOrder(selection.riskMode, phaseContext);
     const fallbackMatrix = [];
 
-    for (const sourceGroup of sourceGroups) {
+    for (const sourceGroup of uniqueSourceGroups) {
       const strategyKey = getStrategyKey(sourceGroup);
       const currentStrategyCount = toInt(strategyUseCount.get(strategyKey), 0);
 
