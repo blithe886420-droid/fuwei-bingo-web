@@ -212,50 +212,28 @@ function getTriggerSource(req) {
   ).trim();
 }
 
+function normalizeAnalysisPeriod(value, fallback = DEFAULT_ANALYSIS_PERIOD) {
+  const n = toNum(value, fallback);
+  return ALLOWED_ANALYSIS_PERIODS.has(n) ? n : fallback;
+}
+
 function getSelectionParams(req) {
-  const body = getBody(req);
-
-  const analysisPeriodRaw = toNum(
-    body?.analysisPeriod ??
-      body?.analysis_period ??
-      req.query?.analysisPeriod ??
-      req.query?.analysis_period,
-    DEFAULT_ANALYSIS_PERIOD
-  );
-
-  const analysisPeriod = ALLOWED_ANALYSIS_PERIODS.has(analysisPeriodRaw)
-    ? analysisPeriodRaw
-    : DEFAULT_ANALYSIS_PERIOD;
-
-  const strategyModeRaw = String(
-    body?.strategyMode ??
-      body?.strategy_mode ??
-      req.query?.strategyMode ??
-      req.query?.strategy_mode ??
-      'mix'
-  ).trim().toLowerCase();
-
-  const strategyMode = ALLOWED_STRATEGY_MODES.has(strategyModeRaw)
-    ? strategyModeRaw
-    : 'mix';
-
-  const riskModeRaw = String(
-    body?.riskMode ??
-      body?.risk_mode ??
-      req.query?.riskMode ??
-      req.query?.risk_mode ??
-      'balanced'
-  ).trim().toLowerCase();
-
-  const riskMode = ALLOWED_RISK_MODES.has(riskModeRaw)
-    ? riskModeRaw
-    : 'balanced';
-
   return {
-    analysisPeriod,
-    strategyMode,
-    riskMode
+    analysisPeriod: DEFAULT_ANALYSIS_PERIOD,
+    strategyMode: 'mix',
+    riskMode: 'balanced'
   };
+}
+
+function deriveBackendAnalysisPeriod(sourcePrediction = null, marketSnapshot = {}, fallback = DEFAULT_ANALYSIS_PERIOD) {
+  return normalizeAnalysisPeriod(
+    sourcePrediction?.analysis_period ||
+      sourcePrediction?.analysisPeriod ||
+      marketSnapshot?.analysis_period_hint ||
+      marketSnapshot?.analysisPeriodHint ||
+      fallback,
+    fallback
+  );
 }
 
 function roleLabelOf(type = '') {
@@ -2222,12 +2200,19 @@ async function buildFormalPrediction(selection = {}, triggerSource = 'unknown') 
   }
 
   const phaseContext = buildPhaseContext(sourcePrediction, lastComparedPrediction);
-  const controlledSelection = applyMarketControl(selection, phaseContext);
 
   const marketSnapshot =
     sourcePrediction?.market_snapshot_json && typeof sourcePrediction.market_snapshot_json === 'object'
       ? sourcePrediction.market_snapshot_json
       : safeJsonParse(sourcePrediction?.market_snapshot_json, {}) || {};
+
+  const controlledSelection = applyMarketControl(
+    {
+      ...selection,
+      analysisPeriod: deriveBackendAnalysisPeriod(sourcePrediction, marketSnapshot, selection.analysisPeriod)
+    },
+    phaseContext
+  );
 
   const pools = buildMarketPools(recentDraws, marketSnapshot);
 
@@ -2323,6 +2308,7 @@ async function buildFormalPrediction(selection = {}, triggerSource = 'unknown') 
     group_count: groups.length,
     formal_batch_limit: FORMAL_BATCH_LIMIT,
     requested_selection: controlledSelection,
+    selection_control_mode: 'backend_only',
     skipped: false,
     reason: '',
     latest_draw_no: sourceDrawNo,
@@ -2376,7 +2362,10 @@ export default async function handler(req, res) {
     }
 
     const result = await buildFormalPrediction(selection, triggerSource);
-    return res.status(200).json(result);
+    return res.status(200).json({
+      ...result,
+      selection_control_mode: 'backend_only'
+    });
   } catch (error) {
     return res.status(200).json({
       ok: false,
