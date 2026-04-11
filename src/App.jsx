@@ -660,6 +660,13 @@ function extractRowDecisionSettings(row) {
   const firstMeta = groups[0]?.meta && typeof groups[0].meta === 'object' ? groups[0].meta : {};
 
   return {
+    analysisPeriod:
+      toNum(
+        firstMeta.analysis_period ??
+          row?.analysis_period ??
+          row?.analysisPeriod,
+        0
+      ) || null,
     strategyMode:
       firstMeta.strategy_mode ||
       row?.strategy_mode ||
@@ -685,9 +692,14 @@ function extractRowDecisionSettings(row) {
   };
 }
 
-function resolveDisplayedSelection(predictionSummary, trainingLatest, formalLatest, fallbackStrategyMode, fallbackRiskMode) {
+function resolveDisplayedSelection(predictionSummary, trainingLatest, formalLatest, fallbackAnalysisPeriod, fallbackStrategyMode, fallbackRiskMode) {
   const formalDecision = extractRowDecisionSettings(formalLatest);
   const trainingDecision = extractRowDecisionSettings(trainingLatest);
+
+  const analysisPeriod =
+    formalDecision.analysisPeriod ||
+    trainingDecision.analysisPeriod ||
+    fallbackAnalysisPeriod;
 
   const strategyMode =
     formalDecision.strategyMode ||
@@ -711,6 +723,7 @@ function resolveDisplayedSelection(predictionSummary, trainingLatest, formalLate
   );
 
   return {
+    analysisPeriod,
     strategyMode,
     riskMode,
     marketPhase,
@@ -910,9 +923,9 @@ export default function App() {
   const [error, setError] = useState('');
   const [loopStatusText, setLoopStatusText] = useState('待命中');
 
-  const [analysisPeriod, setAnalysisPeriod] = useState(20);
-  const [strategyMode, setStrategyMode] = useState('mix');
-  const [riskMode, setRiskMode] = useState('balanced');
+  const [analysisPeriod] = useState(20);
+  const [strategyMode] = useState('mix');
+  const [riskMode] = useState('balanced');
 
   const [recent20, setRecent20] = useState([]);
   const [trainingLatest, setTrainingLatest] = useState(null);
@@ -1059,17 +1072,14 @@ export default function App() {
           'x-manual-formal-save': 'true',
           'x-trigger-source': 'app_button'
         },
-       body: JSON.stringify({
-  mode: 'formal',
-  manual: true,
-  trigger_source: 'app_button',
-  analysisPeriod,
-  strategyMode,
-  riskMode
-})
+        body: JSON.stringify({
+          mode: 'formal',
+          manual: true,
+          trigger_source: 'app_button'
+        })
       });
     });
-  }, [runAction, analysisPeriod, strategyMode, riskMode]);
+  }, [runAction]);
 
   const runAiCycle = useCallback(async () => {
     if (cycleRunningRef.current) return;
@@ -1237,16 +1247,20 @@ export default function App() {
   const latestDrawNo = latestDraw?.draw_no || latestDraw?.drawNo || aiPlayer?.latestDrawNo || '--';
   const latestDrawTime = latestDraw?.draw_time || latestDraw?.drawTime || aiPlayer?.latestDrawTime || '--';
   const latestNumbers = parseNums(latestDraw?.numbers || latestDraw?.nums);
+  const backendAnalysisPeriod =
+    extractRowDecisionSettings(formalLatest).analysisPeriod ||
+    extractRowDecisionSettings(trainingLatest).analysisPeriod ||
+    analysisPeriod;
 
   const recentRowsByPeriod = useMemo(() => {
-    return toArray(recent20).slice(0, analysisPeriod);
-  }, [recent20, analysisPeriod]);
+    return toArray(recent20).slice(0, backendAnalysisPeriod);
+  }, [recent20, backendAnalysisPeriod]);
 
   const trainingGroups = useMemo(() => getPredictionGroups(trainingLatest), [trainingLatest]);
   const formalGroups = useMemo(() => getPredictionGroups(formalLatest), [formalLatest]);
 
-  const hotNumbers = useMemo(() => calcHotNumbers(recentRowsByPeriod, Math.min(analysisPeriod, 10)), [recentRowsByPeriod, analysisPeriod]);
-  const streakNumbers = useMemo(() => calcCurrentStreakNumbers(recentRowsByPeriod, Math.min(analysisPeriod, 5)), [recentRowsByPeriod, analysisPeriod]);
+  const hotNumbers = useMemo(() => calcHotNumbers(recentRowsByPeriod, Math.min(backendAnalysisPeriod, 10)), [recentRowsByPeriod, backendAnalysisPeriod]);
+  const streakNumbers = useMemo(() => calcCurrentStreakNumbers(recentRowsByPeriod, Math.min(backendAnalysisPeriod, 5)), [recentRowsByPeriod, backendAnalysisPeriod]);
   const zoneCounts = useMemo(() => calcZoneCounts(latestNumbers), [latestNumbers]);
   const streak2Buckets = useMemo(
     () => toArray(predictionSummary?.marketStreakBuckets?.streak2),
@@ -1485,11 +1499,16 @@ export default function App() {
         predictionSummary,
         trainingLatest,
         formalLatest,
+        analysisPeriod,
         strategyMode,
         riskMode
       ),
-    [predictionSummary, trainingLatest, formalLatest, strategyMode, riskMode]
+    [predictionSummary, trainingLatest, formalLatest, analysisPeriod, strategyMode, riskMode]
   );
+
+  const displayedAnalysisPeriod = toNum(displayedSelection.analysisPeriod, analysisPeriod) || analysisPeriod;
+  const displayedStrategyMode = displayedSelection.strategyMode || strategyMode;
+  const displayedRiskMode = displayedSelection.riskMode || riskMode;
 
   const decisionTitle = canFormalBet ? '可小試' : '暫不建議正式下注';
   const decisionColor = canFormalBet ? '#0f766e' : '#b45309';
@@ -1602,56 +1621,26 @@ export default function App() {
               </div>
 
               <div style={styles.predictControlStack}>
-                <div style={styles.selectorBlock}>
-                  <div style={styles.selectorTitle}>分析期數</div>
-                  <div style={styles.selectorRow}>
-                    {ANALYSIS_PERIOD_OPTIONS.map((period) => (
-                      <SelectorButton
-                        key={period}
-                        active={analysisPeriod === period}
-                        onClick={() => setAnalysisPeriod(period)}
-                      >
-                        {period} 期
-                      </SelectorButton>
-                    ))}
+                <div style={styles.selectionSummaryBox}>
+                  <div style={styles.selectionSummaryTitle}>AI 目前決策</div>
+                  <div style={styles.metaChipRow}>
+                    <MetaChip label="分析期數" value={`${displayedAnalysisPeriod} 期`} />
+                    <MetaChip label="策略模式" value={getStrategyModeLabel(displayedStrategyMode)} />
+                    <MetaChip label="下注風格" value={getRiskModeLabel(displayedRiskMode)} />
+                    <MetaChip label="盤相" value={fmtText(displayedSelection.marketPhase)} />
                   </div>
                 </div>
 
-                <div style={styles.selectorBlock}>
-                  <div style={styles.selectorTitle}>策略模式</div>
-                  <div style={styles.selectorGrid}>
-                    {STRATEGY_MODE_OPTIONS.map((item) => (
-                      <SelectorCard
-                        key={item.key}
-                        active={strategyMode === item.key}
-                        onClick={() => setStrategyMode(item.key)}
-                        title={item.label}
-                        desc={item.desc}
-                      />
-                    ))}
-                  </div>
-                </div>
-
-                <div style={styles.selectorBlock}>
-                  <div style={styles.selectorTitle}>下注風格</div>
-                  <div style={styles.selectorGrid}>
-                    {RISK_MODE_OPTIONS.map((item) => (
-                      <SelectorCard
-                        key={item.key}
-                        active={riskMode === item.key}
-                        onClick={() => setRiskMode(item.key)}
-                        title={item.label}
-                        desc={item.desc}
-                      />
-                    ))}
-                  </div>
+                <div style={styles.predictOnlyHint}>
+                  前台已改為 AI 決策展示模式，不再由這裡手動指定分析期數、策略模式、下注風格。
+                  正式下注時會直接採用後台當前判斷，只保留真正通過條件的有效組合。
                 </div>
               </div>
             </Card>
 
             <Card
               title="正式下注"
-              subtitle="用現在選定的條件建立正式下注；下方只顯示通過條件的有效組合，同一期最多三批，採寧缺勿濫。"
+              subtitle="正式下注改為直接採用後台 AI 當前決策；下方只顯示通過條件的有效組合，同一期最多三批，採寧缺勿濫。"
               right={
                 <div style={styles.metaChipRow}>
                   <MetaChip label="每組" value={fmtMoney(COST_PER_GROUP)} />
@@ -1674,7 +1663,7 @@ export default function App() {
                 </button>
 
                 <div style={styles.formalActionHint}>
-                  條件：{analysisPeriod}期｜{getStrategyModeLabel(strategyMode)}｜{getRiskModeLabel(riskMode)}｜{formalGroupRealityText}
+                  條件：{displayedAnalysisPeriod}期｜{getStrategyModeLabel(displayedStrategyMode)}｜{getRiskModeLabel(displayedRiskMode)}｜{formalGroupRealityText}
                 </div>
               </div>
 
@@ -1705,77 +1694,22 @@ export default function App() {
 
           <div style={styles.sectionStack}>
             <Card
-              title="預測控制面板"
-              subtitle="這一頁只保留條件設定；正式下注按鈕與正式下注四組已移到第一頁。"
+              title="AI 決策展示面板"
+              subtitle="這一頁不再提供手動控制；只顯示後台目前採用的決策條件。"
             >
               <div style={styles.predictControlStack}>
-                <div style={styles.selectorBlock}>
-                  <div style={styles.selectorTitle}>分析期數</div>
-                  <div style={styles.selectorDesc}>
-                    選擇較少期數可觀察近期變動，較多期數可看長一點的分布。
-                  </div>
-                  <div style={styles.selectorRow}>
-                    {ANALYSIS_PERIOD_OPTIONS.map((period) => (
-                      <SelectorButton
-                        key={period}
-                        active={analysisPeriod === period}
-                        onClick={() => setAnalysisPeriod(period)}
-                      >
-                        {period} 期
-                      </SelectorButton>
-                    ))}
-                  </div>
-                </div>
-
-                <div style={styles.selectorBlock}>
-                  <div style={styles.selectorTitle}>策略模式</div>
-                  <div style={styles.selectorDesc}>
-                    目前先作為前端操作條件，會同步帶到第一頁正式下注。
-                  </div>
-                  <div style={styles.selectorGrid}>
-                    {STRATEGY_MODE_OPTIONS.map((item) => (
-                      <SelectorCard
-                        key={item.key}
-                        active={strategyMode === item.key}
-                        onClick={() => setStrategyMode(item.key)}
-                        title={item.label}
-                        desc={item.desc}
-                      />
-                    ))}
-                  </div>
-                </div>
-
-                <div style={styles.selectorBlock}>
-                  <div style={styles.selectorTitle}>下注風格</div>
-                  <div style={styles.selectorDesc}>
-                    對應目前有效組合分工；若不足四組，代表本期採寧缺勿濫。
-                  </div>
-                  <div style={styles.selectorGrid}>
-                    {RISK_MODE_OPTIONS.map((item) => (
-                      <SelectorCard
-                        key={item.key}
-                        active={riskMode === item.key}
-                        onClick={() => setRiskMode(item.key)}
-                        title={item.label}
-                        desc={item.desc}
-                      />
-                    ))}
-                  </div>
-                </div>
-
                 <div style={styles.selectionSummaryBox}>
-                  <div style={styles.selectionSummaryTitle}>目前選擇摘要</div>
+                  <div style={styles.selectionSummaryTitle}>目前 AI 決策摘要</div>
                   <div style={styles.metaChipRow}>
-                    <MetaChip label="分析期數" value={`${analysisPeriod} 期`} />
-                    <MetaChip label="策略模式" value={getStrategyModeLabel(displayedSelection.strategyMode)} />
-                    <MetaChip label="下注風格" value={getRiskModeLabel(displayedSelection.riskMode)} />
+                    <MetaChip label="分析期數" value={`${displayedAnalysisPeriod} 期`} />
+                    <MetaChip label="策略模式" value={getStrategyModeLabel(displayedStrategyMode)} />
+                    <MetaChip label="下注風格" value={getRiskModeLabel(displayedRiskMode)} />
                     <MetaChip label="最新期數" value={fmtText(latestDrawNo)} />
                   </div>
                 </div>
 
                 <div style={styles.predictOnlyHint}>
-                  第二頁現在只負責設定條件。
-                  正式下注按鈕、正式下注有效組合、批次狀態與下注建議，都已集中到第一頁顯示。
+                  第一頁負責正式下注與有效組顯示；第二頁只保留 AI 當前決策結果展示，避免前台與後台口徑分裂。
                 </div>
               </div>
             </Card>
@@ -1797,18 +1731,18 @@ export default function App() {
                 />
                 <StatBox
                   label="分析期數"
-                  value={`${analysisPeriod} 期`}
-                  hint="可從預測下注面板切換"
+                  value={`${displayedAnalysisPeriod} 期`}
+                  hint="由後台 AI 自動判斷"
                 />
                 <StatBox
                   label="策略模式"
-                  value={getStrategyModeLabel(strategyMode)}
+                  value={getStrategyModeLabel(displayedStrategyMode)}
                   hint={displayedSelection.marketPhase ? `盤相：${fmtText(displayedSelection.marketPhase)} / 信心 ${displayedSelection.confidenceScore || '--'}` : '後端會依盤面自動微調'}
                 />
                 <StatBox
                   label="下注風格"
-                  value={getRiskModeLabel(riskMode)}
-                  hint="對應保守 / 平衡 / 進攻 / 衝高"
+                  value={getRiskModeLabel(displayedRiskMode)}
+                  hint="由後台 AI 自動分配保守 / 平衡 / 進攻 / 衝高"
                 />
               </div>
 
