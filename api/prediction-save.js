@@ -466,7 +466,7 @@ function getFormalStabilityBonus(group = {}, slotNo = 1) {
 }
 
 function mergeStrategyStatsIntoGroup(group = {}, statsMap = new Map()) {
-  const strategyKey = getStrategyKey(group);
+  const strategyKey = getNormalizedStrategyIdentity(group);
   if (!strategyKey || !statsMap.has(strategyKey)) return group;
 
   const stats = statsMap.get(strategyKey) || {};
@@ -1360,6 +1360,14 @@ function getStrategyKey(group = {}) {
   return String(group?.meta?.strategy_key || group?.key || '').trim();
 }
 
+function getNormalizedStrategyIdentity(groupOrKey = {}) {
+  if (typeof groupOrKey === 'string') {
+    return String(groupOrKey || '').trim().toLowerCase();
+  }
+
+  return getStrategyKey(groupOrKey).trim().toLowerCase();
+}
+
 function isFallbackStrategyKey(strategyKey = '') {
   return String(strategyKey || '').trim().toLowerCase().startsWith('fallback_');
 }
@@ -1869,7 +1877,7 @@ function dedupeSourceGroups(groups = []) {
 
   for (const group of groups) {
     const numsKey = uniqueAsc(group?.nums || []).join(',');
-    const strategyKey = getStrategyKey(group) || `unknown|${numsKey}`;
+    const strategyKey = getNormalizedStrategyIdentity(group) || `unknown|${numsKey}`;
     const safeKey = strategyKey;
     const prev = bucket.get(safeKey);
 
@@ -1991,7 +1999,7 @@ function pickRoleOrderedGroups(ranked = [], selection = {}, pools = {}, phaseCon
       if (usedIndexes.has(j)) continue;
 
       const rankedRow = ranked[j];
-      const strategyKey = getStrategyKey(rankedRow.group);
+      const strategyKey = getNormalizedStrategyIdentity(rankedRow.group);
       const usedCount = toInt(strategyUseCount.get(strategyKey), 0);
       const isPool = isStrategyPoolGroup(rankedRow.group);
 
@@ -2023,7 +2031,7 @@ function pickRoleOrderedGroups(ranked = [], selection = {}, pools = {}, phaseCon
       usedIndexes.add(bestIdx);
 
       const chosenGroup = ranked[bestIdx].group;
-      const strategyKey = getStrategyKey(chosenGroup);
+      const strategyKey = getNormalizedStrategyIdentity(chosenGroup);
       if (strategyKey) {
         strategyUseCount.set(strategyKey, toInt(strategyUseCount.get(strategyKey), 0) + 1);
       }
@@ -2045,7 +2053,7 @@ function pickRoleOrderedGroups(ranked = [], selection = {}, pools = {}, phaseCon
       const requiredTier = minTierForSlot(slotNo);
       const role = roles[picked.length] || 'mix';
       const rankedRow = ranked[j];
-      const strategyKey = getStrategyKey(rankedRow.group);
+      const strategyKey = getNormalizedStrategyIdentity(rankedRow.group);
       const usedCount = toInt(strategyUseCount.get(strategyKey), 0);
       if (strategyKey && usedCount >= MAX_GROUPS_PER_STRATEGY) continue;
       if (isFormalHardRejectCandidate(rankedRow.group, slotNo)) continue;
@@ -2121,7 +2129,7 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
     if (!sourceGroup) return false;
     if (isFormalHardRejectCandidate(sourceGroup, slotNo)) return false;
 
-    const strategyKey = getStrategyKey(sourceGroup);
+    const strategyKey = getNormalizedStrategyIdentity(sourceGroup);
     if (strategyKey && usedStrategyKeys.has(strategyKey)) return false;
 
     const totalRounds = toNum(sourceGroup?.meta?.total_rounds, 0);
@@ -2170,7 +2178,7 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
   const pushVariantForSlot = (sourceGroup, slotNo, slotRole) => {
     if (!sourceGroup) return false;
 
-    const strategyKey = getStrategyKey(sourceGroup);
+    const strategyKey = getNormalizedStrategyIdentity(sourceGroup);
     if (strategyKey && usedStrategyKeys.has(strategyKey)) return false;
 
     const variant = buildVariantFromSourceGroup(
@@ -2273,7 +2281,7 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
       if (!sourceGroup) return false;
       if (isFormalHardRejectCandidate(sourceGroup, groups.length + 1)) return false;
 
-      const strategyKey = getStrategyKey(sourceGroup);
+      const strategyKey = getNormalizedStrategyIdentity(sourceGroup);
       if (strategyKey && usedStrategyKeys.has(strategyKey)) return false;
 
       const nextSlotNo = groups.length + 1;
@@ -2317,7 +2325,108 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
     }
   }
 
-  return normalizeGroups(groups, sourceDraw).slice(0, GROUP_COUNT);
+  const finalGroups = [];
+  const usedFinalStrategyKeys = new Set();
+
+  for (const group of groups
+    .slice()
+    .sort((a, b) => toNum(a?.meta?.slot_no, 0) - toNum(b?.meta?.slot_no, 0))) {
+    const strategyIdentity = getNormalizedStrategyIdentity(group);
+    if (strategyIdentity && usedFinalStrategyKeys.has(strategyIdentity)) continue;
+    finalGroups.push(group);
+    if (strategyIdentity) usedFinalStrategyKeys.add(strategyIdentity);
+  }
+
+  if (selection.riskMode === 'balanced' && finalGroups.length < GROUP_COUNT) {
+    const hasSlot = (slotNo) => finalGroups.some((g) => toNum(g?.meta?.slot_no, 0) === slotNo);
+
+    for (let slotNo = 1; slotNo <= GROUP_COUNT && finalGroups.length < GROUP_COUNT; slotNo += 1) {
+      if (hasSlot(slotNo)) continue;
+
+      let best = null;
+      for (const rankedRow of ranked) {
+        const sourceGroup = rankedRow?.group;
+        if (!sourceGroup) continue;
+
+        const strategyIdentity = getNormalizedStrategyIdentity(sourceGroup);
+        if (strategyIdentity && usedFinalStrategyKeys.has(strategyIdentity)) continue;
+
+        const slotRole = getBalancedSlotRoleBySource(slotNo, sourceGroup);
+        if (!canUseBalancedSlot(sourceGroup, slotNo, slotRole)) continue;
+
+        const totalRounds = toNum(sourceGroup?.meta?.total_rounds, 0);
+        const hit2Rate = toNum(sourceGroup?.meta?.hit2_rate, 0);
+        const recent50HitRate = toNum(sourceGroup?.meta?.recent_50_hit_rate, 0);
+        const hit3Rate = Math.max(
+          toNum(sourceGroup?.meta?.hit3_rate, 0),
+          toNum(sourceGroup?.meta?.recent_50_hit3_rate, 0)
+        );
+        const roi = Math.max(
+          toNum(sourceGroup?.meta?.roi, 0),
+          toNum(sourceGroup?.meta?.recent_50_roi, 0)
+        );
+
+        let slotScore = rankedRow.score + getFormalStabilityBonus(sourceGroup, slotNo) + totalRounds;
+        if (slotNo === 1) {
+          slotScore += hit2Rate * 5000 + recent50HitRate * 5000 + Math.max(roi, -1) * 120;
+        } else if (slotNo === 2) {
+          slotScore += hit2Rate * 4200 + recent50HitRate * 3600 + Math.max(roi, -1) * 80;
+        } else if (slotNo === 3) {
+          slotScore += hit2Rate * 2400 + recent50HitRate * 2200 + hit3Rate * 900;
+        } else {
+          slotScore += hit3Rate * 5200 + Math.max(roi, -1) * 140 + hit2Rate * 600;
+        }
+
+        if (!best || slotScore > best.slotScore) {
+          best = { sourceGroup, slotRole, slotScore };
+        }
+      }
+
+      if (best) {
+        const strategyIdentity = getNormalizedStrategyIdentity(best.sourceGroup);
+        const variant = buildVariantFromSourceGroup(
+          best.sourceGroup,
+          best.slotRole,
+          slotNo,
+          pools,
+          finalGroups,
+          selection,
+          phaseContext
+        );
+
+        if (variant && variant.nums && variant.nums.length === 4) {
+          const tier = getCandidateTier(
+            best.sourceGroup,
+            variant.score + getFormalStabilityBonus(best.sourceGroup, slotNo),
+            best.slotRole,
+            selection,
+            phaseContext
+          );
+
+          finalGroups.push({
+            key: `${best.sourceGroup.key}_${best.slotRole}_${slotNo}`,
+            label: buildFormalLabel(best.slotRole, slotNo, best.sourceGroup),
+            nums: variant.nums,
+            reason: `正式下注分工：${best.slotRole.toUpperCase()} / ${strategyModeLabel(selection.strategyMode)} / ${roleLabelOf(selection.riskMode)} / ${phaseContext.marketPhase} / ${phaseContext.lastHitLevel}`,
+            meta: {
+              ...buildFormalMeta(best.sourceGroup, best.slotRole, slotNo, sourcePrediction, selection, phaseContext),
+              decision_score: round4(variant.score + getFormalStabilityBonus(best.sourceGroup, slotNo)),
+              decision_gate: getDecisionScoreFloor(best.slotRole, selection, phaseContext),
+              roi_gate: getRecentRoiFloor(best.slotRole, selection, phaseContext),
+              hit3_gate: getHit3RateFloor(best.slotRole, selection, phaseContext),
+              blended_roi: getBlendedRoi(best.sourceGroup),
+              blended_hit3_rate: getBlendedHit3Rate(best.sourceGroup),
+              tier
+            }
+          });
+
+          if (strategyIdentity) usedFinalStrategyKeys.add(strategyIdentity);
+        }
+      }
+    }
+  }
+
+  return normalizeGroups(finalGroups, sourceDraw).slice(0, GROUP_COUNT);
 }
 
 async function buildFormalPrediction(selection = {}, triggerSource = 'unknown') {
