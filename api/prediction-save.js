@@ -1371,6 +1371,24 @@ function getSourceTag(group = {}) {
   return String(group?.meta?.source_tag || group?.meta?.decision || 'source').trim();
 }
 
+function getStrategySelectionPower(group = {}) {
+  const meta = group?.meta && typeof group.meta === 'object' ? group.meta : {};
+  const hit2Rate = toNum(meta.hit2_rate, 0);
+  const recent50HitRate = toNum(meta.recent_50_hit_rate, 0);
+  const hit3Rate = Math.max(toNum(meta.hit3_rate, 0), toNum(meta.recent_50_hit3_rate, 0));
+  const roi = Math.max(toNum(meta.roi, 0), toNum(meta.recent_50_roi, 0));
+  const avgHit = toNum(meta.avg_hit, 0);
+  const totalRounds = toNum(meta.total_rounds, 0);
+  return round4(
+    hit2Rate * 3200 +
+    recent50HitRate * 2600 +
+    hit3Rate * 4200 +
+    roi * 320 +
+    avgHit * 90 +
+    Math.min(totalRounds, 200) * 2.5
+  );
+}
+
 function scoreGroupForMode(group, role = 'mix', strategyMode = 'mix', riskMode = 'balanced', pools = {}, phaseContext = null) {
   const nums = uniqueAsc(group?.nums || []);
   const meta = group?.meta && typeof group.meta === 'object' ? group.meta : {};
@@ -1379,6 +1397,8 @@ function scoreGroupForMode(group, role = 'mix', strategyMode = 'mix', riskMode =
   const blendedHit3Rate = getBlendedHit3Rate(group);
   const recent50Roi = toNum(meta.recent_50_roi, blendedRoi);
   const recent50Hit3Rate = toNum(meta.recent_50_hit3_rate, blendedHit3Rate);
+  const recent50HitRate = toNum(meta.recent_50_hit_rate, 0);
+  const hit2Rate = toNum(meta.hit2_rate, 0);
   const avgHit = toNum(meta.avg_hit, 0);
   const totalRounds = toNum(meta.total_rounds, 0);
 
@@ -1400,6 +1420,8 @@ function scoreGroupForMode(group, role = 'mix', strategyMode = 'mix', riskMode =
   let score = scoreQualityReport(report, role, { strategyMode, riskMode }, phaseContext);
   score += blendedRoi * 260;
   score += recent50Roi * 340;
+  score += hit2Rate * 3200;
+  score += recent50HitRate * 2600;
   score += blendedHit3Rate * 3600;
   score += recent50Hit3Rate * 4200;
   score += avgHit * 65;
@@ -1409,6 +1431,8 @@ function scoreGroupForMode(group, role = 'mix', strategyMode = 'mix', riskMode =
 
   if (blendedRoi < 0) score += blendedRoi * 260;
   if (recent50Roi < 0) score += recent50Roi * 320;
+  if (hit2Rate <= 0) score -= 520;
+  if (recent50HitRate <= 0) score -= 420;
   if (blendedHit3Rate <= 0) score -= 180;
   if (recent50Hit3Rate <= 0) score -= 220;
 
@@ -1814,11 +1838,16 @@ function dedupeSourceGroups(groups = []) {
 
   for (const group of groups) {
     const numsKey = uniqueAsc(group?.nums || []).join(',');
-    const strategyKey = getStrategyKey(group) || 'unknown';
-    const safeKey = `${strategyKey}|${numsKey}`;
+    const strategyKey = getStrategyKey(group) || `unknown|${numsKey}`;
+    const safeKey = strategyKey;
     const prev = bucket.get(safeKey);
 
-    const score = toNum(group?.meta?.score, 0) + getBlendedRoi(group) * 100 + getBlendedHit3Rate(group) * 1200;
+    const score =
+      getStrategySelectionPower(group) +
+      toNum(group?.meta?.score, 0) * 0.15 +
+      getBlendedRoi(group) * 100 +
+      getBlendedHit3Rate(group) * 1200;
+
     if (!prev || score > prev._score) {
       bucket.set(safeKey, {
         ...group,
@@ -1867,12 +1896,13 @@ function buildRankedSourceGroups(sourceGroups = [], selection = {}, pools = {}, 
         strategyKey: getStrategyKey(group),
         totalRounds: toNum(group?.meta?.total_rounds, 0),
         sourceTag: getSourceTag(group),
+        selectionPower: getStrategySelectionPower(group),
         isPool
       };
     })
     .sort((a, b) => {
-      const slotPriorityA = candidateTierBonus(a.tier) + a.score + a.totalRounds;
-      const slotPriorityB = candidateTierBonus(b.tier) + b.score + b.totalRounds;
+      const slotPriorityA = candidateTierBonus(a.tier) + a.score + a.selectionPower + a.totalRounds;
+      const slotPriorityB = candidateTierBonus(b.tier) + b.score + b.selectionPower + b.totalRounds;
       return slotPriorityB - slotPriorityA;
     });
 }
@@ -1900,7 +1930,7 @@ function pickRoleOrderedGroups(ranked = [], selection = {}, pools = {}, phaseCon
       const isPool = isStrategyPoolGroup(rankedRow.group);
 
       if (slotNo <= 3 && isFallbackStrategyKey(strategyKey)) continue;
-      if (strategyKey && usedCount >= 1) continue;
+      if (strategyKey && usedCount >= MAX_GROUPS_PER_STRATEGY) continue;
       if (isFormalHardRejectCandidate(rankedRow.group, slotNo)) continue;
 
       const score = scoreGroupForMode(
@@ -1915,7 +1945,7 @@ function pickRoleOrderedGroups(ranked = [], selection = {}, pools = {}, phaseCon
       const tier = getCandidateTier(rankedRow.group, score, role, selection, phaseContext);
       if (!isPool && !meetsMinTier(tier, requiredTier)) continue;
 
-      const bonus = candidateTierBonus(tier) - usedCount * 1500;
+      const bonus = candidateTierBonus(tier) - usedCount * 1500 + getStrategySelectionPower(rankedRow.group);
       if (score + bonus > bestScore) {
         bestScore = score + bonus;
         bestIdx = j;
@@ -1951,7 +1981,7 @@ function pickRoleOrderedGroups(ranked = [], selection = {}, pools = {}, phaseCon
       const rankedRow = ranked[j];
       const strategyKey = getStrategyKey(rankedRow.group);
       const usedCount = toInt(strategyUseCount.get(strategyKey), 0);
-      if (strategyKey && usedCount >= 1) continue;
+      if (strategyKey && usedCount >= MAX_GROUPS_PER_STRATEGY) continue;
       if (isFormalHardRejectCandidate(rankedRow.group, slotNo)) continue;
       if (!meetsMinTier(rankedRow.tier, requiredTier)) continue;
 
@@ -2057,9 +2087,9 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
     const tier = getCandidateTier(sourceGroup, candidateScore + getFormalStabilityBonus(sourceGroup, nextSlotNo), slotRole, selection, phaseContext);
     const overlapTooHigh = groups.some((g) => countOverlap(nums, g?.nums || []) > MAX_GROUP_OVERLAP);
 
-    const canUseStrategy = !strategyKey || currentStrategyCount < 1;
+    const canUseStrategy = !strategyKey || currentStrategyCount < MAX_GROUPS_PER_STRATEGY;
     const canUseByTier = isPool ? true : meetsMinTier(tier, requiredTier);
-    const violatesTopSpread = strategyKey && currentStrategyCount >= 1;
+    const violatesTopSpread = strategyKey && currentStrategyCount >= MAX_GROUPS_PER_STRATEGY;
 
     const safeKey = `${sourceGroup.key}_${slotRole}_${nums.join('_')}`;
     if (usedKeys.has(safeKey)) return false;
