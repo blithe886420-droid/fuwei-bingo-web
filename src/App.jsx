@@ -2848,7 +2848,7 @@ const styles = {
     textAlign: 'center',
     color: '#7b6e5c',
     fontWeight: 700
-  }
+  },
   comparePeriodsWrap: {
     display: 'flex',
     flexDirection: 'column',
