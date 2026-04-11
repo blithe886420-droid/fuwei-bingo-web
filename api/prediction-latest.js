@@ -262,6 +262,196 @@ function buildRecentDrawSummary(rows = [], limit = 10) {
     .slice(0, safeLimit);
 }
 
+
+function intersectNums(a = [], b = []) {
+  const setB = new Set(parseDrawNumbers(b));
+  return parseDrawNumbers(a).filter((n) => setB.has(n));
+}
+
+function getCompareDrawNumbers(row = {}) {
+  const compareResult = row?.compare_result_json && typeof row.compare_result_json === 'object'
+    ? row.compare_result_json
+    : safeJsonParse(row?.compare_result_json, null);
+
+  return parseDrawNumbers(
+    compareResult?.draw_numbers ||
+      compareResult?.numbers ||
+      compareResult?.open_numbers ||
+      compareResult?.target_numbers ||
+      compareResult?.result_numbers ||
+      []
+  );
+}
+
+function normalizeGroupCompareItem(detail = {}, fallbackGroup = null, idx = 0, compareDrawNumbers = []) {
+  const baseGroup = fallbackGroup && typeof fallbackGroup === 'object' ? fallbackGroup : {};
+  const nums = parseDrawNumbers(
+    detail?.nums ||
+      detail?.numbers ||
+      detail?.group_numbers ||
+      detail?.groupNums ||
+      detail?.picked_numbers ||
+      detail?.pickedNumbers ||
+      baseGroup?.nums ||
+      []
+  );
+
+  const matchedNumbers = parseDrawNumbers(
+    detail?.matched_numbers ||
+      detail?.matchedNumbers ||
+      detail?.hit_numbers ||
+      detail?.hitNumbers ||
+      detail?.matched ||
+      []
+  );
+
+  const finalMatched = matchedNumbers.length
+    ? matchedNumbers
+    : (nums.length && compareDrawNumbers.length ? intersectNums(nums, compareDrawNumbers) : []);
+
+  const hitCountRaw =
+    detail?.hit_count ??
+    detail?.hitCount ??
+    detail?.match_count ??
+    detail?.matchCount ??
+    detail?.matched_count ??
+    detail?.matchedCount ??
+    detail?.hit ??
+    detail?.matched ??
+    null;
+
+  const hitCount = Number.isFinite(Number(hitCountRaw))
+    ? toInt(hitCountRaw, 0)
+    : finalMatched.length;
+
+  return {
+    group_index: toInt(
+      detail?.group_index ??
+        detail?.groupIndex ??
+        detail?.slot_no ??
+        detail?.slotNo ??
+        detail?.group_no ??
+        detail?.groupNo,
+      idx + 1
+    ),
+    key: String(detail?.key || baseGroup?.key || `group_${idx + 1}`),
+    label: String(detail?.label || baseGroup?.label || `第${idx + 1}組`),
+    nums,
+    matched_numbers: finalMatched,
+    hit_count: hitCount,
+    meta: baseGroup?.meta && typeof baseGroup.meta === 'object' ? baseGroup.meta : {}
+  };
+}
+
+function extractGroupCompareItems(row = {}) {
+  const groups = parseGroupsJson(
+    row?.groups_json ||
+      row?.groups ||
+      row?.prediction_groups ||
+      row?.strategies ||
+      []
+  );
+
+  const compareResult = row?.compare_result_json && typeof row.compare_result_json === 'object'
+    ? row.compare_result_json
+    : safeJsonParse(row?.compare_result_json, null);
+
+  const compareHistory = Array.isArray(row?.compare_history_json)
+    ? row.compare_history_json
+    : normalizeCompareHistory(row?.compare_history_json);
+
+  const compareDrawNumbers = getCompareDrawNumbers(row);
+
+  const detailCandidates = [];
+  if (Array.isArray(compareResult?.detail)) {
+    detailCandidates.push(...compareResult.detail);
+  }
+  compareHistory.forEach((historyItem) => {
+    if (Array.isArray(historyItem?.detail)) {
+      detailCandidates.push(...historyItem.detail);
+    }
+  });
+
+  if (detailCandidates.length) {
+    return detailCandidates
+      .map((detail, idx) => normalizeGroupCompareItem(detail, groups[idx] || null, idx, compareDrawNumbers))
+      .filter((item) => item.nums.length === 4 || item.hit_count > 0)
+      .sort((a, b) => a.group_index - b.group_index);
+  }
+
+  return groups.map((group, idx) => normalizeGroupCompareItem({}, group, idx, compareDrawNumbers));
+}
+
+function buildRecentFormalComparePeriods(rows = [], drawRows = [], limit = 5) {
+  const safeLimit = Math.max(1, Math.min(10, toInt(limit, 5)));
+  const drawMap = new Map(
+    (Array.isArray(drawRows) ? drawRows : []).map((row) => [toInt(row?.draw_no, 0), row])
+  );
+  const periodMap = new Map();
+
+  (Array.isArray(rows) ? rows : []).forEach((rawRow) => {
+    const row = normalizePredictionRow(rawRow);
+    if (!row || String(row?.mode || '') !== FORMAL_MODE) return;
+
+    const compareDrawNo = getCompareDrawNo(row);
+    if (!compareDrawNo) return;
+
+    const compareDraw = drawMap.get(compareDrawNo) || null;
+    const groupItems = extractGroupCompareItems(row);
+
+    const period = periodMap.get(compareDrawNo) || {
+      compare_draw_no: compareDrawNo,
+      compare_draw_time: compareDraw?.draw_time || null,
+      compare_draw_numbers: parseDrawNumbers(compareDraw?.numbers || []),
+      source_draw_no: row?.source_draw_no || 0,
+      batch_count: 0,
+      group_count: 0,
+      hit0_count: 0,
+      hit1_count: 0,
+      hit2_count: 0,
+      hit3_count: 0,
+      hit4_count: 0,
+      batches: []
+    };
+
+    const batchNo = toInt(row?.formal_batch_no, period.batches.length + 1);
+    const batchGroups = groupItems.map((item, idx) => ({
+      ...item,
+      group_index: toInt(item?.group_index, idx + 1)
+    }));
+
+    batchGroups.forEach((group) => {
+      const hit = toInt(group?.hit_count, 0);
+      period.group_count += 1;
+      if (hit <= 0) period.hit0_count += 1;
+      else if (hit === 1) period.hit1_count += 1;
+      else if (hit === 2) period.hit2_count += 1;
+      else if (hit === 3) period.hit3_count += 1;
+      else period.hit4_count += 1;
+    });
+
+    period.batch_count += 1;
+    period.source_draw_no = period.source_draw_no || row?.source_draw_no || 0;
+    period.batches.push({
+      id: row?.id || `${compareDrawNo}_${batchNo}`,
+      formal_batch_no: batchNo,
+      source_draw_no: row?.source_draw_no || 0,
+      compare_draw_no: compareDrawNo,
+      compare_draw_time: compareDraw?.draw_time || null,
+      compare_draw_numbers: parseDrawNumbers(compareDraw?.numbers || []),
+      created_at: row?.created_at || null,
+      status: row?.status || null,
+      groups: batchGroups
+    });
+
+    periodMap.set(compareDrawNo, period);
+  });
+
+  return [...periodMap.values()]
+    .sort((a, b) => b.compare_draw_no - a.compare_draw_no)
+    .slice(0, safeLimit);
+}
+
 function normalizeLeaderboardRow(row, poolRow = null) {
   if (!row || !row.strategy_key) return null;
 
@@ -347,6 +537,27 @@ async function getRecentComparedRows(limit = 10) {
   return (Array.isArray(data) ? data : [])
     .map(normalizePredictionRow)
     .filter(Boolean);
+}
+
+async function getRecentFormalComparedRows(limit = 5) {
+  const safeLimit = Math.max(1, Math.min(10, toInt(limit, 5)));
+  const fetchLimit = Math.max(200, safeLimit * FORMAL_BATCH_LIMIT * 20);
+
+  const { data, error } = await supabase
+    .from(PREDICTIONS_TABLE)
+    .select('*')
+    .eq('mode', FORMAL_MODE)
+    .eq('status', 'compared')
+    .not('compare_result_json', 'is', null)
+    .order('created_at', { ascending: false })
+    .limit(fetchLimit);
+
+  if (error) throw error;
+
+  return (Array.isArray(data) ? data : [])
+    .map(normalizePredictionRow)
+    .filter(Boolean)
+    .slice(0, fetchLimit);
 }
 
 async function getStrategyLeaderboard(limit = 50) {
@@ -565,13 +776,14 @@ export default async function handler(req, res) {
   }
 
   try {
-    const [trainingRow, latestFormalRow, formalCandidateRow, leaderboard, recentDrawRows, allRecentComparedRows] = await Promise.all([
+    const [trainingRow, latestFormalRow, formalCandidateRow, leaderboard, recentDrawRows, allRecentComparedRows, recentFormalComparedRows] = await Promise.all([
       getLatestRowByMode(TEST_MODE),
       getLatestRowByMode(FORMAL_MODE),
       getLatestRowByMode(FORMAL_CANDIDATE_MODE),
       getStrategyLeaderboard(50),
       getRecentDrawRows(20),
-      getRecentComparedRows(10)
+      getRecentComparedRows(10),
+      getRecentFormalComparedRows(5)
     ]);
 
     const formalSourceDrawNo =
@@ -580,6 +792,7 @@ export default async function handler(req, res) {
 
     const recentDrawSummary = buildRecentDrawSummary(allRecentComparedRows, 10);
     const recentComparedRows = allRecentComparedRows.slice(0, 10);
+    const recentFormalComparePeriods = buildRecentFormalComparePeriods(recentFormalComparedRows, recentDrawRows, 5);
     const formalBatches = await getFormalRowsBySourceDrawNo(formalSourceDrawNo);
     const displayFormalRow = buildFormalDisplayRow(formalBatches) || latestFormalRow || null;
     const marketStreakBuckets = buildMarketStreakBuckets(recentDrawRows);
@@ -632,6 +845,8 @@ export default async function handler(req, res) {
       recent_compared_rows: recentComparedRows,
       compare_history_rows: recentComparedRows,
       recent_draw_summary: recentDrawSummary,
+      recent_formal_compare_periods: recentFormalComparePeriods,
+      recent_formal_compared_rows: recentFormalComparedRows.slice(0, 200),
 
       auto_train_result: null
     });
