@@ -436,6 +436,210 @@ function buildRecentDrawSummaryFromComparedRows(rows, limit = 10) {
     .slice(0, Math.max(1, toNum(limit, 10)));
 }
 
+
+function intersectNums(a = [], b = []) {
+  const setB = new Set(parseNums(b));
+  return parseNums(a).filter((n) => setB.has(n));
+}
+
+function getCompareDrawNumbersFromRow(row) {
+  const compareResult =
+    safeJsonParse(row?.compare_result_json, null) ||
+    safeJsonParse(row?.compare_result, null) ||
+    null;
+
+  return parseNums(
+    compareResult?.draw_numbers ||
+      compareResult?.numbers ||
+      compareResult?.open_numbers ||
+      compareResult?.target_numbers ||
+      compareResult?.result_numbers ||
+      []
+  );
+}
+
+function normalizeComparedGroupItem(detail = {}, fallbackGroup = null, idx = 0, compareDrawNumbers = []) {
+  const baseGroup = fallbackGroup && typeof fallbackGroup === 'object' ? fallbackGroup : {};
+  const nums = parseNums(
+    detail?.nums ||
+      detail?.numbers ||
+      detail?.group_numbers ||
+      detail?.groupNums ||
+      detail?.picked_numbers ||
+      detail?.pickedNumbers ||
+      baseGroup?.nums ||
+      []
+  );
+
+  const matchedNumbers = parseNums(
+    detail?.matched_numbers ||
+      detail?.matchedNumbers ||
+      detail?.hit_numbers ||
+      detail?.hitNumbers ||
+      detail?.matched ||
+      []
+  );
+
+  const finalMatched = matchedNumbers.length
+    ? matchedNumbers
+    : (nums.length && compareDrawNumbers.length ? intersectNums(nums, compareDrawNumbers) : []);
+
+  const hitCountRaw =
+    detail?.hit_count ??
+    detail?.hitCount ??
+    detail?.match_count ??
+    detail?.matchCount ??
+    detail?.matched_count ??
+    detail?.matchedCount ??
+    detail?.hit ??
+    detail?.matched ??
+    null;
+
+  const hitCount = Number.isFinite(Number(hitCountRaw))
+    ? toNum(hitCountRaw, 0)
+    : finalMatched.length;
+
+  return {
+    group_index: toNum(
+      detail?.group_index ??
+        detail?.groupIndex ??
+        detail?.slot_no ??
+        detail?.slotNo ??
+        detail?.group_no ??
+        detail?.groupNo,
+      idx + 1
+    ),
+    key: String(detail?.key || baseGroup?.key || `group_${idx + 1}`),
+    label: String(detail?.label || baseGroup?.label || `第${idx + 1}組`),
+    nums,
+    matched_numbers: finalMatched,
+    hit_count: hitCount,
+    meta: baseGroup?.meta && typeof baseGroup.meta === 'object' ? baseGroup.meta : {}
+  };
+}
+
+function extractComparedGroupsFromRow(row) {
+  const groups = getPredictionGroups(row);
+  const compareResult =
+    safeJsonParse(row?.compare_result_json, null) ||
+    safeJsonParse(row?.compare_result, null) ||
+    null;
+
+  const compareHistory = Array.isArray(row?.compare_history_json)
+    ? row.compare_history_json
+    : [];
+
+  const detailCandidates = [];
+  if (Array.isArray(compareResult?.detail)) {
+    detailCandidates.push(...compareResult.detail);
+  }
+  compareHistory.forEach((historyItem) => {
+    if (Array.isArray(historyItem?.detail)) {
+      detailCandidates.push(...historyItem.detail);
+    }
+  });
+
+  const compareDrawNumbers = getCompareDrawNumbersFromRow(row);
+
+  if (detailCandidates.length) {
+    return detailCandidates
+      .map((detail, idx) => normalizeComparedGroupItem(detail, groups[idx] || null, idx, compareDrawNumbers))
+      .filter((item) => item.nums.length === 4 || item.hit_count > 0)
+      .sort((a, b) => a.group_index - b.group_index);
+  }
+
+  return groups.map((group, idx) => normalizeComparedGroupItem({}, group, idx, compareDrawNumbers));
+}
+
+function normalizeRecentFormalComparePeriods(rows) {
+  return toArray(rows)
+    .map((period) => ({
+      compare_draw_no: toNum(period?.compare_draw_no, 0),
+      compare_draw_time: period?.compare_draw_time || null,
+      compare_draw_numbers: parseNums(period?.compare_draw_numbers || []),
+      source_draw_no: toNum(period?.source_draw_no, 0),
+      batch_count: toNum(period?.batch_count, 0),
+      group_count: toNum(period?.group_count, 0),
+      hit0_count: toNum(period?.hit0_count, 0),
+      hit1_count: toNum(period?.hit1_count, 0),
+      hit2_count: toNum(period?.hit2_count, 0),
+      hit3_count: toNum(period?.hit3_count, 0),
+      hit4_count: toNum(period?.hit4_count, 0),
+      batches: toArray(period?.batches).map((batch, batchIdx) => ({
+        ...batch,
+        formal_batch_no: toNum(batch?.formal_batch_no, batchIdx + 1),
+        compare_draw_numbers: parseNums(batch?.compare_draw_numbers || period?.compare_draw_numbers || []),
+        groups: toArray(batch?.groups).map((group, groupIdx) => ({
+          ...group,
+          group_index: toNum(group?.group_index, groupIdx + 1),
+          nums: parseNums(group?.nums || []),
+          matched_numbers: parseNums(group?.matched_numbers || [])
+        }))
+      }))
+    }))
+    .filter((period) => period.compare_draw_no > 0)
+    .sort((a, b) => b.compare_draw_no - a.compare_draw_no);
+}
+
+function buildRecentFormalComparePeriodsFromRows(rows, limit = 5) {
+  const periodMap = new Map();
+
+  toArray(rows)
+    .map(normalizePredictionRow)
+    .filter(Boolean)
+    .filter((row) => String(row?.mode || '').trim().toLowerCase() === 'formal')
+    .forEach((row) => {
+      const compareDrawNo = getCompareDrawNoFromRow(row);
+      if (!compareDrawNo) return;
+
+      const compareDrawNumbers = getCompareDrawNumbersFromRow(row);
+      const period = periodMap.get(compareDrawNo) || {
+        compare_draw_no: compareDrawNo,
+        compare_draw_time: null,
+        compare_draw_numbers: compareDrawNumbers,
+        source_draw_no: toNum(row?.source_draw_no, 0),
+        batch_count: 0,
+        group_count: 0,
+        hit0_count: 0,
+        hit1_count: 0,
+        hit2_count: 0,
+        hit3_count: 0,
+        hit4_count: 0,
+        batches: []
+      };
+
+      const batchNo = period.batches.length + 1;
+      const comparedGroups = extractComparedGroupsFromRow(row);
+      comparedGroups.forEach((group) => {
+        const hit = toNum(group?.hit_count, 0);
+        period.group_count += 1;
+        if (hit <= 0) period.hit0_count += 1;
+        else if (hit === 1) period.hit1_count += 1;
+        else if (hit === 2) period.hit2_count += 1;
+        else if (hit === 3) period.hit3_count += 1;
+        else period.hit4_count += 1;
+      });
+
+      period.batch_count += 1;
+      period.batches.push({
+        id: row?.id || `${compareDrawNo}_${batchNo}`,
+        formal_batch_no: batchNo,
+        source_draw_no: toNum(row?.source_draw_no, 0),
+        compare_draw_no: compareDrawNo,
+        compare_draw_numbers: compareDrawNumbers,
+        created_at: row?.created_at || null,
+        status: row?.status || null,
+        groups: comparedGroups
+      });
+
+      periodMap.set(compareDrawNo, period);
+    });
+
+  return [...periodMap.values()]
+    .sort((a, b) => b.compare_draw_no - a.compare_draw_no)
+    .slice(0, Math.max(1, toNum(limit, 5)));
+}
+
 function normalizePredictionLatest(data) {
   const latest = data && typeof data === 'object' ? data : {};
 
@@ -539,6 +743,10 @@ function normalizePredictionLatest(data) {
     latest?.recent_draw_summary || latest?.recentDrawSummary || []
   );
 
+  const recentFormalComparePeriods = normalizeRecentFormalComparePeriods(
+    latest?.recent_formal_compare_periods || latest?.recentFormalComparePeriods || []
+  );
+
   return {
     raw: latest,
     apiVersion: latest?.api_version || latest?.apiVersion || '--',
@@ -552,6 +760,7 @@ function normalizePredictionLatest(data) {
     marketStreakBuckets,
     recentComparedRows,
     recentDrawSummary,
+    recentFormalComparePeriods,
 
     summaryLabel,
     summaryText,
@@ -949,7 +1158,8 @@ export default function App() {
       lookback: 0,
       latestDrawNo: null
     },
-    recentComparedRows: []
+    recentComparedRows: [],
+    recentFormalComparePeriods: []
   });
   const [aiPlayer, setAiPlayer] = useState(normalizeAiPlayer({}));
   const [lastAutoTrainResult, setLastAutoTrainResult] = useState(null);
@@ -1003,7 +1213,8 @@ export default function App() {
         formalSourceDrawNo: normalizedPrediction.formalSourceDrawNo,
         formalBatches: normalizedPrediction.formalBatches,
         marketStreakBuckets: normalizedPrediction.marketStreakBuckets,
-        recentComparedRows: normalizedPrediction.recentComparedRows
+        recentComparedRows: normalizedPrediction.recentComparedRows,
+        recentFormalComparePeriods: normalizedPrediction.recentFormalComparePeriods
       });
 
       setAiPlayer(normalizeAiPlayer(aiPlayerRes));
@@ -1294,6 +1505,37 @@ export default function App() {
       return true;
     }).slice(0, 10);
   }, [predictionSummary]);
+
+  const recentFormalComparePeriods = useMemo(() => {
+    const fromApi = normalizeRecentFormalComparePeriods(predictionSummary?.recentFormalComparePeriods || []);
+    if (fromApi.length) return fromApi.slice(0, 5);
+    return buildRecentFormalComparePeriodsFromRows(comparedRows, 5);
+  }, [predictionSummary?.recentFormalComparePeriods, comparedRows]);
+
+  const recentFormalCompareSummary = useMemo(() => {
+    const summary = {
+      periodCount: recentFormalComparePeriods.length,
+      batchCount: 0,
+      groupCount: 0,
+      hit0: 0,
+      hit1: 0,
+      hit2: 0,
+      hit3: 0,
+      hit4: 0
+    };
+
+    recentFormalComparePeriods.forEach((period) => {
+      summary.batchCount += toNum(period?.batch_count, 0);
+      summary.groupCount += toNum(period?.group_count, 0);
+      summary.hit0 += toNum(period?.hit0_count, 0);
+      summary.hit1 += toNum(period?.hit1_count, 0);
+      summary.hit2 += toNum(period?.hit2_count, 0);
+      summary.hit3 += toNum(period?.hit3_count, 0);
+      summary.hit4 += toNum(period?.hit4_count, 0);
+    });
+
+    return summary;
+  }, [recentFormalComparePeriods]);
 
   const hitFeedback = useMemo(() => {
     const summary = {
@@ -1694,23 +1936,107 @@ export default function App() {
 
           <div style={styles.sectionStack}>
             <Card
-              title="AI 決策展示面板"
-              subtitle="這一頁不再提供手動控制；只顯示後台目前採用的決策條件。"
+              title="逐組比對戰績"
+              subtitle="第一頁看決策輸出，第二頁看每批每組實戰比對，這樣 AI 才交得出成績單。"
             >
-              <div style={styles.predictControlStack}>
-                <div style={styles.selectionSummaryBox}>
-                  <div style={styles.selectionSummaryTitle}>目前 AI 決策摘要</div>
-                  <div style={styles.metaChipRow}>
-                    <MetaChip label="分析期數" value={`${displayedAnalysisPeriod} 期`} />
-                    <MetaChip label="策略模式" value={getStrategyModeLabel(displayedStrategyMode)} />
-                    <MetaChip label="下注風格" value={getRiskModeLabel(displayedRiskMode)} />
-                    <MetaChip label="最新期數" value={fmtText(latestDrawNo)} />
-                  </div>
-                </div>
+              <div style={styles.statsGrid4}>
+                <StatBox label="追蹤期數" value={`${recentFormalCompareSummary.periodCount} 期`} hint="最近五期 formal 自動比對" />
+                <StatBox label="總批次" value={`${recentFormalCompareSummary.batchCount} 批`} hint="每期最多三批" valueStyle={{ color: '#0f766e' }} />
+                <StatBox label="總組數" value={`${recentFormalCompareSummary.groupCount} 組`} hint="逐組成績統計" valueStyle={{ color: '#0f766e' }} />
+                <StatBox label="中2+" value={`${recentFormalCompareSummary.hit2 + recentFormalCompareSummary.hit3 + recentFormalCompareSummary.hit4} 組`} hint={`中3 ${recentFormalCompareSummary.hit3} / 中4 ${recentFormalCompareSummary.hit4}`} valueStyle={{ color: '#dc2626' }} />
+              </div>
 
-                <div style={styles.predictOnlyHint}>
-                  第一頁負責正式下注與有效組顯示；第二頁只保留 AI 當前決策結果展示，避免前台與後台口徑分裂。
-                </div>
+              <div style={{ ...styles.metaChipRow, marginTop: 12 }}>
+                <MetaChip label="中0" value={recentFormalCompareSummary.hit0} />
+                <MetaChip label="中1" value={recentFormalCompareSummary.hit1} />
+                <MetaChip label="中2" value={recentFormalCompareSummary.hit2} />
+                <MetaChip label="中3" value={recentFormalCompareSummary.hit3} />
+                <MetaChip label="中4" value={recentFormalCompareSummary.hit4} />
+              </div>
+            </Card>
+
+            <Card
+              title="最近五期逐期比對"
+              subtitle="每一期展開後可看到每一批、每一組的命中數與對中號碼。"
+            >
+              <div style={styles.comparePeriodsWrap}>
+                {recentFormalComparePeriods.length ? (
+                  recentFormalComparePeriods.map((period, periodIdx) => (
+                    <div key={`${period?.compare_draw_no || periodIdx}`} style={styles.comparePeriodCard}>
+                      <div style={styles.comparePeriodHead}>
+                        <div>
+                          <div style={styles.comparePeriodTitle}>對獎期數：{fmtText(period?.compare_draw_no)}</div>
+                          <div style={styles.comparePeriodSub}>
+                            開獎時間：{fmtDateTime(period?.compare_draw_time)} ｜ 來源期數：{fmtText(period?.source_draw_no)}
+                          </div>
+                        </div>
+
+                        <div style={styles.metaChipRow}>
+                          <MetaChip label="批次" value={toNum(period?.batch_count, 0)} />
+                          <MetaChip label="組數" value={toNum(period?.group_count, 0)} />
+                          <MetaChip label="中2+" value={toNum(period?.hit2_count, 0) + toNum(period?.hit3_count, 0) + toNum(period?.hit4_count, 0)} />
+                        </div>
+                      </div>
+
+                      <div style={{ ...styles.metaChipRow, marginTop: 10 }}>
+                        <MetaChip label="中0" value={toNum(period?.hit0_count, 0)} />
+                        <MetaChip label="中1" value={toNum(period?.hit1_count, 0)} />
+                        <MetaChip label="中2" value={toNum(period?.hit2_count, 0)} />
+                        <MetaChip label="中3" value={toNum(period?.hit3_count, 0)} />
+                        <MetaChip label="中4" value={toNum(period?.hit4_count, 0)} />
+                      </div>
+
+                      <div style={styles.marketBallsWrap}>
+                        {toArray(period?.compare_draw_numbers).length ? (
+                          toArray(period?.compare_draw_numbers).map((n) => <MarketBall key={`${period?.compare_draw_no}_${n}`} n={n} highlight />)
+                        ) : (
+                          <div style={styles.emptyBox}>目前沒有該期開獎號碼。</div>
+                        )}
+                      </div>
+
+                      <div style={styles.compareBatchStack}>
+                        {toArray(period?.batches).map((batch, batchIdx) => (
+                          <div key={`${period?.compare_draw_no}_${batch?.id || batchIdx}`} style={styles.compareBatchCard}>
+                            <div style={styles.compareBatchHead}>
+                              <div style={styles.compareBatchTitle}>第 {fmtText(batch?.formal_batch_no, batchIdx + 1)} 批</div>
+                              <div style={styles.compareBatchSub}>建立時間：{fmtDateTime(batch?.created_at)}</div>
+                            </div>
+
+                            <div style={styles.compareGroupGrid}>
+                              {toArray(batch?.groups).map((group, groupIdx) => {
+                                const hitCount = toNum(group?.hit_count, 0);
+                                return (
+                                  <div key={`${batch?.id || batchIdx}_${group?.key || groupIdx}`} style={styles.compareGroupCard}>
+                                    <div style={styles.compareGroupHead}>
+                                      <div style={styles.compareGroupTitle}>第 {fmtText(group?.group_index, groupIdx + 1)} 組</div>
+                                      <div style={{ ...styles.compareHitBadge, ...(hitCount >= 2 ? styles.compareHitBadgeStrong : hitCount >= 1 ? styles.compareHitBadgeMid : {}) }}>
+                                        中 {hitCount}
+                                      </div>
+                                    </div>
+
+                                    <div style={styles.groupBalls}>
+                                      {toArray(group?.nums).map((n) => (
+                                        <div key={`${batch?.id || batchIdx}_${group?.key || groupIdx}_${n}`} style={styles.pickBall}>
+                                          {formatBallNumber(n)}
+                                        </div>
+                                      ))}
+                                    </div>
+
+                                    <div style={{ ...styles.metaChipRow, marginTop: 10 }}>
+                                      <MetaChip label="對中" value={toArray(group?.matched_numbers).length ? toArray(group?.matched_numbers).map((n) => formatBallNumber(n)).join(' ') : '—'} />
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div style={styles.emptyBox}>目前還沒有最近五期的逐組比對資料，等 formal 組合完成對獎後會自動累積。</div>
+                )}
               </div>
             </Card>
           </div>
@@ -2523,6 +2849,106 @@ const styles = {
     color: '#7b6e5c',
     fontWeight: 700
   }
+  comparePeriodsWrap: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 16
+  },
+  comparePeriodCard: {
+    border: '1px solid #d6c3a3',
+    borderRadius: 18,
+    padding: 14,
+    background: '#fbf6ec',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 12
+  },
+  comparePeriodHead: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    gap: 12,
+    alignItems: 'flex-start',
+    flexWrap: 'wrap'
+  },
+  comparePeriodTitle: {
+    fontSize: 16,
+    fontWeight: 800,
+    color: '#0f766e'
+  },
+  comparePeriodSub: {
+    fontSize: 12,
+    color: '#7c6a4d',
+    marginTop: 4
+  },
+  compareBatchStack: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 12
+  },
+  compareBatchCard: {
+    border: '1px dashed #d6c3a3',
+    borderRadius: 16,
+    padding: 12,
+    background: '#fffaf1'
+  },
+  compareBatchHead: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    gap: 12,
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    marginBottom: 10
+  },
+  compareBatchTitle: {
+    fontSize: 14,
+    fontWeight: 800,
+    color: '#23413a'
+  },
+  compareBatchSub: {
+    fontSize: 12,
+    color: '#7c6a4d'
+  },
+  compareGroupGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+    gap: 12
+  },
+  compareGroupCard: {
+    border: '1px solid #e7d6b8',
+    borderRadius: 14,
+    padding: 12,
+    background: '#ffffff'
+  },
+  compareGroupHead: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 10
+  },
+  compareGroupTitle: {
+    fontSize: 13,
+    fontWeight: 800,
+    color: '#23413a'
+  },
+  compareHitBadge: {
+    minWidth: 48,
+    textAlign: 'center',
+    padding: '4px 8px',
+    borderRadius: 999,
+    fontSize: 12,
+    fontWeight: 800,
+    color: '#7c6a4d',
+    background: '#efe3ca'
+  },
+  compareHitBadgeMid: {
+    color: '#b45309',
+    background: '#fde7c2'
+  },
+  compareHitBadgeStrong: {
+    color: '#0f766e',
+    background: '#ccefe8'
+  },
 };
 
 // 攻擊型分數
