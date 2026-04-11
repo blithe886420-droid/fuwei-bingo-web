@@ -1142,10 +1142,10 @@ function getRiskOrder(riskMode = 'balanced', phaseContext = null) {
     return ['recent', 'extend', 'guard', 'attack'];
   }
 
-  if (riskMode === 'safe') return ['guard', 'extend', 'attack', 'recent'];
-  if (riskMode === 'balanced') return ['attack', 'extend', 'guard', 'recent'];
-  if (riskMode === 'aggressive') return ['attack', 'attack', 'extend', 'recent'];
-  return ['attack', 'recent', 'extend', 'guard'];
+  if (riskMode === 'safe') return ['guard', 'extend', 'recent', 'attack'];
+  if (riskMode === 'balanced') return ['extend', 'guard', 'recent', 'attack'];
+  if (riskMode === 'aggressive') return ['attack', 'extend', 'guard', 'recent'];
+  return ['recent', 'extend', 'guard', 'attack'];
 }
 
 function inferRoleFromGroup(group = {}) {
@@ -1241,11 +1241,13 @@ function getBlendedHit3Rate(group = {}) {
 
 function getDecisionScoreFloor(role = 'mix', selection = {}, phaseContext = null) {
   let floor = 90;
-  if (role === 'attack') floor = 130;
-  if (role === 'extend') floor = 150;
-  if (role === 'guard') floor = 85;
-  if (role === 'recent') floor = 95;
+  if (role === 'attack') floor = 135;
+  if (role === 'extend') floor = 145;
+  if (role === 'guard') floor = 95;
+  if (role === 'recent') floor = 100;
   if (selection.riskMode === 'safe') floor += 10;
+  if (selection.riskMode === 'balanced' && (role === 'extend' || role === 'guard')) floor += 10;
+  if (selection.riskMode === 'balanced' && role === 'attack') floor += 8;
   if (selection.riskMode === 'aggressive' && role === 'attack') floor -= 5;
   if (phaseContext?.marketPhase === 'continuation' && role === 'attack') floor -= 10;
   if (phaseContext?.marketPhase === 'rotation' && role === 'attack') floor += 10;
@@ -1254,22 +1256,25 @@ function getDecisionScoreFloor(role = 'mix', selection = {}, phaseContext = null
 
 function getRecentRoiFloor(role = 'mix', selection = {}, phaseContext = null) {
   let floor = -0.15;
-  if (role === 'attack') floor = -0.12;
-  if (role === 'extend') floor = -0.24;
-  if (role === 'guard') floor = -0.35;
-  if (role === 'recent') floor = -0.28;
+  if (role === 'attack') floor = -0.08;
+  if (role === 'extend') floor = -0.20;
+  if (role === 'guard') floor = -0.26;
+  if (role === 'recent') floor = -0.24;
   if (selection.riskMode === 'safe') floor += 0.05;
+  if (selection.riskMode === 'balanced' && (role === 'extend' || role === 'guard')) floor += 0.03;
+  if (selection.riskMode === 'balanced' && role === 'attack') floor += 0.02;
   if (phaseContext?.lastHitLevel === 'bad') floor += 0.04;
   return round4(floor);
 }
 
 function getHit3RateFloor(role = 'mix', selection = {}, phaseContext = null) {
   let floor = 0.01;
-  if (role === 'attack') floor = 0.012;
-  if (role === 'extend') floor = 0.008;
-  if (role === 'guard') floor = 0;
-  if (role === 'recent') floor = 0.004;
+  if (role === 'attack') floor = 0.02;
+  if (role === 'extend') floor = 0.01;
+  if (role === 'guard') floor = 0.004;
+  if (role === 'recent') floor = 0.008;
   if (selection.strategyMode === 'hot') floor += 0.002;
+  if (selection.riskMode === 'balanced' && role === 'attack') floor += 0.004;
   if (phaseContext?.marketPhase === 'continuation' && role === 'attack') floor -= 0.002;
   return round4(Math.max(0, floor));
 }
@@ -1469,6 +1474,32 @@ function scoreGroupForMode(group, role = 'mix', strategyMode = 'mix', riskMode =
   if (role === 'attack' && report.streakCount === 0 && report.preStreakCount === 0) score -= 110;
   if (role === 'extend' && report.preStreakCount === 0 && report.streakCount === 0) score -= 18;
   if (role === 'recent' && report.preStreakCount === 0 && report.streakCount === 0) score -= 24;
+
+  if (riskMode === 'balanced') {
+    if (role === 'extend') {
+      score += hit2Rate * 900;
+      score += recent50HitRate * 700;
+      if (blendedHit3Rate <= 0) score -= 80;
+    }
+
+    if (role === 'guard') {
+      score += hit2Rate * 820;
+      score += recent50HitRate * 760;
+      if (recent50Roi < -0.45) score -= 120;
+    }
+
+    if (role === 'recent') {
+      score += recent50HitRate * 420;
+      score += blendedHit3Rate * 600;
+    }
+
+    if (role === 'attack') {
+      score += blendedHit3Rate * 1350;
+      score += recent50Hit3Rate * 1650;
+      if (hit2Rate < 0.2) score -= 260;
+      if (recent50HitRate < 0.2) score -= 220;
+    }
+  }
 
   return round4(score);
 }
@@ -2082,6 +2113,18 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
 
     if (nextSlotNo <= 2 && totalRounds >= 12 && recent50Hit3Rate < FORMAL_MIN_RECENT_50_HIT3_RATE && hit3 < FORMAL_MIN_RECENT_50_HIT3_RATE) {
       return false;
+    }
+
+    if (selection.riskMode === 'balanced') {
+      if ((slotRole === 'extend' || slotRole === 'guard') && totalRounds >= 8) {
+        if (hit2Rate < 0.28) return false;
+        if (recent50HitRate < 0.24) return false;
+      }
+
+      if (slotRole === 'attack' && totalRounds >= 8) {
+        if (Math.max(hit3, recent50Hit3Rate) < 0.018) return false;
+        if (Math.max(recent50Roi, roi) < -0.35) return false;
+      }
     }
 
     const tier = getCandidateTier(sourceGroup, candidateScore + getFormalStabilityBonus(sourceGroup, nextSlotNo), slotRole, selection, phaseContext);
