@@ -2320,168 +2320,6 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
   return normalizeGroups(groups, sourceDraw).slice(0, GROUP_COUNT);
 }
 
-
-function getBalancedSlotTargetRole(slotNo = 1) {
-  if (slotNo === 1) return 'extend';
-  if (slotNo === 2) return 'guard';
-  if (slotNo === 3) return 'recent';
-  return 'attack';
-}
-
-function canUseGroupAtFinalSlot(sourceGroup = {}, slotNo = 1, slotRole = 'mix') {
-  if (!sourceGroup || typeof sourceGroup !== 'object') return false;
-  if (isFormalHardRejectCandidate(sourceGroup, slotNo)) return false;
-
-  const totalRounds = toNum(sourceGroup?.meta?.total_rounds, 0);
-  const hit2Rate = toNum(sourceGroup?.meta?.hit2_rate, 0);
-  const recent50HitRate = toNum(sourceGroup?.meta?.recent_50_hit_rate, 0);
-  const recent50Hit3Rate = toNum(sourceGroup?.meta?.recent_50_hit3_rate, 0);
-  const hit3Rate = toNum(sourceGroup?.meta?.hit3_rate, 0);
-  const blendedHit3Rate = Math.max(recent50Hit3Rate, hit3Rate);
-  const blendedRoi = Math.max(
-    toNum(sourceGroup?.meta?.recent_50_roi, 0),
-    toNum(sourceGroup?.meta?.roi, 0)
-  );
-  const inferredRole = inferRoleFromGroup(sourceGroup);
-
-  if (slotNo === 1) {
-    if (inferredRole === 'attack' || inferredRole === 'recent') return false;
-    if (totalRounds >= 8 && hit2Rate < 0.30) return false;
-    if (totalRounds >= 8 && recent50HitRate < 0.30) return false;
-    if (blendedRoi < -0.35) return false;
-  } else if (slotNo === 2) {
-    if (inferredRole === 'attack') return false;
-    if (totalRounds >= 8 && hit2Rate < 0.27) return false;
-    if (totalRounds >= 8 && recent50HitRate < 0.24) return false;
-  } else if (slotNo === 3) {
-    if (inferredRole === 'attack') return false;
-    if (totalRounds >= 8 && hit2Rate < 0.20) return false;
-  } else if (slotNo === 4) {
-    if (totalRounds >= 8 && blendedHit3Rate < 0.018) return false;
-  }
-
-  if (slotRole === 'attack' && totalRounds >= 8 && blendedHit3Rate < 0.018) return false;
-
-  return true;
-}
-
-function scoreGroupForBalancedFinalSlot(sourceGroup = {}, slotNo = 1, slotRole = 'mix', selection = {}, pools = {}, phaseContext = null) {
-  const baseScore =
-    scoreGroupForMode(sourceGroup, slotRole, selection.strategyMode, selection.riskMode, pools, phaseContext) +
-    getFormalStabilityBonus(sourceGroup, slotNo) +
-    getStrategySelectionPower(sourceGroup);
-
-  const totalRounds = toNum(sourceGroup?.meta?.total_rounds, 0);
-  const hit2Rate = toNum(sourceGroup?.meta?.hit2_rate, 0);
-  const recent50HitRate = toNum(sourceGroup?.meta?.recent_50_hit_rate, 0);
-  const recent50Hit3Rate = toNum(sourceGroup?.meta?.recent_50_hit3_rate, 0);
-  const hit3Rate = toNum(sourceGroup?.meta?.hit3_rate, 0);
-  const blendedHit3Rate = Math.max(recent50Hit3Rate, hit3Rate);
-  const blendedRoi = Math.max(
-    toNum(sourceGroup?.meta?.recent_50_roi, 0),
-    toNum(sourceGroup?.meta?.roi, 0)
-  );
-
-  if (slotNo === 1) {
-    return round4(baseScore + hit2Rate * 5600 + recent50HitRate * 5200 + blendedRoi * 180 + totalRounds);
-  }
-  if (slotNo === 2) {
-    return round4(baseScore + hit2Rate * 4600 + recent50HitRate * 4200 + blendedRoi * 120 + totalRounds);
-  }
-  if (slotNo === 3) {
-    return round4(baseScore + hit2Rate * 2600 + recent50HitRate * 2200 + blendedHit3Rate * 1200 + totalRounds);
-  }
-  return round4(baseScore + blendedHit3Rate * 5600 + blendedRoi * 220 + hit2Rate * 900 + totalRounds);
-}
-
-function buildFinalBalancedGroups(initialGroups = [], sourceGroups = [], sourcePrediction = null, sourceDraw = null, selection = {}, pools = {}, phaseContext = null) {
-  const finalGroups = [];
-  const usedStrategyKeys = new Set();
-  const rankedSourceGroups = buildRankedSourceGroups(
-    dedupeSourceGroupsByStrategy(sourceGroups, selection, pools, phaseContext),
-    selection,
-    pools,
-    phaseContext
-  );
-
-  const tryPushSourceGroup = (sourceGroup, slotNo, slotRole) => {
-    if (!sourceGroup) return false;
-    const strategyKey = getStrategyKey(sourceGroup);
-    if (strategyKey && usedStrategyKeys.has(strategyKey)) return false;
-    if (!canUseGroupAtFinalSlot(sourceGroup, slotNo, slotRole)) return false;
-
-    const variant = buildVariantFromSourceGroup(
-      sourceGroup,
-      slotRole,
-      slotNo,
-      pools,
-      finalGroups,
-      selection,
-      phaseContext
-    );
-    if (!variant || !Array.isArray(variant.nums) || variant.nums.length !== 4) return false;
-    if (finalGroups.some((g) => countOverlap(variant.nums, g?.nums || []) > MAX_GROUP_OVERLAP)) return false;
-
-    finalGroups.push({
-      key: `${strategyKey || sourceGroup.key || 'strategy'}_${slotRole}_${slotNo}`,
-      label: buildFormalLabel(slotRole, slotNo, sourceGroup),
-      nums: variant.nums,
-      reason: `正式下注分工：${slotRole.toUpperCase()} / ${strategyModeLabel(selection.strategyMode)} / ${roleLabelOf(selection.riskMode)} / ${phaseContext.marketPhase} / ${phaseContext.lastHitLevel}`,
-      meta: {
-        ...buildFormalMeta(sourceGroup, slotRole, slotNo, sourcePrediction, selection, phaseContext),
-        decision_score: scoreGroupForBalancedFinalSlot(sourceGroup, slotNo, slotRole, selection, pools, phaseContext),
-        decision_gate: getDecisionScoreFloor(slotRole, selection, phaseContext),
-        roi_gate: getRecentRoiFloor(slotRole, selection, phaseContext),
-        hit3_gate: getHit3RateFloor(slotRole, selection, phaseContext),
-        blended_roi: getBlendedRoi(sourceGroup),
-        blended_hit3_rate: getBlendedHit3Rate(sourceGroup),
-        tier: getCandidateTier(sourceGroup, variant.score, slotRole, selection, phaseContext)
-      }
-    });
-
-    if (strategyKey) usedStrategyKeys.add(strategyKey);
-    return true;
-  };
-
-  const initialPool = normalizeGroups(initialGroups, sourceDraw);
-
-  for (let slotNo = 1; slotNo <= GROUP_COUNT; slotNo += 1) {
-    const slotRole = getBalancedSlotTargetRole(slotNo);
-    let added = false;
-
-    for (const rankedRow of rankedSourceGroups) {
-      if (tryPushSourceGroup(rankedRow.group, slotNo, slotRole)) {
-        added = true;
-        break;
-      }
-    }
-
-    if (!added) {
-      for (const sourceGroup of initialPool) {
-        if (tryPushSourceGroup(sourceGroup, slotNo, slotRole)) {
-          added = true;
-          break;
-        }
-      }
-    }
-
-    if (!added) {
-      finalGroups.push(
-        buildFallbackGroup(
-          slotRole,
-          slotNo,
-          pools,
-          selection,
-          phaseContext,
-          finalGroups
-        )
-      );
-    }
-  }
-
-  return normalizeGroups(finalGroups, sourceDraw).slice(0, GROUP_COUNT);
-}
-
 async function buildFormalPrediction(selection = {}, triggerSource = 'unknown') {
   const latestDraw = await getLatestDraw();
   const sourceDrawNo = String(latestDraw?.draw_no || '').trim();
@@ -2584,7 +2422,7 @@ async function buildFormalPrediction(selection = {}, triggerSource = 'unknown') 
     throw new Error('來源候選池為空，無法建立 formal');
   }
 
-  const draftGroups = buildFormalGroups(
+  const groups = buildFormalGroups(
     sourceGroups,
     sourcePrediction,
     latestDraw,
@@ -2593,29 +2431,18 @@ async function buildFormalPrediction(selection = {}, triggerSource = 'unknown') 
     phaseContext
   );
 
-  const groups =
-    controlledSelection.riskMode === 'balanced'
-      ? buildFinalBalancedGroups(
-          draftGroups,
-          sourceGroups,
-          sourcePrediction,
-          latestDraw,
-          controlledSelection,
-          pools,
-          phaseContext
-        )
-      : normalizeGroups(draftGroups, latestDraw).slice(0, GROUP_COUNT);
-
   if (!groups.length) {
     throw new Error('formal groups 建立失敗');
   }
 
+  const finalGroups = buildFinalGroupsV8(groups);
+
   const insertPayload = {
+  groups_json: finalGroups,
     mode: FORMAL_MODE,
     status: 'created',
     source_draw_no: String(sourceDrawNo),
     target_periods: 1,
-    groups_json: groups,
     latest_draw_numbers: JSON.stringify(parseNums(latestDraw?.numbers || [])),
     compare_result_json: null,
     compare_result: null,
@@ -2708,4 +2535,40 @@ export default async function handler(req, res) {
       error: error instanceof Error ? error.message : String(error || 'unknown error')
     });
   }
+}
+// ===== V8 HARD FINAL CONTROL =====
+function buildFinalGroupsV8(rawGroups = []) {
+  const used = new Set();
+  const result = [];
+
+  for (const g of rawGroups) {
+    if (!g || !g.key) continue;
+    if (!used.has(g.key)) {
+      used.add(g.key);
+      result.push(g);
+    }
+  }
+
+  for (const g of rawGroups) {
+    if (result.length >= 4) break;
+    if (!g || !g.key) continue;
+    if (!used.has(g.key)) {
+      used.add(g.key);
+      result.push(g);
+    }
+  }
+
+  if (result.length < 4) {
+    throw new Error('V8: not enough unique strategies');
+  }
+
+  return result.slice(0, 4).map((g, idx) => ({
+    ...g,
+    meta: {
+      ...(g.meta || {}),
+      slot_no: idx + 1,
+      preferred_role: ['attack','attack','extend','guard'][idx],
+      selection_rank: idx + 1
+    }
+  }));
 }
