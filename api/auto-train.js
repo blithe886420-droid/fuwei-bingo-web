@@ -239,104 +239,165 @@ function sortGroupsForInstantCandidate(groups = []) {
 }
 
 function buildInstantFormalCandidateGroups(groups = []) {
-  const normalized = normalizeGroups(groups)
-    .slice(0, 12)
-    .sort((a, b) => {
-      const scoreA = toNum(a?.meta?.decision_score, Number.NEGATIVE_INFINITY);
-      const scoreB = toNum(b?.meta?.decision_score, Number.NEGATIVE_INFINITY);
+  const normalized = sortGroupsForInstantCandidate(groups).slice(0, 24);
 
-      if (scoreB !== scoreA) return scoreB - scoreA;
+  if (normalized.length < 4) return [];
 
-      const hit3A = toNum(a?.meta?.recent_50_hit3_rate, toNum(a?.meta?.hit3_rate, 0));
-      const hit3B = toNum(b?.meta?.recent_50_hit3_rate, toNum(b?.meta?.hit3_rate, 0));
+  const usedStrategy = new Set();
+  const picked = [];
 
-      if (hit3B !== hit3A) return hit3B - hit3A;
+  for (const group of normalized) {
+    const strategyKey = String(group?.meta?.strategy_key || group?.key || '').trim();
+    if (!strategyKey) continue;
+    if (usedStrategy.has(strategyKey)) continue;
 
-      const roiA = toNum(a?.meta?.recent_50_roi, toNum(a?.meta?.roi, Number.NEGATIVE_INFINITY));
-      const roiB = toNum(b?.meta?.recent_50_roi, toNum(b?.meta?.roi, Number.NEGATIVE_INFINITY));
+    usedStrategy.add(strategyKey);
+    picked.push(group);
 
-      if (roiB !== roiA) return roiB - roiA;
+    if (picked.length === 4) break;
+  }
 
-      const rankA = toNum(a?.meta?.selection_rank, 9999);
-      const rankB = toNum(b?.meta?.selection_rank, 9999);
+  if (picked.length < 4) return [];
 
-      if (rankA !== rankB) return rankA - rankB;
+  const attackPool = [];
+  const extendPool = [];
+  const guardPool = [];
+  const recentPool = [];
 
-      return String(a?.key || '').localeCompare(String(b?.key || ''));
-    });
+  const getHit2 = (group) =>
+    Math.max(
+      toNum(group?.meta?.recent_50_hit_rate, 0),
+      toNum(group?.meta?.hit2_rate, 0)
+    );
 
-  if (normalized.length < 2) return [];
+  const getHit3 = (group) =>
+    Math.max(
+      toNum(group?.meta?.recent_50_hit3_rate, 0),
+      toNum(group?.meta?.hit3_rate, 0)
+    );
 
-  const top1 = normalized[0];
-  const top2 = normalized[1];
-  const top3 = normalized[2] || null;
+  const getRoi = (group) =>
+    Math.max(
+      toNum(group?.meta?.recent_50_roi, Number.NEGATIVE_INFINITY),
+      toNum(group?.meta?.roi, Number.NEGATIVE_INFINITY)
+    );
 
-  const diversifyNums = (sourceNums = [], salt = 0, avoidNums = []) => {
-    const picked = uniqueSorted(sourceNums).slice(0, 4);
-    const avoid = new Set(uniqueSorted(avoidNums));
-    const result = [];
-    const used = new Set();
+  const getScore = (group) =>
+    Math.max(
+      toNum(group?.meta?.decision_score, Number.NEGATIVE_INFINITY),
+      toNum(group?.meta?.score, Number.NEGATIVE_INFINITY)
+    );
 
-    for (const n of picked) {
-      if (!used.has(n) && result.length < 2) {
-        used.add(n);
-        result.push(n);
-      }
+  for (const group of picked) {
+    const key = String(group?.meta?.strategy_key || group?.key || '').toLowerCase();
+    const hit2 = getHit2(group);
+    const hit3 = getHit3(group);
+    const roi = getRoi(group);
+    const score = getScore(group);
+
+    if (
+      key.includes('guard') ||
+      key.includes('balance') ||
+      key.includes('balanced') ||
+      key.includes('warm') ||
+      hit2 >= 0.55
+    ) {
+      guardPool.push(group);
     }
 
-    const fallbackPool = Array.from({ length: 80 }, (_, i) => i + 1)
-      .filter((n) => !used.has(n))
-      .filter((n) => !avoid.has(n));
-
-    let cursor = 0;
-    while (result.length < 4 && cursor < fallbackPool.length) {
-      const index = Math.abs(salt + cursor * 11) % fallbackPool.length;
-      const value = fallbackPool[index];
-      cursor += 1;
-      if (used.has(value)) continue;
-      used.add(value);
-      result.push(value);
+    if (
+      key.includes('recent') ||
+      key.includes('tail') ||
+      key.includes('repeat') ||
+      key.includes('pattern') ||
+      hit2 >= 0.45
+    ) {
+      recentPool.push(group);
     }
 
-    return uniqueSorted(result).slice(0, 4);
+    if (
+      key.includes('extend') ||
+      key.includes('spread') ||
+      key.includes('mix') ||
+      key.includes('zone') ||
+      roi >= -0.25
+    ) {
+      extendPool.push(group);
+    }
+
+    if (
+      key.includes('attack') ||
+      key.includes('gap') ||
+      key.includes('chase') ||
+      key.includes('jump') ||
+      key.includes('hot') ||
+      hit3 > 0 ||
+      score > 0
+    ) {
+      attackPool.push(group);
+    }
+  }
+
+  const uniquePull = (pool = [], used = new Set()) => {
+    for (const group of pool) {
+      const strategyKey = String(group?.meta?.strategy_key || group?.key || '').trim();
+      if (!strategyKey) continue;
+      if (used.has(strategyKey)) continue;
+      used.add(strategyKey);
+      return group;
+    }
+    return null;
   };
 
-  const cloneGroup = (sourceGroup, slotTag, bucket, weight, slotNo, rank, customNums = null) => ({
+  const fallbackPull = (used = new Set()) => {
+    for (const group of picked) {
+      const strategyKey = String(group?.meta?.strategy_key || group?.key || '').trim();
+      if (!strategyKey) continue;
+      if (used.has(strategyKey)) continue;
+      used.add(strategyKey);
+      return group;
+    }
+    return null;
+  };
+
+  const chosen = [];
+  const chosenKeys = new Set();
+
+  const slotPlan = [
+    { slotNo: 1, role: 'guard', tag: 'GUARD 1', rank: 1, pool: guardPool },
+    { slotNo: 2, role: 'extend', tag: 'EXTEND 2', rank: 2, pool: extendPool },
+    { slotNo: 3, role: 'recent', tag: 'RECENT 3', rank: 3, pool: recentPool },
+    { slotNo: 4, role: 'attack', tag: 'ATTACK 4', rank: 4, pool: attackPool }
+  ];
+
+  const cloneGroup = (sourceGroup, slot) => ({
     ...sourceGroup,
-    nums: Array.isArray(customNums) ? uniqueSorted(customNums).slice(0, 4) : sourceGroup.nums,
-    label: `${slotTag}｜${sourceGroup.meta?.strategy_name || sourceGroup.label}`,
-    reason: `即戰候選 / ${slotTag}`,
+    label: `${slot.tag} / ${sourceGroup.meta?.strategy_name || sourceGroup.label}`,
+    reason: `即戰候選 / ${slot.role.toUpperCase()}`,
     meta: {
       ...(sourceGroup.meta || {}),
-      selection_rank: rank,
-      source_selection_rank: toNum(sourceGroup?.meta?.selection_rank, rank),
+      selection_rank: slot.rank,
+      source_selection_rank: toNum(sourceGroup?.meta?.selection_rank, slot.rank),
       instant_candidate: true,
       instant_candidate_mode: 'weighted_focus_b',
       focus_mode: 'weighted_focus_b',
-      focus_bucket: bucket,
-      focus_weight: weight,
-      focus_slot_no: slotNo,
-      focus_tag: slotTag,
-      decision: 'weighted_focus_top1x2_top2x1_top3x1'
+      focus_bucket: slot.role,
+      focus_weight: 1,
+      focus_slot_no: slot.slotNo,
+      focus_tag: slot.tag,
+      decision: 'instant_candidate_unique_slots_v2',
+      preferred_role: slot.role,
+      slot_no: slot.slotNo
     }
   });
 
-  const group1 = cloneGroup(top1, 'TOP1-1', 'top1', 2, 1, 1, top1.nums);
-  const group2 = cloneGroup(
-    top1,
-    'TOP1-2',
-    'top1',
-    2,
-    2,
-    1,
-    diversifyNums(top1.nums, Date.now() % 97, [...(top2?.nums || []), ...(top3?.nums || [])])
-  );
-  const group3 = cloneGroup(top2, 'TOP2-1', 'top2', 1, 3, 2, top2.nums);
-  const group4 = top3
-    ? cloneGroup(top3, 'TOP3-1', 'top3', 1, 4, 3, top3.nums)
-    : cloneGroup(top2, 'TOP2-2', 'top2', 1, 4, 2, diversifyNums(top2.nums, 29, top1.nums));
+  for (const slot of slotPlan) {
+    const sourceGroup = uniquePull(slot.pool, chosenKeys) || fallbackPull(chosenKeys);
+    if (!sourceGroup) return [];
+    chosen.push(cloneGroup(sourceGroup, slot));
+  }
 
-  return [group1, group2, group3, group4];
+  return chosen;
 }
 
 async function upsertFormalCandidateFromTest(db, predictionRow) {
