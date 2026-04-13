@@ -400,7 +400,23 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
   if (!sourceDrawNo) return null;
 
   const candidateGroups = buildInstantFormalCandidateGroups(predictionRow.groups_json || []);
-  if (candidateGroups.length !== 4) return null;
+  let finalGroups = candidateGroups;
+  if (candidateGroups.length !== 4) {
+    const fallback = normalizeGroups(predictionRow.groups_json || []).slice(0,4);
+    if (fallback.length === 4) {
+      finalGroups = fallback.map((g,idx)=>({
+        ...g,
+        meta:{
+          ...(g.meta||{}),
+          slot_no: idx+1,
+          preferred_role: 'fallback',
+          focus_mode: 'force_formal'
+        }
+      }));
+    } else {
+      return null;
+    }
+  }
 
   const nowIso = new Date().toISOString();
 
@@ -409,7 +425,7 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
     status: 'ready',
     source_draw_no: sourceDrawNo,
     target_periods: TARGET_PERIODS,
-    groups_json: candidateGroups,
+    groups_json: finalGroups,
     compare_status: 'candidate',
     compare_result: null,
     compare_result_json: null,
@@ -438,7 +454,7 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
       .from(PREDICTIONS_TABLE)
       .update({
         status: 'ready',
-        groups_json: candidateGroups,
+        groups_json: finalGroups,
         compare_status: 'candidate',
         compare_result: null,
         compare_result_json: null,
@@ -469,7 +485,7 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
     status: 'created',
     source_draw_no: sourceDrawNo,
     target_periods: TARGET_PERIODS,
-    groups_json: candidateGroups,
+    groups_json: finalGroups,
     compare_status: 'pending',
     compare_result: null,
     compare_result_json: null,
@@ -496,7 +512,7 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
       .from(PREDICTIONS_TABLE)
       .update({
         status: 'created',
-        groups_json: candidateGroups,
+        groups_json: finalGroups,
         compare_status: 'pending',
         compare_result: null,
         compare_result_json: null,
