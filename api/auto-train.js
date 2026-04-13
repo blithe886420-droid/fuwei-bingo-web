@@ -4,7 +4,7 @@ import { recordStrategyCompareResult } from '../lib/strategyStatsRecorder.js';
 import { ensureStrategyPoolStrategies } from '../lib/ensureStrategyPoolStrategies.js';
 import { buildRecentMarketSignalSnapshot, buildStrategyDecisionFromSnapshot } from '../lib/marketSignalEngine.js';
 
-const API_VERSION = 'auto-train-stable-hit2-v3-data-classifier';
+const API_VERSION = 'auto-train-stable-hit2-v3-data-classifier-stable-hit2-v4-hotfix';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -420,15 +420,6 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
 
   
 
-// ===== FIX: BLOCK FALLBACK INTO SLOT4 =====
-if (finalGroups.length === 4) {
-  const slot4 = finalGroups[3];
-  if (slot4?.meta?.preferred_role === 'attack_blocked') {
-    // 強制降為 extend（避免亂衝）
-    finalGroups[3].meta.preferred_role = 'extend_safe';
-    finalGroups[3].meta.focus_mode = 'stable_override';
-  }
-}
 
 const nowIso = new Date().toISOString();
 
@@ -1669,15 +1660,6 @@ async function spawnStrategiesIfNeeded(db, latestDrawNo = 0) {
   const skippedDuplicateKeys = [];
   
 
-// ===== FIX: BLOCK FALLBACK INTO SLOT4 =====
-if (finalGroups.length === 4) {
-  const slot4 = finalGroups[3];
-  if (slot4?.meta?.preferred_role === 'attack_blocked') {
-    // 強制降為 extend（避免亂衝）
-    finalGroups[3].meta.preferred_role = 'extend_safe';
-    finalGroups[3].meta.focus_mode = 'stable_override';
-  }
-}
 
 const nowIso = new Date().toISOString();
 
