@@ -2101,3 +2101,62 @@ export default async function handler(req, res) {
 
 // 進攻型decision
 function calcDecisionScore(meta={}){const h3=Number(meta.recent_50_hit3_rate||0); const h2=Number(meta.hit2_rate||0); const roi=Number(meta.recent_50_roi||0); return h3*60+h2*25+Math.max(roi,-1)*15;}
+
+
+
+/* =========================
+   🔧 FIX: AUTO COMPARE TRIGGER
+   ========================= */
+
+async function runAutoCompareForLatest(db) {
+  try {
+    const { data: latestDraw } = await db
+      .from('bingo_draws')
+      .select('draw_no, numbers')
+      .order('draw_no', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (!latestDraw?.draw_no) return;
+
+    const targetDrawNo = Number(latestDraw.draw_no);
+
+    const { data: pending } = await db
+      .from('bingo_predictions')
+      .select('*')
+      .in('mode', ['test', 'formal'])
+      .eq('compare_status', 'pending')
+      .limit(50);
+
+    if (!Array.isArray(pending) || !pending.length) return;
+
+    for (const row of pending) {
+      const source = Number(row.source_draw_no || 0);
+      if (source + 1 !== targetDrawNo) continue;
+
+      const payload = buildComparePayload({
+        prediction: row,
+        draw: latestDraw
+      });
+
+      const result = payload?.result || null;
+
+      await db
+        .from('bingo_predictions')
+        .update({
+          compare_status: 'compared',
+          compare_result_json: result,
+          hit_count: result?.hit_count || 0
+        })
+        .eq('id', row.id);
+
+      await recordStrategyCompareResult(result);
+    }
+  } catch (e) {
+    console.error('AUTO COMPARE ERROR', e);
+  }
+}
+
+/* 👉 在主流程最後加上這一行（非常重要） */
+// await runAutoCompareForLatest(getSupabase());
+
