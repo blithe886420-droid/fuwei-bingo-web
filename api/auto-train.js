@@ -4,7 +4,7 @@ import { recordStrategyCompareResult } from '../lib/strategyStatsRecorder.js';
 import { ensureStrategyPoolStrategies } from '../lib/ensureStrategyPoolStrategies.js';
 import { buildRecentMarketSignalSnapshot, buildStrategyDecisionFromSnapshot } from '../lib/marketSignalEngine.js';
 
-const API_VERSION = 'auto-train-market-decision-v2';
+const API_VERSION = 'auto-train-stable-hit2-v3-data-classifier';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -238,19 +238,20 @@ function sortGroupsForInstantCandidate(groups = []) {
   return normalizeGroups(groups).sort(compareGroupPriorityDesc);
 }
 
-function buildInstantFormalCandidateGroups(groups = []) {
-  const normalized = sortGroupsForInstantCandidate(groups).slice(0, 40);
 
+
+function buildInstantFormalCandidateGroups(groups = []) {
+  const normalized = sortGroupsForInstantCandidate(groups).slice(0, 60);
   if (normalized.length < 4) return [];
 
   const byStrategy = [];
-  const usedStrategy = new Set();
+  const seenStrategy = new Set();
 
   for (const group of normalized) {
     const strategyKey = String(group?.meta?.strategy_key || group?.key || '').trim();
     if (!strategyKey) continue;
-    if (usedStrategy.has(strategyKey)) continue;
-    usedStrategy.add(strategyKey);
+    if (seenStrategy.has(strategyKey)) continue;
+    seenStrategy.add(strategyKey);
     byStrategy.push(group);
   }
 
@@ -280,104 +281,69 @@ function buildInstantFormalCandidateGroups(groups = []) {
       toNum(group?.meta?.score, Number.NEGATIVE_INFINITY)
     );
 
-  const isGuardLike = (key = '') =>
-    key.includes('guard') ||
-    key.includes('balance') ||
-    key.includes('balanced') ||
-    key.includes('warm');
-
-  const isExtendLike = (key = '') =>
-    key.includes('spread') ||
-    key.includes('zone') ||
-    key.includes('mix') ||
-    key.includes('extend');
-
-  const isAttackLike = (key = '') =>
-    key.includes('attack') ||
-    key.includes('gap') ||
-    key.includes('chase') ||
-    key.includes('jump') ||
-    key.includes('hot');
-
-  const sortStableFirst = (a, b) => {
-    const aHit2 = getHit2(a);
-    const bHit2 = getHit2(b);
-    if (bHit2 !== aHit2) return bHit2 - aHit2;
-
-    const aRoi = getRoi(a);
-    const bRoi = getRoi(b);
-    if (bRoi !== aRoi) return bRoi - aRoi;
-
-    const aHit3 = getHit3(a);
-    const bHit3 = getHit3(b);
-    if (aHit3 !== bHit3) return aHit3 - bHit3;
-
-    return compareGroupPriorityDesc(a, b);
-  };
-
-  const sortAttackFirst = (a, b) => {
-    const aHit3 = getHit3(a);
-    const bHit3 = getHit3(b);
-    if (bHit3 !== aHit3) return bHit3 - aHit3;
-
-    const aScore = getScore(a);
-    const bScore = getScore(b);
-    if (bScore !== aScore) return bScore - aScore;
-
-    const aRoi = getRoi(a);
-    const bRoi = getRoi(b);
-    if (bRoi !== aRoi) return bRoi - aRoi;
-
-    return compareGroupPriorityDesc(a, b);
-  };
-
-  const guardPool = [];
-  const extendPool = [];
-  const attackPool = [];
-  const stableFallbackPool = [];
-
-  for (const group of byStrategy) {
-    const key = String(group?.meta?.strategy_key || group?.key || '').toLowerCase();
+  const classifyRole = (group) => {
     const hit2 = getHit2(group);
     const hit3 = getHit3(group);
     const roi = getRoi(group);
     const score = getScore(group);
 
-    if (hit2 >= 0.30 && roi >= -0.40) {
-      stableFallbackPool.push(group);
-    }
+    if (hit2 >= 0.30 && roi >= -0.45 && hit3 <= 0.12) return 'guard';
+    if (hit2 >= 0.24 && roi >= -0.60) return 'extend';
+    if (hit3 >= 0.03 && hit2 >= 0.18 && roi >= -0.75 && score >= -500) return 'attack';
+    return 'reject';
+  };
 
-    if (
-      (isGuardLike(key) && hit2 >= 0.40 && roi >= -0.20) ||
-      hit2 >= 0.52
-    ) {
+  const scoreGuard = (group) => {
+    const hit2 = getHit2(group);
+    const hit3 = getHit3(group);
+    const roi = getRoi(group);
+    const score = getScore(group);
+    return hit2 * 1000 + roi * 120 - hit3 * 120 + score * 0.001;
+  };
+
+  const scoreExtend = (group) => {
+    const hit2 = getHit2(group);
+    const hit3 = getHit3(group);
+    const roi = getRoi(group);
+    const score = getScore(group);
+    return hit2 * 900 + roi * 100 + hit3 * 40 + score * 0.001;
+  };
+
+  const scoreAttack = (group) => {
+    const hit2 = getHit2(group);
+    const hit3 = getHit3(group);
+    const roi = getRoi(group);
+    const score = getScore(group);
+    return hit3 * 1200 + hit2 * 250 + roi * 80 + score * 0.001;
+  };
+
+  const guardPool = [];
+  const extendPool = [];
+  const attackPool = [];
+
+  for (const group of byStrategy) {
+    const role = classifyRole(group);
+    if (role === 'guard') {
       guardPool.push(group);
-      continue;
-    }
-
-    if (
-      (isExtendLike(key) && hit2 >= 0.35 && roi >= -0.30) ||
-      (hit2 >= 0.40 && roi >= -0.30)
-    ) {
       extendPool.push(group);
       continue;
     }
-
-    if (
-      (isAttackLike(key) && (hit3 > 0 || score > 0) && roi >= -0.35 && hit2 >= 0.20) ||
-      (hit3 >= 0.08 && roi >= -0.30)
-    ) {
-      attackPool.push(group);
+    if (role === 'extend') {
+      extendPool.push(group);
       continue;
+    }
+    if (role === 'attack') {
+      attackPool.push(group);
     }
   }
 
-  guardPool.sort(sortStableFirst);
-  extendPool.sort(sortStableFirst);
-  attackPool.sort(sortAttackFirst);
-  stableFallbackPool.sort(sortStableFirst);
+  guardPool.sort((a, b) => scoreGuard(b) - scoreGuard(a));
+  extendPool.sort((a, b) => scoreExtend(b) - scoreExtend(a));
+  attackPool.sort((a, b) => scoreAttack(b) - scoreAttack(a));
 
-  const pullUnique = (pool = [], used = new Set()) => {
+  const used = new Set();
+
+  const pickUnique = (pool) => {
     for (const group of pool) {
       const strategyKey = String(group?.meta?.strategy_key || group?.key || '').trim();
       if (!strategyKey) continue;
@@ -388,46 +354,41 @@ function buildInstantFormalCandidateGroups(groups = []) {
     return null;
   };
 
-  const chosenKeys = new Set();
-  const chosen = [];
+  const slot1 = pickUnique(guardPool);
+  const slot2 = pickUnique(extendPool);
+  const slot3 = pickUnique(extendPool);
+  const slot4 = pickUnique(attackPool);
 
-  const slotPlan = [
-    { slotNo: 1, role: 'guard', tag: 'GUARD 1', rank: 1, primaryPool: guardPool, fallbackPool: stableFallbackPool },
-    { slotNo: 2, role: 'extend', tag: 'EXTEND 2', rank: 2, primaryPool: extendPool, fallbackPool: stableFallbackPool },
-    { slotNo: 3, role: 'extend', tag: 'EXTEND 3', rank: 3, primaryPool: extendPool, fallbackPool: stableFallbackPool },
-    { slotNo: 4, role: 'attack', tag: 'ATTACK 4', rank: 4, primaryPool: attackPool, fallbackPool: stableFallbackPool }
-  ];
+  if (!slot1 || !slot2 || !slot3 || !slot4) return [];
 
-  const cloneGroup = (sourceGroup, slot) => ({
-    ...sourceGroup,
-    label: `${slot.tag} / ${sourceGroup.meta?.strategy_name || sourceGroup.label}`,
-    reason: slot.role === 'attack'
-      ? '即戰候選 / A硬鎖版：穩中2優先，最後一組衝3'
-      : '即戰候選 / A硬鎖版：穩中2優先',
+  const wrap = (group, slotNo, preferredRole, focusLabel) => ({
+    ...group,
+    label: `${focusLabel} / ${group.meta?.strategy_name || group.label}`,
+    reason:
+      preferredRole === 'attack'
+        ? '即戰候選 / 穩中2版：三穩一衝'
+        : '即戰候選 / 穩中2版：穩定優先',
     meta: {
-      ...(sourceGroup.meta || {}),
-      selection_rank: slot.rank,
-      source_selection_rank: toNum(sourceGroup?.meta?.selection_rank, slot.rank),
+      ...(group.meta || {}),
+      selection_rank: slotNo,
+      source_selection_rank: toNum(group?.meta?.selection_rank, slotNo),
       instant_candidate: true,
-      instant_candidate_mode: 'a_hardlock_stable_hit2_v1',
-      focus_mode: 'a_hardlock_stable_hit2_v1',
-      focus_bucket: slot.role,
-      focus_weight: slot.role === 'attack' ? 1.08 : 1,
-      focus_slot_no: slot.slotNo,
-      focus_tag: slot.tag,
-      decision: 'instant_candidate_a_hardlock_stable_hit2_v1',
-      preferred_role: slot.role,
-      slot_no: slot.slotNo
+      instant_candidate_mode: 'stable_hit2_v3_data_classifier',
+      focus_mode: 'stable_hit2_v3_data_classifier',
+      focus_bucket: preferredRole,
+      focus_tag: focusLabel,
+      focus_slot_no: slotNo,
+      preferred_role: preferredRole,
+      slot_no: slotNo
     }
   });
 
-  for (const slot of slotPlan) {
-    const sourceGroup = pullUnique(slot.primaryPool, chosenKeys) || pullUnique(slot.fallbackPool, chosenKeys);
-    if (!sourceGroup) return [];
-    chosen.push(cloneGroup(sourceGroup, slot));
-  }
-
-  return chosen;
+  return [
+    wrap(slot1, 1, 'guard', 'GUARD 1'),
+    wrap(slot2, 2, 'extend', 'EXTEND 2'),
+    wrap(slot3, 3, 'extend', 'EXTEND 3'),
+    wrap(slot4, 4, 'attack', 'ATTACK 4')
+  ];
 }
 
 async function upsertFormalCandidateFromTest(db, predictionRow) {
