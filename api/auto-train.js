@@ -4,7 +4,7 @@ import { recordStrategyCompareResult } from '../lib/strategyStatsRecorder.js';
 import { ensureStrategyPoolStrategies } from '../lib/ensureStrategyPoolStrategies.js';
 import { buildRecentMarketSignalSnapshot, buildStrategyDecisionFromSnapshot } from '../lib/marketSignalEngine.js';
 
-const API_VERSION = 'auto-train-stable-hit2-v3-data-classifier-stable-hit2-v4-hotfix';
+const API_VERSION = 'auto-train-stable-hit2-v3-data-classifier-stable-hit2-v5-fallback-control-hotfix';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
