@@ -402,20 +402,40 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
   const candidateGroups = buildInstantFormalCandidateGroups(predictionRow.groups_json || []);
   let finalGroups = candidateGroups;
   if (candidateGroups.length !== 4) {
-    const fallback = normalizeGroups(predictionRow.groups_json || []).slice(0,4);
+    const normalized = normalizeGroups(predictionRow.groups_json || []);
+
+    // 🔥 FILTER fallback（壓波動核心）
+    const filtered = normalized.filter(g => {
+      const meta = g.meta || {};
+      const hit2 = Math.max(
+        Number(meta.recent_50_hit_rate || 0),
+        Number(meta.hit2_rate || 0)
+      );
+      const roi = Math.max(
+        Number(meta.recent_50_roi || -999),
+        Number(meta.roi || -999)
+      );
+      return hit2 >= 0.25 && roi >= -0.6;
+    });
+
+    let base = filtered.length >= 4 ? filtered : normalized;
+
+    const fallback = base.slice(0,4);
+
     if (fallback.length === 4) {
       finalGroups = fallback.map((g,idx)=>({
         ...g,
         meta:{
           ...(g.meta||{}),
           slot_no: idx+1,
-          preferred_role: idx < 3 ? 'fallback' : 'attack_blocked',
-          focus_mode: 'force_formal'
+          preferred_role: idx === 0 ? 'guard' : (idx < 3 ? 'extend' : 'attack_blocked'),
+          focus_mode: filtered.length >= 4 ? 'fallback_filtered' : 'fallback_raw'
         }
       }));
     } else {
       return null;
     }
+  }
   }
 
   
