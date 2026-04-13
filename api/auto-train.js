@@ -289,7 +289,7 @@ function buildInstantFormalCandidateGroups(groups = []) {
 
     if (hit2 >= 0.30 && roi >= -0.45 && hit3 <= 0.12) return 'guard';
     if (hit2 >= 0.24 && roi >= -0.60) return 'extend';
-    if (hit3 >= 0.03 && hit2 >= 0.18 && roi >= -0.75 && score >= -500) return 'attack';
+    if (hit3 >= 0.05 && hit2 >= 0.22 && roi >= -0.6 && score >= 0) return 'attack';
     return 'reject';
   };
 
@@ -306,7 +306,7 @@ function buildInstantFormalCandidateGroups(groups = []) {
     const hit3 = getHit3(group);
     const roi = getRoi(group);
     const score = getScore(group);
-    return hit2 * 900 + roi * 100 + hit3 * 40 + score * 0.001;
+    return hit2 * 1200 + roi * 120 + hit3 * 30 + score * 0.001;
   };
 
   const scoreAttack = (group) => {
@@ -409,7 +409,7 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
         meta:{
           ...(g.meta||{}),
           slot_no: idx+1,
-          preferred_role: 'fallback',
+          preferred_role: idx < 3 ? 'fallback' : 'attack_blocked',
           focus_mode: 'force_formal'
         }
       }));
@@ -418,7 +418,19 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
     }
   }
 
-  const nowIso = new Date().toISOString();
+  
+
+// ===== FIX: BLOCK FALLBACK INTO SLOT4 =====
+if (finalGroups.length === 4) {
+  const slot4 = finalGroups[3];
+  if (slot4?.meta?.preferred_role === 'attack_blocked') {
+    // 強制降為 extend（避免亂衝）
+    finalGroups[3].meta.preferred_role = 'extend_safe';
+    finalGroups[3].meta.focus_mode = 'stable_override';
+  }
+}
+
+const nowIso = new Date().toISOString();
 
   const candidatePayload = {
     mode: FORMAL_CANDIDATE_MODE,
@@ -1655,7 +1667,19 @@ async function spawnStrategiesIfNeeded(db, latestDrawNo = 0) {
   const needCount = Math.min(MAX_SPAWN_PER_RUN, TARGET_ACTIVE_STRATEGY - activeCount);
   const spawnedKeys = [];
   const skippedDuplicateKeys = [];
-  const nowIso = new Date().toISOString();
+  
+
+// ===== FIX: BLOCK FALLBACK INTO SLOT4 =====
+if (finalGroups.length === 4) {
+  const slot4 = finalGroups[3];
+  if (slot4?.meta?.preferred_role === 'attack_blocked') {
+    // 強制降為 extend（避免亂衝）
+    finalGroups[3].meta.preferred_role = 'extend_safe';
+    finalGroups[3].meta.focus_mode = 'stable_override';
+  }
+}
+
+const nowIso = new Date().toISOString();
 
   if (!sorted.length) {
     return {
