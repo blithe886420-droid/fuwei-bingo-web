@@ -4,7 +4,7 @@ import { recordStrategyCompareResult } from '../lib/strategyStatsRecorder.js';
 import { ensureStrategyPoolStrategies } from '../lib/ensureStrategyPoolStrategies.js';
 import { buildRecentMarketSignalSnapshot, buildStrategyDecisionFromSnapshot } from '../lib/marketSignalEngine.js';
 
-const API_VERSION = 'auto-train-stable-hit2-v3-data-classifier';
+const API_VERSION = 'auto-train-market-decision-v2';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -239,7 +239,6 @@ function sortGroupsForInstantCandidate(groups = []) {
 }
 
 
-
 function buildInstantFormalCandidateGroups(groups = []) {
   const normalized = sortGroupsForInstantCandidate(groups).slice(0, 60);
   if (normalized.length < 4) return [];
@@ -257,28 +256,28 @@ function buildInstantFormalCandidateGroups(groups = []) {
 
   if (byStrategy.length < 4) return [];
 
-  const getHit2 = (group) =>
+  const getHit2 = (g) =>
     Math.max(
-      toNum(group?.meta?.recent_50_hit_rate, 0),
-      toNum(group?.meta?.hit2_rate, 0)
+      toNum(g?.meta?.recent_50_hit_rate, 0),
+      toNum(g?.meta?.hit2_rate, 0)
     );
 
-  const getHit3 = (group) =>
+  const getHit3 = (g) =>
     Math.max(
-      toNum(group?.meta?.recent_50_hit3_rate, 0),
-      toNum(group?.meta?.hit3_rate, 0)
+      toNum(g?.meta?.recent_50_hit3_rate, 0),
+      toNum(g?.meta?.hit3_rate, 0)
     );
 
-  const getRoi = (group) =>
+  const getRoi = (g) =>
     Math.max(
-      toNum(group?.meta?.recent_50_roi, Number.NEGATIVE_INFINITY),
-      toNum(group?.meta?.roi, Number.NEGATIVE_INFINITY)
+      toNum(g?.meta?.recent_50_roi, Number.NEGATIVE_INFINITY),
+      toNum(g?.meta?.roi, Number.NEGATIVE_INFINITY)
     );
 
-  const getScore = (group) =>
+  const getScore = (g) =>
     Math.max(
-      toNum(group?.meta?.decision_score, Number.NEGATIVE_INFINITY),
-      toNum(group?.meta?.score, Number.NEGATIVE_INFINITY)
+      toNum(g?.meta?.decision_score, Number.NEGATIVE_INFINITY),
+      toNum(g?.meta?.score, Number.NEGATIVE_INFINITY)
     );
 
   const classifyRole = (group) => {
@@ -373,8 +372,8 @@ function buildInstantFormalCandidateGroups(groups = []) {
       selection_rank: slotNo,
       source_selection_rank: toNum(group?.meta?.selection_rank, slotNo),
       instant_candidate: true,
-      instant_candidate_mode: 'stable_hit2_v3_data_classifier',
-      focus_mode: 'stable_hit2_v3_data_classifier',
+      instant_candidate_mode: 'stable_hit2_v2',
+      focus_mode: 'stable_hit2_v2',
       focus_bucket: preferredRole,
       focus_tag: focusLabel,
       focus_slot_no: slotNo,
