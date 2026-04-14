@@ -208,10 +208,18 @@ function buildGroupPriorityTuple(group = {}) {
   const meta = group?.meta && typeof group.meta === 'object' ? group.meta : {};
 
   return [
-    toNum(meta.hit3_rate, 0),
-    toNum(meta.recent_50_hit3_rate, 0),
-    toNum(meta.hit4_rate, 0),
-    toNum(meta.roi, 0),
+    Math.max(
+      toNum(meta.recent_50_hit_rate, 0),
+      toNum(meta.hit2_rate, 0)
+    ),
+    Math.max(
+      toNum(meta.recent_50_roi, -999),
+      toNum(meta.roi, -999)
+    ),
+    Math.max(
+      toNum(meta.recent_50_hit3_rate, 0),
+      toNum(meta.hit3_rate, 0)
+    ),
     toNum(meta.score, 0),
     toNum(meta.decision_score, 0),
     toNum(meta.market_boost, 1) - 1,
@@ -285,11 +293,11 @@ function buildInstantFormalCandidateGroups(groups = []) {
     const hit2 = getHit2(group);
     const hit3 = getHit3(group);
     const roi = getRoi(group);
-    const score = getScore(group);
 
-    if (hit2 >= 0.30 && roi >= -0.45 && hit3 <= 0.12) return 'guard';
-    if (hit2 >= 0.24 && roi >= -0.60) return 'extend';
-    if (hit3 >= 0.05 && hit2 >= 0.22 && roi >= -0.6 && score >= 0) return 'attack';
+    if (hit2 >= 0.28 && roi >= -0.4) return 'guard';
+    if (hit2 >= 0.24 && roi >= -0.55) return 'extend';
+    if (hit3 >= 0.05 && hit2 >= 0.22) return 'attack';
+
     return 'reject';
   };
 
