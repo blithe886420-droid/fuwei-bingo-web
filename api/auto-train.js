@@ -4,7 +4,7 @@ import { recordStrategyCompareResult } from '../lib/strategyStatsRecorder.js';
 import { ensureStrategyPoolStrategies } from '../lib/ensureStrategyPoolStrategies.js';
 import { buildRecentMarketSignalSnapshot, buildStrategyDecisionFromSnapshot } from '../lib/marketSignalEngine.js';
 
-const API_VERSION = 'auto-train-stable-hit2-v3-data-classifier-stable-hit2-v6-fallback-semi-filter';
+const API_VERSION = 'auto-train-stable-hit2-v3-data-classifier-B-stable-hit2-penalty-v1';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -208,19 +208,27 @@ function buildGroupPriorityTuple(group = {}) {
   const meta = group?.meta && typeof group.meta === 'object' ? group.meta : {};
 
   return [
+    // 穩中2第一優先：hit2 + hit2貼近度
     Math.max(
       toNum(meta.recent_50_hit_rate, 0),
       toNum(meta.hit2_rate, 0)
     ),
+    toNum(meta.stable_hit2_fit, 0),
+
+    // 第二優先：ROI止血
     Math.max(
       toNum(meta.recent_50_roi, -999),
       toNum(meta.roi, -999)
     ),
+
+    // 第三優先：中3只是加分，不主導
     Math.max(
       toNum(meta.recent_50_hit3_rate, 0),
       toNum(meta.hit3_rate, 0)
     ),
-    toNum(meta.score, 0),
+
+    // 第四優先：高命中懲罰後分數
+    toNum(meta.stable_score, toNum(meta.score, 0)),
     toNum(meta.decision_score, 0),
     toNum(meta.market_boost, 1) - 1,
     -toNum(meta.selection_rank, 999)
@@ -293,10 +301,17 @@ function buildInstantFormalCandidateGroups(groups = []) {
     const hit2 = getHit2(group);
     const hit3 = getHit3(group);
     const roi = getRoi(group);
+    const avgHit = Math.max(
+      toNum(group?.meta?.avg_hit, 0),
+      toNum(group?.meta?.recent_50_avg_hit, 0)
+    );
 
-    if (hit2 >= 0.28 && roi >= -0.4) return 'guard';
-    if (hit2 >= 0.24 && roi >= -0.55) return 'extend';
-    if (hit3 >= 0.05 && hit2 >= 0.22) return 'attack';
+    // 避免穩中4/5那種高命中高波動策略混進前排
+    if (avgHit >= 4.2 && roi < -0.15) return 'reject';
+
+    if (hit2 >= 0.30 && roi >= -0.35) return 'guard';
+    if (hit2 >= 0.26 && roi >= -0.50) return 'extend';
+    if (hit3 >= 0.05 && hit2 >= 0.22 && roi >= -0.35 && avgHit <= 3.6) return 'attack';
 
     return 'reject';
   };
@@ -306,7 +321,10 @@ function buildInstantFormalCandidateGroups(groups = []) {
     const hit3 = getHit3(group);
     const roi = getRoi(group);
     const score = getScore(group);
-    return hit2 * 1000 + roi * 120 - hit3 * 120 + score * 0.001;
+    const avgHit = toNum(group?.meta?.avg_hit, 0);
+    const stableFit = calcStableHit2Fit(avgHit);
+    const penalty = calcHighHitPenalty(avgHit);
+    return (hit2 * 1300 + roi * 140 - hit3 * 80 + stableFit * 260 + score * 0.001) * penalty;
   };
 
   const scoreExtend = (group) => {
@@ -314,7 +332,10 @@ function buildInstantFormalCandidateGroups(groups = []) {
     const hit3 = getHit3(group);
     const roi = getRoi(group);
     const score = getScore(group);
-    return hit2 * 1200 + roi * 120 + hit3 * 30 + score * 0.001;
+    const avgHit = toNum(group?.meta?.avg_hit, 0);
+    const stableFit = calcStableHit2Fit(avgHit);
+    const penalty = calcHighHitPenalty(avgHit);
+    return (hit2 * 1450 + roi * 150 + hit3 * 25 + stableFit * 300 + score * 0.001) * penalty;
   };
 
   const scoreAttack = (group) => {
@@ -322,7 +343,10 @@ function buildInstantFormalCandidateGroups(groups = []) {
     const hit3 = getHit3(group);
     const roi = getRoi(group);
     const score = getScore(group);
-    return hit3 * 1200 + hit2 * 250 + roi * 80 + score * 0.001;
+    const avgHit = toNum(group?.meta?.avg_hit, 0);
+    const stableFit = calcStableHit2Fit(avgHit);
+    const penalty = calcHighHitPenalty(avgHit);
+    return (hit3 * 900 + hit2 * 320 + roi * 110 + stableFit * 120 + score * 0.001) * penalty;
   };
 
   const guardPool = [];
@@ -423,7 +447,7 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
         Number(meta.recent_50_roi || -999),
         Number(meta.roi || -999)
       );
-      return hit2 >= 0.25 && roi >= -0.6;
+      return hit2 >= 0.26 && roi >= -0.45;
     });
 
     let base = [];
@@ -605,6 +629,20 @@ function normalizeHitRate(raw) {
   if (value <= 0) return 0;
   if (value <= 1) return value;
   if (value <= 100) return value / 100;
+  return 1;
+}
+
+function calcStableHit2Fit(avgHit = 0) {
+  const value = toNum(avgHit, 0);
+  const distance = Math.abs(value - 2.4);
+  return round4(Math.max(0, 1.6 - distance));
+}
+
+function calcHighHitPenalty(avgHit = 0) {
+  const value = toNum(avgHit, 0);
+  if (value >= 6) return 0.1;
+  if (value >= 5) return 0.3;
+  if (value >= 4) return 0.6;
   return 1;
 }
 
@@ -1155,43 +1193,55 @@ function chooseDecision(row = {}) {
   const score = toNum(row.score, 0);
   const avgHit = toNum(row.avg_hit, 0);
   const rounds = toNum(row.total_rounds, 0);
+  const hit2Rate = normalizeHitRate(row.hit2_rate || row.recent_50_hit_rate);
   const hit3Rate = normalizeHitRate(row.hit3_rate);
   const recent50Hit3Rate = normalizeHitRate(row.recent_50_hit3_rate);
   const hit4Rate = normalizeHitRate(row.hit4_rate);
   const marketBoost = toNum(row.market_boost, 1);
+  const stableFit = calcStableHit2Fit(avgHit);
+  const highHitPenalty = calcHighHitPenalty(avgHit);
 
   if (roi <= DECISION_CONFIG.hardRejectRoi || score <= DECISION_CONFIG.hardRejectScore) {
     return 'reject';
   }
 
-  const weighted = score * marketBoost;
+  if (avgHit >= 5.2 && roi < -0.15) {
+    row.decision_score = round4(-50);
+    return 'reject';
+  }
+
+  const weighted = toNum(row.stable_score, score) * marketBoost;
   const trustBonus = rounds >= DECISION_CONFIG.minRoundsForTrust ? 20 : 0;
-  const explodeBonus = hit3Rate * 220 + recent50Hit3Rate * 300 + hit4Rate * 500;
-  const avgBonus = avgHit >= DECISION_CONFIG.minAvgHitPreferred ? 35 : avgHit * 18;
-  const decisionScore = weighted + trustBonus + explodeBonus + avgBonus;
+  const hit2Bonus = hit2Rate * 420;
+  const hit3Bonus = hit3Rate * 90 + recent50Hit3Rate * 120;
+  const hit4Penalty = hit4Rate * 260;
+  const stabilityBonus = stableFit * 220;
+  const avgPenalty = avgHit >= 4 ? (avgHit - 4) * 180 : 0;
+  const penaltyMultiplier = highHitPenalty;
+
+  const decisionScore =
+    (weighted + trustBonus + hit2Bonus + hit3Bonus + stabilityBonus - hit4Penalty - avgPenalty) *
+    penaltyMultiplier;
 
   row.decision_score = round4(decisionScore);
 
   if (
-    decisionScore >= DECISION_CONFIG.strongScoreFloor * 2.8 ||
-    (recent50Hit3Rate >= 0.06 && avgHit >= 1.15) ||
-    (hit3Rate >= 0.08 && marketBoost >= 1.1)
+    decisionScore >= DECISION_CONFIG.strongScoreFloor * 2.2 ||
+    (hit2Rate >= 0.30 && roi >= -0.2 && avgHit <= 3.2)
   ) {
     return 'strong';
   }
 
   if (
     decisionScore >= DECISION_CONFIG.strongScoreFloor ||
-    (avgHit >= 1.2 && roi >= -0.1) ||
-    recent50Hit3Rate >= 0.03
+    (hit2Rate >= 0.24 && roi >= -0.35 && avgHit <= 3.6)
   ) {
     return 'usable';
   }
 
   if (
     decisionScore >= DECISION_CONFIG.usableScoreFloor ||
-    score >= 0 ||
-    roi >= DECISION_CONFIG.softRejectRoi
+    (hit2Rate >= 0.2 && roi >= DECISION_CONFIG.softRejectRoi)
   ) {
     return 'candidate';
   }
@@ -1264,11 +1314,20 @@ function mergePoolWithStats(poolRows = [], statsRows = [], marketSnapshot = {}, 
     const avgHit =
       totalRounds > 0 ? toNum(stats?.total_hits, 0) / totalRounds : 0;
     const roi = totalCost > 0 ? totalProfit / totalCost : 0;
+    const stableHit2Fit = calcStableHit2Fit(avgHit);
+    const highHitPenalty = calcHighHitPenalty(avgHit);
+    const stableScore = round4(
+      (
+        totalProfit +
+        Math.max(0, 2.8 - Math.abs(avgHit - 2.4)) * 180 +
+        toNum(stats?.hit2, 0) * 95 +
+        toNum(stats?.hit3, 0) * 35 -
+        toNum(stats?.hit4, 0) * 45
+      ) * highHitPenalty
+    );
     const score = round4(
-      totalProfit +
-        avgHit * 100 +
-        toNum(stats?.hit3, 0) * 70 +
-        toNum(stats?.hit4, 0) * 160
+      stableScore +
+        toNum(stats?.hit3, 0) * 20
     );
 
     const recent = calcRecentRates(stats);
@@ -1283,7 +1342,15 @@ function mergePoolWithStats(poolRows = [], statsRows = [], marketSnapshot = {}, 
       status: String(poolRow?.status || 'active').toLowerCase(),
       total_rounds: totalRounds,
       avg_hit: round4(avgHit),
+      recent_50_avg_hit: round4(
+        safeArray(stats?.recent_hits).slice(-50).length
+          ? safeArray(stats?.recent_hits).slice(-50).reduce((acc, n) => acc + toNum(n, 0), 0) / safeArray(stats?.recent_hits).slice(-50).length
+          : 0
+      ),
       roi: round4(roi),
+      stable_hit2_fit: stableHit2Fit,
+      high_hit_penalty: highHitPenalty,
+      stable_score: stableScore,
       score,
       market_boost: marketFit.market_boost,
       market_reason: marketFit.market_reason,
@@ -1309,16 +1376,21 @@ function byPowerDesc(a, b) {
   const decisionDiff = getDecisionRank(b?.decision) - getDecisionRank(a?.decision);
   if (decisionDiff !== 0) return decisionDiff;
 
-  const scoreDiff = toNum(b?.decision_score, 0) - toNum(a?.decision_score, 0);
-  if (scoreDiff !== 0) return scoreDiff;
+  const stableDiff = toNum(b?.stable_score, toNum(b?.score, 0)) - toNum(a?.stable_score, toNum(a?.score, 0));
+  if (stableDiff !== 0) return stableDiff;
+
+  const hit2Diff =
+    toNum(b?.recent_50_hit_rate, toNum(b?.hit2_rate, 0)) -
+    toNum(a?.recent_50_hit_rate, toNum(a?.hit2_rate, 0));
+  if (hit2Diff !== 0) return hit2Diff;
+
+  const roiDiff = toNum(b?.recent_50_roi, toNum(b?.roi, 0)) - toNum(a?.recent_50_roi, toNum(a?.roi, 0));
+  if (roiDiff !== 0) return roiDiff;
 
   const hit3Diff =
     toNum(b?.recent_50_hit3_rate, toNum(b?.hit3_rate, 0)) -
     toNum(a?.recent_50_hit3_rate, toNum(a?.hit3_rate, 0));
   if (hit3Diff !== 0) return hit3Diff;
-
-  const roiDiff = toNum(b?.recent_50_roi, toNum(b?.roi, 0)) - toNum(a?.recent_50_roi, toNum(a?.roi, 0));
-  if (roiDiff !== 0) return roiDiff;
 
   return String(a?.strategy_key || '').localeCompare(String(b?.strategy_key || ''));
 }
@@ -1326,7 +1398,7 @@ function byPowerDesc(a, b) {
 function sortByFormalSelection(a, b) {
   const roleA = String(a?.preferred_role || '');
   const roleB = String(b?.preferred_role || '');
-  const roleScore = { attack: 4, extend: 3, guard: 2, recent: 1, mix: 0 };
+  const roleScore = { guard: 5, extend: 4, recent: 3, attack: 2, mix: 1 };
 
   const rd = toNum(roleScore[roleB], 0) - toNum(roleScore[roleA], 0);
   if (rd !== 0) return rd;
@@ -1417,6 +1489,10 @@ function decorateGroupMeta(row = {}, idx = 0, role = 'mix') {
     recent_50_hit4_rate: round4(row.recent_50_hit4_rate),
     recent_50_roi: round4(row.recent_50_roi),
     avg_hit: round4(row.avg_hit),
+    recent_50_avg_hit: round4(row.recent_50_avg_hit),
+    stable_hit2_fit: round4(row.stable_hit2_fit),
+    high_hit_penalty: round4(row.high_hit_penalty),
+    stable_score: round4(row.stable_score),
     total_rounds: toNum(row.total_rounds, 0),
     roi: round4(row.roi),
     score: round4(row.score)
@@ -1434,7 +1510,7 @@ function buildPredictionGroups(strategyCandidates = [], market = {}, marketSnaps
     }))
     .sort(sortByFormalSelection);
 
-  const roleTargets = ['attack', 'extend', 'guard', 'recent'];
+  const roleTargets = ['guard', 'extend', 'extend', 'attack'];
 
   for (const role of roleTargets) {
     const candidatesForRole = ranked.filter((row) => row.preferred_role === role);
