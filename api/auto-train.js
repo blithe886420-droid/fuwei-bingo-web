@@ -4,7 +4,7 @@ import { recordStrategyCompareResult } from '../lib/strategyStatsRecorder.js';
 import { ensureStrategyPoolStrategies } from '../lib/ensureStrategyPoolStrategies.js';
 import { buildRecentMarketSignalSnapshot, buildStrategyDecisionFromSnapshot } from '../lib/marketSignalEngine.js';
 
-const API_VERSION = 'auto-train-stable-hit2-v3-data-classifier-stable-hit2-v5-fallback-control-hotfix2';
+const API_VERSION = 'auto-train-stable-hit2-v3-data-classifier-stable-hit2-v6-fallback-semi-filter';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -404,8 +404,8 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
   if (candidateGroups.length !== 4) {
     const normalized = normalizeGroups(predictionRow.groups_json || []);
 
-    // 🔥 FILTER fallback（壓波動核心）
-    const filtered = normalized.filter(g => {
+    // 🔥 SEMI FILTER fallback（至少保住一半穩定來源）
+    const filtered = normalized.filter((g) => {
       const meta = g.meta || {};
       const hit2 = Math.max(
         Number(meta.recent_50_hit_rate || 0),
@@ -418,18 +418,56 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
       return hit2 >= 0.25 && roi >= -0.6;
     });
 
-    let base = filtered.length >= 4 ? filtered : normalized;
+    let base = [];
+    let fallbackMode = 'fallback_raw';
 
-    const fallback = base.slice(0,4);
+    if (filtered.length >= 2) {
+      const filteredKeys = new Set(
+        filtered.map((g) => String(g?.meta?.strategy_key || g?.key || '').trim()).filter(Boolean)
+      );
+
+      const remainder = normalized.filter((g) => {
+        const key = String(g?.meta?.strategy_key || g?.key || '').trim();
+        return !filteredKeys.has(key);
+      });
+
+      base = [...filtered, ...remainder];
+      fallbackMode = 'fallback_semi_filtered';
+    } else if (filtered.length === 1) {
+      const onlyKey = String(filtered[0]?.meta?.strategy_key || filtered[0]?.key || '').trim();
+      const remainder = normalized.filter((g) => {
+        const key = String(g?.meta?.strategy_key || g?.key || '').trim();
+        return key !== onlyKey;
+      });
+
+      base = [filtered[0], ...remainder];
+      fallbackMode = 'fallback_one_filtered';
+    } else {
+      base = normalized;
+      fallbackMode = 'fallback_raw';
+    }
+
+    const deduped = [];
+    const seenKeys = new Set();
+
+    for (const g of base) {
+      const key = String(g?.meta?.strategy_key || g?.key || '').trim();
+      if (key && seenKeys.has(key)) continue;
+      if (key) seenKeys.add(key);
+      deduped.push(g);
+      if (deduped.length >= 4) break;
+    }
+
+    const fallback = deduped.slice(0, 4);
 
     if (fallback.length === 4) {
-      finalGroups = fallback.map((g,idx)=>({
+      finalGroups = fallback.map((g, idx) => ({
         ...g,
-        meta:{
-          ...(g.meta||{}),
-          slot_no: idx+1,
+        meta: {
+          ...(g.meta || {}),
+          slot_no: idx + 1,
           preferred_role: idx === 0 ? 'guard' : (idx < 3 ? 'extend' : 'attack_blocked'),
-          focus_mode: filtered.length >= 4 ? 'fallback_filtered' : 'fallback_raw'
+          focus_mode: fallbackMode
         }
       }));
     } else {
