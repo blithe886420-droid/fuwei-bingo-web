@@ -423,11 +423,12 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
         Number(meta.recent_50_roi || -999),
         Number(meta.roi || -999)
       );
-      return hit2 >= 0.25 && roi >= -0.6;
+      return hit2 >= 0.28 && roi >= -0.4;
     });
 
     let base = [];
-    let fallbackMode = 'fallback_raw';
+    let // ❌ 禁止 fallback_raw
+    return null;
 
     if (filtered.length >= 2) {
       const filteredKeys = new Set(
@@ -452,7 +453,8 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
       fallbackMode = 'fallback_one_filtered';
     } else {
       base = normalized;
-      fallbackMode = 'fallback_raw';
+      // ❌ 禁止 fallback_raw
+    return null;
     }
 
     const deduped = [];
