@@ -294,9 +294,9 @@ function buildInstantFormalCandidateGroups(groups = []) {
     const hit3 = getHit3(group);
     const roi = getRoi(group);
 
-    if (hit2 >= 0.28 && roi >= -0.4) return 'guard';
-    if (hit2 >= 0.24 && roi >= -0.55) return 'extend';
-    if (hit3 >= 0.05 && hit2 >= 0.22) return 'attack';
+    if (hit2 >= 0.3 && roi >= -0.3) return 'guard';
+    if (hit2 >= 0.25 && roi >= -0.45) return 'extend';
+    if (hit3 >= 0.055 && (hit2 >= 0.2 || roi >= -0.2)) return 'attack';
 
     return 'reject';
   };
@@ -306,7 +306,7 @@ function buildInstantFormalCandidateGroups(groups = []) {
     const hit3 = getHit3(group);
     const roi = getRoi(group);
     const score = getScore(group);
-    return hit2 * 1000 + roi * 120 - hit3 * 120 + score * 0.001;
+    return hit2 * 1200 + roi * 180 - hit3 * 160 + score * 0.001;
   };
 
   const scoreExtend = (group) => {
@@ -314,7 +314,7 @@ function buildInstantFormalCandidateGroups(groups = []) {
     const hit3 = getHit3(group);
     const roi = getRoi(group);
     const score = getScore(group);
-    return hit2 * 1200 + roi * 120 + hit3 * 30 + score * 0.001;
+    return hit2 * 1350 + roi * 180 + hit3 * 40 + score * 0.001;
   };
 
   const scoreAttack = (group) => {
@@ -322,12 +322,13 @@ function buildInstantFormalCandidateGroups(groups = []) {
     const hit3 = getHit3(group);
     const roi = getRoi(group);
     const score = getScore(group);
-    return hit3 * 1200 + hit2 * 250 + roi * 80 + score * 0.001;
+    return hit3 * 1600 + hit2 * 180 + roi * 120 + score * 0.001;
   };
 
   const guardPool = [];
   const extendPool = [];
   const attackPool = [];
+  const reservePool = [];
 
   for (const group of byStrategy) {
     const role = classifyRole(group);
@@ -338,34 +339,41 @@ function buildInstantFormalCandidateGroups(groups = []) {
     }
     if (role === 'extend') {
       extendPool.push(group);
+      reservePool.push(group);
       continue;
     }
     if (role === 'attack') {
       attackPool.push(group);
+      reservePool.push(group);
+      continue;
     }
+    reservePool.push(group);
   }
 
   guardPool.sort((a, b) => scoreGuard(b) - scoreGuard(a));
   extendPool.sort((a, b) => scoreExtend(b) - scoreExtend(a));
   attackPool.sort((a, b) => scoreAttack(b) - scoreAttack(a));
+  reservePool.sort(compareGroupPriorityDesc);
 
   const used = new Set();
 
-  const pickUnique = (pool) => {
-    for (const group of pool) {
-      const strategyKey = String(group?.meta?.strategy_key || group?.key || '').trim();
-      if (!strategyKey) continue;
-      if (used.has(strategyKey)) continue;
-      used.add(strategyKey);
-      return group;
+  const pickUnique = (pools = []) => {
+    for (const pool of pools) {
+      for (const group of pool) {
+        const strategyKey = String(group?.meta?.strategy_key || group?.key || '').trim();
+        if (!strategyKey) continue;
+        if (used.has(strategyKey)) continue;
+        used.add(strategyKey);
+        return group;
+      }
     }
     return null;
   };
 
-  const slot1 = pickUnique(guardPool);
-  const slot2 = pickUnique(extendPool);
-  const slot3 = pickUnique(extendPool);
-  const slot4 = pickUnique(attackPool);
+  const slot1 = pickUnique([guardPool, extendPool, reservePool]);
+  const slot2 = pickUnique([extendPool, guardPool, reservePool]);
+  const slot3 = pickUnique([extendPool, reservePool]);
+  const slot4 = pickUnique([attackPool, extendPool, reservePool]);
 
   if (!slot1 || !slot2 || !slot3 || !slot4) return [];
 
@@ -374,15 +382,15 @@ function buildInstantFormalCandidateGroups(groups = []) {
     label: `${focusLabel} / ${group.meta?.strategy_name || group.label}`,
     reason:
       preferredRole === 'attack'
-        ? '即戰候選 / 穩中2版：三穩一衝'
-        : '即戰候選 / 穩中2版：穩定優先',
+        ? '即戰候選 / 盈利導向版：三穩一衝'
+        : '即戰候選 / 盈利導向版：穩定優先',
     meta: {
       ...(group.meta || {}),
       selection_rank: slotNo,
       source_selection_rank: toNum(group?.meta?.selection_rank, slotNo),
       instant_candidate: true,
-      instant_candidate_mode: 'stable_hit2_v3_data_classifier',
-      focus_mode: 'stable_hit2_v3_data_classifier',
+      instant_candidate_mode: 'profit_focus_v1',
+      focus_mode: 'profit_focus_v1',
       focus_bucket: preferredRole,
       focus_tag: focusLabel,
       focus_slot_no: slotNo,
@@ -933,30 +941,30 @@ function buildDecisionPools(market = {}, marketSnapshot = {}) {
     ...(decisionBasis.attack_core_numbers || []),
     ...streak4,
     ...streak3,
-    ...hot5.slice(0, 10),
-    ...hot10.slice(0, 6)
+    ...streak2.slice(0, 4),
+    ...hot5.slice(0, 8)
   ]);
 
   const extend = uniqueSorted([
     ...(decisionBasis.extend_numbers || []),
     ...streak2,
-    ...hot10.slice(0, 14),
-    ...hot20.slice(0, 8)
+    ...hot10.slice(0, 12),
+    ...hot20.slice(0, 6)
   ]);
 
   const guard = uniqueSorted([
     ...(decisionBasis.guard_numbers || []),
-    ...hot20.slice(0, 20),
-    ...market.warm?.slice(0, 20)
+    ...hot20.slice(0, 18),
+    ...market.warm?.slice(0, 18)
   ]);
 
   const recent = uniqueSorted([
     ...(decisionBasis.recent_focus_numbers || []),
     ...market.latest,
-    ...hot5.slice(0, 12)
+    ...hot5.slice(0, 8)
   ]);
 
-  const hot = uniqueSorted([...hot5, ...hot10, ...hot20, ...(market.hot || []).slice(0, 30)]);
+  const hot = uniqueSorted([...hot5, ...hot10, ...hot20, ...(market.hot || []).slice(0, 24)]);
   const cold = uniqueSorted([...(market.cold || []).slice(0, 24), ...(market.gap || []).slice(0, 24)]);
   const gap = uniqueSorted([...(market.gap || []).slice(0, 24)]);
   const warm = uniqueSorted([...(market.warm || []).slice(0, 24)]);
@@ -990,7 +998,7 @@ function buildStrategyNums(strategyKey = '', market = {}, marketSnapshot = {}, s
   const base = [];
 
   const rolePoolMap = {
-    attack: [pools.attack, pools.hot, pools.extend, pools.all],
+    attack: [pools.attack, pools.attack, pools.hot, pools.extend],
     extend: [pools.extend, pools.attack, pools.guard, pools.all],
     guard: [pools.guard, pools.extend, pools.hot, pools.all],
     recent: [pools.recent, pools.attack, pools.hot, pools.all],
@@ -1014,9 +1022,8 @@ function buildStrategyNums(strategyKey = '', market = {}, marketSnapshot = {}, s
   if (rolePoolMap[role]) {
     const list = rolePoolMap[role];
     if (role === 'attack') {
-      pushFromPool(list[0], 2, 11);
+      pushFromPool(list[0], 3, 11);
       pushFromPool(list[1], 1, 17);
-      pushFromPool(list[2], 1, 23);
     } else if (role === 'extend') {
       pushFromPool(list[0], 2, 29);
       pushFromPool(list[1], 1, 31);
@@ -1040,7 +1047,7 @@ function buildStrategyNums(strategyKey = '', market = {}, marketSnapshot = {}, s
     if (base.length >= 4) break;
 
     if (token === 'hot' || token === 'repeat') {
-      pushFromPool(pools.attack.length ? pools.attack : pools.hot, 1, 101);
+      pushFromPool(pools.attack.length ? pools.attack : pools.hot, role === 'attack' ? 2 : 1, 101);
       continue;
     }
 
@@ -1060,7 +1067,7 @@ function buildStrategyNums(strategyKey = '', market = {}, marketSnapshot = {}, s
     }
 
     if (token === 'zone' || token === 'pattern' || token === 'structure' || token === 'cluster') {
-      pushFromPool(pools.attack.length ? pools.attack : pools.hot, 1, 113);
+      pushFromPool(pools.attack.length ? pools.attack : pools.hot, role === 'attack' ? 2 : 1, 113);
       continue;
     }
 
@@ -1075,7 +1082,11 @@ function buildStrategyNums(strategyKey = '', market = {}, marketSnapshot = {}, s
     }
   }
 
-  const fallbackPools = rolePoolMap[role] || [pools.hot, pools.extend, pools.guard, pools.all];
+  const fallbackPools =
+    role === 'attack'
+      ? [pools.attack, pools.attack, pools.hot, pools.extend, pools.all]
+      : (rolePoolMap[role] || [pools.hot, pools.extend, pools.guard, pools.all]);
+
   return fillToFour(base, fallbackPools, seed + 199);
 }
 
@@ -1155,7 +1166,9 @@ function chooseDecision(row = {}) {
   const score = toNum(row.score, 0);
   const avgHit = toNum(row.avg_hit, 0);
   const rounds = toNum(row.total_rounds, 0);
+  const hit2Rate = normalizeHitRate(row.hit2_rate);
   const hit3Rate = normalizeHitRate(row.hit3_rate);
+  const recent50HitRate = normalizeHitRate(row.recent_50_hit_rate);
   const recent50Hit3Rate = normalizeHitRate(row.recent_50_hit3_rate);
   const hit4Rate = normalizeHitRate(row.hit4_rate);
   const marketBoost = toNum(row.market_boost, 1);
@@ -1164,34 +1177,41 @@ function chooseDecision(row = {}) {
     return 'reject';
   }
 
+  if (rounds >= 8 && roi <= -0.65 && recent50Hit3Rate <= 0.01) {
+    row.decision_score = round4(score * marketBoost - 120);
+    return 'reject';
+  }
+
   const weighted = score * marketBoost;
-  const trustBonus = rounds >= DECISION_CONFIG.minRoundsForTrust ? 20 : 0;
-  const explodeBonus = hit3Rate * 220 + recent50Hit3Rate * 300 + hit4Rate * 500;
+  const trustBonus = rounds >= DECISION_CONFIG.minRoundsForTrust ? 24 : 0;
+  const explodeBonus = hit3Rate * 320 + recent50Hit3Rate * 420 + hit4Rate * 650;
+  const stableBonus = hit2Rate * 55 + recent50HitRate * 80;
   const avgBonus = avgHit >= DECISION_CONFIG.minAvgHitPreferred ? 35 : avgHit * 18;
-  const decisionScore = weighted + trustBonus + explodeBonus + avgBonus;
+  const roiPenalty = roi < -0.2 ? Math.abs(roi + 0.2) * 140 : 0;
+  const decisionScore = weighted + trustBonus + explodeBonus + stableBonus + avgBonus - roiPenalty;
 
   row.decision_score = round4(decisionScore);
 
   if (
-    decisionScore >= DECISION_CONFIG.strongScoreFloor * 2.8 ||
-    (recent50Hit3Rate >= 0.06 && avgHit >= 1.15) ||
-    (hit3Rate >= 0.08 && marketBoost >= 1.1)
+    decisionScore >= DECISION_CONFIG.strongScoreFloor * 3.2 ||
+    (recent50Hit3Rate >= 0.07 && avgHit >= 1.2 && roi >= -0.25) ||
+    (hit3Rate >= 0.09 && marketBoost >= 1.12 && roi >= -0.2)
   ) {
     return 'strong';
   }
 
   if (
-    decisionScore >= DECISION_CONFIG.strongScoreFloor ||
-    (avgHit >= 1.2 && roi >= -0.1) ||
-    recent50Hit3Rate >= 0.03
+    (decisionScore >= DECISION_CONFIG.strongScoreFloor * 1.1 && avgHit >= 1.15 && recent50HitRate >= 0.52 && roi >= -0.2) ||
+    (avgHit >= 1.25 && recent50HitRate >= 0.55 && roi >= -0.12) ||
+    (recent50Hit3Rate >= 0.035 && roi >= -0.15)
   ) {
     return 'usable';
   }
 
   if (
-    decisionScore >= DECISION_CONFIG.usableScoreFloor ||
-    score >= 0 ||
-    roi >= DECISION_CONFIG.softRejectRoi
+    (decisionScore >= DECISION_CONFIG.usableScoreFloor * 1.8 && roi >= DECISION_CONFIG.softRejectRoi) ||
+    (score >= 0 && recent50HitRate >= 0.42) ||
+    (roi >= -0.35 && recent50Hit3Rate >= 0.02)
   ) {
     return 'candidate';
   }
