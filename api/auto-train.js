@@ -427,35 +427,23 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
     });
 
     let base = [];
-    let // ❌ 禁止 fallback_raw
-    return null;
+    let fallbackMode = 'fallback_semi_filtered';
 
-    if (filtered.length >= 2) {
-      const filteredKeys = new Set(
-        filtered.map((g) => String(g?.meta?.strategy_key || g?.key || '').trim()).filter(Boolean)
-      );
-
-      const remainder = normalized.filter((g) => {
-        const key = String(g?.meta?.strategy_key || g?.key || '').trim();
-        return !filteredKeys.has(key);
-      });
-
-      base = [...filtered, ...remainder];
-      fallbackMode = 'fallback_semi_filtered';
-    } else if (filtered.length === 1) {
-      const onlyKey = String(filtered[0]?.meta?.strategy_key || filtered[0]?.key || '').trim();
-      const remainder = normalized.filter((g) => {
-        const key = String(g?.meta?.strategy_key || g?.key || '').trim();
-        return key !== onlyKey;
-      });
-
-      base = [filtered[0], ...remainder];
-      fallbackMode = 'fallback_one_filtered';
-    } else {
-      base = normalized;
-      // ❌ 禁止 fallback_raw
-    return null;
+    // ✅ 強化版：至少要有 2 組通過穩中2門檻，否則本期不建立 formal candidate
+    if (filtered.length < 2) {
+      return null;
     }
+
+    const filteredKeys = new Set(
+      filtered.map((g) => String(g?.meta?.strategy_key || g?.key || '').trim()).filter(Boolean)
+    );
+
+    const remainder = normalized.filter((g) => {
+      const key = String(g?.meta?.strategy_key || g?.key || '').trim();
+      return !filteredKeys.has(key);
+    });
+
+    base = [...filtered, ...remainder];
 
     const deduped = [];
     const seenKeys = new Set();
