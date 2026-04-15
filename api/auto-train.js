@@ -423,11 +423,11 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
         Number(meta.recent_50_roi || -999),
         Number(meta.roi || -999)
       );
-      return hit2 >= 0.28 && roi >= -0.4;
+      return hit2 >= 0.25 && roi >= -0.6;
     });
 
     let base = [];
-    let fallbackMode = 'fallback_semi_filtered';
+    let fallbackMode = 'fallback_raw';
 
     if (filtered.length >= 2) {
       const filteredKeys = new Set(
@@ -451,7 +451,8 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
       base = [filtered[0], ...remainder];
       fallbackMode = 'fallback_one_filtered';
     } else {
-      return null;
+      base = normalized;
+      fallbackMode = 'fallback_raw';
     }
 
     const deduped = [];
