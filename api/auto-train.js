@@ -4,7 +4,7 @@ import { recordStrategyCompareResult } from '../lib/strategyStatsRecorder.js';
 import { ensureStrategyPoolStrategies } from '../lib/ensureStrategyPoolStrategies.js';
 import { buildRecentMarketSignalSnapshot, buildStrategyDecisionFromSnapshot } from '../lib/marketSignalEngine.js';
 
-const API_VERSION = 'auto-train-stable-hit2-v3-data-classifier-stable-hit2-v6-fallback-semi-filter';
+const API_VERSION = 'auto-train-c-phase-aware-v1-from-a-base';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -246,9 +246,119 @@ function sortGroupsForInstantCandidate(groups = []) {
   return normalizeGroups(groups).sort(compareGroupPriorityDesc);
 }
 
+function getPhaseRoleTargets(marketPhase = '') {
+  const phase = String(marketPhase || '').toLowerCase();
+
+  if (phase === 'continuation') return ['attack', 'attack', 'extend', 'guard'];
+  if (phase === 'bias') return ['attack', 'attack', 'guard', 'extend'];
+  if (phase === 'chaos') return ['guard', 'guard', 'extend', 'recent'];
+  return ['guard', 'extend', 'extend', 'attack'];
+}
+
+function buildMarketPhase(snapshot = {}) {
+  const streak2 = uniqueSorted(snapshot?.streak2 || snapshot?.streaks?.streak2 || []);
+  const streak3 = uniqueSorted(snapshot?.streak3 || snapshot?.streaks?.streak3 || []);
+  const streak4 = uniqueSorted(snapshot?.streak4 || snapshot?.streaks?.streak4 || []);
+  const hot5 = uniqueSorted(snapshot?.hot_windows?.hot_5?.numbers || snapshot?.hot_5_numbers || []);
+  const latest = uniqueSorted(snapshot?.latest_numbers || snapshot?.latest || []);
+  const gap = uniqueSorted(snapshot?.gap_numbers || snapshot?.gap || []);
+  const cold = uniqueSorted(snapshot?.cold_numbers || snapshot?.cold || []);
+
+  const latestOverlapHot5 = latest.filter((n) => hot5.includes(n)).length;
+  const zoneFreq = snapshot?.zone_freq || snapshot?.zoneFreq || {};
+  const tailFreq = snapshot?.tail_freq || snapshot?.tailFreq || {};
+  const zoneValues = Object.values(zoneFreq).map((v) => toNum(v, 0)).filter((v) => v > 0);
+  const tailValues = Object.values(tailFreq).map((v) => toNum(v, 0)).filter((v) => v > 0);
+  const avgZone = zoneValues.length ? zoneValues.reduce((a, b) => a + b, 0) / zoneValues.length : 1;
+  const avgTail = tailValues.length ? tailValues.reduce((a, b) => a + b, 0) / tailValues.length : 1;
+  const maxZone = zoneValues.length ? Math.max(...zoneValues) : 1;
+  const maxTail = tailValues.length ? Math.max(...tailValues) : 1;
+  const zoneBias = avgZone > 0 ? maxZone / avgZone : 1;
+  const tailBias = avgTail > 0 ? maxTail / avgTail : 1;
+  const recentRepeatRatio = toNum(snapshot?.recent_repeat_ratio, 0);
+
+  const continuationScore =
+    streak3.length * 3 +
+    streak4.length * 5 +
+    latestOverlapHot5 * 2 +
+    recentRepeatRatio * 10;
+
+  const rotationScore =
+    gap.length * 0.5 +
+    cold.length * 0.3 +
+    streak2.length * 0.4 -
+    streak3.length * 2 -
+    latestOverlapHot5 * 1.5;
+
+  const biasScore = zoneBias * 5 + tailBias * 4 + Math.max(0, latestOverlapHot5 - 1) * 0.5;
+
+  const chaosScore =
+    10 -
+    streak3.length * 2 -
+    streak4.length * 3 -
+    latestOverlapHot5 -
+    Math.max(0, zoneBias - 1) * 2;
+
+  const marketPhaseScore = {
+    continuation: round4(continuationScore),
+    rotation: round4(rotationScore),
+    bias: round4(biasScore),
+    chaos: round4(chaosScore)
+  };
+
+  const sorted = Object.entries(marketPhaseScore).sort((a, b) => toNum(b[1], 0) - toNum(a[1], 0));
+  const marketPhase = sorted[0]?.[0] || 'rotation';
+  const topScore = toNum(sorted[0]?.[1], 0);
+  const secondScore = toNum(sorted[1]?.[1], 0);
+  const marketPhaseConfidence = round4((topScore - secondScore) / (Math.abs(topScore) + 0.001));
+
+  return {
+    market_phase: marketPhase,
+    market_phase_score: marketPhaseScore,
+    market_phase_confidence: marketPhaseConfidence,
+    market_phase_features: {
+      streak2_count: streak2.length,
+      streak3_count: streak3.length,
+      streak4_count: streak4.length,
+      latest_overlap_hot5: latestOverlapHot5,
+      zone_bias: round4(zoneBias),
+      tail_bias: round4(tailBias),
+      gap_count: gap.length,
+      cold_count: cold.length,
+      recent_repeat_ratio: round4(recentRepeatRatio)
+    }
+  };
+}
+
+function enrichMarketSnapshotWithPhase(marketSnapshot = {}, market = {}) {
+  const snapshot = {
+    ...(marketSnapshot || {}),
+    latest_numbers: uniqueSorted(market?.latest || marketSnapshot?.latest_numbers || []),
+    hot_5_numbers: uniqueSorted(
+      marketSnapshot?.hot_windows?.hot_5?.numbers || marketSnapshot?.hot_5_numbers || (market?.hot || []).slice(0, 5)
+    ),
+    hot_10_numbers: uniqueSorted(
+      marketSnapshot?.hot_windows?.hot_10?.numbers || marketSnapshot?.hot_10_numbers || (market?.hot || []).slice(0, 10)
+    ),
+    hot_20_numbers: uniqueSorted(
+      marketSnapshot?.hot_windows?.hot_20?.numbers || marketSnapshot?.hot_20_numbers || (market?.hot || []).slice(0, 20)
+    ),
+    gap_numbers: uniqueSorted(market?.gap || marketSnapshot?.gap_numbers || []),
+    cold_numbers: uniqueSorted(market?.cold || marketSnapshot?.cold_numbers || []),
+    zone_freq: Object.fromEntries(Array.from((market?.zoneFreq20 || marketSnapshot?.zone_freq || new Map()).entries?.() || [])),
+    tail_freq: Object.fromEntries(Array.from((market?.tailFreq20 || marketSnapshot?.tail_freq || new Map()).entries?.() || []))
+  };
+
+  const phaseInfo = buildMarketPhase(snapshot);
+  return {
+    ...snapshot,
+    ...phaseInfo
+  };
+}
 
 
-function buildInstantFormalCandidateGroups(groups = []) {
+
+function buildInstantFormalCandidateGroups(groups = [], marketSnapshot = {}) {
   const normalized = sortGroupsForInstantCandidate(groups).slice(0, 60);
   if (normalized.length < 4) return [];
 
@@ -294,9 +404,9 @@ function buildInstantFormalCandidateGroups(groups = []) {
     const hit3 = getHit3(group);
     const roi = getRoi(group);
 
-    if (hit2 >= 0.3 && roi >= -0.3) return 'guard';
-    if (hit2 >= 0.25 && roi >= -0.45) return 'extend';
-    if (hit3 >= 0.055 && (hit2 >= 0.2 || roi >= -0.2)) return 'attack';
+    if (hit2 >= 0.28 && roi >= -0.4) return 'guard';
+    if (hit2 >= 0.24 && roi >= -0.55) return 'extend';
+    if (hit3 >= 0.05 && hit2 >= 0.22) return 'attack';
 
     return 'reject';
   };
@@ -306,7 +416,7 @@ function buildInstantFormalCandidateGroups(groups = []) {
     const hit3 = getHit3(group);
     const roi = getRoi(group);
     const score = getScore(group);
-    return hit2 * 1200 + roi * 180 - hit3 * 160 + score * 0.001;
+    return hit2 * 1000 + roi * 120 - hit3 * 120 + score * 0.001;
   };
 
   const scoreExtend = (group) => {
@@ -314,7 +424,7 @@ function buildInstantFormalCandidateGroups(groups = []) {
     const hit3 = getHit3(group);
     const roi = getRoi(group);
     const score = getScore(group);
-    return hit2 * 1350 + roi * 180 + hit3 * 40 + score * 0.001;
+    return hit2 * 1200 + roi * 120 + hit3 * 30 + score * 0.001;
   };
 
   const scoreAttack = (group) => {
@@ -322,13 +432,12 @@ function buildInstantFormalCandidateGroups(groups = []) {
     const hit3 = getHit3(group);
     const roi = getRoi(group);
     const score = getScore(group);
-    return hit3 * 1600 + hit2 * 180 + roi * 120 + score * 0.001;
+    return hit3 * 1200 + hit2 * 250 + roi * 80 + score * 0.001;
   };
 
   const guardPool = [];
   const extendPool = [];
   const attackPool = [];
-  const reservePool = [];
 
   for (const group of byStrategy) {
     const role = classifyRole(group);
@@ -339,58 +448,59 @@ function buildInstantFormalCandidateGroups(groups = []) {
     }
     if (role === 'extend') {
       extendPool.push(group);
-      reservePool.push(group);
       continue;
     }
     if (role === 'attack') {
       attackPool.push(group);
-      reservePool.push(group);
-      continue;
     }
-    reservePool.push(group);
   }
 
   guardPool.sort((a, b) => scoreGuard(b) - scoreGuard(a));
   extendPool.sort((a, b) => scoreExtend(b) - scoreExtend(a));
   attackPool.sort((a, b) => scoreAttack(b) - scoreAttack(a));
-  reservePool.sort(compareGroupPriorityDesc);
 
   const used = new Set();
 
-  const pickUnique = (pools = []) => {
-    for (const pool of pools) {
-      for (const group of pool) {
-        const strategyKey = String(group?.meta?.strategy_key || group?.key || '').trim();
-        if (!strategyKey) continue;
-        if (used.has(strategyKey)) continue;
-        used.add(strategyKey);
-        return group;
-      }
+  const pickUnique = (pool) => {
+    for (const group of pool) {
+      const strategyKey = String(group?.meta?.strategy_key || group?.key || '').trim();
+      if (!strategyKey) continue;
+      if (used.has(strategyKey)) continue;
+      used.add(strategyKey);
+      return group;
     }
     return null;
   };
 
-  const slot1 = pickUnique([guardPool, extendPool, reservePool]);
-  const slot2 = pickUnique([extendPool, guardPool, reservePool]);
-  const slot3 = pickUnique([extendPool, reservePool]);
-  const slot4 = pickUnique([attackPool, extendPool, reservePool]);
+  const phaseRoles = getPhaseRoleTargets(marketSnapshot?.market_phase);
+  const rolePickers = {
+    attack: () => pickUnique(attackPool) || pickUnique(extendPool) || pickUnique(guardPool),
+    extend: () => pickUnique(extendPool) || pickUnique(guardPool) || pickUnique(attackPool),
+    guard: () => pickUnique(guardPool) || pickUnique(extendPool) || pickUnique(attackPool),
+    recent: () => pickUnique(extendPool) || pickUnique(guardPool) || pickUnique(attackPool)
+  };
 
-  if (!slot1 || !slot2 || !slot3 || !slot4) return [];
+  const chosen = phaseRoles.map((role, idx) => {
+    const group = rolePickers[role]?.() || null;
+    return group ? { group, role, slotNo: idx + 1 } : null;
+  }).filter(Boolean);
+
+  if (chosen.length !== BET_GROUP_COUNT) return [];
 
   const wrap = (group, slotNo, preferredRole, focusLabel) => ({
     ...group,
     label: `${focusLabel} / ${group.meta?.strategy_name || group.label}`,
     reason:
       preferredRole === 'attack'
-        ? '即戰候選 / 盈利導向版：三穩一衝'
-        : '即戰候選 / 盈利導向版：穩定優先',
+        ? '即戰候選 / 穩中2版：三穩一衝'
+        : '即戰候選 / 穩中2版：穩定優先',
     meta: {
       ...(group.meta || {}),
       selection_rank: slotNo,
       source_selection_rank: toNum(group?.meta?.selection_rank, slotNo),
       instant_candidate: true,
-      instant_candidate_mode: 'profit_focus_v1',
-      focus_mode: 'profit_focus_v1',
+      instant_candidate_mode: 'stable_hit2_v3_data_classifier',
+      focus_mode: 'stable_hit2_v3_data_classifier',
       focus_bucket: preferredRole,
       focus_tag: focusLabel,
       focus_slot_no: slotNo,
@@ -399,12 +509,7 @@ function buildInstantFormalCandidateGroups(groups = []) {
     }
   });
 
-  return [
-    wrap(slot1, 1, 'guard', 'GUARD 1'),
-    wrap(slot2, 2, 'extend', 'EXTEND 2'),
-    wrap(slot3, 3, 'extend', 'EXTEND 3'),
-    wrap(slot4, 4, 'attack', 'ATTACK 4')
-  ];
+  return chosen.map(({ group, role, slotNo }) => wrap(group, slotNo, role, `${String(role || 'mix').toUpperCase()} ${slotNo}`));
 }
 
 async function upsertFormalCandidateFromTest(db, predictionRow) {
@@ -415,7 +520,7 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
   const sourceDrawNo = String(predictionRow.source_draw_no || '').trim();
   if (!sourceDrawNo) return null;
 
-  const candidateGroups = buildInstantFormalCandidateGroups(predictionRow.groups_json || []);
+  const candidateGroups = buildInstantFormalCandidateGroups(predictionRow.groups_json || [], predictionRow.market_snapshot_json || {});
   let finalGroups = candidateGroups;
   if (candidateGroups.length !== 4) {
     const normalized = normalizeGroups(predictionRow.groups_json || []);
@@ -936,38 +1041,68 @@ function buildDecisionPools(market = {}, marketSnapshot = {}) {
   const streak3 = uniqueSorted(marketSnapshot?.streak3 || marketSnapshot?.streaks?.streak3 || []);
   const streak4 = uniqueSorted(marketSnapshot?.streak4 || marketSnapshot?.streaks?.streak4 || []);
   const decisionBasis = marketSnapshot?.decision_basis || {};
+  const phase = String(marketSnapshot?.market_phase || 'rotation').toLowerCase();
+
+  let attackHotTake = 10;
+  let attackStreak2Take = 0;
+  let extendHot10Take = 14;
+  let extendHot20Take = 8;
+  let guardHot20Take = 20;
+  let recentHot5Take = 12;
+
+  if (phase === 'continuation') {
+    attackHotTake = 12;
+    attackStreak2Take = 4;
+    extendHot10Take = 12;
+    guardHot20Take = 16;
+  } else if (phase === 'bias') {
+    attackHotTake = 10;
+    attackStreak2Take = 3;
+    extendHot10Take = 10;
+    extendHot20Take = 6;
+    guardHot20Take = 16;
+    recentHot5Take = 8;
+  } else if (phase === 'chaos') {
+    attackHotTake = 6;
+    attackStreak2Take = 1;
+    extendHot10Take = 10;
+    extendHot20Take = 10;
+    guardHot20Take = 24;
+    recentHot5Take = 6;
+  }
 
   const attack = uniqueSorted([
     ...(decisionBasis.attack_core_numbers || []),
     ...streak4,
     ...streak3,
-    ...streak2.slice(0, 4),
-    ...hot5.slice(0, 8)
+    ...streak2.slice(0, attackStreak2Take),
+    ...hot5.slice(0, attackHotTake),
+    ...hot10.slice(0, 6)
   ]);
 
   const extend = uniqueSorted([
     ...(decisionBasis.extend_numbers || []),
     ...streak2,
-    ...hot10.slice(0, 12),
-    ...hot20.slice(0, 6)
+    ...hot10.slice(0, extendHot10Take),
+    ...hot20.slice(0, extendHot20Take)
   ]);
 
   const guard = uniqueSorted([
     ...(decisionBasis.guard_numbers || []),
-    ...hot20.slice(0, 18),
-    ...market.warm?.slice(0, 18)
+    ...hot20.slice(0, guardHot20Take),
+    ...((market.warm || []).slice(0, guardHot20Take))
   ]);
 
   const recent = uniqueSorted([
     ...(decisionBasis.recent_focus_numbers || []),
-    ...market.latest,
-    ...hot5.slice(0, 8)
+    ...(market.latest || []),
+    ...hot5.slice(0, recentHot5Take)
   ]);
 
-  const hot = uniqueSorted([...hot5, ...hot10, ...hot20, ...(market.hot || []).slice(0, 24)]);
-  const cold = uniqueSorted([...(market.cold || []).slice(0, 24), ...(market.gap || []).slice(0, 24)]);
-  const gap = uniqueSorted([...(market.gap || []).slice(0, 24)]);
-  const warm = uniqueSorted([...(market.warm || []).slice(0, 24)]);
+  const hot = uniqueSorted([...hot5, ...hot10, ...hot20, ...((market.hot || []).slice(0, 30))]);
+  const cold = uniqueSorted([...((market.cold || []).slice(0, 24)), ...((market.gap || []).slice(0, 24))]);
+  const gap = uniqueSorted([...((market.gap || []).slice(0, 24))]);
+  const warm = uniqueSorted([...((market.warm || []).slice(0, 24))]);
 
   return {
     attack,
@@ -998,7 +1133,7 @@ function buildStrategyNums(strategyKey = '', market = {}, marketSnapshot = {}, s
   const base = [];
 
   const rolePoolMap = {
-    attack: [pools.attack, pools.attack, pools.hot, pools.extend],
+    attack: [pools.attack, pools.hot, pools.extend, pools.all],
     extend: [pools.extend, pools.attack, pools.guard, pools.all],
     guard: [pools.guard, pools.extend, pools.hot, pools.all],
     recent: [pools.recent, pools.attack, pools.hot, pools.all],
@@ -1022,8 +1157,9 @@ function buildStrategyNums(strategyKey = '', market = {}, marketSnapshot = {}, s
   if (rolePoolMap[role]) {
     const list = rolePoolMap[role];
     if (role === 'attack') {
-      pushFromPool(list[0], 3, 11);
+      pushFromPool(list[0], 2, 11);
       pushFromPool(list[1], 1, 17);
+      pushFromPool(list[2], 1, 23);
     } else if (role === 'extend') {
       pushFromPool(list[0], 2, 29);
       pushFromPool(list[1], 1, 31);
@@ -1047,7 +1183,7 @@ function buildStrategyNums(strategyKey = '', market = {}, marketSnapshot = {}, s
     if (base.length >= 4) break;
 
     if (token === 'hot' || token === 'repeat') {
-      pushFromPool(pools.attack.length ? pools.attack : pools.hot, role === 'attack' ? 2 : 1, 101);
+      pushFromPool(pools.attack.length ? pools.attack : pools.hot, 1, 101);
       continue;
     }
 
@@ -1067,7 +1203,7 @@ function buildStrategyNums(strategyKey = '', market = {}, marketSnapshot = {}, s
     }
 
     if (token === 'zone' || token === 'pattern' || token === 'structure' || token === 'cluster') {
-      pushFromPool(pools.attack.length ? pools.attack : pools.hot, role === 'attack' ? 2 : 1, 113);
+      pushFromPool(pools.attack.length ? pools.attack : pools.hot, 1, 113);
       continue;
     }
 
@@ -1082,11 +1218,7 @@ function buildStrategyNums(strategyKey = '', market = {}, marketSnapshot = {}, s
     }
   }
 
-  const fallbackPools =
-    role === 'attack'
-      ? [pools.attack, pools.attack, pools.hot, pools.extend, pools.all]
-      : (rolePoolMap[role] || [pools.hot, pools.extend, pools.guard, pools.all]);
-
+  const fallbackPools = rolePoolMap[role] || [pools.hot, pools.extend, pools.guard, pools.all];
   return fillToFour(base, fallbackPools, seed + 199);
 }
 
@@ -1166,9 +1298,7 @@ function chooseDecision(row = {}) {
   const score = toNum(row.score, 0);
   const avgHit = toNum(row.avg_hit, 0);
   const rounds = toNum(row.total_rounds, 0);
-  const hit2Rate = normalizeHitRate(row.hit2_rate);
   const hit3Rate = normalizeHitRate(row.hit3_rate);
-  const recent50HitRate = normalizeHitRate(row.recent_50_hit_rate);
   const recent50Hit3Rate = normalizeHitRate(row.recent_50_hit3_rate);
   const hit4Rate = normalizeHitRate(row.hit4_rate);
   const marketBoost = toNum(row.market_boost, 1);
@@ -1177,41 +1307,34 @@ function chooseDecision(row = {}) {
     return 'reject';
   }
 
-  if (rounds >= 8 && roi <= -0.65 && recent50Hit3Rate <= 0.01) {
-    row.decision_score = round4(score * marketBoost - 120);
-    return 'reject';
-  }
-
   const weighted = score * marketBoost;
-  const trustBonus = rounds >= DECISION_CONFIG.minRoundsForTrust ? 24 : 0;
-  const explodeBonus = hit3Rate * 320 + recent50Hit3Rate * 420 + hit4Rate * 650;
-  const stableBonus = hit2Rate * 55 + recent50HitRate * 80;
+  const trustBonus = rounds >= DECISION_CONFIG.minRoundsForTrust ? 20 : 0;
+  const explodeBonus = hit3Rate * 220 + recent50Hit3Rate * 300 + hit4Rate * 500;
   const avgBonus = avgHit >= DECISION_CONFIG.minAvgHitPreferred ? 35 : avgHit * 18;
-  const roiPenalty = roi < -0.2 ? Math.abs(roi + 0.2) * 140 : 0;
-  const decisionScore = weighted + trustBonus + explodeBonus + stableBonus + avgBonus - roiPenalty;
+  const decisionScore = weighted + trustBonus + explodeBonus + avgBonus;
 
   row.decision_score = round4(decisionScore);
 
   if (
-    decisionScore >= DECISION_CONFIG.strongScoreFloor * 3.2 ||
-    (recent50Hit3Rate >= 0.07 && avgHit >= 1.2 && roi >= -0.25) ||
-    (hit3Rate >= 0.09 && marketBoost >= 1.12 && roi >= -0.2)
+    decisionScore >= DECISION_CONFIG.strongScoreFloor * 2.8 ||
+    (recent50Hit3Rate >= 0.06 && avgHit >= 1.15) ||
+    (hit3Rate >= 0.08 && marketBoost >= 1.1)
   ) {
     return 'strong';
   }
 
   if (
-    (decisionScore >= DECISION_CONFIG.strongScoreFloor * 1.1 && avgHit >= 1.15 && recent50HitRate >= 0.52 && roi >= -0.2) ||
-    (avgHit >= 1.25 && recent50HitRate >= 0.55 && roi >= -0.12) ||
-    (recent50Hit3Rate >= 0.035 && roi >= -0.15)
+    decisionScore >= DECISION_CONFIG.strongScoreFloor ||
+    (avgHit >= 1.2 && roi >= -0.1) ||
+    recent50Hit3Rate >= 0.03
   ) {
     return 'usable';
   }
 
   if (
-    (decisionScore >= DECISION_CONFIG.usableScoreFloor * 1.8 && roi >= DECISION_CONFIG.softRejectRoi) ||
-    (score >= 0 && recent50HitRate >= 0.42) ||
-    (roi >= -0.35 && recent50Hit3Rate >= 0.02)
+    decisionScore >= DECISION_CONFIG.usableScoreFloor ||
+    score >= 0 ||
+    roi >= DECISION_CONFIG.softRejectRoi
   ) {
     return 'candidate';
   }
@@ -1454,7 +1577,7 @@ function buildPredictionGroups(strategyCandidates = [], market = {}, marketSnaps
     }))
     .sort(sortByFormalSelection);
 
-  const roleTargets = ['attack', 'extend', 'guard', 'recent'];
+  const roleTargets = getPhaseRoleTargets(marketSnapshot?.market_phase);
 
   for (const role of roleTargets) {
     const candidatesForRole = ranked.filter((row) => row.preferred_role === role);
@@ -2021,6 +2144,7 @@ async function createLatestTestPrediction(db, latestDrawNo, marketSnapshot = {})
 
   const marketRows = await fetchMarketRows(db);
   const market = buildMarketState(marketRows);
+  marketSnapshot = enrichMarketSnapshotWithPhase(marketSnapshot, market);
   const strategyCandidates = await fetchStrategyCandidates(db, marketSnapshot, market);
 
   const groups = buildPredictionGroups(
@@ -2146,11 +2270,12 @@ export default async function handler(req, res) {
     const marketRows = await fetchMarketRows(db);
     const baseMarketSnapshot = buildRecentMarketSignalSnapshot(marketRows, 'numbers');
     const marketDecision = buildStrategyDecisionFromSnapshot(baseMarketSnapshot);
-    const marketSnapshot = {
+    let marketSnapshot = {
       ...baseMarketSnapshot,
       ...marketDecision
     };
     const market = buildMarketState(marketRows);
+    marketSnapshot = enrichMarketSnapshotWithPhase(marketSnapshot, market);
 
     const spawn = await spawnStrategiesIfNeeded(db, latestDrawNo);
     const shrink = await shrinkStrategiesIfNeeded(db);
