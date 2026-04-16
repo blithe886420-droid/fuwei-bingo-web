@@ -1810,7 +1810,19 @@ async function comparePendingPredictions(db) {
       throw new Error(`prediction compare update failed: ${updateError.message || updateError}`);
     }
 
-    const statsResult = await recordStrategyCompareResult(payload.compareResult);
+    const statsResult = await recordStrategyCompareResult({
+      ...payload.compareResult,
+      market_phase:
+        prediction?.market_snapshot_json?.market_phase ||
+        prediction?.market_snapshot_json?.phase_context?.market_phase ||
+        null,
+      phase_context: {
+        market_phase:
+          prediction?.market_snapshot_json?.market_phase ||
+          prediction?.market_snapshot_json?.phase_context?.market_phase ||
+          null
+      }
+    });
 
     if (Array.isArray(statsResult?.disabled_keys) && statsResult.disabled_keys.length) {
       disabledKeysAll.push(...statsResult.disabled_keys);
