@@ -1,7 +1,7 @@
 
 import { createClient } from '@supabase/supabase-js';
 
-const API_VERSION = 'prediction-save-market-role-v11-stable-full-rewrite-streak-core-v2';
+const API_VERSION = 'prediction-save-d-phase-aware-v1';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -376,21 +376,76 @@ function pickMetric(preferredValue, fallbackValue) {
   return Number.isFinite(fallback) ? fallback : 0;
 }
 
-function getFormalStabilitySnapshot(group = {}) {
+function getPhaseBucketStats(group = {}, phaseContext = null) {
   const meta = group?.meta && typeof group.meta === 'object' ? group.meta : {};
+  const marketPhase = String(phaseContext?.marketPhase || '').trim().toLowerCase();
+  const phaseStatsJson = safeJsonParse(meta.phase_stats_json, meta.phase_stats_json) || {};
+  const bucket =
+    marketPhase && phaseStatsJson && typeof phaseStatsJson === 'object'
+      ? phaseStatsJson[marketPhase] || {}
+      : {};
+
   return {
-    totalRounds: toNum(meta.total_rounds, 0),
-    recent50HitRate: toNum(meta.recent_50_hit_rate, 0),
-    hit2Rate: toNum(meta.hit2_rate, 0),
-    recent50Hit3Rate: toNum(meta.recent_50_hit3_rate, 0),
-    hit3Rate: toNum(meta.hit3_rate, 0),
-    recent50Roi: toNum(meta.recent_50_roi, 0),
-    roi: toNum(meta.roi, 0)
+    rounds: toNum(bucket?.rounds, 0),
+    avgHit: toNum(bucket?.avg_hit, 0),
+    roi: toNum(bucket?.roi, 0),
+    hit2Rate: toNum(bucket?.hit2_rate, 0),
+    hit3Rate: toNum(bucket?.hit3_rate, 0),
+    hit4Rate: toNum(bucket?.hit4_rate, 0),
+    recent20HitRate: toNum(bucket?.recent_20_hit_rate, 0),
+    recent20Hit3Rate: toNum(bucket?.recent_20_hit3_rate, 0),
+    recent20Hit4Rate: toNum(bucket?.recent_20_hit4_rate, 0),
+    recent20Roi: toNum(bucket?.recent_20_roi, 0)
   };
 }
 
-function isStableFormalCandidate(group = {}, slotNo = 1) {
-  const stats = getFormalStabilitySnapshot(group);
+function getPhaseBestSnapshot(group = {}, phaseContext = null) {
+  const meta = group?.meta && typeof group.meta === 'object' ? group.meta : {};
+  const bestJson = safeJsonParse(meta.phase_best_json, meta.phase_best_json) || {};
+  const marketPhase = String(phaseContext?.marketPhase || '').trim().toLowerCase();
+  const bestPhase = String(bestJson?.best_phase || '').trim().toLowerCase();
+  const phaseScores = bestJson?.phase_scores && typeof bestJson.phase_scores === 'object' ? bestJson.phase_scores : {};
+
+  return {
+    bestPhase,
+    bestScore: toNum(bestJson?.best_score, 0),
+    currentPhaseScore: toNum(phaseScores?.[marketPhase], 0),
+    bestPhaseMatched: !!marketPhase && bestPhase === marketPhase
+  };
+}
+
+function getFormalStabilitySnapshot(group = {}, phaseContext = null) {
+  const meta = group?.meta && typeof group.meta === 'object' ? group.meta : {};
+  const phaseBucket = getPhaseBucketStats(group, phaseContext);
+  const phaseBest = getPhaseBestSnapshot(group, phaseContext);
+
+  const totalRounds = toNum(meta.total_rounds, 0);
+  const phaseRounds = phaseBucket.rounds;
+  const phaseWeight = phaseRounds >= 8 ? 0.65 : phaseRounds >= 4 ? 0.45 : phaseRounds >= 2 ? 0.25 : 0;
+  const globalWeight = 1 - phaseWeight;
+
+  const mix = (globalValue, phaseValue) => round4(toNum(globalValue, 0) * globalWeight + toNum(phaseValue, 0) * phaseWeight);
+
+  return {
+    totalRounds,
+    phaseRounds,
+    recent50HitRate: mix(meta.recent_50_hit_rate, phaseBucket.recent20HitRate),
+    hit2Rate: mix(meta.hit2_rate, phaseBucket.hit2Rate),
+    recent50Hit3Rate: mix(meta.recent_50_hit3_rate, phaseBucket.recent20Hit3Rate),
+    hit3Rate: mix(meta.hit3_rate, phaseBucket.hit3Rate),
+    recent50Hit4Rate: mix(meta.recent_50_hit4_rate, phaseBucket.recent20Hit4Rate),
+    hit4Rate: mix(meta.hit4_rate, phaseBucket.hit4Rate),
+    recent50Roi: mix(meta.recent_50_roi, phaseBucket.recent20Roi),
+    roi: mix(meta.roi, phaseBucket.roi),
+    avgHit: mix(meta.avg_hit, phaseBucket.avgHit),
+    phaseBestMatched: phaseBest.bestPhaseMatched,
+    phaseBestScore: phaseBest.bestScore,
+    currentPhaseScore: phaseBest.currentPhaseScore
+  };
+}
+
+function isStableFormalCandidate(group = {}, slotNo = 1, phaseContext = null) {
+  const stats = getFormalStabilitySnapshot(group, phaseContext);
   const totalRounds = stats.totalRounds;
 
   if (totalRounds <= 0) return false;
@@ -410,9 +465,9 @@ function isStableFormalCandidate(group = {}, slotNo = 1) {
   return true;
 }
 
-function isFormalHardRejectCandidate(group = {}, slotNo = 1) {
+function isFormalHardRejectCandidate(group = {}, slotNo = 1, phaseContext = null) {
   const meta = group?.meta && typeof group.meta === 'object' ? group.meta : {};
-  const stats = getFormalStabilitySnapshot(group);
+  const stats = getFormalStabilitySnapshot(group, phaseContext);
   const totalRounds = stats.totalRounds;
   const decision = String(meta.decision || '').trim().toLowerCase();
   const blendedHit3Rate = Math.max(stats.recent50Hit3Rate, stats.hit3Rate);
@@ -447,8 +502,8 @@ function isFormalHardRejectCandidate(group = {}, slotNo = 1) {
   return false;
 }
 
-function getFormalStabilityBonus(group = {}, slotNo = 1) {
-  const stats = getFormalStabilitySnapshot(group);
+function getFormalStabilityBonus(group = {}, slotNo = 1, phaseContext = null) {
+  const stats = getFormalStabilitySnapshot(group, phaseContext);
   let bonus = 0;
 
   bonus += stats.recent50HitRate * 4200;
@@ -461,6 +516,10 @@ function getFormalStabilityBonus(group = {}, slotNo = 1) {
   if (stats.recent50Hit3Rate >= FORMAL_STRONG_RECENT_50_HIT3_RATE) bonus += 180;
   if (slotNo <= 2 && stats.recent50Hit3Rate >= FORMAL_STRONG_RECENT_50_HIT3_RATE) bonus += 120;
   if (stats.recent50Roi >= 0) bonus += 100;
+  if (stats.phaseBestMatched) bonus += 220;
+  bonus += stats.currentPhaseScore * 0.45;
+  if (stats.phaseRounds >= 4) bonus += Math.min(stats.phaseRounds, 20) * 12;
+  if (stats.phaseRounds >= 8 && stats.recent50HitRate >= 0.28) bonus += 90;
 
   return round4(bonus);
 }
@@ -492,6 +551,8 @@ function mergeStrategyStatsIntoGroup(group = {}, statsMap = new Map()) {
       recent_50_hit_rate: pickMetric(stats.recent_50_hit_rate, meta.recent_50_hit_rate),
       recent_50_hit3_rate: pickMetric(stats.recent_50_hit3_rate, meta.recent_50_hit3_rate),
       recent_50_hit4_rate: pickMetric(stats.recent_50_hit4_rate, meta.recent_50_hit4_rate),
+      phase_stats_json: stats.phase_stats_json || meta.phase_stats_json || {},
+      phase_best_json: stats.phase_best_json || meta.phase_best_json || {},
       score: pickMetric(stats.score, meta.score)
     }
   };
@@ -1406,6 +1467,8 @@ function scoreGroupForMode(group, role = 'mix', strategyMode = 'mix', riskMode =
   const hit2Rate = toNum(meta.hit2_rate, 0);
   const avgHit = toNum(meta.avg_hit, 0);
   const totalRounds = toNum(meta.total_rounds, 0);
+  const phaseBucket = getPhaseBucketStats(group, phaseContext);
+  const phaseBest = getPhaseBestSnapshot(group, phaseContext);
 
   const roleWeight =
     role === 'attack'
@@ -1433,6 +1496,15 @@ function scoreGroupForMode(group, role = 'mix', strategyMode = 'mix', riskMode =
   score += totalRounds * 1.6;
   score += toNum(meta.hit4_rate, 0) * 5200;
   score += toNum(meta.recent_50_hit4_rate, 0) * 6000;
+  score += phaseBucket.hit2Rate * 2400;
+  score += phaseBucket.recent20HitRate * 3000;
+  score += phaseBucket.hit3Rate * 4200;
+  score += phaseBucket.recent20Hit3Rate * 5200;
+  score += phaseBucket.recent20Hit4Rate * 7600;
+  score += phaseBucket.recent20Roi * 420;
+  score += phaseBest.currentPhaseScore * 0.8;
+  if (phaseBest.bestPhaseMatched) score += 380;
+  if (phaseBucket.rounds >= 4) score += Math.min(phaseBucket.rounds, 20) * 18;
 
   if (blendedRoi < 0) score += blendedRoi * 260;
   if (recent50Roi < 0) score += recent50Roi * 320;
@@ -1937,7 +2009,7 @@ function dedupeSourceGroupsByStrategy(sourceGroups = [], selection = {}, pools =
 
 function buildRankedSourceGroups(sourceGroups = [], selection = {}, pools = {}, phaseContext = null) {
   return dedupeSourceGroupsByStrategy(sourceGroups, selection, pools, phaseContext)
-    .filter((group) => !isFormalHardRejectCandidate(group, 1))
+    .filter((group) => !isFormalHardRejectCandidate(group, 1, phaseContext))
     .map((group) => {
       const role = inferRoleFromGroup(group);
       const score = scoreGroupForMode(
@@ -1952,7 +2024,7 @@ function buildRankedSourceGroups(sourceGroups = [], selection = {}, pools = {}, 
 
       const isPool = isStrategyPoolGroup(group);
 
-      const stabilityBonus = getFormalStabilityBonus(group, 1);
+      const stabilityBonus = getFormalStabilityBonus(group, 1, phaseContext);
 
       return {
         group,
@@ -1963,12 +2035,14 @@ function buildRankedSourceGroups(sourceGroups = [], selection = {}, pools = {}, 
         totalRounds: toNum(group?.meta?.total_rounds, 0),
         sourceTag: getSourceTag(group),
         selectionPower: getStrategySelectionPower(group),
+        phaseBestMatched: getPhaseBestSnapshot(group, phaseContext).bestPhaseMatched,
+        phaseCurrentScore: getPhaseBestSnapshot(group, phaseContext).currentPhaseScore,
         isPool
       };
     })
     .sort((a, b) => {
-      const slotPriorityA = candidateTierBonus(a.tier) + a.score + a.selectionPower + a.totalRounds;
-      const slotPriorityB = candidateTierBonus(b.tier) + b.score + b.selectionPower + b.totalRounds;
+      const slotPriorityA = candidateTierBonus(a.tier) + a.score + a.selectionPower + a.totalRounds + (a.phaseBestMatched ? 260 : 0) + a.phaseCurrentScore;
+      const slotPriorityB = candidateTierBonus(b.tier) + b.score + b.selectionPower + b.totalRounds + (b.phaseBestMatched ? 260 : 0) + b.phaseCurrentScore;
       return slotPriorityB - slotPriorityA;
     });
 }
@@ -2119,7 +2193,7 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
 
   const canUseBalancedSlot = (sourceGroup, slotNo, slotRole) => {
     if (!sourceGroup) return false;
-    if (isFormalHardRejectCandidate(sourceGroup, slotNo)) return false;
+    if (isFormalHardRejectCandidate(sourceGroup, slotNo, phaseContext)) return false;
 
     const strategyKey = getStrategyKey(sourceGroup);
     if (strategyKey && usedStrategyKeys.has(strategyKey)) return false;
@@ -2132,7 +2206,7 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
     const recent50Hit3Rate = toNum(sourceGroup?.meta?.recent_50_hit3_rate, 0);
     const recent50Roi = toNum(sourceGroup?.meta?.recent_50_roi, 0);
 
-    if (!isStableFormalCandidate(sourceGroup, slotNo)) return false;
+    if (!isStableFormalCandidate(sourceGroup, slotNo, phaseContext)) return false;
 
     if (slotNo === 1) {
       if (!(slotRole === 'extend' || slotRole === 'guard')) return false;
@@ -2192,7 +2266,7 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
     const candidateScore = variant.score;
     const tier = getCandidateTier(
       sourceGroup,
-      candidateScore + getFormalStabilityBonus(sourceGroup, slotNo),
+      candidateScore + getFormalStabilityBonus(sourceGroup, slotNo, phaseContext),
       slotRole,
       selection,
       phaseContext
@@ -2205,7 +2279,7 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
       reason: `正式下注分工：${slotRole.toUpperCase()} / ${strategyModeLabel(selection.strategyMode)} / ${roleLabelOf(selection.riskMode)} / ${phaseContext.marketPhase} / ${phaseContext.lastHitLevel}`,
       meta: {
         ...buildFormalMeta(sourceGroup, slotRole, slotNo, sourcePrediction, selection, phaseContext),
-        decision_score: round4(candidateScore + getFormalStabilityBonus(sourceGroup, slotNo)),
+        decision_score: round4(candidateScore + getFormalStabilityBonus(sourceGroup, slotNo, phaseContext)),
         decision_gate: getDecisionScoreFloor(slotRole, selection, phaseContext),
         roi_gate: getRecentRoiFloor(slotRole, selection, phaseContext),
         hit3_gate: getHit3RateFloor(slotRole, selection, phaseContext),
@@ -2242,7 +2316,7 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
           toNum(sourceGroup?.meta?.recent_50_roi, 0)
         );
 
-        let slotScore = rankedRow.score + getFormalStabilityBonus(sourceGroup, slotNo) + totalRounds;
+        let slotScore = rankedRow.score + getFormalStabilityBonus(sourceGroup, slotNo, phaseContext) + totalRounds;
         if (slotNo === 1) {
           slotScore += hit2Rate * 5000 + recent50HitRate * 5000 + Math.max(roi, -1) * 120;
         } else if (slotNo === 2) {
