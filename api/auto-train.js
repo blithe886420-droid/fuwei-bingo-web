@@ -4,7 +4,7 @@ import { recordStrategyCompareResult } from '../lib/strategyStatsRecorder.js';
 import { ensureStrategyPoolStrategies } from '../lib/ensureStrategyPoolStrategies.js';
 import { buildRecentMarketSignalSnapshot, buildStrategyDecisionFromSnapshot } from '../lib/marketSignalEngine.js';
 
-const API_VERSION = 'auto-train-c-phase-aware-v1-from-a-base';
+const API_VERSION = 'auto-train-c-phase-aware-v2-phase-balance-tuned';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -277,27 +277,34 @@ function buildMarketPhase(snapshot = {}) {
   const tailBias = avgTail > 0 ? maxTail / avgTail : 1;
   const recentRepeatRatio = toNum(snapshot?.recent_repeat_ratio, 0);
 
-  const continuationScore =
-    streak3.length * 3 +
-    streak4.length * 5 +
-    latestOverlapHot5 * 2 +
-    recentRepeatRatio * 10;
+  let continuationScore =
+    streak3.length * 2 +
+    streak4.length * 4 +
+    latestOverlapHot5 * 1.2 +
+    recentRepeatRatio * 6;
 
-  const rotationScore =
-    gap.length * 0.5 +
-    cold.length * 0.3 +
-    streak2.length * 0.4 -
-    streak3.length * 2 -
-    latestOverlapHot5 * 1.5;
+  let rotationScore =
+    gap.length * 1.2 +
+    cold.length * 0.8 +
+    streak2.length * 0.2 -
+    streak3.length * 1.5 -
+    latestOverlapHot5 * 1.0;
 
-  const biasScore = zoneBias * 5 + tailBias * 4 + Math.max(0, latestOverlapHot5 - 1) * 0.5;
+  const biasScore =
+    zoneBias * 6 +
+    tailBias * 5 +
+    Math.max(0, latestOverlapHot5 - 1) * 0.35;
 
   const chaosScore =
     10 -
-    streak3.length * 2 -
-    streak4.length * 3 -
-    latestOverlapHot5 -
-    Math.max(0, zoneBias - 1) * 2;
+    streak3.length * 1.4 -
+    streak4.length * 2.2 -
+    latestOverlapHot5 * 0.8 -
+    Math.max(0, zoneBias - 1) * 1.5;
+
+  if (gap.length > 12) {
+    continuationScore *= 0.6;
+  }
 
   const marketPhaseScore = {
     continuation: round4(continuationScore),
