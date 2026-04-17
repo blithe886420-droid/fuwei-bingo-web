@@ -1,7 +1,7 @@
 
 import { createClient } from '@supabase/supabase-js';
 
-const API_VERSION = 'prediction-save-d-phase-aware-v1';
+const API_VERSION = 'prediction-save-d-phase-aware-v2-phase-meta-fix';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -553,6 +553,11 @@ function mergeStrategyStatsIntoGroup(group = {}, statsMap = new Map()) {
       recent_50_hit4_rate: pickMetric(stats.recent_50_hit4_rate, meta.recent_50_hit4_rate),
       phase_stats_json: stats.phase_stats_json || meta.phase_stats_json || {},
       phase_best_json: stats.phase_best_json || meta.phase_best_json || {},
+      phase_best_phase: String((stats.phase_best_json && stats.phase_best_json.best_phase) || meta.phase_best_phase || '').trim().toLowerCase() || null,
+      phase_best_score: pickMetric(stats.phase_best_json && stats.phase_best_json.best_score, meta.phase_best_score),
+      phase_current_phase: meta.phase_current_phase || null,
+      phase_current_score: pickMetric(meta.phase_current_score, 0),
+      phase_best_matched: Boolean(meta.phase_best_matched),
       score: pickMetric(stats.score, meta.score)
     }
   };
@@ -1841,6 +1846,7 @@ function buildFormalLabel(slotRole, slotNo, sourceGroup) {
 
 function buildFormalMeta(sourceGroup, slotRole, slotNo, sourcePrediction, selection, phaseContext) {
   const meta = sourceGroup?.meta && typeof sourceGroup.meta === 'object' ? sourceGroup.meta : {};
+  const phaseBest = getPhaseBestSnapshot(sourceGroup, phaseContext);
   return {
     ...meta,
     strategy_key: String(meta.strategy_key || sourceGroup?.key || `strategy_${slotNo}`).trim(),
@@ -1858,6 +1864,13 @@ function buildFormalMeta(sourceGroup, slotRole, slotNo, sourcePrediction, select
     last_hit_level: phaseContext?.lastHitLevel || null,
     confidence_score: phaseContext?.confidenceScore || null,
     weight_profile: phaseContext?.weightProfile || null,
+    phase_stats_json: meta.phase_stats_json || {},
+    phase_best_json: meta.phase_best_json || {},
+    phase_best_phase: phaseBest.bestPhase || String(meta.phase_best_phase || '').trim().toLowerCase() || phaseContext?.marketPhase || null,
+    phase_best_score: pickMetric(phaseBest.bestScore, meta.phase_best_score),
+    phase_current_phase: phaseContext?.marketPhase || null,
+    phase_current_score: pickMetric(phaseBest.currentPhaseScore, meta.phase_current_score),
+    phase_best_matched: Boolean(phaseBest.bestPhaseMatched),
     decision: 'formal_slot_selected',
     bet_amount: COST_PER_GROUP
   };
@@ -1903,6 +1916,13 @@ function buildFallbackGroup(slotRole, slotNo, pools, selection, phaseContext, ex
       last_hit_level: phaseContext.lastHitLevel,
       confidence_score: phaseContext.confidenceScore,
       weight_profile: phaseContext.weightProfile,
+      phase_stats_json: {},
+      phase_best_json: {},
+      phase_best_phase: phaseContext.marketPhase,
+      phase_best_score: 0,
+      phase_current_phase: phaseContext.marketPhase,
+      phase_current_score: 0,
+      phase_best_matched: true,
       total_rounds: 0,
       avg_hit: 0,
       roi: 0,
