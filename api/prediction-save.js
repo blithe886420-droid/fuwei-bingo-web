@@ -1,7 +1,7 @@
 
 import { createClient } from '@supabase/supabase-js';
 
-const API_VERSION = 'prediction-save-e-phase-connected-v1';
+const API_VERSION = 'prediction-save-e-phase-final-write-v2';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -2545,10 +2545,14 @@ async function buildFormalPrediction(selection = {}, triggerSource = 'unknown') 
     throw new Error('formal groups 建立失敗');
   }
 
-  const finalGroups = __forceInjectPhaseMeta(buildFinalGroupsV8(groups), phaseContext);
+  const finalGroups = forceInjectPhaseIntoGroups(
+    __forceInjectPhaseMeta(buildFinalGroupsV8(groups), phaseContext),
+    phaseContext
+  );
 
   const insertPayload = {
-  groups_json: finalGroups,
+    groups_json: finalGroups,
+    market_phase: String(phaseContext?.marketPhase || 'rotation').toLowerCase(),
     mode: FORMAL_MODE,
     status: 'created',
     source_draw_no: String(sourceDrawNo),
@@ -2685,18 +2689,32 @@ function buildFinalGroupsV8(rawGroups = []) {
 
 // ===== E版 phase 強制寫入（正式接入決策與寫入）=====
 function __forceInjectPhaseMeta(groups = [], phaseContext = {}) {
-  const marketPhase = String(phaseContext?.marketPhase || '').toLowerCase();
-  return (Array.isArray(groups) ? groups : []).map(g => {
-    const meta = g.meta || {};
-    const best = String(meta.phase_best_phase || marketPhase || '').toLowerCase();
+  const marketPhase = String(phaseContext?.marketPhase || 'rotation').toLowerCase();
+  return (Array.isArray(groups) ? groups : []).map((g) => {
+    const meta = g?.meta && typeof g.meta === 'object' ? g.meta : {};
+    const bestJson = safeJsonParse(meta.phase_best_json, meta.phase_best_json) || {};
+    const bestPhase = String(
+      meta.phase_best_phase ||
+      bestJson?.best_phase ||
+      meta.market_phase ||
+      marketPhase ||
+      'rotation'
+    ).toLowerCase();
+    const phaseScores = bestJson?.phase_scores && typeof bestJson.phase_scores === 'object' ? bestJson.phase_scores : {};
+    const currentPhaseScore = pickMetric(meta.phase_current_score, phaseScores?.[marketPhase]);
+    const bestPhaseScore = pickMetric(meta.phase_best_score, bestJson?.best_score);
+
     return {
       ...g,
       meta: {
         ...meta,
-        phase_best_phase: best || null,
+        phase_best_json: bestJson,
+        phase_best_phase: bestPhase || null,
+        phase_best_score: bestPhaseScore,
         phase_current_phase: marketPhase || null,
-        phase_current_score: pickMetric(meta.phase_current_score, 0),
-        phase_best_matched: best && marketPhase ? best === marketPhase : false
+        phase_current_score: currentPhaseScore,
+        phase_best_matched: !!bestPhase && !!marketPhase ? bestPhase === marketPhase : false,
+        market_phase: marketPhase || null
       }
     };
   });
@@ -2704,3 +2722,41 @@ function __forceInjectPhaseMeta(groups = [], phaseContext = {}) {
 
 // ⚠️ 如有 groups 寫入 DB 前的區塊，請確保有這行（已補安全版）
 // groups = __forceInjectPhaseMeta(groups, phaseContext);
+
+
+
+
+// ====== 🔥 FORCE PHASE INJECTION (E版最終修正) ======
+function forceInjectPhaseIntoGroups(groups = [], phaseContext = null) {
+  const currentPhase = String(phaseContext?.marketPhase || 'rotation').toLowerCase() || 'rotation';
+
+  return (Array.isArray(groups) ? groups : []).map((g) => {
+    const meta = g?.meta && typeof g.meta === 'object' ? g.meta : {};
+    const bestJson = safeJsonParse(meta.phase_best_json, meta.phase_best_json) || {};
+    const bestPhase = String(
+      meta.phase_best_phase ||
+      bestJson?.best_phase ||
+      meta.market_phase ||
+      currentPhase ||
+      'rotation'
+    ).toLowerCase() || 'rotation';
+    const phaseScores = bestJson?.phase_scores && typeof bestJson.phase_scores === 'object' ? bestJson.phase_scores : {};
+
+    return {
+      ...g,
+      meta: {
+        ...meta,
+        phase_best_json: bestJson,
+        phase_best_phase: bestPhase || null,
+        phase_current_phase: currentPhase || null,
+        phase_best_matched: !!currentPhase && !!bestPhase ? currentPhase === bestPhase : false,
+        phase_current_score: pickMetric(meta.phase_current_score, phaseScores?.[currentPhase]),
+        phase_best_score: pickMetric(meta.phase_best_score, bestJson?.best_score),
+        market_phase: currentPhase || null
+      }
+    };
+  });
+}
+
+// ⚠️ 在正式寫入前，務必呼叫：
+// finalGroups = forceInjectPhaseIntoGroups(finalGroups, phaseContext);
