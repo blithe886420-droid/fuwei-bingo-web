@@ -1,7 +1,7 @@
 
 import { createClient } from '@supabase/supabase-js';
 
-const API_VERSION = 'prediction-save-d-phase-aware-v2-phase-meta-fix';
+const API_VERSION = 'prediction-save-e-phase-connected-v1';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -2061,8 +2061,20 @@ function buildRankedSourceGroups(sourceGroups = [], selection = {}, pools = {}, 
       };
     })
     .sort((a, b) => {
-      const slotPriorityA = candidateTierBonus(a.tier) + a.score + a.selectionPower + a.totalRounds + (a.phaseBestMatched ? 260 : 0) + a.phaseCurrentScore;
-      const slotPriorityB = candidateTierBonus(b.tier) + b.score + b.selectionPower + b.totalRounds + (b.phaseBestMatched ? 260 : 0) + b.phaseCurrentScore;
+      const slotPriorityA =
+        candidateTierBonus(a.tier) +
+        a.score +
+        a.selectionPower +
+        a.totalRounds +
+        (a.phaseBestMatched ? 1800 : 0) +
+        a.phaseCurrentScore * 1.5;
+      const slotPriorityB =
+        candidateTierBonus(b.tier) +
+        b.score +
+        b.selectionPower +
+        b.totalRounds +
+        (b.phaseBestMatched ? 1800 : 0) +
+        b.phaseCurrentScore * 1.5;
       return slotPriorityB - slotPriorityA;
     });
 }
@@ -2105,7 +2117,7 @@ function pickRoleOrderedGroups(ranked = [], selection = {}, pools = {}, phaseCon
       const tier = getCandidateTier(rankedRow.group, score, role, selection, phaseContext);
       if (!isPool && !meetsMinTier(tier, requiredTier)) continue;
 
-      const bonus = candidateTierBonus(tier) - usedCount * 1500 + getStrategySelectionPower(rankedRow.group);
+      const bonus = candidateTierBonus(tier) - usedCount * 1500 + getStrategySelectionPower(rankedRow.group) + (getPhaseBestSnapshot(rankedRow.group, phaseContext).bestPhaseMatched ? 2200 : 0);
       if (score + bonus > bestScore) {
         bestScore = score + bonus;
         bestIdx = j;
@@ -2227,6 +2239,10 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
     const recent50Roi = toNum(sourceGroup?.meta?.recent_50_roi, 0);
 
     if (!isStableFormalCandidate(sourceGroup, slotNo, phaseContext)) return false;
+    const phaseBest = getPhaseBestSnapshot(sourceGroup, phaseContext);
+    const hasPhaseMemory = Boolean(phaseBest.bestPhase);
+    if (slotNo <= 2 && hasPhaseMemory && !phaseBest.bestPhaseMatched) return false;
+
 
     if (slotNo === 1) {
       if (!(slotRole === 'extend' || slotRole === 'guard')) return false;
@@ -2336,7 +2352,7 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
           toNum(sourceGroup?.meta?.recent_50_roi, 0)
         );
 
-        let slotScore = rankedRow.score + getFormalStabilityBonus(sourceGroup, slotNo, phaseContext) + totalRounds;
+        let slotScore = rankedRow.score + getFormalStabilityBonus(sourceGroup, slotNo, phaseContext) + totalRounds + (getPhaseBestSnapshot(sourceGroup, phaseContext).bestPhaseMatched ? 2400 : 0);
         if (slotNo === 1) {
           slotScore += hit2Rate * 5000 + recent50HitRate * 5000 + Math.max(roi, -1) * 120;
         } else if (slotNo === 2) {
@@ -2529,7 +2545,7 @@ async function buildFormalPrediction(selection = {}, triggerSource = 'unknown') 
     throw new Error('formal groups 建立失敗');
   }
 
-  const finalGroups = buildFinalGroupsV8(groups);
+  const finalGroups = __forceInjectPhaseMeta(buildFinalGroupsV8(groups), phaseContext);
 
   const insertPayload = {
   groups_json: finalGroups,
@@ -2666,3 +2682,25 @@ function buildFinalGroupsV8(rawGroups = []) {
     }
   }));
 }
+
+// ===== E版 phase 強制寫入（正式接入決策與寫入）=====
+function __forceInjectPhaseMeta(groups = [], phaseContext = {}) {
+  const marketPhase = String(phaseContext?.marketPhase || '').toLowerCase();
+  return (Array.isArray(groups) ? groups : []).map(g => {
+    const meta = g.meta || {};
+    const best = String(meta.phase_best_phase || marketPhase || '').toLowerCase();
+    return {
+      ...g,
+      meta: {
+        ...meta,
+        phase_best_phase: best || null,
+        phase_current_phase: marketPhase || null,
+        phase_current_score: pickMetric(meta.phase_current_score, 0),
+        phase_best_matched: best && marketPhase ? best === marketPhase : false
+      }
+    };
+  });
+}
+
+// ⚠️ 如有 groups 寫入 DB 前的區塊，請確保有這行（已補安全版）
+// groups = __forceInjectPhaseMeta(groups, phaseContext);
