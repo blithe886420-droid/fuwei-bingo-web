@@ -1,7 +1,7 @@
 
 import { createClient } from '@supabase/supabase-js';
 
-const API_VERSION = 'prediction-save-e-phase-final-write-v2';
+const API_VERSION = 'prediction-save-e-phase-final-write-v3-force-insert';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -27,7 +27,7 @@ const FORMAL_MODE = 'formal';
 const FORMAL_CANDIDATE_MODE = 'formal_candidate';
 
 const COST_PER_GROUP = 25;
-const FORMAL_BATCH_LIMIT = 3;
+const FORMAL_BATCH_LIMIT = 999;
 const GROUP_COUNT = 4;
 const MAX_GROUPS_PER_STRATEGY = 1;
 
@@ -2550,8 +2550,24 @@ async function buildFormalPrediction(selection = {}, triggerSource = 'unknown') 
     phaseContext
   );
 
+  const persistedGroups = (Array.isArray(finalGroups) ? finalGroups : []).map((g) => ({
+    ...g,
+    meta: {
+      ...(g?.meta || {}),
+      phase_best_phase: String(g?.meta?.phase_best_phase || phaseContext?.marketPhase || 'rotation').toLowerCase(),
+      phase_current_phase: String(g?.meta?.phase_current_phase || phaseContext?.marketPhase || 'rotation').toLowerCase(),
+      phase_best_matched: typeof g?.meta?.phase_best_matched === 'boolean'
+        ? g.meta.phase_best_matched
+        : String(g?.meta?.phase_best_phase || phaseContext?.marketPhase || 'rotation').toLowerCase() === String(phaseContext?.marketPhase || 'rotation').toLowerCase(),
+      phase_best_score: pickMetric(g?.meta?.phase_best_score, 0),
+      phase_current_score: pickMetric(g?.meta?.phase_current_score, 0),
+      market_phase: String(g?.meta?.market_phase || phaseContext?.marketPhase || 'rotation').toLowerCase(),
+      phase_marker: 'FORCED_PHASE_V3'
+    }
+  }));
+
   const insertPayload = {
-    groups_json: finalGroups,
+    groups_json: persistedGroups,
     market_phase: String(phaseContext?.marketPhase || 'rotation').toLowerCase(),
     mode: FORMAL_MODE,
     status: 'created',
@@ -2608,7 +2624,7 @@ async function buildFormalPrediction(selection = {}, triggerSource = 'unknown') 
       source_draw_no: sourceDrawNo,
       target_periods: 1,
       group_count: groups.length,
-      groups
+      groups: persistedGroups
     }
   };
 }
@@ -2714,7 +2730,8 @@ function __forceInjectPhaseMeta(groups = [], phaseContext = {}) {
         phase_current_phase: marketPhase || null,
         phase_current_score: currentPhaseScore,
         phase_best_matched: !!bestPhase && !!marketPhase ? bestPhase === marketPhase : false,
-        market_phase: marketPhase || null
+        market_phase: marketPhase || null,
+        phase_marker: 'FORCED_PHASE_V3'
       }
     };
   });
@@ -2752,7 +2769,8 @@ function forceInjectPhaseIntoGroups(groups = [], phaseContext = null) {
         phase_best_matched: !!currentPhase && !!bestPhase ? currentPhase === bestPhase : false,
         phase_current_score: pickMetric(meta.phase_current_score, phaseScores?.[currentPhase]),
         phase_best_score: pickMetric(meta.phase_best_score, bestJson?.best_score),
-        market_phase: currentPhase || null
+        market_phase: currentPhase || null,
+        phase_marker: 'FORCED_PHASE_V3'
       }
     };
   });
