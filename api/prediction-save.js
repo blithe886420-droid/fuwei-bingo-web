@@ -2047,14 +2047,16 @@ function buildRankedSourceGroups(sourceGroups = [], selection = {}, pools = {}, 
 
       const totalRoundsForPenalty = toNum(group?.meta?.total_rounds, 0);
       // 輪數太少（< 20輪）的策略給予分數懲罰，避免新策略因小樣本假高分擠掉老策略
-      const lowRoundsPenalty = totalRoundsForPenalty < 5 ? -3000
-        : totalRoundsForPenalty < 10 ? -2000
-        : totalRoundsForPenalty < 20 ? -1000
+      const lowRoundsPenalty = totalRoundsForPenalty < 5 ? -8000
+        : totalRoundsForPenalty < 10 ? -6000
+        : totalRoundsForPenalty < 20 ? -4000
+        : totalRoundsForPenalty < 30 ? -2000
         : 0;
       // 輪數夠多（>= 50輪）給予經驗加成
-      const experienceBonus = totalRoundsForPenalty >= 200 ? 600
-        : totalRoundsForPenalty >= 100 ? 400
-        : totalRoundsForPenalty >= 50 ? 200
+      const experienceBonus = totalRoundsForPenalty >= 300 ? 1200
+        : totalRoundsForPenalty >= 200 ? 900
+        : totalRoundsForPenalty >= 100 ? 600
+        : totalRoundsForPenalty >= 50 ? 300
         : 0;
 
       return {
