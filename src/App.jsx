@@ -961,8 +961,8 @@ function StatBox({ label, value, hint, valueStyle }) {
   return (
     <div style={styles.statBox}>
       <div style={styles.statLabel}>{label}</div>
-      <div style={{ ...styles.statValue, ...valueStyle }}>{value}</div>
-      {hint ? <div style={styles.statHint}>{hint}</div> : null}
+      <div style={{ ...styles.statValue, ...valueStyle, fontSize: 26, lineHeight: 1.1 }}>{value}</div>
+      {hint ? <div style={{ ...styles.statHint, fontSize: 12, marginTop: 6 }}>{hint}</div> : null}
     </div>
   );
 }
@@ -1000,37 +1000,42 @@ function StreakBall({ n, streak }) {
 
 function GroupCard({ group, idx, showRank = false }) {
   const meta = group?.meta || {};
+  const label = fmtText(group?.label || group?.key, `第${idx + 1}組`);
+  const shortLabel = label.split('/')[0].trim();
+  const roi = Number(meta?.recent_50_roi ?? meta?.roi);
+  const roiColor = Number.isFinite(roi) ? (roi >= 0 ? '#0f766e' : '#dc2626') : '#7b6e5c';
   return (
-    <div style={styles.groupCard}>
-      <div style={styles.groupHeader}>
-        <div style={styles.groupTitleWrap}>
-          <div style={styles.groupTitle}>
-            {showRank ? `第 ${idx + 1} 名｜` : ''}
-            {fmtText(group?.label || group?.key, `第${idx + 1}組`)}
-          </div>
-          <div style={styles.groupReason}>{fmtText(group?.reason)}</div>
+    <div style={{ ...styles.groupCard, marginBottom: 10 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+        <div style={{ fontSize: 16, fontWeight: 900, color: '#0f766e' }}>
+          第 {idx + 1} 組
         </div>
+        <div style={{ fontSize: 13, color: '#7b6e5c', fontWeight: 700 }}>{shortLabel}</div>
       </div>
 
-      <div style={styles.groupBalls}>
+      <div style={{ display: 'flex', gap: 10, marginBottom: 12 }}>
         {toArray(group?.nums).map((n) => (
-          <div key={`${group?.key}_${n}`} style={styles.pickBall}>
+          <div key={`${group?.key}_${n}`} style={{ ...styles.pickBall, width: 52, height: 52, fontSize: 18 }}>
             {formatBallNumber(n)}
           </div>
         ))}
       </div>
 
-      <div style={styles.metaChipRow}>
-        <MetaChip label="策略" value={fmtText(meta?.strategy_key || group?.key)} />
-        <MetaChip label="角色" value={fmtText(meta?.role_label || meta?.type || '--')} />
-        <MetaChip label="排序" value={fmtText(meta?.selection_rank, idx + 1)} />
-        <MetaChip label="ROI" value={fmtPercent(meta?.recent_50_roi ?? meta?.roi)} />
-        <MetaChip
-          label="平均命中"
-          value={fmtText(
-            Number.isFinite(Number(meta?.avg_hit)) ? Number(meta.avg_hit).toFixed(2) : '--'
-          )}
-        />
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <span style={{ ...styles.metaChip, color: roiColor }}>
+          <span style={styles.metaChipLabel}>ROI </span>
+          {Number.isFinite(roi) ? fmtPercent(roi) : '--'}
+        </span>
+        <span style={styles.metaChip}>
+          <span style={styles.metaChipLabel}>均中 </span>
+          {Number.isFinite(Number(meta?.avg_hit)) ? Number(meta.avg_hit).toFixed(2) : '--'}
+        </span>
+        {meta?.hit3_rate > 0 && (
+          <span style={{ ...styles.metaChip, background: '#e0f0ea', borderColor: '#0f766e', color: '#0f766e' }}>
+            <span style={{ color: '#0f766e' }}>中3率 </span>
+            {fmtPercent(meta.hit3_rate)}
+          </span>
+        )}
       </div>
     </div>
   );
@@ -1063,27 +1068,29 @@ function CompactBetCard({ group, idx }) {
 
 function FormalBatchCard({ batch, idx }) {
   const groups = getPredictionGroups(batch);
+  const statusColor = batch?.status === 'compared' ? '#0f766e' : '#b45309';
 
   return (
-    <div style={styles.batchCard}>
-      <div style={styles.batchCardHead}>
+    <div style={{ ...styles.batchCard, marginBottom: 12 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
         <div>
-          <div style={styles.batchCardTitle}>
+          <div style={{ fontSize: 18, fontWeight: 900, color: '#0f766e' }}>
             第 {fmtText(batch?.formal_batch_no, idx + 1)} 批
           </div>
-          <div style={styles.batchCardSub}>
-            建立時間：{fmtDateTime(batch?.created_at)}
+          <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 3 }}>
+            {fmtDateTime(batch?.created_at)}
           </div>
         </div>
-
-        <div style={styles.metaChipRow}>
-          <MetaChip label="status" value={fmtText(batch?.status)} />
-          <MetaChip label="source_draw_no" value={fmtText(batch?.source_draw_no)} />
-          <MetaChip label="groups" value={groups.length} />
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          <span style={{ ...styles.metaChip, color: statusColor }}>
+            {batch?.status === 'compared' ? '已對獎' : batch?.status === 'created' ? '待對獎' : fmtText(batch?.status)}
+          </span>
+          <span style={styles.metaChip}>期號 {fmtText(batch?.source_draw_no)}</span>
+          <span style={styles.metaChip}>{groups.length} 組</span>
         </div>
       </div>
 
-      <div style={styles.groupGrid}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
         {groups.length ? (
           groups.map((group, groupIdx) => (
             <GroupCard key={`${batch?.id || idx}_${group?.key || groupIdx}`} group={group} idx={groupIdx} />
@@ -1815,19 +1822,17 @@ export default function App() {
               title="首頁決策"
               subtitle="先看雙分數，再決定要不要直接產生正式下注。"
             >
-              <div style={styles.statsGrid2}>
-                <StatBox
-                  label="策略穩定度"
-                  value={`${strategyStabilityScore} / 100`}
-                  hint={`活躍策略 ${aiPlayer.activeCount} / 策略池 ${aiPlayer.totalPoolCount}`}
-                  valueStyle={{ color: '#0f766e' }}
-                />
-                <StatBox
-                  label="市場適應度"
-                  value={`${marketFitScore} / 100`}
-                  hint={`最新期數 ${fmtText(latestDrawNo)} / ${fmtText(latestDrawTime)}`}
-                  valueStyle={{ color: decisionColor }}
-                />
+              <div style={{ display: 'flex', gap: 10, marginBottom: 4 }}>
+                <div style={{ flex: 1, background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 14, padding: 14 }}>
+                  <div style={{ fontSize: 13, color: '#7b6e5c', marginBottom: 6 }}>策略穩定度</div>
+                  <div style={{ fontSize: 32, fontWeight: 900, color: '#0f766e', lineHeight: 1 }}>{strategyStabilityScore}<span style={{ fontSize: 16, color: '#7b6e5c' }}> / 100</span></div>
+                  <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 6 }}>活躍策略 {aiPlayer.activeCount} / 策略池 {aiPlayer.totalPoolCount}</div>
+                </div>
+                <div style={{ flex: 1, background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 14, padding: 14 }}>
+                  <div style={{ fontSize: 13, color: '#7b6e5c', marginBottom: 6 }}>市場適應度</div>
+                  <div style={{ fontSize: 32, fontWeight: 900, color: decisionColor, lineHeight: 1 }}>{marketFitScore}<span style={{ fontSize: 16, color: '#7b6e5c' }}> / 100</span></div>
+                  <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 6 }}>期數 {fmtText(latestDrawNo)}</div>
+                </div>
               </div>
 
               <div style={styles.resultPanel}>
@@ -1848,11 +1853,27 @@ export default function App() {
 
               <div style={styles.resultPanel}>
                 <div style={styles.resultTitle}>最近 10 期即時命中回饋</div>
-                <div style={styles.statsGrid4}>
-                  <StatBox label="中1" value={`${hitFeedback.hit1} 期`} hint="單組命中 1" valueStyle={{ color: '#b45309' }} />
-                  <StatBox label="中2" value={`${hitFeedback.hit2} 期`} hint={`中2+ ${hitFeedback.sampleCount ? Math.round(((hitFeedback.hit2 + hitFeedback.hit3 + hitFeedback.hit4Plus) / hitFeedback.sampleCount) * 100) : 0}%`} valueStyle={{ color: '#0f766e' }} />
-                  <StatBox label="中3" value={`${hitFeedback.hit3} 期`} hint={`中3+ ${hitFeedback.sampleCount ? Math.round(((hitFeedback.hit3 + hitFeedback.hit4Plus) / hitFeedback.sampleCount) * 100) : 0}%`} valueStyle={{ color: '#dc2626' }} />
-                  <StatBox label="樣本" value={`${hitFeedback.sampleCount} 期`} hint={`中0 ${hitFeedback.hit0} / 中4+ ${hitFeedback.hit4Plus}`} />
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
+                  <div style={{ background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 14, padding: 14 }}>
+                    <div style={{ fontSize: 13, color: '#7b6e5c', marginBottom: 4 }}>中2</div>
+                    <div style={{ fontSize: 28, fontWeight: 900, color: '#0f766e', lineHeight: 1.1 }}>{hitFeedback.hit2} <span style={{ fontSize: 14 }}>期</span></div>
+                    <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 4 }}>中2+ {hitFeedback.sampleCount ? Math.round(((hitFeedback.hit2 + hitFeedback.hit3 + hitFeedback.hit4Plus) / hitFeedback.sampleCount) * 100) : 0}%</div>
+                  </div>
+                  <div style={{ background: '#f8f1e6', border: '2px solid #fecaca', borderRadius: 14, padding: 14 }}>
+                    <div style={{ fontSize: 13, color: '#7b6e5c', marginBottom: 4 }}>中3</div>
+                    <div style={{ fontSize: 28, fontWeight: 900, color: '#dc2626', lineHeight: 1.1 }}>{hitFeedback.hit3} <span style={{ fontSize: 14 }}>期</span></div>
+                    <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 4 }}>中3+ {hitFeedback.sampleCount ? Math.round(((hitFeedback.hit3 + hitFeedback.hit4Plus) / hitFeedback.sampleCount) * 100) : 0}%</div>
+                  </div>
+                  <div style={{ background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 14, padding: 14 }}>
+                    <div style={{ fontSize: 13, color: '#7b6e5c', marginBottom: 4 }}>中1</div>
+                    <div style={{ fontSize: 28, fontWeight: 900, color: '#b45309', lineHeight: 1.1 }}>{hitFeedback.hit1} <span style={{ fontSize: 14 }}>期</span></div>
+                    <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 4 }}>單組命中1</div>
+                  </div>
+                  <div style={{ background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 14, padding: 14 }}>
+                    <div style={{ fontSize: 13, color: '#7b6e5c', marginBottom: 4 }}>樣本</div>
+                    <div style={{ fontSize: 28, fontWeight: 900, color: '#23413a', lineHeight: 1.1 }}>{hitFeedback.sampleCount} <span style={{ fontSize: 14 }}>期</span></div>
+                    <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 4 }}>中0 {hitFeedback.hit0} / 中4+ {hitFeedback.hit4Plus}</div>
+                  </div>
                 </div>
                 <div style={{ ...styles.metaChipRow, marginTop: 12 }}>
                   <MetaChip label="最近樣本" value={`${hitFeedback.sampleCount} 期`} />
@@ -1862,20 +1883,25 @@ export default function App() {
                 <div style={{ ...styles.resultText, marginTop: 10 }}>{hitFeedback.note}</div>
               </div>
 
-              <div style={styles.predictControlStack}>
-                <div style={styles.selectionSummaryBox}>
-                  <div style={styles.selectionSummaryTitle}>AI 目前決策</div>
-                  <div style={styles.metaChipRow}>
-                    <MetaChip label="分析期數" value={`${displayedAnalysisPeriod} 期`} />
-                    <MetaChip label="策略模式" value={getStrategyModeLabel(displayedStrategyMode)} />
-                    <MetaChip label="下注風格" value={getRiskModeLabel(displayedRiskMode)} />
-                    <MetaChip label="盤相" value={fmtText(displayedSelection.marketPhase)} />
+              <div style={{ background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 14, padding: 14, marginTop: 4 }}>
+                <div style={{ fontSize: 16, fontWeight: 900, color: '#0f766e', marginBottom: 12 }}>AI 目前決策</div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 }}>
+                  <div style={{ background: '#efe8db', borderRadius: 10, padding: '10px 12px' }}>
+                    <div style={{ fontSize: 11, color: '#7b6e5c', marginBottom: 3 }}>分析期數</div>
+                    <div style={{ fontSize: 16, fontWeight: 800, color: '#23413a' }}>{displayedAnalysisPeriod} 期</div>
                   </div>
-                </div>
-
-                <div style={styles.predictOnlyHint}>
-                  前台已改為 AI 決策展示模式，不再由這裡手動指定分析期數、策略模式、下注風格。
-                  正式下注時會直接採用後台當前判斷，只保留真正通過條件的有效組合。
+                  <div style={{ background: '#efe8db', borderRadius: 10, padding: '10px 12px' }}>
+                    <div style={{ fontSize: 11, color: '#7b6e5c', marginBottom: 3 }}>策略模式</div>
+                    <div style={{ fontSize: 16, fontWeight: 800, color: '#23413a' }}>{getStrategyModeLabel(displayedStrategyMode)}</div>
+                  </div>
+                  <div style={{ background: '#efe8db', borderRadius: 10, padding: '10px 12px' }}>
+                    <div style={{ fontSize: 11, color: '#7b6e5c', marginBottom: 3 }}>下注風格</div>
+                    <div style={{ fontSize: 16, fontWeight: 800, color: '#23413a' }}>{getRiskModeLabel(displayedRiskMode)}</div>
+                  </div>
+                  <div style={{ background: '#efe8db', borderRadius: 10, padding: '10px 12px' }}>
+                    <div style={{ fontSize: 11, color: '#7b6e5c', marginBottom: 3 }}>盤相</div>
+                    <div style={{ fontSize: 16, fontWeight: 800, color: '#23413a' }}>{fmtText(displayedSelection.marketPhase, '--')}</div>
+                  </div>
                 </div>
               </div>
             </Card>
@@ -1939,11 +1965,27 @@ export default function App() {
               title="逐組比對戰績"
               subtitle="第一頁看決策輸出，第二頁看每批每組實戰比對，這樣 AI 才交得出成績單。"
             >
-              <div style={styles.statsGrid4}>
-                <StatBox label="追蹤期數" value={`${recentFormalCompareSummary.periodCount} 期`} hint="最近五期 formal 自動比對" />
-                <StatBox label="總批次" value={`${recentFormalCompareSummary.batchCount} 批`} hint="每期最多三批" valueStyle={{ color: '#0f766e' }} />
-                <StatBox label="總組數" value={`${recentFormalCompareSummary.groupCount} 組`} hint="逐組成績統計" valueStyle={{ color: '#0f766e' }} />
-                <StatBox label="中2+" value={`${recentFormalCompareSummary.hit2 + recentFormalCompareSummary.hit3 + recentFormalCompareSummary.hit4} 組`} hint={`中3 ${recentFormalCompareSummary.hit3} / 中4 ${recentFormalCompareSummary.hit4}`} valueStyle={{ color: '#dc2626' }} />
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10, marginBottom: 4 }}>
+                <div style={{ background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 14, padding: 14 }}>
+                  <div style={{ fontSize: 13, color: '#7b6e5c', marginBottom: 4 }}>追蹤期數</div>
+                  <div style={{ fontSize: 28, fontWeight: 900, color: '#23413a', lineHeight: 1.1 }}>{recentFormalCompareSummary.periodCount} <span style={{ fontSize: 14 }}>期</span></div>
+                  <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 4 }}>最近五期 formal</div>
+                </div>
+                <div style={{ background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 14, padding: 14 }}>
+                  <div style={{ fontSize: 13, color: '#7b6e5c', marginBottom: 4 }}>總組數</div>
+                  <div style={{ fontSize: 28, fontWeight: 900, color: '#0f766e', lineHeight: 1.1 }}>{recentFormalCompareSummary.groupCount} <span style={{ fontSize: 14 }}>組</span></div>
+                  <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 4 }}>{recentFormalCompareSummary.batchCount} 批次</div>
+                </div>
+                <div style={{ background: '#f8f1e6', border: '2px solid #fecaca', borderRadius: 14, padding: 14 }}>
+                  <div style={{ fontSize: 13, color: '#7b6e5c', marginBottom: 4 }}>中3組數</div>
+                  <div style={{ fontSize: 28, fontWeight: 900, color: '#dc2626', lineHeight: 1.1 }}>{recentFormalCompareSummary.hit3} <span style={{ fontSize: 14 }}>組</span></div>
+                  <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 4 }}>中4 {recentFormalCompareSummary.hit4} 組</div>
+                </div>
+                <div style={{ background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 14, padding: 14 }}>
+                  <div style={{ fontSize: 13, color: '#7b6e5c', marginBottom: 4 }}>中2+組數</div>
+                  <div style={{ fontSize: 28, fontWeight: 900, color: '#0f766e', lineHeight: 1.1 }}>{recentFormalCompareSummary.hit2 + recentFormalCompareSummary.hit3 + recentFormalCompareSummary.hit4} <span style={{ fontSize: 14 }}>組</span></div>
+                  <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 4 }}>中2 {recentFormalCompareSummary.hit2} 組</div>
+                </div>
               </div>
 
               <div style={{ ...styles.metaChipRow, marginTop: 12 }}>
