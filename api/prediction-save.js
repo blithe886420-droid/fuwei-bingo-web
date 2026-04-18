@@ -39,11 +39,11 @@ const MIN_TIER_A_ROUNDS = 20;
 const MIN_TIER_B_ROUNDS = 10;
 const MAX_GROUP_OVERLAP = 2;
 
-const FORMAL_MIN_RECENT_50_HIT_RATE = 0.25;
-const FORMAL_MIN_HIT2_RATE = 0.25;
-const FORMAL_MIN_RECENT_50_HIT3_RATE = 0.02;
-const FORMAL_STRONG_RECENT_50_HIT3_RATE = 0.05;
-const FORMAL_MIN_RECENT_50_ROI = -0.6;
+const FORMAL_MIN_RECENT_50_HIT_RATE = 0.12;
+const FORMAL_MIN_HIT2_RATE = 0.12;
+const FORMAL_MIN_RECENT_50_HIT3_RATE = 0.005;
+const FORMAL_STRONG_RECENT_50_HIT3_RATE = 0.03;
+const FORMAL_MIN_RECENT_50_ROI = -0.85;
 
 let supabase = null;
 
@@ -489,12 +489,12 @@ function isFormalHardRejectCandidate(group = {}, slotNo = 1, phaseContext = null
     return true;
   }
 
-  if (slotNo === 1 && totalRounds >= 12) {
-    if (stats.recent50HitRate < 0.28) return true;
-    if (stats.hit2Rate < 0.28) return true;
+  if (slotNo === 1 && totalRounds >= 20) {
+    if (stats.recent50HitRate < 0.15) return true;
+    if (stats.hit2Rate < 0.15) return true;
   }
 
-  if (slotNo === 1 && totalRounds >= 20 && blendedRoi < -0.45) {
+  if (slotNo === 1 && totalRounds >= 30 && blendedRoi < -0.75) {
     return true;
   }
 
@@ -2245,32 +2245,32 @@ function buildFormalGroups(sourceGroups = [], sourcePrediction = null, sourceDra
 
     if (slotNo === 1) {
       if (!(slotRole === 'extend' || slotRole === 'guard')) return false;
-      if (totalRounds >= 8 && hit2Rate < 0.30) return false;
-      if (totalRounds >= 8 && recent50HitRate < 0.30) return false;
-      if (Math.max(recent50Roi, roi) < -0.30) return false;
+      if (totalRounds >= 20 && hit2Rate < 0.15) return false;
+      if (totalRounds >= 20 && recent50HitRate < 0.15) return false;
+      if (Math.max(recent50Roi, roi) < -0.80) return false;
     } else if (slotNo === 2) {
       if (!(slotRole === 'guard' || slotRole === 'extend')) return false;
-      if (totalRounds >= 8 && hit2Rate < 0.28) return false;
-      if (totalRounds >= 8 && recent50HitRate < 0.26) return false;
+      if (totalRounds >= 20 && hit2Rate < 0.13) return false;
+      if (totalRounds >= 20 && recent50HitRate < 0.13) return false;
     } else if (slotNo === 3) {
       if (slotRole === 'attack') return false;
-      if (totalRounds >= 8 && hit2Rate < 0.22) return false;
+      if (totalRounds >= 20 && hit2Rate < 0.10) return false;
     } else if (slotNo === 4) {
       if (slotRole !== 'attack') return false;
-      if (totalRounds >= 8) {
-        if (Math.max(hit3, recent50Hit3Rate) < 0.018) return false;
-        if (Math.max(recent50Roi, roi) < -0.35) return false;
+      if (totalRounds >= 20) {
+        if (Math.max(hit3, recent50Hit3Rate) < 0.005) return false;
+        if (Math.max(recent50Roi, roi) < -0.80) return false;
       }
     }
 
-    if ((slotRole === 'extend' || slotRole === 'guard') && totalRounds >= 8) {
-      if (hit2Rate < 0.28) return false;
-      if (recent50HitRate < 0.24) return false;
+    if ((slotRole === 'extend' || slotRole === 'guard') && totalRounds >= 20) {
+      if (hit2Rate < 0.13) return false;
+      if (recent50HitRate < 0.12) return false;
     }
 
-    if (slotRole === 'attack' && totalRounds >= 8) {
-      if (Math.max(hit3, recent50Hit3Rate) < 0.018) return false;
-      if (Math.max(recent50Roi, roi) < -0.35) return false;
+    if (slotRole === 'attack' && totalRounds >= 20) {
+      if (Math.max(hit3, recent50Hit3Rate) < 0.005) return false;
+      if (Math.max(recent50Roi, roi) < -0.80) return false;
     }
 
     return true;
