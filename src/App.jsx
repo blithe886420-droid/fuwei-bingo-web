@@ -1757,7 +1757,7 @@ export default function App() {
   const decisionSubtitle = displayedSelection.summaryText || predictionSummary.summaryText || aiPlayer.statusText || '先觀察再行動。';
 
   return (
-    <div style={styles.page}>
+    <div style={{ ...styles.page, WebkitTextSizeAdjust: '100%' }}>
       <div style={styles.app}>
         <header style={styles.header}>
           <div>
@@ -2196,59 +2196,60 @@ const styles = {
   page: {
     minHeight: '100vh',
     background: '#f3ece0',
-    padding: 24,
+    padding: '12px 12px 32px',
     color: '#23413a',
     boxSizing: 'border-box'
   },
   app: {
-    maxWidth: 1400,
+    maxWidth: 480,
     margin: '0 auto',
     display: 'flex',
     flexDirection: 'column',
-    gap: 20
+    gap: 14
   },
   header: {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
-    gap: 16,
-    padding: '8px 4px 0'
+    gap: 10,
+    padding: '4px 2px 0'
   },
   brand: {
-    fontSize: 32,
+    fontSize: 24,
     fontWeight: 900,
     color: '#0f766e',
     letterSpacing: '0.5px'
   },
   headerSub: {
-    marginTop: 6,
+    marginTop: 4,
     color: '#7b6e5c',
-    fontSize: 14
+    fontSize: 12
   },
   headerActions: {
     display: 'flex',
     alignItems: 'center',
-    gap: 10
+    gap: 8
   },
   tabBar: {
     display: 'grid',
     gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
-    gap: 12
+    gap: 8
   },
   tabButton: {
     border: '2px solid #2e4b44',
     background: '#f7f1e7',
     color: '#23413a',
-    borderRadius: 18,
-    padding: '14px 12px',
-    fontSize: 22,
+    borderRadius: 14,
+    padding: '12px 8px',
+    fontSize: 16,
     fontWeight: 800,
     cursor: 'pointer',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 10,
-    transition: 'all .15s ease'
+    gap: 6,
+    transition: 'all .15s ease',
+    minHeight: 52
   },
   tabButtonActive: {
     background: '#0f766e',
@@ -2256,63 +2257,63 @@ const styles = {
     borderColor: '#0f766e'
   },
   tabIcon: {
-    fontSize: 20
+    fontSize: 18
   },
   sectionStack: {
     display: 'flex',
     flexDirection: 'column',
-    gap: 20
+    gap: 14
   },
   card: {
     background: '#efe8db',
     border: '2px solid #d8c7ad',
-    borderRadius: 24,
-    padding: 18,
+    borderRadius: 18,
+    padding: 14,
     boxShadow: '0 2px 0 rgba(124, 90, 34, 0.04)'
   },
   cardHeader: {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
-    gap: 16,
-    marginBottom: 18
+    gap: 12,
+    marginBottom: 14
   },
   cardTitle: {
-    fontSize: 21,
+    fontSize: 18,
     fontWeight: 900,
     color: '#0f766e'
   },
   cardSubtitle: {
-    marginTop: 6,
+    marginTop: 4,
     color: '#7b6e5c',
-    fontSize: 14,
-    lineHeight: 1.6
+    fontSize: 13,
+    lineHeight: 1.5
   },
   statsGrid4: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
-    gap: 16
+    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+    gap: 10
   },
   statsGrid2: {
     display: 'grid',
     gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-    gap: 16
+    gap: 10
   },
   statBox: {
     background: '#f8f1e6',
     border: '2px solid #d9c7a8',
-    borderRadius: 18,
-    padding: 14,
-    minHeight: 108,
+    borderRadius: 14,
+    padding: 12,
+    minHeight: 90,
     boxSizing: 'border-box'
   },
   statLabel: {
-    fontSize: 14,
+    fontSize: 13,
     color: '#7b6e5c',
-    marginBottom: 10
+    marginBottom: 8
   },
   statValue: {
-    fontSize: 18,
+    fontSize: 20,
     fontWeight: 900,
     color: '#d2534f',
     lineHeight: 1.2
@@ -2395,25 +2396,28 @@ const styles = {
     marginTop: 14
   },
   primaryButton: {
-    marginTop: 14,
+    marginTop: 12,
     background: '#0f766e',
     color: '#fff',
     border: 'none',
-    borderRadius: 16,
-    padding: '10px 14px',
-    fontSize: 14,
+    borderRadius: 14,
+    padding: '14px 18px',
+    fontSize: 16,
     fontWeight: 800,
-    cursor: 'pointer'
+    cursor: 'pointer',
+    width: '100%',
+    minHeight: 50
   },
   secondaryButton: {
     background: '#f8f1e6',
     color: '#23413a',
     border: '2px solid #d9c7a8',
     borderRadius: 14,
-    padding: '10px 14px',
-    fontSize: 14,
+    padding: '14px 18px',
+    fontSize: 16,
     fontWeight: 800,
-    cursor: 'pointer'
+    cursor: 'pointer',
+    minHeight: 50
   },
   stopButton: {
     background: '#a1433d'
@@ -2559,8 +2563,8 @@ const styles = {
   },
   groupGrid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-    gap: 16
+    gridTemplateColumns: 'repeat(1, minmax(0, 1fr))',
+    gap: 12
   },
   compactBetCard: {
     background: '#f8f1e6',
@@ -2701,8 +2705,8 @@ const styles = {
   },
   marketGrid3: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
-    gap: 12
+    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+    gap: 10
   },
   marketBallsWrap: {
     display: 'flex',
