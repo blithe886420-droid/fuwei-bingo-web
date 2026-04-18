@@ -498,6 +498,17 @@ function isFormalHardRejectCandidate(group = {}, slotNo = 1, phaseContext = null
     return true;
   }
 
+  // 第1、2槽：輪數不足 50 輪且 hit3 = 0，直接拒絕
+  // 避免小樣本假高分策略佔據重要槽位
+  if (slotNo <= 2 && totalRounds < 50 && blendedHit3Rate <= 0) {
+    return true;
+  }
+
+  // 第1槽：輪數不足 30 輪直接拒絕，讓有歷史資料的策略優先
+  if (slotNo === 1 && totalRounds < 30) {
+    return true;
+  }
+
   return false;
 }
 
