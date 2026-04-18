@@ -1,4 +1,3 @@
-
 import { createClient } from '@supabase/supabase-js';
 
 const API_VERSION = 'prediction-save-e-phase-final-write-v3-force-insert';
@@ -2671,17 +2670,21 @@ function buildFinalGroupsV8(rawGroups = []) {
   const used = new Set();
   const result = [];
 
+  // 第一輪：正常去重，跳過 decision=reject 的 group
   for (const g of rawGroups) {
     if (!g || !g.key) continue;
+    if (String(g?.meta?.decision || '').trim().toLowerCase() === 'reject') continue;
     if (!used.has(g.key)) {
       used.add(g.key);
       result.push(g);
     }
   }
 
+  // 第二輪：補足4組，仍然跳過 decision=reject 的 group
   for (const g of rawGroups) {
     if (result.length >= 4) break;
     if (!g || !g.key) continue;
+    if (String(g?.meta?.decision || '').trim().toLowerCase() === 'reject') continue;
     if (!used.has(g.key)) {
       used.add(g.key);
       result.push(g);
@@ -2689,7 +2692,7 @@ function buildFinalGroupsV8(rawGroups = []) {
   }
 
   if (result.length < 4) {
-    throw new Error('V8: not enough unique strategies');
+    throw new Error('V8: not enough valid (non-reject) strategies');
   }
 
   return result.slice(0, 4).map((g, idx) => ({
