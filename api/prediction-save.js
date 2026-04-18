@@ -2045,13 +2045,27 @@ function buildRankedSourceGroups(sourceGroups = [], selection = {}, pools = {}, 
 
       const stabilityBonus = getFormalStabilityBonus(group, 1, phaseContext);
 
+      const totalRoundsForPenalty = toNum(group?.meta?.total_rounds, 0);
+      // 輪數太少（< 20輪）的策略給予分數懲罰，避免新策略因小樣本假高分擠掉老策略
+      const lowRoundsPenalty = totalRoundsForPenalty < 5 ? -3000
+        : totalRoundsForPenalty < 10 ? -2000
+        : totalRoundsForPenalty < 20 ? -1000
+        : 0;
+      // 輪數夠多（>= 50輪）給予經驗加成
+      const experienceBonus = totalRoundsForPenalty >= 200 ? 600
+        : totalRoundsForPenalty >= 100 ? 400
+        : totalRoundsForPenalty >= 50 ? 200
+        : 0;
+
       return {
         group,
         role,
-        score: isPool ? round4(score + 120 + stabilityBonus) : round4(score + stabilityBonus),
+        score: isPool
+          ? round4(score + 120 + stabilityBonus + lowRoundsPenalty + experienceBonus)
+          : round4(score + stabilityBonus + lowRoundsPenalty + experienceBonus),
         tier,
         strategyKey: getStrategyKey(group),
-        totalRounds: toNum(group?.meta?.total_rounds, 0),
+        totalRounds: totalRoundsForPenalty,
         sourceTag: getSourceTag(group),
         selectionPower: getStrategySelectionPower(group),
         phaseBestMatched: getPhaseBestSnapshot(group, phaseContext).bestPhaseMatched,
