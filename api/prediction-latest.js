@@ -506,7 +506,8 @@ async function getFormalRowsBySourceDrawNo(sourceDrawNo) {
     .select('*')
     .eq('mode', FORMAL_MODE)
     .eq('source_draw_no', sourceDrawNo)
-    .order('created_at', { ascending: true });
+    .order('created_at', { ascending: true })
+    .limit(20);
 
   if (error) throw error;
 
@@ -522,7 +523,7 @@ async function getFormalRowsBySourceDrawNo(sourceDrawNo) {
 
 async function getRecentComparedRows(limit = 10) {
   const safeLimit = Math.max(10, Math.min(50, toInt(limit, 10)));
-  const fetchLimit = Math.max(5000, safeLimit * 100);
+  const fetchLimit = Math.min(100, safeLimit * 2);
 
   const { data, error } = await supabase
     .from(PREDICTIONS_TABLE)
@@ -570,6 +571,7 @@ async function getStrategyLeaderboard(limit = 50) {
     supabase
       .from(STRATEGY_POOL_TABLE)
       .select('strategy_key, strategy_name, status, protected_rank')
+      .limit(200)
   ]);
 
   if (statsError) throw statsError;
