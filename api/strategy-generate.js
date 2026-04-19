@@ -157,7 +157,6 @@ function diversifyGroups(groups) {
 /* ================= 盤面特徵分析 ================= */
 
 function analyzeBoardFeatures(rows) {
-  // 用最近10期的特徵欄位計算平均值
   const recent = rows.slice(0, 10);
 
   const validRows = recent.filter(r =>
@@ -167,14 +166,14 @@ function analyzeBoardFeatures(rows) {
   );
 
   if (validRows.length === 0) {
-    // 沒有特徵資料，回傳中性值
     return {
       avgSum: 800,
       avgBig: 10,
       avgOdd: 10,
       bigTrend: "neutral",
       oddTrend: "neutral",
-      sumTrend: "neutral"
+      sumTrend: "neutral",
+      marketPhase: "rotation"
     };
   }
 
@@ -182,12 +181,28 @@ function analyzeBoardFeatures(rows) {
   const avgBig = validRows.reduce((a, r) => a + Number(r.big_count), 0) / validRows.length;
   const avgOdd = validRows.reduce((a, r) => a + Number(r.odd_count), 0) / validRows.length;
 
-  // 判斷趨勢（KENO每期開20個號碼，大小/奇偶各自基準是10）
   const bigTrend = avgBig > 10.5 ? "big" : avgBig < 9.5 ? "small" : "neutral";
   const oddTrend = avgOdd > 10.5 ? "odd" : avgOdd < 9.5 ? "even" : "neutral";
   const sumTrend = avgSum > 820 ? "high" : avgSum < 760 ? "low" : "neutral";
 
-  return { avgSum, avgBig, avgOdd, bigTrend, oddTrend, sumTrend };
+  // 判斷盤面階段：看最近5期號碼重複率
+  // 重複率高 → continuation（延續盤），重複率低 → rotation（輪動盤）
+  const recentNums = rows.slice(0, 5).map(r => new Set(parseNumbers(r.numbers)));
+  let overlapScore = 0;
+  if (recentNums.length >= 2) {
+    const latest = recentNums[0];
+    for (let i = 1; i < recentNums.length; i++) {
+      const prev = recentNums[i];
+      let overlap = 0;
+      for (const n of latest) {
+        if (prev.has(n)) overlap++;
+      }
+      overlapScore += overlap;
+    }
+  }
+  const marketPhase = overlapScore > 20 ? "continuation" : "rotation";
+
+  return { avgSum, avgBig, avgOdd, bigTrend, oddTrend, sumTrend, marketPhase };
 }
 
 /* 根據盤面特徵調整候選號碼的分數 */
@@ -200,21 +215,18 @@ function applyBoardBias(scoreMap, features) {
     const isOdd = n % 2 === 1;
     const isHigh = n >= 41;
 
-    // 大小偏向
     if (features.bigTrend === "big" && isBig) {
       biased[num] = (biased[num] || 0) * 1.2;
     } else if (features.bigTrend === "small" && !isBig) {
       biased[num] = (biased[num] || 0) * 1.2;
     }
 
-    // 奇偶偏向
     if (features.oddTrend === "odd" && isOdd) {
       biased[num] = (biased[num] || 0) * 1.15;
     } else if (features.oddTrend === "even" && !isOdd) {
       biased[num] = (biased[num] || 0) * 1.15;
     }
 
-    // 和值偏向（高和值 → 偏向高號碼，低和值 → 偏向低號碼）
     if (features.sumTrend === "high" && isHigh) {
       biased[num] = (biased[num] || 0) * 1.1;
     } else if (features.sumTrend === "low" && !isHigh) {
@@ -225,9 +237,31 @@ function applyBoardBias(scoreMap, features) {
   return biased;
 }
 
-/* ================= AI：選強策略 ================= */
+/* ================= AI：根據當前盤面選強策略 ================= */
 
-function selectTopStrategies(statsRows, limit = 20) {
+function getPhaseHit3Rate(s, marketPhase) {
+  // 從 phase_stats_json 取出當前盤面下的 hit3 率
+  try {
+    const phaseStats = typeof s.phase_stats_json === 'string'
+      ? JSON.parse(s.phase_stats_json)
+      : s.phase_stats_json;
+
+    if (!phaseStats || typeof phaseStats !== 'object') return null;
+
+    const bucket = phaseStats[marketPhase];
+    if (!bucket) return null;
+
+    const rounds = Number(bucket.rounds || bucket.total_rounds || 0);
+    const hit3 = Number(bucket.hit3 || bucket.hit3_count || 0);
+
+    if (rounds < 5) return null; // 太少場次不可信
+    return hit3 / rounds;
+  } catch {
+    return null;
+  }
+}
+
+function selectTopStrategies(statsRows, limit = 20, marketPhase = "rotation") {
   if (!Array.isArray(statsRows)) return [];
 
   return statsRows
@@ -235,13 +269,31 @@ function selectTopStrategies(statsRows, limit = 20) {
       const rounds = Number(s.total_rounds || 0);
       const profit = Number(s.total_profit || 0);
       const roi = Number(s.roi || 0);
+      const hit3Rate = Number(s.hit3_rate || 0);
+      const recent50Hit3Rate = Number(s.recent_50_hit3_rate || 0);
 
-      const score =
-        roi * 0.6 +
-        profit * 0.3 +
-        Math.log1p(rounds) * 10;
+      // 取得當前盤面下的歷史 hit3 率
+      const phaseHit3Rate = getPhaseHit3Rate(s, marketPhase);
 
-      return { ...s, score };
+      // 基礎分數
+      const baseScore =
+        roi * 0.4 +
+        profit * 0.2 +
+        Math.log1p(rounds) * 8 +
+        hit3Rate * 30 +
+        recent50Hit3Rate * 20;
+
+      // 盤面加權：在當前盤面下表現好的策略額外加分
+      const phaseBonus = phaseHit3Rate !== null ? phaseHit3Rate * 40 : 0;
+
+      const finalScore = baseScore + phaseBonus;
+
+      return {
+        ...s,
+        score: finalScore,
+        phaseHit3Rate,
+        phaseBonus
+      };
     })
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);
@@ -465,7 +517,7 @@ export default async function handler(req, res) {
     const todayRows = cleanRows.slice(0, Math.min(120, cleanRows.length));
     const recent80Rows = cleanRows.slice(0, Math.min(80, cleanRows.length));
 
-    // 分析盤面特徵
+    // 分析盤面特徵（含 marketPhase）
     const features = analyzeBoardFeatures(cleanRows);
 
     const sectionStats = buildSectionStats(recent20Rows);
@@ -478,21 +530,25 @@ export default async function handler(req, res) {
       buildPatternStructure(todayRows, recent20Rows, recent80Rows, features)
     ];
 
-    /* 🔥 AI進化（覆蓋策略key來源） */
+    /* 🔥 AI進化：根據當前盤面選最強策略 */
     try {
       const { data: stats } = await supabase
         .from('strategy_stats')
         .select('*');
 
-      const topStrategies = selectTopStrategies(stats, 4);
+      // 傳入 marketPhase，讓 AI 優先選在這種盤面下表現好的策略
+      const topStrategies = selectTopStrategies(stats, 4, features.marketPhase);
 
       if (topStrategies.length === 4) {
         rawGroups = rawGroups.map((g, idx) => {
           const s = topStrategies[idx];
+          const phaseNote = s.phaseHit3Rate !== null
+            ? `｜${features.marketPhase}盤命中率${(s.phaseHit3Rate * 100).toFixed(1)}%`
+            : '';
           return {
             ...g,
             key: s.strategy_key || g.key,
-            reason: `[AI進化] ${g.reason}`
+            reason: `[AI進化${phaseNote}] ${g.reason}`
           };
         });
       }
@@ -510,7 +566,7 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       ok: true,
-      mode: "bingo_strategy_generate_v3_board_aware",
+      mode: "bingo_strategy_generate_v4_phase_aware",
       target: {
         stars: 4,
         groups: 4,
