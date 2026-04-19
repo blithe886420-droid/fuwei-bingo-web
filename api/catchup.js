@@ -1,5 +1,25 @@
 import { parseAuzoBingoDraws } from "../lib/parseAuzoBingo.js";
 
+function calcFeatures(numbersStr) {
+  const nums = String(numbersStr || "")
+    .split(/[,\s]+/)
+    .map(x => x.trim())
+    .filter(Boolean)
+    .map(Number)
+    .filter(n => n >= 1 && n <= 80);
+
+  if (nums.length === 0) return {};
+
+  return {
+    sum_value: nums.reduce((a, b) => a + b, 0),
+    span_value: Math.max(...nums) - Math.min(...nums),
+    big_count: nums.filter(n => n >= 41).length,
+    small_count: nums.filter(n => n <= 40).length,
+    odd_count: nums.filter(n => n % 2 === 1).length,
+    even_count: nums.filter(n => n % 2 === 0).length
+  };
+}
+
 export default async function handler(req, res) {
   try {
     const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -104,7 +124,8 @@ export default async function handler(req, res) {
       .map(d => ({
         draw_no: Number(d.draw_no),
         draw_time: d.draw_time,
-        numbers: d.numbers
+        numbers: d.numbers,
+        ...calcFeatures(d.numbers)
       }))
       .filter(d =>
         Number.isInteger(d.draw_no) &&
