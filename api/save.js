@@ -8,6 +8,26 @@ function isValidDrawTime(drawTime) {
   return typeof drawTime === "string" && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(drawTime);
 }
 
+function calcFeatures(numbersStr) {
+  const nums = String(numbersStr || "")
+    .split(/[,\s]+/)
+    .map(x => x.trim())
+    .filter(Boolean)
+    .map(Number)
+    .filter(n => n >= 1 && n <= 80);
+
+  if (nums.length === 0) return {};
+
+  return {
+    sum_value: nums.reduce((a, b) => a + b, 0),
+    span_value: Math.max(...nums) - Math.min(...nums),
+    big_count: nums.filter(n => n >= 41).length,
+    small_count: nums.filter(n => n <= 40).length,
+    odd_count: nums.filter(n => n % 2 === 1).length,
+    even_count: nums.filter(n => n % 2 === 0).length
+  };
+}
+
 function normalizeDrawRow(row) {
   const drawNo = Number(row?.draw_no);
   const drawTime = row?.draw_time || "";
@@ -24,7 +44,8 @@ function normalizeDrawRow(row) {
   return {
     draw_no: drawNo,
     draw_time: drawTime,
-    numbers
+    numbers,
+    ...calcFeatures(numbers)
   };
 }
 
