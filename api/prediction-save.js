@@ -2595,6 +2595,9 @@ async function buildFormalPrediction(selection = {}, triggerSource = 'unknown') 
   const insertPayload = {
     groups_json: persistedGroups,
     market_phase: String(phaseContext?.marketPhase || 'rotation').toLowerCase(),
+    market_signal: phaseContext?.marketPhase || null,
+    confidence_score: phaseContext?.confidenceScore != null ? toNum(phaseContext.confidenceScore, null) : null,
+    weight_profile: phaseContext?.weightProfile ? JSON.stringify(phaseContext.weightProfile) : null,
     mode: FORMAL_MODE,
     status: 'created',
     source_draw_no: String(sourceDrawNo),
