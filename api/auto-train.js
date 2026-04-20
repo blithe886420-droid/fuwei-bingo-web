@@ -2200,6 +2200,10 @@ async function createLatestTestPrediction(db, latestDrawNo, marketSnapshot = {})
     verdict: null,
     latest_draw_numbers: latestDrawNumbers,
     market_snapshot_json: marketSnapshot,
+    market_phase: String(marketSnapshot?.market_phase || 'rotation').toLowerCase(),
+    market_signal: marketSnapshot?.signal || marketSnapshot?.market_signal || null,
+    confidence_score: marketSnapshot?.confidence_score != null ? toNum(marketSnapshot.confidence_score, null) : null,
+    weight_profile: marketSnapshot?.weight_profile || null,
     created_at: new Date().toISOString()
   };
 
@@ -2300,6 +2304,8 @@ export default async function handler(req, res) {
     const shrink = await shrinkStrategiesIfNeeded(db);
 
     const create = await createLatestTestPrediction(db, latestDrawNo, marketSnapshot);
+
+    await runAutoCompareForLatest(db);
 
     const compareAfterCreate = await comparePendingPredictions(db);
 
@@ -2405,6 +2411,5 @@ async function runAutoCompareForLatest(db) {
   }
 }
 
-/* 👉 在主流程最後加上這一行（非常重要） */
+/* 👉 自動比對觸發（已啟用） */
 // await runAutoCompareForLatest(getSupabase());
-
