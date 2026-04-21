@@ -2012,6 +2012,17 @@ async function shrinkStrategiesIfNeeded(db) {
   const active = Array.isArray(activeRows) ? activeRows : [];
   const activeCount = active.length;
 
+  if (activeCount <= MIN_ACTIVE_STRATEGY) {
+    return {
+      ok: true,
+      active_count: activeCount,
+      disabled_count: 0,
+      disabled_keys: [],
+      skipped: true,
+      reason: 'below_min_active_strategy'
+    };
+  }
+
   if (activeCount <= SOFT_SHRINK_TRIGGER) {
     return {
       ok: true,
@@ -2086,10 +2097,16 @@ async function shrinkStrategiesIfNeeded(db) {
       return String(a.key).localeCompare(String(b.key));
     });
 
+  // 計算最多可以砍幾個，確保砍完之後 active 數量不低於 MIN_ACTIVE_STRATEGY
+  const maxAllowedDisable = Math.max(0, activeCount - MIN_ACTIVE_STRATEGY);
+
   let disableCount = 0;
   if (activeCount >= EXTREME_SHRINK_TRIGGER) disableCount = Math.min(24, candidates.length);
   else if (activeCount >= HARD_SHRINK_TRIGGER) disableCount = Math.min(12, candidates.length);
   else disableCount = Math.min(6, candidates.length);
+
+  // 關鍵保護：不能砍到低於 MIN_ACTIVE_STRATEGY
+  disableCount = Math.min(disableCount, maxAllowedDisable);
 
   const disabledKeys = candidates.slice(0, disableCount).map((row) => row.key).filter(Boolean);
 
