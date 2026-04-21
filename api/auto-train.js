@@ -1309,12 +1309,17 @@ function chooseDecision(row = {}) {
   const recent50Hit3Rate = normalizeHitRate(row.recent_50_hit3_rate);
   const hit4Rate = normalizeHitRate(row.hit4_rate);
   const marketBoost = toNum(row.market_boost, 1);
+  const recent50Roi = toNum(row.recent_50_roi, 0);
 
   if (roi <= DECISION_CONFIG.hardRejectRoi || score <= DECISION_CONFIG.hardRejectScore) {
     return 'reject';
   }
 
-  const weighted = score * marketBoost;
+  // 近期表現差時懲罰\uff1arecent_50_roi 越差\uff0c分數打折越大
+  const recentPenalty = recent50Roi < -0.5 ? 0.3 : recent50Roi < -0.3 ? 0.6 : recent50Roi < 0 ? 0.85 : 1.0;
+  const adjustedScore = score * recentPenalty;
+
+  const weighted = adjustedScore * marketBoost;
   const trustBonus = rounds >= DECISION_CONFIG.minRoundsForTrust ? 20 : 0;
   const explodeBonus = hit3Rate * 220 + recent50Hit3Rate * 300 + hit4Rate * 500;
   const avgBonus = avgHit >= DECISION_CONFIG.minAvgHitPreferred ? 35 : avgHit * 18;
@@ -1325,7 +1330,8 @@ function chooseDecision(row = {}) {
   if (
     decisionScore >= DECISION_CONFIG.strongScoreFloor * 2.8 ||
     (recent50Hit3Rate >= 0.06 && avgHit >= 1.15) ||
-    (hit3Rate >= 0.08 && marketBoost >= 1.1)
+    // 修正\uff1a歷史hit3高不夠\uff0c還需要近期也要有表現
+    (hit3Rate >= 0.08 && marketBoost >= 1.1 && recent50Hit3Rate >= 0.04)
   ) {
     return 'strong';
   }
@@ -1414,11 +1420,14 @@ function mergePoolWithStats(poolRows = [], statsRows = [], marketSnapshot = {}, 
     const avgHit =
       totalRounds > 0 ? toNum(stats?.total_hits, 0) / totalRounds : 0;
     const roi = totalCost > 0 ? totalProfit / totalCost : 0;
+    // 近期表現差時對基礎分數打折
+    const recentRoi50 = toNum(stats?.recent_50_roi, 0);
+    const scorePenalty = recentRoi50 < -0.5 ? 0.3 : recentRoi50 < -0.3 ? 0.6 : recentRoi50 < 0 ? 0.85 : 1.0;
     const score = round4(
-      totalProfit +
+      (totalProfit +
         avgHit * 100 +
         toNum(stats?.hit3, 0) * 70 +
-        toNum(stats?.hit4, 0) * 160
+        toNum(stats?.hit4, 0) * 160) * scorePenalty
     );
 
     const recent = calcRecentRates(stats);
