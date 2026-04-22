@@ -778,10 +778,11 @@ export default async function handler(req, res) {
   }
 
   try {
-    const [trainingRow, latestFormalRow, formalCandidateRow, leaderboard, recentDrawRows, allRecentComparedRows, recentFormalComparedRows] = await Promise.all([
+    const [trainingRow, latestFormalRow, formalCandidateRow, latest3StarRow, leaderboard, recentDrawRows, allRecentComparedRows, recentFormalComparedRows] = await Promise.all([
       getLatestRowByMode(TEST_MODE),
       getLatestRowByMode(FORMAL_MODE),
       getLatestRowByMode(FORMAL_CANDIDATE_MODE),
+      getLatestRowByMode('formal_3star'),
       getStrategyLeaderboard(50),
       getRecentDrawRows(20),
       getRecentComparedRows(10),
@@ -850,7 +851,9 @@ export default async function handler(req, res) {
       recent_formal_compare_periods: recentFormalComparePeriods,
       recent_formal_compared_rows: recentFormalComparedRows.slice(0, 200),
 
-      auto_train_result: null
+      auto_train_result: null,
+
+      latest_3star_row: latest3StarRow || null
     });
   } catch (error) {
     return res.status(500).json({
