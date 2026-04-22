@@ -2620,6 +2620,9 @@ async function buildFormalPrediction(selection = {}, triggerSource = 'unknown') 
 
   if (insertError) throw insertError;
 
+  // ===== 衍生3星預測（不影響主流程，失敗不拋錯）=====
+  await insertThreeStarDerivative(persistedGroups, sourceDrawNo, latestDraw, phaseContext);
+
   return {
     ok: true,
     api_version: API_VERSION,
@@ -2811,3 +2814,62 @@ function forceInjectPhaseIntoGroups(groups = [], phaseContext = null) {
 
 // ⚠️ 在正式寫入前，務必呼叫：
 // finalGroups = forceInjectPhaseIntoGroups(finalGroups, phaseContext);
+
+
+// ===== 3星衍生預測（Parallel 3-Star）=====
+async function insertThreeStarDerivative(formalGroups, sourceDrawNo, latestDraw, phaseContext) {
+  try {
+    const threeStarGroups = (Array.isArray(formalGroups) ? formalGroups : []).map((g, idx) => ({
+      key: g.key,
+      label: g.label,
+      nums: (Array.isArray(g.nums) ? g.nums : []).slice(0, 3),
+      reason: '3星衍生自4星預測',
+      meta: {
+        ...(g.meta || {}),
+        star_mode: 3,
+        derived_from: '4star',
+        slot_no: idx + 1
+      }
+    })).filter(g => g.nums.length === 3);
+
+    if (!threeStarGroups.length) return null;
+
+    const payload = {
+      groups_json: threeStarGroups,
+      market_phase: String(phaseContext?.marketPhase || 'rotation').toLowerCase(),
+      market_signal: phaseContext?.marketPhase || null,
+      confidence_score: phaseContext?.confidenceScore != null
+        ? toNum(phaseContext.confidenceScore, null) : null,
+      weight_profile: phaseContext?.weightProfile
+        ? JSON.stringify(phaseContext.weightProfile) : null,
+      mode: 'formal_3star',
+      status: 'created',
+      source_draw_no: String(sourceDrawNo),
+      target_periods: 1,
+      latest_draw_numbers: JSON.stringify(parseNums(latestDraw?.numbers || [])),
+      compare_result_json: null,
+      compare_result: null,
+      compared_history_json: [],
+      compared_draw_count: 0,
+      verdict: null,
+      compared_at: null
+    };
+
+    const { data, error } = await supabase
+      .from(PREDICTIONS_TABLE)
+      .insert(payload)
+      .select('id')
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      console.warn('[3star] 衍生寫入失敗:', error.message);
+      return null;
+    }
+    console.log('[3star] 衍生成功, id:', data?.id);
+    return data?.id || null;
+  } catch (err) {
+    console.warn('[3star] 衍生例外:', err.message);
+    return null;
+  }
+}
