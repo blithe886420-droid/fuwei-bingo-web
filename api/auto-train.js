@@ -23,7 +23,7 @@ const SUPABASE_KEY =
 const TEST_MODE = 'test';
 const FORMAL_MODE = 'formal';
 const FORMAL_CANDIDATE_MODE = 'formal_candidate';
-const COMPARE_MODES = [TEST_MODE, FORMAL_MODE];
+const COMPARE_MODES = [TEST_MODE, FORMAL_MODE, 'formal_3star'];
 
 const BET_GROUP_COUNT = 4;
 const TARGET_PERIODS = 1;
@@ -1754,12 +1754,14 @@ async function comparePendingPredictions(db) {
 
   const processedByMode = {
     [TEST_MODE]: 0,
-    [FORMAL_MODE]: 0
+    [FORMAL_MODE]: 0,
+    'formal_3star': 0
   };
 
   const waitingByMode = {
     [TEST_MODE]: 0,
-    [FORMAL_MODE]: 0
+    [FORMAL_MODE]: 0,
+    'formal_3star': 0
   };
 
   let processed = 0;
@@ -1789,7 +1791,8 @@ async function comparePendingPredictions(db) {
     const payload = buildComparePayload({
       groups: prediction?.groups_json || [],
       drawRows,
-      costPerGroupPerPeriod: COST_PER_GROUP_PER_PERIOD
+      costPerGroupPerPeriod: COST_PER_GROUP_PER_PERIOD,
+      starMode: prediction?.mode === 'formal_3star' ? 3 : 4
     });
 
     const comparedAt = new Date().toISOString();
