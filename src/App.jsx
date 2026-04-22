@@ -771,7 +771,9 @@ function normalizePredictionLatest(data) {
     formalBatchLimit,
     formalBatchCount,
     formalRemainingBatchCount,
-    formalSourceDrawNo
+    formalSourceDrawNo,
+
+    latest3StarRow: latest?.latest_3star_row || null
   };
 }
 
@@ -1166,7 +1168,8 @@ export default function App() {
       latestDrawNo: null
     },
     recentComparedRows: [],
-    recentFormalComparePeriods: []
+    recentFormalComparePeriods: [],
+    latest3StarRow: null
   });
   const [aiPlayer, setAiPlayer] = useState(normalizeAiPlayer({}));
   const [lastAutoTrainResult, setLastAutoTrainResult] = useState(null);
@@ -1221,7 +1224,8 @@ export default function App() {
         formalBatches: normalizedPrediction.formalBatches,
         marketStreakBuckets: normalizedPrediction.marketStreakBuckets,
         recentComparedRows: normalizedPrediction.recentComparedRows,
-        recentFormalComparePeriods: normalizedPrediction.recentFormalComparePeriods
+        recentFormalComparePeriods: normalizedPrediction.recentFormalComparePeriods,
+        latest3StarRow: normalizedPrediction.latest3StarRow || null
       });
 
       setAiPlayer(normalizeAiPlayer(aiPlayerRes));
@@ -1955,6 +1959,90 @@ export default function App() {
                 )}
               </div>
             </Card>
+
+            {/* ===== 3星賓果監控區塊 ===== */}
+            {(() => {
+              const row3 = predictionSummary.latest3StarRow;
+              const groups3 = toArray(row3?.groups_json);
+              const compareResult = row3?.compare_result;
+              const detail = toArray(compareResult?.detail);
+              const bestHit = toNum(row3?.hit_count, 0);
+              const isDone = row3?.compare_status === 'done';
+              const createdAt = row3?.created_at;
+              const sourceDrawNo = row3?.source_draw_no;
+              const hitColor = bestHit >= 3 ? '#dc2626' : bestHit >= 2 ? '#0f766e' : '#7b6e5c';
+
+              return (
+                <Card
+                  title="⭐ 3星賓果監控"
+                  subtitle="每期同步產生，觀察3星與4星哪個EV更好。"
+                  right={
+                    <div style={styles.metaChipRow}>
+                      <MetaChip label="狀態" value={isDone ? '已比對' : '待開獎'} />
+                      {sourceDrawNo && <MetaChip label="期號" value={sourceDrawNo} />}
+                    </div>
+                  }
+                >
+                  {!row3 ? (
+                    <div style={styles.emptyBox}>尚無3星資料，07:05開獎後自動產生。</div>
+                  ) : (
+                    <>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                        {groups3.map((g, idx) => {
+                          const nums = toArray(g?.nums);
+                          const matchDetail = detail.find(d => String(d?.strategy_key) === String(g?.key || g?.meta?.strategy_key));
+                          const hit = matchDetail ? toNum(matchDetail.hit, -1) : -1;
+                          const hitBg = hit >= 3 ? '#fef2f2' : hit >= 2 ? '#f0fdf4' : '#f8f1e6';
+                          const hitBorder = hit >= 3 ? '#fecaca' : hit >= 2 ? '#86efac' : '#d9c7a8';
+                          return (
+                            <div key={g?.key || idx} style={{ background: hitBg, border: `2px solid ${hitBorder}`, borderRadius: 14, padding: '12px 14px' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                                <div style={{ fontSize: 13, fontWeight: 700, color: '#0f766e' }}>
+                                  第 {idx + 1} 組｜{fmtText(g?.label || g?.key)}
+                                </div>
+                                {isDone && hit >= 0 && (
+                                  <div style={{ fontSize: 13, fontWeight: 900, color: hit >= 3 ? '#dc2626' : hit >= 2 ? '#0f766e' : '#7b6e5c' }}>
+                                    中{hit}
+                                  </div>
+                                )}
+                              </div>
+                              <div style={{ display: 'flex', gap: 8 }}>
+                                {nums.map((n) => (
+                                  <div key={n} style={{
+                                    ...styles.pickBall,
+                                    width: 44, height: 44, fontSize: 16
+                                  }}>
+                                    {formatBallNumber(n)}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      {isDone && (
+                        <div style={{ marginTop: 12, background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 14, padding: 14 }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div style={{ fontSize: 13, color: '#7b6e5c' }}>本期最佳命中</div>
+                            <div style={{ fontSize: 24, fontWeight: 900, color: hitColor }}>中{bestHit}</div>
+                          </div>
+                          <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 6 }}>
+                            3星獎金：{bestHit >= 3 ? '500元' : bestHit >= 2 ? '50元' : '0元'}｜成本：25元｜損益：{bestHit >= 3 ? '+475元' : bestHit >= 2 ? '+25元' : '-25元'}
+                          </div>
+                        </div>
+                      )}
+
+                      <div style={{ ...styles.metaChipRow, marginTop: 10 }}>
+                        <MetaChip label="更新時間" value={fmtDateTime(createdAt)} />
+                        <MetaChip label="比對" value={isDone ? '完成' : '等待開獎'} />
+                      </div>
+                    </>
+                  )}
+                </Card>
+              );
+            })()}
+
           </div>
         )}
 
