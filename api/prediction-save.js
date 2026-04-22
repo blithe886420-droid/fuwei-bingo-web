@@ -2621,7 +2621,7 @@ async function buildFormalPrediction(selection = {}, triggerSource = 'unknown') 
   if (insertError) throw insertError;
 
   // ===== 衍生3星預測（不影響主流程，失敗不拋錯）=====
-  await insertThreeStarDerivative(persistedGroups, sourceDrawNo, latestDraw, phaseContext);
+  await insertThreeStarDerivative(supabase, persistedGroups, sourceDrawNo, latestDraw, phaseContext);
 
   return {
     ok: true,
@@ -2817,7 +2817,7 @@ function forceInjectPhaseIntoGroups(groups = [], phaseContext = null) {
 
 
 // ===== 3星衍生預測（Parallel 3-Star）=====
-async function insertThreeStarDerivative(formalGroups, sourceDrawNo, latestDraw, phaseContext) {
+async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestDraw, phaseContext) {
   try {
     const threeStarGroups = (Array.isArray(formalGroups) ? formalGroups : []).map((g, idx) => ({
       key: g.key,
@@ -2832,7 +2832,10 @@ async function insertThreeStarDerivative(formalGroups, sourceDrawNo, latestDraw,
       }
     })).filter(g => g.nums.length === 3);
 
-    if (!threeStarGroups.length) return null;
+    if (!threeStarGroups.length) {
+      console.warn('[3star] 無有效3星組，跳過');
+      return null;
+    }
 
     const payload = {
       groups_json: threeStarGroups,
@@ -2855,7 +2858,7 @@ async function insertThreeStarDerivative(formalGroups, sourceDrawNo, latestDraw,
       compared_at: null
     };
 
-    const { data, error } = await supabase
+    const { data, error } = await db
       .from(PREDICTIONS_TABLE)
       .insert(payload)
       .select('id')
