@@ -1987,6 +1987,7 @@ export default function App() {
                     <div style={styles.emptyBox}>尚無3星資料，07:05開獎後自動產生。</div>
                   ) : (
                     <>
+                      {/* 4組號碼全部顯示 */}
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                         {groups3.map((g, idx) => {
                           const nums = toArray(g?.nums);
@@ -2021,17 +2022,20 @@ export default function App() {
                         })}
                       </div>
 
-                      {isDone && (
-                        <div style={{ marginTop: 12, background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 14, padding: 14 }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <div style={{ fontSize: 13, color: '#7b6e5c' }}>本期最佳命中</div>
-                            <div style={{ fontSize: 24, fontWeight: 900, color: hitColor }}>中{bestHit}</div>
-                          </div>
-                          <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 6 }}>
-                            3星獎金：{bestHit >= 3 ? '500元' : bestHit >= 2 ? '50元' : '0元'}｜成本：25元｜損益：{bestHit >= 3 ? '+475元' : bestHit >= 2 ? '+25元' : '-25元'}
+                      {/* 損益摘要 */}
+                      <div style={{ marginTop: 12, background: isDone && bestHit >= 2 ? '#f0fdf4' : '#f8f1e6', border: `2px solid ${isDone && bestHit >= 2 ? '#86efac' : '#d9c7a8'}`, borderRadius: 14, padding: 14 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <div style={{ fontSize: 13, color: '#7b6e5c' }}>{isDone ? '本期最佳命中' : '等待開獎比對'}</div>
+                          <div style={{ fontSize: 24, fontWeight: 900, color: isDone ? hitColor : '#7b6e5c' }}>
+                            {isDone ? `中${bestHit}` : '--'}
                           </div>
                         </div>
-                      )}
+                        <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 6 }}>
+                          {isDone
+                            ? `3星獎金：${bestHit >= 3 ? '500元' : bestHit >= 2 ? '50元' : '0元'}｜成本：25元｜損益：${bestHit >= 3 ? '+475元' : bestHit >= 2 ? '+25元' : '-25元'}`
+                            : '開獎後自動比對'}
+                        </div>
+                      </div>
 
                       <div style={{ ...styles.metaChipRow, marginTop: 10 }}>
                         <MetaChip label="更新時間" value={fmtDateTime(createdAt)} />
