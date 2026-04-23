@@ -773,7 +773,8 @@ function normalizePredictionLatest(data) {
     formalRemainingBatchCount,
     formalSourceDrawNo,
 
-    latest3StarRow: latest?.latest_3star_row || null
+    latest3StarRow: latest?.latest_3star_row || null,
+    recent3StarComparedRows: latest?.recent_3star_compared_rows || []
   };
 }
 
@@ -1169,7 +1170,8 @@ export default function App() {
     },
     recentComparedRows: [],
     recentFormalComparePeriods: [],
-    latest3StarRow: null
+    latest3StarRow: null,
+    recent3StarComparedRows: []
   });
   const [aiPlayer, setAiPlayer] = useState(normalizeAiPlayer({}));
   const [lastAutoTrainResult, setLastAutoTrainResult] = useState(null);
@@ -1225,7 +1227,8 @@ export default function App() {
         marketStreakBuckets: normalizedPrediction.marketStreakBuckets,
         recentComparedRows: normalizedPrediction.recentComparedRows,
         recentFormalComparePeriods: normalizedPrediction.recentFormalComparePeriods,
-        latest3StarRow: normalizedPrediction.latest3StarRow || null
+        latest3StarRow: normalizedPrediction.latest3StarRow || null,
+        recent3StarComparedRows: normalizedPrediction.recent3StarComparedRows || []
       });
 
       setAiPlayer(normalizeAiPlayer(aiPlayerRes));
@@ -1522,6 +1525,24 @@ export default function App() {
     if (fromApi.length) return fromApi.slice(0, 5);
     return buildRecentFormalComparePeriodsFromRows(comparedRows, 5);
   }, [predictionSummary?.recentFormalComparePeriods, comparedRows]);
+
+  // 3星比對歷史數據
+  const recent3StarRows = toArray(predictionSummary?.recent3StarComparedRows);
+  const recent3StarSummary = useMemo(() => {
+    const rows = recent3StarRows.filter(r => r?.compare_result?.detail);
+    let hit0 = 0, hit1 = 0, hit2 = 0, hit3 = 0, groupCount = 0;
+    rows.forEach(row => {
+      toArray(row?.compare_result?.detail).forEach(d => {
+        const h = toNum(d?.hit, 0);
+        groupCount++;
+        if (h === 0) hit0++;
+        else if (h === 1) hit1++;
+        else if (h === 2) hit2++;
+        else if (h >= 3) hit3++;
+      });
+    });
+    return { periodCount: rows.length, groupCount, hit0, hit1, hit2, hit3 };
+  }, [recent3StarRows]);
 
   const recentFormalCompareSummary = useMemo(() => {
     const summary = {
@@ -1911,16 +1932,17 @@ export default function App() {
             </Card>
 
             <Card
-              title="正式下注"
-              subtitle="正式下注改為直接採用後台 AI 當前決策；下方只顯示通過條件的有效組合，同一期最多三批，採寧缺勿濫。"
+              title="⭐ 3星下注號碼"
+              subtitle="本期3星預測號碼，每期自動產生，每組3個號碼。"
               right={
                 <div style={styles.metaChipRow}>
-                  <MetaChip label="每組" value={fmtMoney(COST_PER_GROUP)} />
-                  <MetaChip label="有效組數" value={formalGroupCoverageText} />
-                  <MetaChip label="剩餘批次" value={formalRemainingBatchCount} />
+                  <MetaChip label="每組" value="25元" />
+                  <MetaChip label="期號" value={fmtText(predictionSummary.latest3StarRow?.source_draw_no, '--')} />
+                  <MetaChip label="狀態" value={predictionSummary.latest3StarRow?.compare_status === 'done' ? '已比對' : '待開獎'} />
                 </div>
               }
             >
+              {/* 保留原本的手動產生按鈕（仍可使用） */}
               <div style={styles.formalActionBar}>
                 <button
                   style={{
@@ -1933,31 +1955,73 @@ export default function App() {
                 >
                   {formalButtonLabel}
                 </button>
-
                 <div style={styles.formalActionHint}>
-                  條件：{displayedAnalysisPeriod}期｜{getStrategyModeLabel(displayedStrategyMode)}｜{getRiskModeLabel(displayedRiskMode)}｜{formalGroupRealityText}
+                  手動產生正式下注（同時衍生3星）
                 </div>
               </div>
 
-              <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
-                {formalBatches.length ? (
-                  formalBatches.map((batch, idx) => (
-                    <FormalBatchCard key={batch?.id || idx} batch={batch} idx={idx} />
-                  ))
-                ) : formalDisplayGroups.length ? (
-                  <div style={styles.groupGrid}>
-                    {formalDisplayGroups.map((group, idx) => (
-                      <CompactBetCard
-                        key={`${group?.key || idx}_${idx}`}
-                        group={group}
-                        idx={idx}
-                      />
-                    ))}
+              {/* 3星號碼顯示 */}
+              {(() => {
+                const row3 = predictionSummary.latest3StarRow;
+                const groups3 = toArray(row3?.groups_json);
+                const compareResult = row3?.compare_result;
+                const detail = toArray(compareResult?.detail);
+                const bestHit = toNum(row3?.hit_count, 0);
+                const isDone = row3?.compare_status === 'done';
+                const hitColor = bestHit >= 3 ? '#dc2626' : bestHit >= 2 ? '#0f766e' : '#7b6e5c';
+
+                if (!row3) return (
+                  <div style={{ ...styles.emptyBox, marginTop: 16 }}>尚無3星資料，等待自動產生中...</div>
+                );
+
+                return (
+                  <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    {groups3.map((g, idx) => {
+                      const nums = toArray(g?.nums);
+                      const matchDetail = detail.find(d => String(d?.strategy_key) === String(g?.key || g?.meta?.strategy_key));
+                      const hit = matchDetail ? toNum(matchDetail.hit, -1) : -1;
+                      const hitBg = hit >= 3 ? '#fef2f2' : hit >= 2 ? '#f0fdf4' : '#f8f1e6';
+                      const hitBorder = hit >= 3 ? '#fecaca' : hit >= 2 ? '#86efac' : '#d9c7a8';
+                      return (
+                        <div key={g?.key || idx} style={{ background: hitBg, border: `2px solid ${hitBorder}`, borderRadius: 14, padding: '12px 14px' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                            <div style={{ fontSize: 13, fontWeight: 700, color: '#0f766e' }}>
+                              第 {idx + 1} 組｜{fmtText(g?.label || g?.key)}
+                            </div>
+                            {isDone && hit >= 0 && (
+                              <div style={{ fontSize: 13, fontWeight: 900, color: hit >= 3 ? '#dc2626' : hit >= 2 ? '#0f766e' : '#7b6e5c' }}>
+                                中{hit}
+                              </div>
+                            )}
+                          </div>
+                          <div style={{ display: 'flex', gap: 8 }}>
+                            {nums.map((n) => (
+                              <div key={n} style={{ ...styles.pickBall, width: 48, height: 48, fontSize: 17 }}>
+                                {formatBallNumber(n)}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                    {/* 損益摘要 */}
+                    <div style={{ background: isDone && bestHit >= 2 ? '#f0fdf4' : '#f8f1e6', border: `2px solid ${isDone && bestHit >= 2 ? '#86efac' : '#d9c7a8'}`, borderRadius: 14, padding: 14 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div style={{ fontSize: 13, color: '#7b6e5c' }}>{isDone ? '本期最佳命中' : '等待開獎比對'}</div>
+                        <div style={{ fontSize: 24, fontWeight: 900, color: isDone ? hitColor : '#7b6e5c' }}>
+                          {isDone ? `中${bestHit}` : '--'}
+                        </div>
+                      </div>
+                      <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 6 }}>
+                        {isDone
+                          ? `3星獎金：${bestHit >= 3 ? '500元' : bestHit >= 2 ? '50元' : '0元'}｜成本：25元｜損益：${bestHit >= 3 ? '+475元' : bestHit >= 2 ? '+25元' : '-25元'}`
+                          : '開獎後自動比對'}
+                      </div>
+                    </div>
                   </div>
-                ) : (
-                  <div style={styles.emptyBox}>尚未產生通過條件的正式下注組合，先按上方按鈕建立一批。</div>
-                )}
-              </div>
+                );
+              })()}
             </Card>
 
             {/* ===== 3星賓果監控區塊 ===== */}
@@ -2054,38 +2118,38 @@ export default function App() {
 
           <div style={styles.sectionStack}>
             <Card
-              title="逐組比對戰績"
-              subtitle="第一頁看決策輸出，第二頁看每批每組實戰比對，這樣 AI 才交得出成績單。"
+              title="⭐ 3星比對戰績"
+              subtitle="最近3星預測的實際命中統計，中2得50元、中3得500元。"
             >
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10, marginBottom: 4 }}>
                 <div style={{ background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 14, padding: 14 }}>
                   <div style={{ fontSize: 13, color: '#7b6e5c', marginBottom: 4 }}>追蹤期數</div>
-                  <div style={{ fontSize: 28, fontWeight: 900, color: '#23413a', lineHeight: 1.1 }}>{recentFormalCompareSummary.periodCount} <span style={{ fontSize: 14 }}>期</span></div>
-                  <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 4 }}>最近五期 formal</div>
+                  <div style={{ fontSize: 28, fontWeight: 900, color: '#23413a', lineHeight: 1.1 }}>{recent3StarSummary.periodCount} <span style={{ fontSize: 14 }}>期</span></div>
+                  <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 4 }}>3星已比對期數</div>
                 </div>
                 <div style={{ background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 14, padding: 14 }}>
                   <div style={{ fontSize: 13, color: '#7b6e5c', marginBottom: 4 }}>總組數</div>
-                  <div style={{ fontSize: 28, fontWeight: 900, color: '#0f766e', lineHeight: 1.1 }}>{recentFormalCompareSummary.groupCount} <span style={{ fontSize: 14 }}>組</span></div>
-                  <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 4 }}>{recentFormalCompareSummary.batchCount} 批次</div>
+                  <div style={{ fontSize: 28, fontWeight: 900, color: '#0f766e', lineHeight: 1.1 }}>{recent3StarSummary.groupCount} <span style={{ fontSize: 14 }}>組</span></div>
+                  <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 4 }}>每期4組3星</div>
                 </div>
                 <div style={{ background: '#f8f1e6', border: '2px solid #fecaca', borderRadius: 14, padding: 14 }}>
                   <div style={{ fontSize: 13, color: '#7b6e5c', marginBottom: 4 }}>中3組數</div>
-                  <div style={{ fontSize: 28, fontWeight: 900, color: '#dc2626', lineHeight: 1.1 }}>{recentFormalCompareSummary.hit3} <span style={{ fontSize: 14 }}>組</span></div>
-                  <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 4 }}>中4 {recentFormalCompareSummary.hit4} 組</div>
+                  <div style={{ fontSize: 28, fontWeight: 900, color: '#dc2626', lineHeight: 1.1 }}>{recent3StarSummary.hit3} <span style={{ fontSize: 14 }}>組</span></div>
+                  <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 4 }}>+475元/組</div>
                 </div>
                 <div style={{ background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 14, padding: 14 }}>
-                  <div style={{ fontSize: 13, color: '#7b6e5c', marginBottom: 4 }}>中2+組數</div>
-                  <div style={{ fontSize: 28, fontWeight: 900, color: '#0f766e', lineHeight: 1.1 }}>{recentFormalCompareSummary.hit2 + recentFormalCompareSummary.hit3 + recentFormalCompareSummary.hit4} <span style={{ fontSize: 14 }}>組</span></div>
-                  <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 4 }}>中2 {recentFormalCompareSummary.hit2} 組</div>
+                  <div style={{ fontSize: 13, color: '#7b6e5c', marginBottom: 4 }}>中2組數</div>
+                  <div style={{ fontSize: 28, fontWeight: 900, color: '#0f766e', lineHeight: 1.1 }}>{recent3StarSummary.hit2} <span style={{ fontSize: 14 }}>組</span></div>
+                  <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 4 }}>+25元/組</div>
                 </div>
               </div>
 
               <div style={{ ...styles.metaChipRow, marginTop: 12 }}>
-                <MetaChip label="中0" value={recentFormalCompareSummary.hit0} />
-                <MetaChip label="中1" value={recentFormalCompareSummary.hit1} />
-                <MetaChip label="中2" value={recentFormalCompareSummary.hit2} />
-                <MetaChip label="中3" value={recentFormalCompareSummary.hit3} />
-                <MetaChip label="中4" value={recentFormalCompareSummary.hit4} />
+                <MetaChip label="中0" value={recent3StarSummary.hit0} />
+                <MetaChip label="中1" value={recent3StarSummary.hit1} />
+                <MetaChip label="中2" value={recent3StarSummary.hit2} />
+                <MetaChip label="中3" value={recent3StarSummary.hit3} />
+                <MetaChip label="中2+率" value={recent3StarSummary.groupCount ? `${Math.round((recent3StarSummary.hit2 + recent3StarSummary.hit3) / recent3StarSummary.groupCount * 100)}%` : '--'} />
               </div>
             </Card>
 
