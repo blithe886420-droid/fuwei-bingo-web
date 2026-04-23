@@ -1882,12 +1882,12 @@ export default function App() {
                   <div style={{ background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 14, padding: 14 }}>
                     <div style={{ fontSize: 13, color: '#7b6e5c', marginBottom: 4 }}>中2</div>
                     <div style={{ fontSize: 28, fontWeight: 900, color: '#0f766e', lineHeight: 1.1 }}>{hitFeedback.hit2} <span style={{ fontSize: 14 }}>期</span></div>
-                    <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 4 }}>中2+ {hitFeedback.sampleCount ? Math.round(((hitFeedback.hit2 + hitFeedback.hit3 + hitFeedback.hit4Plus) / hitFeedback.sampleCount) * 100) : 0}%</div>
+                    <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 4 }}>中2+ {hitFeedback.sampleCount ? Math.round(((hitFeedback.hit2 + hitFeedback.hit3) / hitFeedback.sampleCount) * 100) : 0}%</div>
                   </div>
                   <div style={{ background: '#f8f1e6', border: '2px solid #fecaca', borderRadius: 14, padding: 14 }}>
                     <div style={{ fontSize: 13, color: '#7b6e5c', marginBottom: 4 }}>中3</div>
                     <div style={{ fontSize: 28, fontWeight: 900, color: '#dc2626', lineHeight: 1.1 }}>{hitFeedback.hit3} <span style={{ fontSize: 14 }}>期</span></div>
-                    <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 4 }}>中3+ {hitFeedback.sampleCount ? Math.round(((hitFeedback.hit3 + hitFeedback.hit4Plus) / hitFeedback.sampleCount) * 100) : 0}%</div>
+                    <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 4 }}>中3率 {hitFeedback.sampleCount ? Math.round((hitFeedback.hit3 / hitFeedback.sampleCount) * 100) : 0}%</div>
                   </div>
                   <div style={{ background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 14, padding: 14 }}>
                     <div style={{ fontSize: 13, color: '#7b6e5c', marginBottom: 4 }}>中1</div>
@@ -1897,7 +1897,7 @@ export default function App() {
                   <div style={{ background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 14, padding: 14 }}>
                     <div style={{ fontSize: 13, color: '#7b6e5c', marginBottom: 4 }}>樣本</div>
                     <div style={{ fontSize: 28, fontWeight: 900, color: '#23413a', lineHeight: 1.1 }}>{hitFeedback.sampleCount} <span style={{ fontSize: 14 }}>期</span></div>
-                    <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 4 }}>中0 {hitFeedback.hit0} / 中4+ {hitFeedback.hit4Plus}</div>
+                    <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 4 }}>中0 {hitFeedback.hit0}</div>
                   </div>
                 </div>
                 <div style={{ ...styles.metaChipRow, marginTop: 12 }}>
@@ -1926,6 +1926,52 @@ export default function App() {
                   <div style={{ background: '#efe8db', borderRadius: 10, padding: '10px 12px' }}>
                     <div style={{ fontSize: 11, color: '#7b6e5c', marginBottom: 3 }}>盤相</div>
                     <div style={{ fontSize: 16, fontWeight: 800, color: '#23413a' }}>{fmtText(displayedSelection.marketPhase, '--')}</div>
+                  </div>
+                </div>
+              </div>
+            </Card>
+
+            <Card
+              title="近期連續號碼（連2／連3／連4）"
+              subtitle="連續出現的號碼，可作為三星選號參考。"
+            >
+              <div style={styles.marketGrid3}>
+                <div style={styles.zoneBox}>
+                  <div style={styles.zoneLabel}>連4+</div>
+                  <div style={styles.marketBallsWrap}>
+                    {streak4Buckets.length ? (
+                      streak4Buckets.map((item) => (
+                        <StreakBall key={`streak4_${item.num}`} n={item.num} streak={item.streak} />
+                      ))
+                    ) : (
+                      <div style={styles.emptyBox}>目前沒有連4以上號碼。</div>
+                    )}
+                  </div>
+                </div>
+
+                <div style={styles.zoneBox}>
+                  <div style={styles.zoneLabel}>連3</div>
+                  <div style={styles.marketBallsWrap}>
+                    {streak3Buckets.length ? (
+                      streak3Buckets.map((item) => (
+                        <StreakBall key={`streak3_${item.num}`} n={item.num} streak={item.streak} />
+                      ))
+                    ) : (
+                      <div style={styles.emptyBox}>目前沒有連3號碼。</div>
+                    )}
+                  </div>
+                </div>
+
+                <div style={styles.zoneBox}>
+                  <div style={styles.zoneLabel}>連2</div>
+                  <div style={styles.marketBallsWrap}>
+                    {streak2Buckets.length ? (
+                      streak2Buckets.map((item) => (
+                        <StreakBall key={`streak2_${item.num}`} n={item.num} streak={item.streak} />
+                      ))
+                    ) : (
+                      <div style={styles.emptyBox}>目前沒有連2號碼。</div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -2024,92 +2070,7 @@ export default function App() {
               })()}
             </Card>
 
-            {/* ===== 3星賓果監控區塊 ===== */}
-            {(() => {
-              const row3 = predictionSummary.latest3StarRow;
-              const groups3 = toArray(row3?.groups_json);
-              const compareResult = row3?.compare_result;
-              const detail = toArray(compareResult?.detail);
-              const bestHit = toNum(row3?.hit_count, 0);
-              const isDone = row3?.compare_status === 'done';
-              const createdAt = row3?.created_at;
-              const sourceDrawNo = row3?.source_draw_no;
-              const hitColor = bestHit >= 3 ? '#dc2626' : bestHit >= 2 ? '#0f766e' : '#7b6e5c';
 
-              return (
-                <Card
-                  title="⭐ 3星賓果監控"
-                  subtitle="每期同步產生，觀察3星與4星哪個EV更好。"
-                  right={
-                    <div style={styles.metaChipRow}>
-                      <MetaChip label="狀態" value={isDone ? '已比對' : '待開獎'} />
-                      {sourceDrawNo && <MetaChip label="期號" value={sourceDrawNo} />}
-                    </div>
-                  }
-                >
-                  {!row3 ? (
-                    <div style={styles.emptyBox}>尚無3星資料，07:05開獎後自動產生。</div>
-                  ) : (
-                    <>
-                      {/* 4組號碼全部顯示 */}
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                        {groups3.map((g, idx) => {
-                          const nums = toArray(g?.nums);
-                          const matchDetail = detail.find(d => String(d?.strategy_key) === String(g?.key || g?.meta?.strategy_key));
-                          const hit = matchDetail ? toNum(matchDetail.hit, -1) : -1;
-                          const hitBg = hit >= 3 ? '#fef2f2' : hit >= 2 ? '#f0fdf4' : '#f8f1e6';
-                          const hitBorder = hit >= 3 ? '#fecaca' : hit >= 2 ? '#86efac' : '#d9c7a8';
-                          return (
-                            <div key={g?.key || idx} style={{ background: hitBg, border: `2px solid ${hitBorder}`, borderRadius: 14, padding: '12px 14px' }}>
-                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                                <div style={{ fontSize: 13, fontWeight: 700, color: '#0f766e' }}>
-                                  第 {idx + 1} 組｜{fmtText(g?.label || g?.key)}
-                                </div>
-                                {isDone && hit >= 0 && (
-                                  <div style={{ fontSize: 13, fontWeight: 900, color: hit >= 3 ? '#dc2626' : hit >= 2 ? '#0f766e' : '#7b6e5c' }}>
-                                    中{hit}
-                                  </div>
-                                )}
-                              </div>
-                              <div style={{ display: 'flex', gap: 8 }}>
-                                {nums.map((n) => (
-                                  <div key={n} style={{
-                                    ...styles.pickBall,
-                                    width: 44, height: 44, fontSize: 16
-                                  }}>
-                                    {formatBallNumber(n)}
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-
-                      {/* 損益摘要 */}
-                      <div style={{ marginTop: 12, background: isDone && bestHit >= 2 ? '#f0fdf4' : '#f8f1e6', border: `2px solid ${isDone && bestHit >= 2 ? '#86efac' : '#d9c7a8'}`, borderRadius: 14, padding: 14 }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <div style={{ fontSize: 13, color: '#7b6e5c' }}>{isDone ? '本期最佳命中' : '等待開獎比對'}</div>
-                          <div style={{ fontSize: 24, fontWeight: 900, color: isDone ? hitColor : '#7b6e5c' }}>
-                            {isDone ? `中${bestHit}` : '--'}
-                          </div>
-                        </div>
-                        <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 6 }}>
-                          {isDone
-                            ? `3星獎金：${bestHit >= 3 ? '500元' : bestHit >= 2 ? '50元' : '0元'}｜成本：25元｜損益：${bestHit >= 3 ? '+475元' : bestHit >= 2 ? '+25元' : '-25元'}`
-                            : '開獎後自動比對'}
-                        </div>
-                      </div>
-
-                      <div style={{ ...styles.metaChipRow, marginTop: 10 }}>
-                        <MetaChip label="更新時間" value={fmtDateTime(createdAt)} />
-                        <MetaChip label="比對" value={isDone ? '完成' : '等待開獎'} />
-                      </div>
-                    </>
-                  )}
-                </Card>
-              );
-            })()}
 
           </div>
         )}
@@ -2153,90 +2114,7 @@ export default function App() {
               </div>
             </Card>
 
-            <Card
-              title="最近五期逐期比對"
-              subtitle="每一期展開後可看到每一批、每一組的命中數與對中號碼。"
-            >
-              <div style={styles.comparePeriodsWrap}>
-                {recentFormalComparePeriods.length ? (
-                  recentFormalComparePeriods.map((period, periodIdx) => (
-                    <div key={`${period?.compare_draw_no || periodIdx}`} style={styles.comparePeriodCard}>
-                      <div style={styles.comparePeriodHead}>
-                        <div>
-                          <div style={styles.comparePeriodTitle}>對獎期數：{fmtText(period?.compare_draw_no)}</div>
-                          <div style={styles.comparePeriodSub}>
-                            開獎時間：{fmtDateTime(period?.compare_draw_time)} ｜ 來源期數：{fmtText(period?.source_draw_no)}
-                          </div>
-                        </div>
 
-                        <div style={styles.metaChipRow}>
-                          <MetaChip label="批次" value={toNum(period?.batch_count, 0)} />
-                          <MetaChip label="組數" value={toNum(period?.group_count, 0)} />
-                          <MetaChip label="中2+" value={toNum(period?.hit2_count, 0) + toNum(period?.hit3_count, 0) + toNum(period?.hit4_count, 0)} />
-                        </div>
-                      </div>
-
-                      <div style={{ ...styles.metaChipRow, marginTop: 10 }}>
-                        <MetaChip label="中0" value={toNum(period?.hit0_count, 0)} />
-                        <MetaChip label="中1" value={toNum(period?.hit1_count, 0)} />
-                        <MetaChip label="中2" value={toNum(period?.hit2_count, 0)} />
-                        <MetaChip label="中3" value={toNum(period?.hit3_count, 0)} />
-                        <MetaChip label="中4" value={toNum(period?.hit4_count, 0)} />
-                      </div>
-
-                      <div style={styles.marketBallsWrap}>
-                        {toArray(period?.compare_draw_numbers).length ? (
-                          toArray(period?.compare_draw_numbers).map((n) => <MarketBall key={`${period?.compare_draw_no}_${n}`} n={n} highlight />)
-                        ) : (
-                          <div style={styles.emptyBox}>目前沒有該期開獎號碼。</div>
-                        )}
-                      </div>
-
-                      <div style={styles.compareBatchStack}>
-                        {toArray(period?.batches).map((batch, batchIdx) => (
-                          <div key={`${period?.compare_draw_no}_${batch?.id || batchIdx}`} style={styles.compareBatchCard}>
-                            <div style={styles.compareBatchHead}>
-                              <div style={styles.compareBatchTitle}>第 {fmtText(batch?.formal_batch_no, batchIdx + 1)} 批</div>
-                              <div style={styles.compareBatchSub}>建立時間：{fmtDateTime(batch?.created_at)}</div>
-                            </div>
-
-                            <div style={styles.compareGroupGrid}>
-                              {toArray(batch?.groups).map((group, groupIdx) => {
-                                const hitCount = toNum(group?.hit_count, 0);
-                                return (
-                                  <div key={`${batch?.id || batchIdx}_${group?.key || groupIdx}`} style={styles.compareGroupCard}>
-                                    <div style={styles.compareGroupHead}>
-                                      <div style={styles.compareGroupTitle}>第 {fmtText(group?.group_index, groupIdx + 1)} 組</div>
-                                      <div style={{ ...styles.compareHitBadge, ...(hitCount >= 2 ? styles.compareHitBadgeStrong : hitCount >= 1 ? styles.compareHitBadgeMid : {}) }}>
-                                        中 {hitCount}
-                                      </div>
-                                    </div>
-
-                                    <div style={styles.groupBalls}>
-                                      {toArray(group?.nums).map((n) => (
-                                        <div key={`${batch?.id || batchIdx}_${group?.key || groupIdx}_${n}`} style={styles.pickBall}>
-                                          {formatBallNumber(n)}
-                                        </div>
-                                      ))}
-                                    </div>
-
-                                    <div style={{ ...styles.metaChipRow, marginTop: 10 }}>
-                                      <MetaChip label="對中" value={toArray(group?.matched_numbers).length ? toArray(group?.matched_numbers).map((n) => formatBallNumber(n)).join(' ') : '—'} />
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  ))
-                ) : (
-                  <div style={styles.emptyBox}>目前還沒有最近五期的逐組比對資料，等 formal 組合完成對獎後會自動累積。</div>
-                )}
-              </div>
-            </Card>
           </div>
         )}
 
@@ -2310,50 +2188,6 @@ export default function App() {
                       </div>
                     );
                   })}
-                </div>
-              </div>
-
-              <div style={styles.marketPanel}>
-                <div style={styles.marketPanelTitle}>近期連續號碼（連2／連3／連4）</div>
-                <div style={styles.marketGrid3}>
-                  <div style={styles.zoneBox}>
-                    <div style={styles.zoneLabel}>連4+</div>
-                    <div style={styles.marketBallsWrap}>
-                      {streak4Buckets.length ? (
-                        streak4Buckets.map((item) => (
-                          <StreakBall key={`streak4_${item.num}`} n={item.num} streak={item.streak} />
-                        ))
-                      ) : (
-                        <div style={styles.emptyBox}>目前沒有連4以上號碼。</div>
-                      )}
-                    </div>
-                  </div>
-
-                  <div style={styles.zoneBox}>
-                    <div style={styles.zoneLabel}>連3</div>
-                    <div style={styles.marketBallsWrap}>
-                      {streak3Buckets.length ? (
-                        streak3Buckets.map((item) => (
-                          <StreakBall key={`streak3_${item.num}`} n={item.num} streak={item.streak} />
-                        ))
-                      ) : (
-                        <div style={styles.emptyBox}>目前沒有連3號碼。</div>
-                      )}
-                    </div>
-                  </div>
-
-                  <div style={styles.zoneBox}>
-                    <div style={styles.zoneLabel}>連2</div>
-                    <div style={styles.marketBallsWrap}>
-                      {streak2Buckets.length ? (
-                        streak2Buckets.map((item) => (
-                          <StreakBall key={`streak2_${item.num}`} n={item.num} streak={item.streak} />
-                        ))
-                      ) : (
-                        <div style={styles.emptyBox}>目前沒有連2號碼。</div>
-                      )}
-                    </div>
-                  </div>
                 </div>
               </div>
 
