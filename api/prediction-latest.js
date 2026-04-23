@@ -561,6 +561,26 @@ async function getRecentFormalComparedRows(limit = 5) {
     .slice(0, fetchLimit);
 }
 
+async function getRecent3StarComparedRows(limit = 10) {
+  const safeLimit = Math.max(1, Math.min(20, toInt(limit, 10)));
+
+  const { data, error } = await supabase
+    .from(PREDICTIONS_TABLE)
+    .select('*')
+    .eq('mode', 'formal_3star')
+    .eq('status', 'compared')
+    .not('compare_result_json', 'is', null)
+    .order('created_at', { ascending: false })
+    .limit(safeLimit * 4);
+
+  if (error) throw error;
+
+  return (Array.isArray(data) ? data : [])
+    .map(normalizePredictionRow)
+    .filter(Boolean)
+    .slice(0, safeLimit * 4);
+}
+
 async function getStrategyLeaderboard(limit = 50) {
   const [{ data: statsRows, error: statsError }, { data: poolRows, error: poolError }] = await Promise.all([
     supabase
@@ -778,7 +798,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const [trainingRow, latestFormalRow, formalCandidateRow, latest3StarRow, leaderboard, recentDrawRows, allRecentComparedRows, recentFormalComparedRows] = await Promise.all([
+    const [trainingRow, latestFormalRow, formalCandidateRow, latest3StarRow, leaderboard, recentDrawRows, allRecentComparedRows, recentFormalComparedRows, recent3StarComparedRows] = await Promise.all([
       getLatestRowByMode(TEST_MODE),
       getLatestRowByMode(FORMAL_MODE),
       getLatestRowByMode(FORMAL_CANDIDATE_MODE),
@@ -786,7 +806,8 @@ export default async function handler(req, res) {
       getStrategyLeaderboard(50),
       getRecentDrawRows(20),
       getRecentComparedRows(10),
-      getRecentFormalComparedRows(5)
+      getRecentFormalComparedRows(5),
+      getRecent3StarComparedRows(10)
     ]);
 
     const formalSourceDrawNo =
@@ -853,7 +874,8 @@ export default async function handler(req, res) {
 
       auto_train_result: null,
 
-      latest_3star_row: latest3StarRow || null
+      latest_3star_row: latest3StarRow || null,
+      recent_3star_compared_rows: recent3StarComparedRows || []
     });
   } catch (error) {
     return res.status(500).json({
