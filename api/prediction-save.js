@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import { buildBingoV1Strategies } from '../lib/buildBingoV1Strategies.js';
 
 const API_VERSION = 'prediction-save-e-phase-final-write-v3-force-insert';
 
@@ -2819,15 +2820,24 @@ function forceInjectPhaseIntoGroups(groups = [], phaseContext = null) {
 // ===== 3星衍生預測（Parallel 3-Star）=====
 async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestDraw, phaseContext) {
   try {
-    const threeStarGroups = (Array.isArray(formalGroups) ? formalGroups : []).map((g, idx) => ({
-      key: g.key,
-      label: g.label,
-      nums: (Array.isArray(g.nums) ? g.nums : []).slice(0, 3),
-      reason: '3星衍生自4星預測',
+    // ✅ 真三星：直接用 buildBingoV1Strategies starCount=3 獨立產生，不從四星截頭
+    const marketRows = await db
+      .from(DRAWS_TABLE)
+      .select('draw_no, numbers, draw_time')
+      .order('draw_no', { ascending: false })
+      .limit(160);
+
+    const result3star = buildBingoV1Strategies(marketRows.data || [], {}, 3);
+
+    const threeStarGroups = (result3star.strategies || []).map((s, idx) => ({
+      key: s.key,
+      label: s.label,
+      nums: (Array.isArray(s.nums) ? s.nums : []).slice(0, 3),
+      reason: '真三星直接選號',
       meta: {
-        ...(g.meta || {}),
+        ...(s.meta || {}),
         star_mode: 3,
-        derived_from: '4star',
+        derived_from: 'buildBingoV1Strategies_3star',
         slot_no: idx + 1
       }
     })).filter(g => g.nums.length === 3);
