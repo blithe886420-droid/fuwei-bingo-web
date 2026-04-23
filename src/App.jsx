@@ -140,7 +140,7 @@ function normalizeGroups(rawGroups) {
       if (!group || typeof group !== 'object') return null;
 
       const nums = parseNums(group?.nums || group?.numbers || []);
-      if (nums.length !== 4) return null;
+      if (nums.length < 3) return null;  // ✅ 支援三星(3個)和四星(4個)
 
       const meta = group?.meta && typeof group.meta === 'object' ? group.meta : {};
 
@@ -544,7 +544,7 @@ function extractComparedGroupsFromRow(row) {
   if (detailCandidates.length) {
     return detailCandidates
       .map((detail, idx) => normalizeComparedGroupItem(detail, groups[idx] || null, idx, compareDrawNumbers))
-      .filter((item) => item.nums.length === 4 || item.hit_count > 0)
+      .filter((item) => item.nums.length >= 3 || item.hit_count > 0)  // ✅ 支援三星
       .sort((a, b) => a.group_index - b.group_index);
   }
 
