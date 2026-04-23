@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { buildComparePayload } from '../lib/buildComparePayload.js';
+import { buildBingoV1Strategies } from '../lib/buildBingoV1Strategies.js';
 import { recordStrategyCompareResult } from '../lib/strategyStatsRecorder.js';
 import { ensureStrategyPoolStrategies } from '../lib/ensureStrategyPoolStrategies.js';
 import { buildRecentMarketSignalSnapshot, buildStrategyDecisionFromSnapshot } from '../lib/marketSignalEngine.js';
@@ -717,30 +718,37 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
     if (insertFormalError) throw insertFormalError;
   }
 
-  // ===== 3星衍生（每期自動產生，不影響主流程）=====
+  // ===== ✅ 真三星預測（直接用 buildBingoV1Strategies starCount=3 獨立產生，不再從四星截頭）=====
   try {
-    const threeStarGroups = (Array.isArray(finalGroups) ? finalGroups : []).map((g, idx) => ({
-      key: g.key,
-      label: g.label,
-      nums: (Array.isArray(g.nums) ? g.nums : []).slice(0, 3),
-      reason: '3星衍生自auto-train',
-      meta: {
-        ...(g.meta || {}),
-        star_mode: 3,
-        derived_from: 'auto_train',
-        slot_no: idx + 1
-      }
-    })).filter(g => g.nums.length === 3);
+    const check3star = await db
+      .from(PREDICTIONS_TABLE)
+      .select('id')
+      .eq('mode', 'formal_3star')
+      .eq('source_draw_no', sourceDrawNo)
+      .maybeSingle();
 
-    if (threeStarGroups.length > 0) {
-      const check3star = await db
-        .from(PREDICTIONS_TABLE)
-        .select('id')
-        .eq('mode', 'formal_3star')
-        .eq('source_draw_no', sourceDrawNo)
-        .maybeSingle();
+    if (!check3star?.data?.id) {
+      const marketRows = await db
+        .from(DRAWS_TABLE)
+        .select('*')
+        .order('draw_no', { ascending: false })
+        .limit(MARKET_LOOKBACK_LIMIT);
 
-      if (!check3star?.data?.id) {
+      const result3star = buildBingoV1Strategies(marketRows.data || [], {}, 3);
+      const threeStarGroups = (result3star.strategies || []).map((s, idx) => ({
+        key: s.key,
+        label: s.label,
+        nums: (Array.isArray(s.nums) ? s.nums : []).slice(0, 3),
+        reason: '真三星直接選號',
+        meta: {
+          ...(s.meta || {}),
+          star_mode: 3,
+          derived_from: 'buildBingoV1Strategies_3star',
+          slot_no: idx + 1
+        }
+      })).filter(g => g.nums.length === 3);
+
+      if (threeStarGroups.length > 0) {
         const payload3star = {
           mode: 'formal_3star',
           status: 'created',
@@ -757,11 +765,11 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
           created_at: nowIso
         };
         await db.from(PREDICTIONS_TABLE).insert(payload3star);
-        console.log('[3star] auto-train 衍生成功, draw:', sourceDrawNo);
+        console.log('[3star] 真三星選號成功, draw:', sourceDrawNo);
       }
     }
   } catch (err3) {
-    console.warn('[3star] auto-train 衍生失敗:', err3.message);
+    console.warn('[3star] 真三星產生失敗:', err3.message);
   }
 
   return candidateRow;
