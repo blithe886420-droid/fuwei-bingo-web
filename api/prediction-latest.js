@@ -87,7 +87,7 @@ function normalizeGroups(groups) {
     .map((g, idx) => {
       if (Array.isArray(g)) {
         const nums = uniqueAsc(g).slice(0, 4);
-        if (nums.length !== 4) return null;
+        if (nums.length < 3) return null;  // 支援3星(3個)和4星(4個)
 
         return {
           key: `group_${idx + 1}`,
@@ -110,7 +110,7 @@ function normalizeGroups(groups) {
               : []
       ).slice(0, 4);
 
-      if (nums.length !== 4) return null;
+      if (nums.length < 3) return null;  // 支援3星(3個)和4星(4個)
 
       const meta = g.meta && typeof g.meta === 'object' ? g.meta : {};
 
