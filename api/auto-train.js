@@ -717,6 +717,53 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
     if (insertFormalError) throw insertFormalError;
   }
 
+  // ===== 3星衍生（每期自動產生，不影響主流程）=====
+  try {
+    const threeStarGroups = (Array.isArray(finalGroups) ? finalGroups : []).map((g, idx) => ({
+      key: g.key,
+      label: g.label,
+      nums: (Array.isArray(g.nums) ? g.nums : []).slice(0, 3),
+      reason: '3星衍生自auto-train',
+      meta: {
+        ...(g.meta || {}),
+        star_mode: 3,
+        derived_from: 'auto_train',
+        slot_no: idx + 1
+      }
+    })).filter(g => g.nums.length === 3);
+
+    if (threeStarGroups.length > 0) {
+      const check3star = await db
+        .from(PREDICTIONS_TABLE)
+        .select('id')
+        .eq('mode', 'formal_3star')
+        .eq('source_draw_no', sourceDrawNo)
+        .maybeSingle();
+
+      if (!check3star?.data?.id) {
+        const payload3star = {
+          mode: 'formal_3star',
+          status: 'created',
+          source_draw_no: sourceDrawNo,
+          target_periods: TARGET_PERIODS,
+          groups_json: threeStarGroups,
+          compare_status: 'pending',
+          compare_result: null,
+          compare_result_json: null,
+          hit_count: 0,
+          verdict: null,
+          latest_draw_numbers: predictionRow.latest_draw_numbers || null,
+          market_snapshot_json: predictionRow.market_snapshot_json || null,
+          created_at: nowIso
+        };
+        await db.from(PREDICTIONS_TABLE).insert(payload3star);
+        console.log('[3star] auto-train 衍生成功, draw:', sourceDrawNo);
+      }
+    }
+  } catch (err3) {
+    console.warn('[3star] auto-train 衍生失敗:', err3.message);
+  }
+
   return candidateRow;
 }
 
