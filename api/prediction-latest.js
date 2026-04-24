@@ -375,7 +375,7 @@ function extractGroupCompareItems(row = {}) {
   if (detailCandidates.length) {
     return detailCandidates
       .map((detail, idx) => normalizeGroupCompareItem(detail, groups[idx] || null, idx, compareDrawNumbers))
-      .filter((item) => item.nums.length >= 3 || item.hit_count > 0  // ✅ 支援三星)
+      .filter((item) => item.nums.length >= 3 || item.hit_count > 0)  // ✅ 支援三星
       .sort((a, b) => a.group_index - b.group_index);
   }
 
