@@ -774,7 +774,7 @@ function normalizePredictionLatest(data) {
     formalSourceDrawNo,
 
     latest3StarRow: latest?.latest_3star_row || null,
-    recent3StarComparedRows: latest?.recent_3star_compared_rows || []
+    recent3StarComparedRows: toArray(latest?.recent_3star_compared_rows).map(normalizePredictionRow).filter(Boolean)
   };
 }
 
