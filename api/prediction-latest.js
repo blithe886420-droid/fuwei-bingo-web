@@ -529,8 +529,9 @@ async function getRecentComparedRows(limit = 10) {
   const { data, error } = await supabase
     .from(PREDICTIONS_TABLE)
     .select('*')
+    .eq('mode', 'formal_3star')
     .eq('status', 'compared')
-    .not('compare_result', 'is', null)  // ✅ 三星用 compare_result 欄位
+    .not('compare_result', 'is', null)
     .order('created_at', { ascending: false })
     .limit(fetchLimit);
 
