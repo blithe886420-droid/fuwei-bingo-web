@@ -569,7 +569,7 @@ async function getRecent3StarComparedRows(limit = 10) {
     .select('*')
     .eq('mode', 'formal_3star')
     .eq('status', 'compared')
-    .not('compare_result_json', 'is', null)
+    .not('compare_result', 'is', null)  // ✅ 三星用 compare_result 欄位
     .order('created_at', { ascending: false })
     .limit(safeLimit * 4);
 
