@@ -531,7 +531,7 @@ async function getRecentComparedRows(limit = 10) {
     .select('*')
     .eq('mode', 'formal_3star')
     .eq('status', 'compared')
-    .not('compare_result', 'is', null)
+
     .order('created_at', { ascending: false })
     .limit(fetchLimit);
 
@@ -551,7 +551,7 @@ async function getRecentFormalComparedRows(limit = 5) {
     .select('*')
     .eq('mode', FORMAL_MODE)
     .eq('status', 'compared')
-    .not('compare_result', 'is', null)  // ✅ 三星用 compare_result 欄位
+
     .order('created_at', { ascending: false })
     .limit(fetchLimit);
 
@@ -571,7 +571,7 @@ async function getRecent3StarComparedRows(limit = 10) {
     .select('*')
     .eq('mode', 'formal_3star')
     .eq('status', 'compared')
-    .not('compare_result', 'is', null)  // ✅ 三星用 compare_result 欄位
+
     .order('created_at', { ascending: false })
     .limit(safeLimit * 4);
 
