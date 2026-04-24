@@ -718,7 +718,7 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
     if (insertFormalError) throw insertFormalError;
   }
 
-  // ===== ✅ 真三星預測（直接用 buildBingoV1Strategies starCount=3 獨立產生，不再從四星截頭）=====
+  // ===== ✅ 真三星預測（市場感知版：接收 marketSnapshot + 近10期表現動態決定組數）=====
   try {
     const check3star = await db
       .from(PREDICTIONS_TABLE)
@@ -734,16 +734,42 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
         .order('draw_no', { ascending: false })
         .limit(MARKET_LOOKBACK_LIMIT);
 
-      const result3star = buildBingoV1Strategies(marketRows.data || [], {}, 3);
+      // ✅ 讀取四個三星策略的近10期 ROI
+      const statsRows = await db
+        .from(STRATEGY_STATS_TABLE)
+        .select('strategy_key, recent_hits, recent_profit, recent_50_roi')
+        .in('strategy_key', ['hot_chase', 'rebound', 'zone_balanced', 'pattern_structure', 'streak_chase']);
+
+      const recent10Stats = {};
+      (statsRows?.data || []).forEach(row => {
+        const recentHits = Array.isArray(row.recent_hits) ? row.recent_hits : [];
+        const recentProfit = Array.isArray(row.recent_profit) ? row.recent_profit : [];
+        const last10Profit = recentProfit.slice(-10);
+        const last10Cost = last10Profit.length * 25;
+        const last10Sum = last10Profit.reduce((a, b) => a + toNum(b, 0), 0);
+        recent10Stats[row.strategy_key] = last10Cost > 0 ? last10Sum / last10Cost : toNum(row.recent_50_roi, -0.5);
+      });
+
+      // ✅ 傳入 marketSnapshot 和 recent10Stats
+      const result3star = buildBingoV1Strategies(
+        marketRows.data || [],
+        {},
+        3,
+        predictionRow.market_snapshot_json || {},
+        recent10Stats
+      );
+
       const threeStarGroups = (result3star.strategies || []).map((s, idx) => ({
         key: s.key,
         label: s.label,
         nums: (Array.isArray(s.nums) ? s.nums : []).slice(0, 3),
-        reason: '真三星直接選號',
+        reason: s.reason || '市場感知三星選號',
         meta: {
           ...(s.meta || {}),
           star_mode: 3,
-          derived_from: 'buildBingoV1Strategies_3star',
+          derived_from: 'buildBingoV1Strategies_market_driven',
+          market_phase: result3star.marketPhase || 'rotation',
+          group_allocation: result3star.groupAllocation || {},
           slot_no: idx + 1
         }
       })).filter(g => g.nums.length === 3);
@@ -765,7 +791,7 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
           created_at: nowIso
         };
         await db.from(PREDICTIONS_TABLE).insert(payload3star);
-        console.log('[3star] 真三星選號成功, draw:', sourceDrawNo);
+        console.log('[3star] 市場感知三星選號成功, draw:', sourceDrawNo, '組數:', threeStarGroups.length, '盤相:', result3star.marketPhase);
       }
     }
   } catch (err3) {
