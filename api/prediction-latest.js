@@ -189,6 +189,7 @@ function normalizePredictionRow(row) {
     compare_status: row.compare_status || null,
     verdict: row.verdict || null,
     compare_result_json: compareResult,
+    compare_result: compareResult,  // ✅ APP.txt가 compare_result.detail을 읽을 수 있도록
     compare_history_json: compareHistory,
     groups_json: groups,
     groups,
@@ -529,7 +530,7 @@ async function getRecentComparedRows(limit = 10) {
     .from(PREDICTIONS_TABLE)
     .select('*')
     .eq('status', 'compared')
-    .not('compare_result_json', 'is', null)
+    .not('compare_result', 'is', null)  // ✅ 三星用 compare_result 欄位
     .order('created_at', { ascending: false })
     .limit(fetchLimit);
 
@@ -549,7 +550,7 @@ async function getRecentFormalComparedRows(limit = 5) {
     .select('*')
     .eq('mode', FORMAL_MODE)
     .eq('status', 'compared')
-    .not('compare_result_json', 'is', null)
+    .not('compare_result', 'is', null)  // ✅ 三星用 compare_result 欄位
     .order('created_at', { ascending: false })
     .limit(fetchLimit);
 
