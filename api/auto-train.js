@@ -62,6 +62,12 @@ const SOFT_SHRINK_TRIGGER = MAX_ACTIVE_STRATEGY + 1;
 const HARD_SHRINK_TRIGGER = 120;
 const EXTREME_SHRINK_TRIGGER = 160;
 
+// ✅ 三星加碼減碼設定
+const STAR3_MIN_GROUPS = 5;   // 連續沒中2時的最少組數
+const STAR3_MAX_GROUPS = 8;   // 正常/加碼時的最大組數
+const STAR3_DEFAULT_GROUPS = 8; // 預設出幾組（初始 / 中3後維持）
+const STAR3_REDUCE_AFTER_NO_HIT2 = 3; // 連續幾期沒中2就縮組
+
 const KNOWN_GENES = [
   'hot',
   'cold',
@@ -364,7 +370,115 @@ function enrichMarketSnapshotWithPhase(marketSnapshot = {}, market = {}) {
   };
 }
 
+// ============================================================
+// ✅ 新增：fetch3starBettingState
+// 讀取近期三星比對結果，決定本期出幾組（5~8）
+// 規則：
+//   - 連續3期沒中2（best_hit < 2）→ 縮到 STAR3_MIN_GROUPS（5組）
+//   - 連續有中2（best_hit >= 2）→ 維持/加到 STAR3_MAX_GROUPS（8組）
+//   - 中3後 → 維持 STAR3_MAX_GROUPS（8組）
+//   - 資料不足 → 預設 STAR3_DEFAULT_GROUPS（8組）
+// ============================================================
+async function fetch3starBettingState(db) {
+  try {
+    // 取最近 10 筆已比對完成的三星預測
+    const { data: recentCompared } = await db
+      .from(PREDICTIONS_TABLE)
+      .select('hit_count, compare_result_json, verdict, compared_at')
+      .eq('mode', 'formal_3star')
+      .eq('compare_status', 'done')
+      .order('compared_at', { ascending: false })
+      .limit(10);
 
+    if (!Array.isArray(recentCompared) || recentCompared.length === 0) {
+      return {
+        groupCount: STAR3_DEFAULT_GROUPS,
+        reason: 'no_history',
+        consecutiveNoHit2: 0,
+        lastHit3: false
+      };
+    }
+
+    // 從每筆記錄中取出 best_hit（每期8組裡最高中幾個）
+    const recentBestHits = recentCompared.map(row => {
+      const result = row.compare_result_json;
+      // compare_result_json.best_hit 是這期所有組裡最高中幾個
+      const bestHit = toNum(result?.best_hit, 0);
+      return bestHit;
+    });
+
+    // 計算連續沒中2的期數（從最近往前算）
+    let consecutiveNoHit2 = 0;
+    for (const hit of recentBestHits) {
+      if (hit < 2) {
+        consecutiveNoHit2 += 1;
+      } else {
+        break; // 只要有一期中2就停止
+      }
+    }
+
+    // 最近一期有沒有中3
+    const lastHit3 = recentBestHits[0] >= 3;
+
+    // 最近連續中2的期數（從最近往前算）
+    let consecutiveHit2 = 0;
+    for (const hit of recentBestHits) {
+      if (hit >= 2) {
+        consecutiveHit2 += 1;
+      } else {
+        break;
+      }
+    }
+
+    let groupCount;
+    let reason;
+
+    if (lastHit3) {
+      // 中3後維持最大組數繼續追
+      groupCount = STAR3_MAX_GROUPS;
+      reason = 'hit3_maintain_max';
+    } else if (consecutiveNoHit2 >= STAR3_REDUCE_AFTER_NO_HIT2) {
+      // 連續3期以上沒中2 → 縮組省成本
+      groupCount = STAR3_MIN_GROUPS;
+      reason = `consecutive_no_hit2_${consecutiveNoHit2}_reduce_to_${STAR3_MIN_GROUPS}`;
+    } else if (consecutiveHit2 >= 2) {
+      // 連續2期以上中2 → 加碼追中3
+      groupCount = STAR3_MAX_GROUPS;
+      reason = `consecutive_hit2_${consecutiveHit2}_boost_to_${STAR3_MAX_GROUPS}`;
+    } else if (consecutiveHit2 >= 1) {
+      // 剛中一次2 → 維持正常組數
+      groupCount = STAR3_MAX_GROUPS;
+      reason = 'hit2_maintain_max';
+    } else {
+      // 其他情況（1~2期沒中2）→ 維持預設
+      groupCount = STAR3_DEFAULT_GROUPS;
+      reason = 'default';
+    }
+
+    console.log(
+      `[3star BettingState] groupCount=${groupCount} reason=${reason}`,
+      `consecutiveNoHit2=${consecutiveNoHit2} consecutiveHit2=${consecutiveHit2} lastHit3=${lastHit3}`
+    );
+
+    return {
+      groupCount,
+      reason,
+      consecutiveNoHit2,
+      consecutiveHit2,
+      lastHit3,
+      recentBestHits: recentBestHits.slice(0, 5) // 只回傳最近5筆供 log 參考
+    };
+  } catch (err) {
+    console.warn('[fetch3starBettingState] failed:', err.message);
+    // 出錯時保守回預設
+    return {
+      groupCount: STAR3_DEFAULT_GROUPS,
+      reason: 'error_fallback',
+      consecutiveNoHit2: 0,
+      lastHit3: false
+    };
+  }
+}
 
 function buildInstantFormalCandidateGroups(groups = [], marketSnapshot = {}) {
   const normalized = sortGroupsForInstantCandidate(groups).slice(0, 60);
@@ -485,92 +599,65 @@ function buildInstantFormalCandidateGroups(groups = [], marketSnapshot = {}) {
     attack: () => pickUnique(attackPool) || pickUnique(extendPool) || pickUnique(guardPool),
     extend: () => pickUnique(extendPool) || pickUnique(guardPool) || pickUnique(attackPool),
     guard: () => pickUnique(guardPool) || pickUnique(extendPool) || pickUnique(attackPool),
-    recent: () => pickUnique(extendPool) || pickUnique(guardPool) || pickUnique(attackPool)
+    recent: () => pickUnique(extendPool) || pickUnique(attackPool) || pickUnique(guardPool)
   };
 
-  const chosen = phaseRoles.map((role, idx) => {
-    const group = rolePickers[role]?.() || null;
-    return group ? { group, role, slotNo: idx + 1 } : null;
-  }).filter(Boolean);
+  const result = [];
+  for (const role of phaseRoles) {
+    if (result.length >= 4) break;
+    const picker = rolePickers[role] || rolePickers.extend;
+    const group = picker();
+    if (group) result.push(group);
+  }
 
-  if (chosen.length !== BET_GROUP_COUNT) return [];
+  while (result.length < 4) {
+    const remaining = byStrategy.find(
+      (g) => !used.has(String(g?.meta?.strategy_key || g?.key || '').trim())
+    );
+    if (!remaining) break;
+    const strategyKey = String(remaining?.meta?.strategy_key || remaining?.key || '').trim();
+    used.add(strategyKey);
+    result.push(remaining);
+  }
 
-  const wrap = (group, slotNo, preferredRole, focusLabel) => ({
-    ...group,
-    label: `${focusLabel} / ${group.meta?.strategy_name || group.label}`,
-    reason:
-      preferredRole === 'attack'
-        ? '即戰候選 / 穩中2版：三穩一衝'
-        : '即戰候選 / 穩中2版：穩定優先',
-    meta: {
-      ...(group.meta || {}),
-      selection_rank: slotNo,
-      source_selection_rank: toNum(group?.meta?.selection_rank, slotNo),
-      instant_candidate: true,
-      instant_candidate_mode: 'stable_hit2_v3_data_classifier',
-      focus_mode: 'stable_hit2_v3_data_classifier',
-      focus_bucket: preferredRole,
-      focus_tag: focusLabel,
-      focus_slot_no: slotNo,
-      preferred_role: preferredRole,
-      slot_no: slotNo
-    }
-  });
-
-  return chosen.map(({ group, role, slotNo }) => wrap(group, slotNo, role, `${String(role || 'mix').toUpperCase()} ${slotNo}`));
+  return result;
 }
 
 async function upsertFormalCandidateFromTest(db, predictionRow) {
-  if (!predictionRow || String(predictionRow.mode || '').toLowerCase() !== TEST_MODE) {
-    return null;
-  }
+  if (!predictionRow?.id || !predictionRow?.groups_json) return null;
 
-  const sourceDrawNo = String(predictionRow.source_draw_no || '').trim();
+  const mode = String(predictionRow?.mode || '').trim().toLowerCase();
+  if (mode !== TEST_MODE) return null;
+
+  const sourceDrawNo = toNum(predictionRow?.source_draw_no, 0);
   if (!sourceDrawNo) return null;
 
-  const candidateGroups = buildInstantFormalCandidateGroups(predictionRow.groups_json || [], predictionRow.market_snapshot_json || {});
-  let finalGroups = candidateGroups;
-  if (candidateGroups.length !== 4) {
-    const normalized = normalizeGroups(predictionRow.groups_json || []);
+  const groups = safeArray(predictionRow?.groups_json);
+  if (!groups.length) return null;
 
-    // 🔥 SEMI FILTER fallback（至少保住一半穩定來源）
-    const filtered = normalized.filter((g) => {
-      const meta = g.meta || {};
-      const hit2 = Math.max(
-        Number(meta.recent_50_hit_rate || 0),
-        Number(meta.hit2_rate || 0)
-      );
-      const roi = Math.max(
-        Number(meta.recent_50_roi || -999),
-        Number(meta.roi || -999)
-      );
-      return hit2 >= 0.25 && roi >= -0.6;
-    });
+  const marketSnapshot = predictionRow?.market_snapshot_json || {};
 
-    let base = [];
-    let fallbackMode = 'fallback_raw';
+  const finalGroupsRaw = buildInstantFormalCandidateGroups(groups, marketSnapshot);
 
-    if (filtered.length >= 2) {
-      const filteredKeys = new Set(
-        filtered.map((g) => String(g?.meta?.strategy_key || g?.key || '').trim()).filter(Boolean)
-      );
+  let finalGroups = [];
+  let fallbackMode = '';
 
-      const remainder = normalized.filter((g) => {
-        const key = String(g?.meta?.strategy_key || g?.key || '').trim();
-        return !filteredKeys.has(key);
-      });
+  if (finalGroupsRaw.length >= 4) {
+    finalGroups = finalGroupsRaw.slice(0, 4).map((g, idx) => ({
+      ...g,
+      meta: {
+        ...(g.meta || {}),
+        slot_no: idx + 1,
+        preferred_role: idx === 0 ? 'guard' : idx === 1 ? 'extend' : idx === 2 ? 'attack' : 'recent',
+        focus_mode: 'phase_role'
+      }
+    }));
+  } else {
+    const normalized = normalizeGroups(groups);
 
-      base = [...filtered, ...remainder];
-      fallbackMode = 'fallback_semi_filtered';
-    } else if (filtered.length === 1) {
-      const onlyKey = String(filtered[0]?.meta?.strategy_key || filtered[0]?.key || '').trim();
-      const remainder = normalized.filter((g) => {
-        const key = String(g?.meta?.strategy_key || g?.key || '').trim();
-        return key !== onlyKey;
-      });
-
-      base = [filtered[0], ...remainder];
-      fallbackMode = 'fallback_one_filtered';
+    if (normalized.length >= 4) {
+      base = normalized;
+      fallbackMode = 'fallback_normalized';
     } else {
       base = normalized;
       fallbackMode = 'fallback_raw';
@@ -718,7 +805,7 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
     if (insertFormalError) throw insertFormalError;
   }
 
-  // ===== ✅ 真三星預測（市場感知版：接收 marketSnapshot + 近10期表現動態決定組數）=====
+  // ===== ✅ 真三星預測（市場感知版 + 動態加碼/減碼）=====
   try {
     const check3star = await db
       .from(PREDICTIONS_TABLE)
@@ -733,6 +820,10 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
         .select('*')
         .order('draw_no', { ascending: false })
         .limit(MARKET_LOOKBACK_LIMIT);
+
+      // ✅ 動態加碼/減碼：讀取近期三星命中狀態，決定本期出幾組
+      const bettingState = await fetch3starBettingState(db);
+      const dynamicGroupCount = bettingState.groupCount;
 
       // ✅ 從 strategy_pool 取所有 active 策略（和四星一樣動態競爭）
       const poolRows3star = await db
@@ -788,16 +879,16 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
         });
       });
 
-      // ✅ 按分數排序，取前8名策略出組（和四星一樣競爭）
-      const TOP_3STAR_COUNT = 8;
+      // ✅ 按分數排序，取前 dynamicGroupCount 名策略出組
+      // 加碼時取8個策略，縮組時取5個策略（最多出1組各策略，節省成本）
+      const TOP_3STAR_COUNT = dynamicGroupCount;
       const sorted3starKeys = activeKeys3star
         .map(key => ({
           key,
-          score: statsMap3star.get(key)?.score ?? -10, // 沒有數據的新策略給低分但不排除
+          score: statsMap3star.get(key)?.score ?? -10,
           totalRounds: statsMap3star.get(key)?.totalRounds ?? 0
         }))
         .sort((a, b) => {
-          // 有數據的策略按分數排，沒數據的新策略放後面輪流測試
           if (a.totalRounds === 0 && b.totalRounds > 0) return 1;
           if (b.totalRounds === 0 && a.totalRounds > 0) return -1;
           return b.score - a.score;
@@ -814,14 +905,15 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
           : { score: -10, hit3Rate: 0, avgCoverageHit: 3, totalRounds: 0 };
       });
 
-      // ✅ 傳入 marketSnapshot、recent10Stats 和動態策略清單
+      // ✅ 傳入 marketSnapshot、recent10Stats、動態策略清單 和 forcedGroupCount
       const result3star = buildBingoV1Strategies(
         marketRows.data || [],
         {},
         3,
         predictionRow.market_snapshot_json || {},
         recent10Stats,
-        sorted3starKeys  // ✅ 新增：動態策略清單
+        sorted3starKeys,   // ✅ 動態策略清單
+        dynamicGroupCount  // ✅ 新增：強制組數（加碼/減碼控制）
       );
 
       const threeStarGroups = (result3star.strategies || []).map((s, idx) => ({
@@ -835,7 +927,16 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
           derived_from: 'buildBingoV1Strategies_market_driven',
           market_phase: result3star.marketPhase || 'rotation',
           group_allocation: result3star.groupAllocation || {},
-          slot_no: idx + 1
+          slot_no: idx + 1,
+          // ✅ 記錄加碼/減碼狀態
+          betting_state: {
+            group_count: dynamicGroupCount,
+            reason: bettingState.reason,
+            consecutive_no_hit2: bettingState.consecutiveNoHit2,
+            consecutive_hit2: bettingState.consecutiveHit2 ?? 0,
+            last_hit3: bettingState.lastHit3,
+            recent_best_hits: bettingState.recentBestHits ?? []
+          }
         }
       })).filter(g => g.nums.length === 3);
 
@@ -856,7 +957,11 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
           created_at: nowIso
         };
         await db.from(PREDICTIONS_TABLE).insert(payload3star);
-        console.log('[3star] 市場感知三星選號成功, draw:', sourceDrawNo, '組數:', threeStarGroups.length, '盤相:', result3star.marketPhase);
+        console.log(
+          `[3star] 市場感知三星選號成功, draw: ${sourceDrawNo}`,
+          `組數: ${threeStarGroups.length}（${bettingState.reason}）`,
+          `盤相: ${result3star.marketPhase}`
+        );
       }
     }
   } catch (err3) {
@@ -1426,57 +1531,51 @@ function calcMarketBoost(strategyKey = '', marketSnapshot = {}, market = {}) {
   }
 
   if (tokens.includes('gap') || tokens.includes('jump') || tokens.includes('chase')) {
-    boost += extend.length ? 0.05 : 0;
-    if (extend.length) reasons.push('gap_extend');
+    const gapPool = uniqueSorted([...(market.gap || []).slice(0, 20)]);
+    const gapHits = scorePoolHits(nums, gapPool, 0.04);
+    boost += gapHits;
+    if (gapHits > 0) reasons.push('gap_jump');
   }
 
-  if (tokens.includes('zone') || tokens.includes('cluster') || tokens.includes('structure')) {
-    boost += attack.length ? 0.04 : 0;
-    if (attack.length) reasons.push('zone_focus');
-  }
-
-  if (tokens.includes('tail') || tokens.includes('rotation') || tokens.includes('split')) {
-    boost += recent.length ? 0.03 : 0;
-    if (recent.length) reasons.push('tail_recent');
-  }
+  boost = clamp(boost, 0.6, 2.2);
 
   return {
-    market_boost: round4(clamp(boost, 0.8, 2.2)),
-    market_reason: uniqueTokens(reasons).join('|')
+    market_boost: round4(boost),
+    market_reason: reasons.slice(0, 4).join(',')
   };
 }
 
 function chooseDecision(row = {}) {
-  const roi = toNum(row.roi, 0);
+  const totalRounds = toNum(row.total_rounds, 0);
+  const roi = toNum(row.roi, -1);
   const score = toNum(row.score, 0);
   const avgHit = toNum(row.avg_hit, 0);
-  const rounds = toNum(row.total_rounds, 0);
+  const marketBoost = toNum(row.market_boost, 1);
   const hit3Rate = normalizeHitRate(row.hit3_rate);
   const recent50Hit3Rate = normalizeHitRate(row.recent_50_hit3_rate);
-  const hit4Rate = normalizeHitRate(row.hit4_rate);
-  const marketBoost = toNum(row.market_boost, 1);
-  const recent50Roi = toNum(row.recent_50_roi, 0);
+  const recent50Roi = toNum(row.recent_50_roi, -1);
 
-  if (roi <= DECISION_CONFIG.hardRejectRoi || score <= DECISION_CONFIG.hardRejectScore) {
+  const decisionScore = calcDecisionScore(row);
+
+  if (
+    toNum(row.roi, -1) <= DECISION_CONFIG.hardRejectRoi &&
+    totalRounds >= DECISION_CONFIG.minRoundsForTrust &&
+    recent50Roi <= DECISION_CONFIG.hardRejectRoi
+  ) {
+    row.decision_score = round4(decisionScore);
     return 'reject';
   }
 
-  // 近期表現差時懲罰\uff1arecent_50_roi 越差\uff0c分數打折越大
-  const recentPenalty = recent50Roi < -0.5 ? 0.3 : recent50Roi < -0.3 ? 0.6 : recent50Roi < 0 ? 0.85 : 1.0;
-  const adjustedScore = score * recentPenalty;
-
-  const weighted = adjustedScore * marketBoost;
-  const trustBonus = rounds >= DECISION_CONFIG.minRoundsForTrust ? 20 : 0;
-  const explodeBonus = hit3Rate * 220 + recent50Hit3Rate * 300 + hit4Rate * 500;
-  const avgBonus = avgHit >= DECISION_CONFIG.minAvgHitPreferred ? 35 : avgHit * 18;
-  const decisionScore = weighted + trustBonus + explodeBonus + avgBonus;
+  if (score <= DECISION_CONFIG.hardRejectScore && totalRounds >= DECISION_CONFIG.minRoundsForTrust) {
+    row.decision_score = round4(decisionScore);
+    return 'reject';
+  }
 
   row.decision_score = round4(decisionScore);
 
   if (
     decisionScore >= DECISION_CONFIG.strongScoreFloor * 2.8 ||
     (recent50Hit3Rate >= 0.06 && avgHit >= 1.15) ||
-    // 修正\uff1a歷史hit3高不夠\uff0c還需要近期也要有表現
     (hit3Rate >= 0.08 && marketBoost >= 1.1 && recent50Hit3Rate >= 0.04)
   ) {
     return 'strong';
@@ -1566,7 +1665,6 @@ function mergePoolWithStats(poolRows = [], statsRows = [], marketSnapshot = {}, 
     const avgHit =
       totalRounds > 0 ? toNum(stats?.total_hits, 0) / totalRounds : 0;
     const roi = totalCost > 0 ? totalProfit / totalCost : 0;
-    // 近期表現差時對基礎分數打折
     const recentRoi50 = toNum(stats?.recent_50_roi, 0);
     const scorePenalty = recentRoi50 < -0.5 ? 0.3 : recentRoi50 < -0.3 ? 0.6 : recentRoi50 < 0 ? 0.85 : 1.0;
     const score = round4(
@@ -1968,7 +2066,6 @@ async function comparePendingPredictions(db) {
       throw new Error(`prediction compare update failed: ${updateError.message || updateError}`);
     }
 
-    // ✅ 把 coverage_hit 合併進每筆 detail，讓 strategyStatsRecorder 可以讀到
     const coverageHitMap = new Map(
       (payload.compareResult?.coverage_hit_per_draw || []).map(c => [c.draw_no, c.coverage_hit])
     );
@@ -2050,10 +2147,8 @@ async function spawnStrategiesIfNeeded(db, latestDrawNo = 0) {
   const needCount = Math.min(MAX_SPAWN_PER_RUN, TARGET_ACTIVE_STRATEGY - activeCount);
   const spawnedKeys = [];
   const skippedDuplicateKeys = [];
-  
 
-
-const nowIso = new Date().toISOString();
+  const nowIso = new Date().toISOString();
 
   if (!sorted.length) {
     return {
@@ -2104,44 +2199,45 @@ const nowIso = new Date().toISOString();
       continue;
     }
 
-    const genes = inferGenesFromStrategyKey(strategyKey);
+    existingSet.add(strategyKey);
 
-    const insertRow = {
+    const genes = inferGenesFromStrategyKey(strategyKey);
+    const parentGeneration = Math.max(
+      toInt(parentA?.generation, 1),
+      toInt(parentB?.generation, 1)
+    );
+
+    const newRow = {
       strategy_key: strategyKey,
       strategy_name: strategyLabel(strategyKey),
       gene_a: genes.gene_a,
       gene_b: genes.gene_b,
-      parameters: {
-        source_type: sourceType,
-        parent_a: parentA?.strategy_key || null,
-        parent_b: parentB?.strategy_key || null
-      },
-      generation: Math.max(1, toNum(parentA?.generation, 1), toNum(parentB?.generation, 1)) + 1,
-      source_type: sourceType,
-      parent_keys: [parentA?.strategy_key || null, parentB?.strategy_key || null].filter(Boolean),
       status: 'active',
-      protected_rank: false,
-      incubation_until_draw: toNum(latestDrawNo, 0) + 1,
-      created_draw_no: toNum(latestDrawNo, 0),
+      generation: parentGeneration + 1,
+      parent_a_key: parentA?.strategy_key || null,
+      parent_b_key: sourceType !== 'mutation' ? (parentB?.strategy_key || null) : null,
+      spawn_source: sourceType,
+      spawn_draw_no: latestDrawNo || null,
+      protected_rank: null,
       created_at: nowIso,
       updated_at: nowIso
     };
 
     const { error: insertError } = await db
       .from(STRATEGY_POOL_TABLE)
-      .insert(insertRow);
+      .insert(newRow);
 
     if (insertError) {
-      if (isDuplicateDrawModeError(insertError) || String(insertError?.code || '') === '23505') {
-        existingSet.add(strategyKey);
+      if (
+        String(insertError?.code || '') === '23505' ||
+        String(insertError?.message || '').includes('duplicate')
+      ) {
         skippedDuplicateKeys.push(strategyKey);
         continue;
       }
-
-      throw new Error(`strategy_pool spawn insert failed: ${insertError.message || insertError}`);
+      throw new Error(`strategy spawn insert failed: ${insertError.message || insertError}`);
     }
 
-    existingSet.add(strategyKey);
     spawnedKeys.push(strategyKey);
     createdCount += 1;
   }
@@ -2151,25 +2247,18 @@ const nowIso = new Date().toISOString();
     active_count: activeCount,
     target_active_strategy: TARGET_ACTIVE_STRATEGY,
     max_active_strategy: MAX_ACTIVE_STRATEGY,
-    spawned_count: createdCount,
+    spawned_count: spawnedKeys.length,
     spawned_keys: spawnedKeys,
-    skipped_duplicate_keys: [...new Set(skippedDuplicateKeys)],
-    skipped: createdCount === 0,
-    reason:
-      createdCount === 0
-        ? skippedDuplicateKeys.length > 0
-          ? 'duplicate_keys_skipped'
-          : 'no_new_spawn_key'
-        : attemptCursor >= maxAttempts && createdCount < needCount
-          ? 'partial_spawn_max_attempts_reached'
-          : ''
+    skipped_duplicate_keys: skippedDuplicateKeys,
+    skipped: spawnedKeys.length === 0,
+    reason: spawnedKeys.length === 0 ? 'all_attempts_duplicate' : ''
   };
 }
 
 async function shrinkStrategiesIfNeeded(db) {
   const { data: activeRows, error: activeError } = await db
     .from(STRATEGY_POOL_TABLE)
-    .select('*')
+    .select('strategy_key, status, protected_rank, updated_at')
     .eq('status', 'active')
     .order('updated_at', { ascending: false });
 
@@ -2180,21 +2269,12 @@ async function shrinkStrategiesIfNeeded(db) {
   const active = Array.isArray(activeRows) ? activeRows : [];
   const activeCount = active.length;
 
-  if (activeCount <= MIN_ACTIVE_STRATEGY) {
+  if (activeCount <= SOFT_SHRINK_TRIGGER - 1) {
     return {
       ok: true,
       active_count: activeCount,
-      disabled_count: 0,
-      disabled_keys: [],
-      skipped: true,
-      reason: 'below_min_active_strategy'
-    };
-  }
-
-  if (activeCount <= SOFT_SHRINK_TRIGGER) {
-    return {
-      ok: true,
-      active_count: activeCount,
+      soft_shrink_trigger: SOFT_SHRINK_TRIGGER,
+      hard_shrink_trigger: HARD_SHRINK_TRIGGER,
       disabled_count: 0,
       disabled_keys: [],
       skipped: true,
@@ -2202,176 +2282,154 @@ async function shrinkStrategiesIfNeeded(db) {
     };
   }
 
-  const strategyKeys = active.map((row) => normalizeStrategyKey(row?.strategy_key)).filter(Boolean);
-
-  if (!strategyKeys.length) {
-    return {
-      ok: true,
-      active_count: activeCount,
-      disabled_count: 0,
-      disabled_keys: [],
-      skipped: true,
-      reason: 'no_active_keys'
-    };
-  }
-
   const { data: statsRows, error: statsError } = await db
     .from(STRATEGY_STATS_TABLE)
-    .select('*')
-    .in('strategy_key', strategyKeys);
+    .select('strategy_key, total_rounds, roi, recent_50_roi, hit3, hit4, score')
+    .in(
+      'strategy_key',
+      active.map((r) => r.strategy_key).filter(Boolean)
+    );
 
   if (statsError) {
-    throw new Error(`strategy_stats shrink fetch failed: ${statsError.message || statsError}`);
+    throw new Error(`strategy shrink stats fetch failed: ${statsError.message || statsError}`);
   }
 
   const statsMap = new Map(
     (statsRows || []).map((row) => [normalizeStrategyKey(row?.strategy_key), row])
   );
 
+  const protectedKeys = new Set(
+    active
+      .filter((r) => PROTECTED_STATUS.has(String(r?.status || '').toLowerCase()) || r?.protected_rank != null)
+      .map((r) => normalizeStrategyKey(r?.strategy_key))
+  );
+
+  let shrinkTarget;
+  let shrinkMode;
+
+  if (activeCount >= EXTREME_SHRINK_TRIGGER) {
+    shrinkTarget = Math.ceil((activeCount - TARGET_ACTIVE_STRATEGY) * 0.6);
+    shrinkMode = 'extreme';
+  } else if (activeCount >= HARD_SHRINK_TRIGGER) {
+    shrinkTarget = Math.ceil((activeCount - TARGET_ACTIVE_STRATEGY) * 0.4);
+    shrinkMode = 'hard';
+  } else {
+    shrinkTarget = Math.ceil((activeCount - MAX_ACTIVE_STRATEGY) * 0.3) + 1;
+    shrinkMode = 'soft';
+  }
+
+  shrinkTarget = Math.max(1, Math.min(shrinkTarget, activeCount - MIN_ACTIVE_STRATEGY));
+
   const candidates = active
-    .map((poolRow) => {
-      const key = normalizeStrategyKey(poolRow?.strategy_key);
+    .filter((r) => !protectedKeys.has(normalizeStrategyKey(r?.strategy_key)))
+    .map((r) => {
+      const key = normalizeStrategyKey(r?.strategy_key);
       const stats = statsMap.get(key) || {};
-      const rounds = toNum(stats?.total_rounds, 0);
-      const roi = toNum(stats?.roi, 0);
-      const avgHit = toNum(stats?.avg_hit, 0);
+      const totalRounds = toNum(stats?.total_rounds, 0);
+      const roi = toNum(stats?.roi, -1);
+      const recent50Roi = toNum(stats?.recent_50_roi, -1);
       const hit3 = toNum(stats?.hit3, 0);
       const hit4 = toNum(stats?.hit4, 0);
-      const recent50Hit3Rate = toNum(stats?.recent_50_hit3_rate, 0);
-      const protectedRank = Boolean(poolRow?.protected_rank) || PROTECTED_STATUS.has(String(poolRow?.status || '').toLowerCase());
+      const score = toNum(stats?.score, 0);
 
-      return {
-        key,
-        protected_rank: protectedRank,
-        rounds,
-        roi,
-        avg_hit: avgHit,
-        hit3,
-        hit4,
-        recent_50_hit3_rate: recent50Hit3Rate,
-        weakness:
-          (roi < -0.15 ? 3 : 0) +
-          (avgHit < 1.0 ? 2 : 0) +
-          (hit3 <= 0 ? 2 : 0) +
-          (hit4 <= 0 ? 1 : 0) +
-          (recent50Hit3Rate <= 0.01 ? 2 : 0) -
-          (rounds < 5 ? 2 : 0)
-      };
+      const elimScore =
+        totalRounds === 0
+          ? -500
+          : roi * 40 + recent50Roi * 60 + hit3 * 8 + hit4 * 20 + score * 0.01;
+
+      return { key, elimScore };
     })
-    .filter((row) => !row.protected_rank)
-    .sort((a, b) => {
-      if (b.weakness !== a.weakness) return b.weakness - a.weakness;
-      if (a.roi !== b.roi) return a.roi - b.roi;
-      return String(a.key).localeCompare(String(b.key));
-    });
+    .sort((a, b) => toNum(a.elimScore, 0) - toNum(b.elimScore, 0));
 
-  // 計算最多可以砍幾個，確保砍完之後 active 數量不低於 MIN_ACTIVE_STRATEGY
-  const maxAllowedDisable = Math.max(0, activeCount - MIN_ACTIVE_STRATEGY);
+  const toDisable = candidates.slice(0, shrinkTarget).map((c) => c.key);
 
-  let disableCount = 0;
-  if (activeCount >= EXTREME_SHRINK_TRIGGER) disableCount = Math.min(24, candidates.length);
-  else if (activeCount >= HARD_SHRINK_TRIGGER) disableCount = Math.min(12, candidates.length);
-  else disableCount = Math.min(6, candidates.length);
+  if (!toDisable.length) {
+    return {
+      ok: true,
+      active_count: activeCount,
+      disabled_count: 0,
+      disabled_keys: [],
+      skipped: true,
+      reason: 'no_candidates_to_disable'
+    };
+  }
 
-  // 關鍵保護：不能砍到低於 MIN_ACTIVE_STRATEGY
-  disableCount = Math.min(disableCount, maxAllowedDisable);
+  const nowIso = new Date().toISOString();
 
-  const disabledKeys = candidates.slice(0, disableCount).map((row) => row.key).filter(Boolean);
+  const { error: disableError } = await db
+    .from(STRATEGY_POOL_TABLE)
+    .update({ status: 'disabled', updated_at: nowIso })
+    .in('strategy_key', toDisable);
 
-  if (disabledKeys.length > 0) {
-    const { error: updateError } = await db
-      .from(STRATEGY_POOL_TABLE)
-      .update({
-        status: 'disabled',
-        updated_at: new Date().toISOString()
-      })
-      .in('strategy_key', disabledKeys);
-
-    if (updateError) {
-      throw new Error(`strategy_pool shrink update failed: ${updateError.message || updateError}`);
-    }
+  if (disableError) {
+    throw new Error(`strategy shrink disable failed: ${disableError.message || disableError}`);
   }
 
   return {
     ok: true,
     active_count: activeCount,
-    disabled_count: disabledKeys.length,
-    disabled_keys: disabledKeys,
-    skipped: disabledKeys.length === 0,
-    reason: disabledKeys.length === 0 ? 'no_disable_target' : ''
+    soft_shrink_trigger: SOFT_SHRINK_TRIGGER,
+    hard_shrink_trigger: HARD_SHRINK_TRIGGER,
+    shrink_mode: shrinkMode,
+    shrink_target: shrinkTarget,
+    disabled_count: toDisable.length,
+    disabled_keys: toDisable
   };
 }
 
-async function createLatestTestPrediction(db, latestDrawNo, marketSnapshot = {}) {
-  const sourceDrawNo = String(latestDrawNo || '').trim();
+async function createLatestTestPrediction(db, latestDrawNo = 0, marketSnapshot = {}) {
+  const existingCreatedCount = await countCreatedPredictions(db);
 
-  if (!sourceDrawNo) {
+  if (!ALLOW_CREATE_WHEN_EXISTING && existingCreatedCount > 0) {
     return {
       created_count: 0,
       active_created_prediction: null,
       skipped: true,
-      reason: 'missing_source_draw_no'
+      reason: 'existing_pending'
     };
   }
 
-  const createdNowCount = await countCreatedPredictions(db);
-  if (createdNowCount >= MAX_CREATED_PREDICTIONS) {
+  if (existingCreatedCount >= MAX_CREATED_PREDICTIONS) {
     return {
       created_count: 0,
       active_created_prediction: null,
       skipped: true,
-      reason: 'created_pool_reached_limit'
+      reason: 'max_created_predictions_reached'
     };
   }
+
+  const sourceDrawNo = latestDrawNo;
 
   const { data: existingPrediction, error: existingError } = await db
     .from(PREDICTIONS_TABLE)
     .select('*')
     .eq('mode', TEST_MODE)
     .eq('source_draw_no', sourceDrawNo)
-    .eq('status', 'created')
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();
 
   if (existingError) throw existingError;
 
-  const allowCreateNow = ALLOW_CREATE_WHEN_EXISTING || !existingPrediction;
-  if (!allowCreateNow) {
-    return {
-      created_count: 0,
-      active_created_prediction: existingPrediction || null,
-      skipped: true,
-      reason: 'existing_created_prediction_found'
-    };
-  }
-
   const marketRows = await fetchMarketRows(db);
   const market = buildMarketState(marketRows);
-  marketSnapshot = enrichMarketSnapshotWithPhase(marketSnapshot, market);
+
   const strategyCandidates = await fetchStrategyCandidates(db, marketSnapshot, market);
 
-  const groups = buildPredictionGroups(
-    strategyCandidates,
-    market,
-    marketSnapshot,
-    Date.now()
-  )
-    .slice()
-    .sort(compareGroupPriorityDesc)
-    .slice(0, BET_GROUP_COUNT);
+  const seedBase = sourceDrawNo + Date.now() % 10000;
+  const groups = buildPredictionGroups(strategyCandidates, market, marketSnapshot, seedBase);
 
-  if (groups.length < BET_GROUP_COUNT) {
+  if (!groups.length) {
     return {
       created_count: 0,
       active_created_prediction: null,
       skipped: true,
-      reason: 'not_enough_groups_built',
-      candidate_count: strategyCandidates.length
+      reason: 'no_groups_built'
     };
   }
 
-  const latestDrawNumbers = uniqueSorted(market.latest || []);
+  const latestDrawNumbers = parseNums(marketRows[0]?.numbers || []);
+
   const payload = {
     mode: TEST_MODE,
     status: 'created',
@@ -2578,7 +2636,7 @@ async function runAutoCompareForLatest(db) {
       // ✅ 根據 mode 決定 starMode
       const starMode = row.mode === 'formal_3star' ? 3 : 4;
 
-      // ✅ 正確傳入 groups + drawRows + starMode（原本傳 prediction/draw 是錯的）
+      // ✅ 正確傳入 groups + drawRows + starMode
       const payload = buildComparePayload({
         groups: row.groups_json || [],
         drawRows: [latestDraw],
@@ -2605,7 +2663,6 @@ async function runAutoCompareForLatest(db) {
       // ✅ 只有 detail 非空才寫入 strategy_stats
       if (result?.detail?.length) {
         try {
-          // ✅ 把 coverage_hit 合併進每筆 detail
           const coverageHitMap2 = new Map(
             (result?.coverage_hit_per_draw || []).map(c => [c.draw_no, c.coverage_hit])
           );
