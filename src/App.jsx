@@ -774,7 +774,8 @@ function normalizePredictionLatest(data) {
     formalSourceDrawNo,
 
     latest3StarRow: latest?.latest_3star_row || null,
-    recent3StarComparedRows: toArray(latest?.recent_3star_compared_rows).map(normalizePredictionRow).filter(Boolean)
+    recent3StarComparedRows: toArray(latest?.recent_3star_compared_rows).map(normalizePredictionRow).filter(Boolean),
+    threeStarLeaderboard: toArray(latest?.three_star_leaderboard)
   };
 }
 
@@ -1171,7 +1172,8 @@ export default function App() {
     recentComparedRows: [],
     recentFormalComparePeriods: [],
     latest3StarRow: null,
-    recent3StarComparedRows: []
+    recent3StarComparedRows: [],
+    threeStarLeaderboard: []
   });
   const [aiPlayer, setAiPlayer] = useState(normalizeAiPlayer({}));
   const [lastAutoTrainResult, setLastAutoTrainResult] = useState(null);
@@ -1228,7 +1230,8 @@ export default function App() {
         recentComparedRows: normalizedPrediction.recentComparedRows,
         recentFormalComparePeriods: normalizedPrediction.recentFormalComparePeriods,
         latest3StarRow: normalizedPrediction.latest3StarRow || null,
-        recent3StarComparedRows: normalizedPrediction.recent3StarComparedRows || []
+        recent3StarComparedRows: normalizedPrediction.recent3StarComparedRows || [],
+        threeStarLeaderboard: normalizedPrediction.threeStarLeaderboard || []
       });
 
       setAiPlayer(normalizeAiPlayer(aiPlayerRes));
@@ -2116,6 +2119,31 @@ export default function App() {
               </div>
             </Card>
 
+            <Card
+              title="⭐ 3星策略競爭排行"
+              subtitle="按中3率排序，AI自動選用表現最好的策略出組。"
+            >
+              {(() => {
+                const lb = toArray(predictionSummary?.threeStarLeaderboard).slice(0, 10);
+                if (!lb.length) return <div style={styles.emptyBox}>累積數據中...</div>;
+                return (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {lb.map((row, idx) => (
+                      <div key={row.strategy_key} style={{ background: idx === 0 ? '#f0fdf4' : '#f8f1e6', border: `2px solid ${idx === 0 ? '#86efac' : '#d9c7a8'}`, borderRadius: 12, padding: '10px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div>
+                          <span style={{ fontSize: 13, fontWeight: 800, color: '#0f766e' }}>#{idx + 1} {row.strategy_key}</span>
+                          <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 2 }}>期數：{row.total_rounds} | 中3：{row.hit3}次 | 中2：{row.hit2}次</div>
+                        </div>
+                        <div style={{ textAlign: 'right' }}>
+                          <div style={{ fontSize: 16, fontWeight: 900, color: row.hit3_rate > 5 ? '#dc2626' : '#0f766e' }}>{row.hit3_rate}%</div>
+                          <div style={{ fontSize: 11, color: '#7b6e5c' }}>中3率</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
+            </Card>
 
           </div>
         )}
