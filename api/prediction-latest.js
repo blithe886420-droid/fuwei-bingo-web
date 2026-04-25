@@ -1,718 +1,892 @@
 import { createClient } from '@supabase/supabase-js';
 
+const API_VERSION = 'prediction-latest-market-role-v6-ui-compare-bridge-v4-appsync-summary-sync-v2';
+
+const SUPABASE_URL =
+  process.env.SUPABASE_URL ||
+  process.env.VITE_SUPABASE_URL ||
+  process.env.NEXT_PUBLIC_SUPABASE_URL;
+
+const SUPABASE_KEY =
+  process.env.SUPABASE_SERVICE_ROLE_KEY ||
+  process.env.SUPABASE_SECRET_KEY ||
+  process.env.SUPABASE_KEY ||
+  process.env.SUPABASE_ANON_KEY;
+
+const PREDICTIONS_TABLE = 'bingo_predictions';
+const DRAWS_TABLE = 'bingo_draws';
 const STRATEGY_STATS_TABLE = 'strategy_stats';
 const STRATEGY_POOL_TABLE = 'strategy_pool';
 
-/**
- * 命中品質導向淘汰版（第四刀：直接開殺）
- * 目標：
- * 1. 讓不會中3的策略更快出局
- * 2. 讓只會保2、但拉不起中3的策略提早被清掉
- * 3. 保留真正有 hit4 / 近期 hit3 爆發能力的策略
- *
- * D版補強：
- * 4. 增加盤型記憶層（phase_stats_json）
- * 5. 每次 compare 後，同步記錄該策略在 continuation / rotation / bias / chaos 下的表現
- * 6. v2：phase 無法辨識時，不丟棄，改歸 continuation 避免統計斷流
- */
-const DISABLE_RULES = {
-  // A: 整體 ROI 太低（放寬：輪數提高到 15，門檻放寬到 -0.7）
-  minRoundsA: 15,
-  roiFloorA: -0.7,
-  // B: 近期 ROI 差且命中低（放寬：輪數提高到 12，門檻放寬）
-  minRoundsB: 12,
-  recent50RoiFloorB: -0.5,
-  avgHitFloorB: 0.8,
-  // C: 近期 ROI 差且命中率低（放寬：輪數提高到 15）
-  minRoundsC: 15,
-  recent50RoiFloorC: -0.55,
-  hitRateFloorC: 0.08,
-  // D: ROI 差且平均命中低（放寬：輪數提高到 15）
-  minRoundsD: 15,
-  roiFloorD: -0.5,
-  avgHitFloorD: 0.9,
-  // E: 早期快速淘汰（放寬：輪數提高到 20，避免新策略過早死亡）
-  minRoundsE: 20,
-  roiFloorE: -0.7,
-  // F: 早期命中太低（放寬：輪數提高到 20）
-  minRoundsF: 20,
-  avgHitFloorF: 0.6,
-  recent50RoiFloorF: -0.6,
-  // G: hit3 率低且 ROI 差（放寬：輪數提高到 20）
-  minRoundsG: 20,
-  hit3RateFloorG: 0.05,
-  recent50RoiFloorG: -0.15,
-  avgHitFloorG: 1.0,
-  // H: 完全沒有 hit3/hit4（放寬：輪數提高到 20）
-  minRoundsH: 20,
-  hit3CountFloorH: 0,
-  hit4CountFloorH: 0,
-  roiFloorH: -0.1,
-  // I: 近期 hit3 極低（放寬：輪數提高到 15）
-  minRoundsI: 15,
-  recent50Hit3RateFloorI: 0.01,
-  recent50RoiFloorI: -0.15,
-  recent50HitRateFloorI: 0.10,
-  // J: hit2 高但 hit3 低（放寬：輪數提高到 20）
-  minRoundsJ: 20,
-  hit2RateCeilJ: 0.28,
-  hit3RateFloorJ: 0.03,
-  recent50RoiFloorJ: -0.10,
-  // K: 近期命中率不足（放寬：輪數提高到 20）
-  minRoundsK: 20,
-  recent50HitRateFloorK: 0.12,
-  recent50Hit3RateFloorK: 0.005,
-  roiFloorK: -0.10,
-  // L: hit3 仍是 0（放寬：輪數提高到 15）
-  minRoundsL: 15,
-  hit3CountFloorL: 0,
-  recent50RoiFloorL: -0.10,
-  // M: 近期無 hit3/hit4 且命中低（放寬：輪數提高到 20）
-  minRoundsM: 20,
-  recent50Hit3RateFloorM: 0,
-  hit4CountFloorM: 0,
-  avgHitFloorM: 1.0
-};
+const FORMAL_BATCH_LIMIT = 3;
+const TEST_MODE = 'test';
+const FORMAL_MODE = 'formal';
+const FORMAL_CANDIDATE_MODE = 'formal_candidate';
 
-const PROTECTED_STATUS = new Set(['protected']);
-const TERMINAL_STATUS = new Set(['disabled', 'retired']);
-const VALID_PHASES = ['continuation', 'rotation', 'bias', 'chaos'];
-const PHASE_RECENT_WINDOW = 20;
-
-function getSupabase() {
-  const url =
-    process.env.SUPABASE_URL ||
-    process.env.VITE_SUPABASE_URL ||
-    process.env.NEXT_PUBLIC_SUPABASE_URL;
-
-  const key =
-    process.env.SUPABASE_SERVICE_ROLE_KEY ||
-    process.env.SUPABASE_SECRET_KEY ||
-    process.env.SUPABASE_SERVICE_ROLE ||
-    process.env.SUPABASE_KEY ||
-    process.env.SUPABASE_ANON_KEY ||
-    process.env.VITE_SUPABASE_ANON_KEY ||
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-  if (!url || !key) {
-    throw new Error('Missing SUPABASE env');
-  }
-
-  return createClient(url, key, {
-    auth: { persistSession: false }
-  });
+if (!SUPABASE_URL || !SUPABASE_KEY) {
+  throw new Error('Missing SUPABASE_URL or SUPABASE key');
 }
 
-function toNum(v, d = 0) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : d;
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+  auth: { persistSession: false }
+});
+
+function toInt(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.trunc(n) : fallback;
 }
 
-function tail(arr = [], size = 50) {
-  return (Array.isArray(arr) ? arr : []).slice(-size);
-}
-
-function safeArrayValue(value) {
-  if (Array.isArray(value)) return value;
-  if (typeof value === 'string') {
-    try {
-      const parsed = JSON.parse(value);
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      return [];
-    }
-  }
-  return [];
-}
-
-function safeObjectValue(value) {
-  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
-  if (typeof value === 'string') {
-    try {
-      const parsed = JSON.parse(value);
-      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
-    } catch {
-      return {};
-    }
-  }
-  return {};
+function toNum(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
 }
 
 function round4(value) {
   const n = Number(value);
-  if (!Number.isFinite(n)) return 0;
-  return Number(n.toFixed(4));
+  return Number.isFinite(n) ? Number(n.toFixed(4)) : 0;
 }
 
-function clamp(value, min, max) {
-  return Math.min(max, Math.max(min, value));
+function uniqueAsc(nums = []) {
+  return [...new Set((Array.isArray(nums) ? nums : []).map((n) => Number(n)).filter(Number.isFinite))]
+    .filter((n) => n >= 1 && n <= 80)
+    .sort((a, b) => a - b);
 }
 
-function calcRate(numerator, denominator) {
-  if (toNum(denominator, 0) <= 0) return 0;
-  return toNum(numerator, 0) / toNum(denominator, 0);
-}
-
-function calcRecentHitRate(recentHits = []) {
-  const arr = Array.isArray(recentHits) ? recentHits : [];
-  if (!arr.length) return 0;
-  return arr.filter((x) => toNum(x) >= 2).length / arr.length;
-}
-
-function calcRecentHit3Rate(recentHits = []) {
-  const arr = Array.isArray(recentHits) ? recentHits : [];
-  if (!arr.length) return 0;
-  return arr.filter((x) => toNum(x) >= 3).length / arr.length;
-}
-
-function calcRecentHit4Rate(recentHits = []) {
-  const arr = Array.isArray(recentHits) ? recentHits : [];
-  if (!arr.length) return 0;
-  return arr.filter((x) => toNum(x) >= 4).length / arr.length;
-}
-
-function calcShortWindowStats(recentHits = [], windowSize = 10) {
-  const arr = tail(Array.isArray(recentHits) ? recentHits : [], windowSize);
-  if (!arr.length) {
-    return {
-      avg_hit: 0,
-      hit2_rate: 0,
-      hit3_rate: 0,
-      hit4_rate: 0,
-      zero_one_rate: 1,
-      strong_round_rate: 0
-    };
+function parseDrawNumbers(value) {
+  if (Array.isArray(value)) {
+    return uniqueAsc(value);
   }
 
-  const total = arr.length;
-  const sumHits = arr.reduce((acc, value) => acc + toNum(value, 0), 0);
-  const hit2Rate = arr.filter((x) => toNum(x) >= 2).length / total;
-  const hit3Rate = arr.filter((x) => toNum(x) >= 3).length / total;
-  const hit4Rate = arr.filter((x) => toNum(x) >= 4).length / total;
-  const zeroOneRate = arr.filter((x) => toNum(x) <= 1).length / total;
-  const strongRoundRate = arr.filter((x) => toNum(x) >= 2).length / total;
-
-  return {
-    avg_hit: sumHits / total,
-    hit2_rate: hit2Rate,
-    hit3_rate: hit3Rate,
-    hit4_rate: hit4Rate,
-    zero_one_rate: zeroOneRate,
-    strong_round_rate: strongRoundRate
-  };
-}
-
-function normalizeMarketPhase(rawPhase = '') {
-  const phase = String(rawPhase || '').trim().toLowerCase();
-  return VALID_PHASES.includes(phase) ? phase : 'unknown';
-}
-
-function normalizePhaseBucket(value) {
-  const source = safeObjectValue(value);
-  const recentHits = tail(safeArrayValue(source.recent_hits), PHASE_RECENT_WINDOW);
-  const recentProfit = tail(safeArrayValue(source.recent_profit), PHASE_RECENT_WINDOW);
-  const recentCost = tail(safeArrayValue(source.recent_cost), PHASE_RECENT_WINDOW);
-
-  const rounds = toNum(source.rounds, 0);
-  const totalHits = toNum(source.total_hits, 0);
-  const totalCost = toNum(source.total_cost, 0);
-  const totalReward = toNum(source.total_reward, 0);
-  const totalProfit = toNum(source.total_profit, totalReward - totalCost);
-
-  const hit0 = toNum(source.hit0, 0);
-  const hit1 = toNum(source.hit1, 0);
-  const hit2 = toNum(source.hit2, 0);
-  const hit3 = toNum(source.hit3, 0);
-  const hit4 = toNum(source.hit4, 0);
-
-  const sumRecentProfit = recentProfit.reduce((a, b) => a + toNum(b, 0), 0);
-  const sumRecentCost = recentCost.reduce((a, b) => a + toNum(b, 0), 0);
-
-  return {
-    rounds,
-    total_hits: totalHits,
-    total_cost: totalCost,
-    total_reward: totalReward,
-    total_profit: totalProfit,
-    hit0,
-    hit1,
-    hit2,
-    hit3,
-    hit4,
-    avg_hit: round4(rounds > 0 ? totalHits / rounds : 0),
-    roi: round4(totalCost > 0 ? totalProfit / totalCost : 0),
-    hit2_rate: round4(calcRate(hit2, rounds)),
-    hit3_rate: round4(calcRate(hit3, rounds)),
-    hit4_rate: round4(calcRate(hit4, rounds)),
-    recent_hits: recentHits,
-    recent_profit: recentProfit,
-    recent_cost: recentCost,
-    recent_20_hit_rate: round4(calcRecentHitRate(recentHits)),
-    recent_20_hit3_rate: round4(calcRecentHit3Rate(recentHits)),
-    recent_20_hit4_rate: round4(calcRecentHit4Rate(recentHits)),
-    recent_20_roi: round4(sumRecentCost > 0 ? sumRecentProfit / sumRecentCost : 0)
-  };
-}
-
-function normalizePhaseStatsJson(value) {
-  const source = safeObjectValue(value);
-  const result = {};
-  for (const phase of VALID_PHASES) {
-    result[phase] = normalizePhaseBucket(source[phase]);
-  }
-  return result;
-}
-
-function updatePhaseStatsJson(oldValue, marketPhase, hit, cost, reward, profit) {
-  const phase = normalizeMarketPhase(marketPhase);
-  const phaseStats = normalizePhaseStatsJson(oldValue);
-
-  let finalPhase = phase;
-  if (!VALID_PHASES.includes(finalPhase)) {
-    // unknown phase 直接跳過，不污染任何 bucket 的統計資料
-    return normalizePhaseStatsJson(oldValue);
+  if (typeof value === 'string') {
+    return uniqueAsc(
+      value
+        .replace(/[{}[\]]/g, ' ')
+        .split(/[,\s|/]+/)
+        .map(Number)
+    );
   }
 
-  const bucket = normalizePhaseBucket(phaseStats[finalPhase] || {});
-  bucket.rounds += 1;
-  bucket.total_hits += toNum(hit, 0);
-  bucket.total_cost += toNum(cost, 0);
-  bucket.total_reward += toNum(reward, 0);
-  bucket.total_profit = bucket.total_reward - bucket.total_cost;
-
-  const safeHit = toNum(hit, 0);
-  if (safeHit <= 0) bucket.hit0 += 1;
-  if (safeHit === 1) bucket.hit1 += 1;
-  if (safeHit >= 2) bucket.hit2 += 1;
-  if (safeHit >= 3) bucket.hit3 += 1;
-  if (safeHit >= 4) bucket.hit4 += 1;
-
-  bucket.recent_hits = tail([...(bucket.recent_hits || []), safeHit], PHASE_RECENT_WINDOW);
-  bucket.recent_profit = tail([...(bucket.recent_profit || []), toNum(profit, 0)], PHASE_RECENT_WINDOW);
-  bucket.recent_cost = tail([...(bucket.recent_cost || []), toNum(cost, 0)], PHASE_RECENT_WINDOW);
-
-  phaseStats[finalPhase] = normalizePhaseBucket(bucket);
-  return phaseStats;
-}
-
-function calcPhaseBestJson(phaseStatsJson = {}) {
-  const phaseStats = normalizePhaseStatsJson(phaseStatsJson);
-  const phaseScores = {};
-
-  for (const phase of VALID_PHASES) {
-    const bucket = phaseStats[phase];
-    const rounds = toNum(bucket.rounds, 0);
-    const score =
-      bucket.avg_hit * 120 +
-      bucket.hit2_rate * 220 +
-      bucket.hit3_rate * 420 +
-      bucket.hit4_rate * 700 +
-      bucket.recent_20_hit_rate * 180 +
-      bucket.recent_20_hit3_rate * 320 +
-      bucket.recent_20_hit4_rate * 520 +
-      bucket.recent_20_roi * 80 +
-      Math.min(rounds, 20) * 3;
-
-    phaseScores[phase] = round4(score);
+  if (value && typeof value === 'object') {
+    return parseDrawNumbers(
+      value.numbers ||
+        value.draw_numbers ||
+        value.result_numbers ||
+        value.open_numbers ||
+        value.nums ||
+        []
+    );
   }
 
-  const bestEntry = Object.entries(phaseScores).sort((a, b) => toNum(b[1], 0) - toNum(a[1], 0))[0] || ['unknown', 0];
-
-  return {
-    best_phase: bestEntry[0],
-    best_score: round4(bestEntry[1]),
-    phase_scores: phaseScores
-  };
+  return [];
 }
 
-function getMarketPhaseFromCompareResult(compareResult = {}) {
-  const phaseFromContext = String(compareResult?.phase_context?.market_phase || '').trim().toLowerCase();
-  if (VALID_PHASES.includes(phaseFromContext)) return phaseFromContext;
+function normalizeGroups(groups) {
+  if (!Array.isArray(groups)) return [];
 
-  const directPhase = String(compareResult?.market_phase || '').trim().toLowerCase();
-  if (VALID_PHASES.includes(directPhase)) return directPhase;
+  return groups
+    .map((g, idx) => {
+      if (Array.isArray(g)) {
+        const nums = uniqueAsc(g).slice(0, 4);
+        if (nums.length < 3) return null;  // 支援3星(3個)和4星(4個)
 
-  return 'unknown';
-}
-
-function calcStableScore({
-  roi,
-  avg_hit,
-  recent_50_roi,
-  recent_50_hit_rate,
-  total_rounds,
-  hit2,
-  hit3,
-  hit4,
-  hit2_rate,
-  hit3_rate,
-  hit4_rate,
-  recent_50_hit3_rate,
-  recent_50_hit4_rate,
-  recent_hits = []
-}) {
-  const roiClamped = clamp(roi, -1.2, 1.2);
-  const recentRoiClamped = clamp(recent_50_roi, -1.2, 1.2);
-  const avgHitDelta = clamp(avg_hit - 1, -1, 2.5);
-  const hitRateClamped = clamp(recent_50_hit_rate, 0, 1);
-  const hit2RateClamped = clamp(hit2_rate, 0, 1);
-  const hit3RateClamped = clamp(hit3_rate, 0, 1);
-  const hit4RateClamped = clamp(hit4_rate, 0, 1);
-  const recentHit3RateClamped = clamp(recent_50_hit3_rate, 0, 1);
-  const recentHit4RateClamped = clamp(recent_50_hit4_rate, 0, 1);
-  const roundsClamped = Math.min(40, Math.max(0, total_rounds));
-
-  const recent10 = calcShortWindowStats(recent_hits, 10);
-  const recent20 = calcShortWindowStats(recent_hits, 20);
-
-  const recent10Avg = clamp(recent10.avg_hit, 0, 4);
-  const recent20Avg = clamp(recent20.avg_hit, 0, 4);
-  const recent10Hit2 = clamp(recent10.hit2_rate, 0, 1);
-  const recent20Hit2 = clamp(recent20.hit2_rate, 0, 1);
-  const recent10Hit3 = clamp(recent10.hit3_rate, 0, 1);
-  const recent20Hit3 = clamp(recent20.hit3_rate, 0, 1);
-  const recent10Hit4 = clamp(recent10.hit4_rate, 0, 1);
-  const recent20Hit4 = clamp(recent20.hit4_rate, 0, 1);
-  const recent10ZeroOne = clamp(recent10.zero_one_rate, 0, 1);
-  const recent20ZeroOne = clamp(recent20.zero_one_rate, 0, 1);
-
-  const roiPart = roiClamped * 10;
-  const recentRoiPart = recentRoiClamped * 8;
-  const avgHitPart = avgHitDelta * 70;
-  const roundsBonus = roundsClamped * 0.8;
-
-  const lifetimeQualityPart =
-    hit2RateClamped * 25 +
-    hit3RateClamped * 180 +
-    hit4RateClamped * 320 +
-    recentHit3RateClamped * 140 +
-    recentHit4RateClamped * 240 +
-    hitRateClamped * 20;
-
-  const recentTruthPart =
-    recent10Avg * 140 +
-    recent20Avg * 110 +
-    recent10Hit2 * 260 +
-    recent20Hit2 * 180 +
-    recent10Hit3 * 560 +
-    recent20Hit3 * 420 +
-    recent10Hit4 * 720 +
-    recent20Hit4 * 520;
-
-  const countPart = toNum(hit2, 0) * 0.8 + toNum(hit3, 0) * 9 + toNum(hit4, 0) * 28;
-
-  let honestyAdjustment = 0;
-  if (recent10Hit2 >= 0.3) honestyAdjustment += 70;
-  if (recent10Hit2 >= 0.5) honestyAdjustment += 55;
-  if (recent20Hit2 >= 0.35) honestyAdjustment += 45;
-  if (recent10Hit3 >= 0.08) honestyAdjustment += 120;
-  if (recent10Hit3 >= 0.15) honestyAdjustment += 90;
-  if (recent20Hit3 >= 0.08) honestyAdjustment += 80;
-  if (recent10Hit4 > 0) honestyAdjustment += 140;
-  if (recent10ZeroOne >= 0.8) honestyAdjustment -= 220;
-  if (recent20ZeroOne >= 0.75) honestyAdjustment -= 180;
-  if (recent10Hit2 <= 0.1) honestyAdjustment -= 120;
-  if (recent20Hit2 <= 0.15) honestyAdjustment -= 90;
-  if (recent10Hit3 <= 0.01) honestyAdjustment -= 80;
-  if (recent20Hit3 <= 0.01) honestyAdjustment -= 60;
-  if (recentRoiClamped < -0.6 && recent20Hit2 < 0.2 && recent20Hit3 <= 0.01) {
-    honestyAdjustment -= 140;
-  }
-
-  return round4(
-    roiPart +
-      recentRoiPart +
-      avgHitPart +
-      roundsBonus +
-      lifetimeQualityPart +
-      recentTruthPart +
-      countPart +
-      honestyAdjustment
-  );
-}
-
-function shouldDisableStrategy(row = {}) {
-  const roi = toNum(row?.roi);
-  const avgHit = toNum(row?.avg_hit);
-  const recent50Roi = toNum(row?.recent_50_roi);
-  const recent50HitRate = toNum(row?.recent_50_hit_rate);
-  const recent50Hit3Rate = toNum(row?.recent_50_hit3_rate);
-  const totalRounds = toNum(row?.total_rounds);
-  const hit2 = toNum(row?.hit2);
-  const hit3 = toNum(row?.hit3);
-  const hit4 = toNum(row?.hit4);
-  const hit2Rate = toNum(row?.hit2_rate);
-  const hit3Rate = toNum(row?.hit3_rate);
-  const hit4Rate = toNum(row?.hit4_rate);
-  const recentHits = safeArrayValue(row?.recent_hits);
-  const recent10 = calcShortWindowStats(recentHits, 10);
-  const recent20 = calcShortWindowStats(recentHits, 20);
-
-  if (hit4Rate >= 0.01 || recent50Hit3Rate >= 0.08 || hit3Rate >= 0.10 || avgHit >= 1.45 || recent10.hit3_rate >= 0.10 || recent20.hit3_rate >= 0.08) {
-    return { shouldDisable: false, reason: '' };
-  }
-  if (totalRounds >= 8 && recent10.hit2_rate <= 0.1 && recent20.hit2_rate <= 0.15 && recent20.hit3_rate <= 0.01) {
-    return { shouldDisable: true, reason: 'recent_low_hit2_and_no_hit3' };
-  }
-  if (totalRounds >= DISABLE_RULES.minRoundsA && roi < DISABLE_RULES.roiFloorA) return { shouldDisable: true, reason: `roi_below_${DISABLE_RULES.roiFloorA}_after_${DISABLE_RULES.minRoundsA}` };
-  if (totalRounds >= DISABLE_RULES.minRoundsB && recent50Roi < DISABLE_RULES.recent50RoiFloorB && avgHit < DISABLE_RULES.avgHitFloorB) return { shouldDisable: true, reason: `recent50_roi_below_${DISABLE_RULES.recent50RoiFloorB}_and_avg_hit_below_${DISABLE_RULES.avgHitFloorB}` };
-  if (totalRounds >= DISABLE_RULES.minRoundsC && recent50Roi < DISABLE_RULES.recent50RoiFloorC && recent50HitRate < DISABLE_RULES.hitRateFloorC) return { shouldDisable: true, reason: `recent50_roi_below_${DISABLE_RULES.recent50RoiFloorC}_and_hit_rate_below_${DISABLE_RULES.hitRateFloorC}` };
-  if (totalRounds >= DISABLE_RULES.minRoundsD && roi < DISABLE_RULES.roiFloorD && avgHit < DISABLE_RULES.avgHitFloorD) return { shouldDisable: true, reason: `roi_below_${DISABLE_RULES.roiFloorD}_and_avg_hit_below_${DISABLE_RULES.avgHitFloorD}` };
-  if (totalRounds >= DISABLE_RULES.minRoundsE && roi < DISABLE_RULES.roiFloorE) return { shouldDisable: true, reason: `early_fail_roi_below_${DISABLE_RULES.roiFloorE}_after_${DISABLE_RULES.minRoundsE}` };
-  if (totalRounds >= DISABLE_RULES.minRoundsF && avgHit < DISABLE_RULES.avgHitFloorF && recent50Roi < DISABLE_RULES.recent50RoiFloorF) return { shouldDisable: true, reason: `early_fail_avg_hit_below_${DISABLE_RULES.avgHitFloorF}_and_recent50_roi_below_${DISABLE_RULES.recent50RoiFloorF}` };
-  if (totalRounds >= DISABLE_RULES.minRoundsG && hit3Rate < DISABLE_RULES.hit3RateFloorG && recent50Roi < DISABLE_RULES.recent50RoiFloorG && avgHit < DISABLE_RULES.avgHitFloorG) return { shouldDisable: true, reason: `low_hit3_rate_below_${DISABLE_RULES.hit3RateFloorG}_and_recent50_roi_below_${DISABLE_RULES.recent50RoiFloorG}` };
-  if (totalRounds >= DISABLE_RULES.minRoundsH && hit3 <= DISABLE_RULES.hit3CountFloorH && hit4 <= DISABLE_RULES.hit4CountFloorH && roi < DISABLE_RULES.roiFloorH) return { shouldDisable: true, reason: `no_hit3_hit4_after_${DISABLE_RULES.minRoundsH}_and_roi_below_${DISABLE_RULES.roiFloorH}` };
-  if (totalRounds >= DISABLE_RULES.minRoundsI && recent50Hit3Rate < DISABLE_RULES.recent50Hit3RateFloorI && recent50Roi < DISABLE_RULES.recent50RoiFloorI && recent50HitRate < DISABLE_RULES.recent50HitRateFloorI) return { shouldDisable: true, reason: `recent50_hit3_rate_below_${DISABLE_RULES.recent50Hit3RateFloorI}_and_recent50_roi_below_${DISABLE_RULES.recent50RoiFloorI}` };
-  if (totalRounds >= DISABLE_RULES.minRoundsJ && hit2Rate >= DISABLE_RULES.hit2RateCeilJ && hit3Rate < DISABLE_RULES.hit3RateFloorJ && recent50Roi < DISABLE_RULES.recent50RoiFloorJ) return { shouldDisable: true, reason: `high_hit2_rate_but_low_hit3_rate_and_recent50_roi_below_${DISABLE_RULES.recent50RoiFloorJ}` };
-  if (totalRounds >= DISABLE_RULES.minRoundsK && recent50HitRate >= DISABLE_RULES.recent50HitRateFloorK && recent50Hit3Rate < DISABLE_RULES.recent50Hit3RateFloorK && roi < DISABLE_RULES.roiFloorK) return { shouldDisable: true, reason: `recent50_hit_rate_ok_but_recent50_hit3_rate_too_low_and_roi_below_${DISABLE_RULES.roiFloorK}` };
-  if (totalRounds >= DISABLE_RULES.minRoundsL && hit3 <= DISABLE_RULES.hit3CountFloorL && recent50Roi < DISABLE_RULES.recent50RoiFloorL) return { shouldDisable: true, reason: `hit3_still_zero_after_${DISABLE_RULES.minRoundsL}_and_recent50_roi_below_${DISABLE_RULES.recent50RoiFloorL}` };
-  if (totalRounds >= DISABLE_RULES.minRoundsM && recent50Hit3Rate <= DISABLE_RULES.recent50Hit3RateFloorM && hit4 <= DISABLE_RULES.hit4CountFloorM && avgHit < DISABLE_RULES.avgHitFloorM) return { shouldDisable: true, reason: `no_recent_hit3_no_hit4_and_avg_hit_below_${DISABLE_RULES.avgHitFloorM}` };
-  return { shouldDisable: false, reason: '' };
-}
-
-async function getPoolStatusMap(supabase, strategyKeys = []) {
-  const safeKeys = [...new Set((Array.isArray(strategyKeys) ? strategyKeys : []).filter(Boolean))];
-  if (!safeKeys.length) return new Map();
-
-  const { data, error } = await supabase
-    .from(STRATEGY_POOL_TABLE)
-    .select('strategy_key, status, protected_rank')
-    .in('strategy_key', safeKeys);
-
-  if (error) {
-    throw new Error(`strategy_pool select failed: ${error.message || error}`);
-  }
-
-  return new Map(
-    (data || []).map((row) => [
-      String(row?.strategy_key || '').trim(),
-      {
-        status: String(row?.status || '').trim().toLowerCase(),
-        protected_rank: Boolean(row?.protected_rank)
+        return {
+          key: `group_${idx + 1}`,
+          label: `第${idx + 1}組`,
+          nums,
+          reason: '',
+          meta: {}
+        };
       }
-    ])
-  );
+
+      if (!g || typeof g !== 'object') return null;
+
+      const nums = uniqueAsc(
+        Array.isArray(g.nums)
+          ? g.nums
+          : Array.isArray(g.numbers)
+            ? g.numbers
+            : Array.isArray(g.values)
+              ? g.values
+              : []
+      ).slice(0, 4);
+
+      if (nums.length < 3) return null;  // 支援3星(3個)和4星(4個)
+
+      const meta = g.meta && typeof g.meta === 'object' ? g.meta : {};
+
+      return {
+        key: g.key || meta.strategy_key || `group_${idx + 1}`,
+        label: g.label || g.name || meta.strategy_name || `第${idx + 1}組`,
+        nums,
+        reason: g.reason || meta.strategy_name || '',
+        meta
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 12);
 }
 
-async function disableStrategies(supabase, strategyKeys = [], reasonMap = {}) {
-  const finalKeys = [...new Set((Array.isArray(strategyKeys) ? strategyKeys : []).filter(Boolean))];
-  if (!finalKeys.length) {
-    return { updated: 0, disabled_keys: [] };
+function parseGroupsJson(value) {
+  if (Array.isArray(value)) return normalizeGroups(value);
+
+  if (typeof value === 'string') {
+    try {
+      return normalizeGroups(JSON.parse(value));
+    } catch {
+      return [];
+    }
   }
 
-  const nowIso = new Date().toISOString();
-  const { error } = await supabase
-    .from(STRATEGY_POOL_TABLE)
-    .update({ status: 'disabled', updated_at: nowIso })
-    .in('strategy_key', finalKeys);
-
-  if (error) {
-    throw new Error(`strategy_pool disable update failed: ${error.message || error}`);
+  if (value && typeof value === 'object') {
+    return normalizeGroups(value);
   }
+
+  return [];
+}
+
+
+function safeJsonParse(value, fallback = null) {
+  if (value == null) return fallback;
+  if (typeof value === 'object') return value;
+  if (typeof value !== 'string') return fallback;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function normalizeCompareHistory(value) {
+  const parsed = safeJsonParse(value, []);
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+function normalizePredictionRow(row) {
+  if (!row || typeof row !== 'object') return null;
+
+  const groups = parseGroupsJson(
+    row.groups_json ||
+      row.groups ||
+      row.prediction_groups ||
+      row.strategies ||
+      []
+  );
+
+  const compareResult =
+    safeJsonParse(row.compare_result_json, null) ||
+    safeJsonParse(row.compare_result, null) ||
+    null;
+
+  const compareHistory = normalizeCompareHistory(row.compare_history_json);
 
   return {
-    updated: finalKeys.length,
-    disabled_keys: finalKeys,
-    disabled_reason_map: reasonMap
+    ...row,
+    mode: String(row.mode || '').trim().toLowerCase(),
+    status: String(row.status || '').trim().toLowerCase() || 'created',
+    source_draw_no: toInt(row.source_draw_no, 0),
+    target_periods: toInt(row.target_periods, 1),
+    hit_count: toInt(row.hit_count, toInt(compareResult?.hit_count, 0)),
+    compare_status: row.compare_status || null,
+    verdict: row.verdict || null,
+    compare_result_json: compareResult,
+    compare_result: compareResult,  // ✅ APP.txt가 compare_result.detail을 읽을 수 있도록
+    compare_history_json: compareHistory,
+    groups_json: groups,
+    groups,
+    prediction_groups: groups,
+    group_count: groups.length
   };
 }
 
-export async function recordStrategyCompareResult(compareResult) {
-  if (!compareResult || typeof compareResult !== 'object') {
-    throw new Error('compareResult missing or invalid');
-  }
 
-  const supabase = getSupabase();
-  const detail = Array.isArray(compareResult.detail) ? compareResult.detail : [];
-  if (detail.length === 0) {
-    throw new Error('compareResult.detail missing or empty');
-  }
+function getCompareDrawNo(row) {
+  if (!row || typeof row !== 'object') return 0;
 
-  const marketPhase = getMarketPhaseFromCompareResult(compareResult);
-  const uniqueKeys = [...new Set(detail.map((row) => String(row?.strategy_key || '').trim()).filter(Boolean))];
-  const poolStatusMap = await getPoolStatusMap(supabase, uniqueKeys);
+  const compareResult =
+    row.compare_result_json && typeof row.compare_result_json === 'object'
+      ? row.compare_result_json
+      : safeJsonParse(row.compare_result_json, null);
 
-  const updatedKeys = [];
-  const disabledKeys = [];
-  const disabledReasonMap = {};
+  const detail = Array.isArray(compareResult?.detail) ? compareResult.detail : [];
+  const firstDetail = detail.length && detail[0] && typeof detail[0] === 'object' ? detail[0] : null;
 
-  for (const row of detail) {
-    const key = String(row?.strategy_key || '').trim();
-    if (!key) {
-      console.warn('[strategyStatsRecorder] strategy_key missing, skipping row:', JSON.stringify(row));
-      continue;  // ✅ 修正：單筆沒有 key 跳過，不中斷整個 loop
+  return toInt(
+    row?.draw_no ||
+      row?.target_draw_no ||
+      compareResult?.draw_no ||
+      compareResult?.target_draw_no ||
+      firstDetail?.draw_no ||
+      firstDetail?.target_draw_no,
+    0
+  );
+}
+
+function buildRecentDrawSummary(rows = [], limit = 10) {
+  const safeLimit = Math.max(1, Math.min(30, toInt(limit, 10)));
+  const summaryMap = new Map();
+
+  (Array.isArray(rows) ? rows : []).forEach((rawRow) => {
+    const row = normalizePredictionRow(rawRow);
+    if (!row) return;
+
+    const drawNo = getCompareDrawNo(row);
+    if (!drawNo) return;
+
+    const current = summaryMap.get(drawNo) || {
+      draw_no: drawNo,
+      hit0_count: 0,
+      hit1_count: 0,
+      hit2_count: 0,
+      hit3_count: 0,
+      hit4_count: 0,
+      row_count: 0,
+      latest_created_at: row?.created_at || null
+    };
+
+    const hit = toInt(row?.hit_count, 0);
+    current.row_count += 1;
+    if (!current.latest_created_at || new Date(row?.created_at || 0).getTime() > new Date(current.latest_created_at || 0).getTime()) {
+      current.latest_created_at = row?.created_at || current.latest_created_at;
     }
 
-    // ✅ 修正：strategy_pool 找不到的 key 也要繼續處理（不能因為 pool 沒有就跳過）
-    const poolInfo = poolStatusMap.get(key) || { status: 'active', protected_rank: false };
-    const currentStatus = String(poolInfo.status || 'active').trim().toLowerCase();
-    if (TERMINAL_STATUS.has(currentStatus)) continue;
+    if (hit <= 0) current.hit0_count += 1;
+    else if (hit === 1) current.hit1_count += 1;
+    else if (hit === 2) current.hit2_count += 1;
+    else if (hit === 3) current.hit3_count += 1;
+    else current.hit4_count += 1;
 
-    const hit = toNum(row?.hit);
-    const cost = toNum(row?.cost);
-    const reward = toNum(row?.reward);
-    const profit = reward - cost;
-    const hit2Add = hit >= 2 ? 1 : 0;
-    const hit3Add = hit >= 3 ? 1 : 0;
-    const hit4Add = hit >= 4 ? 1 : 0;
+    summaryMap.set(drawNo, current);
+  });
 
-    const { data: old, error: oldError } = await supabase
-      .from(STRATEGY_STATS_TABLE)
-      .select('*')
-      .eq('strategy_key', key)
-      .maybeSingle();
+  return [...summaryMap.values()]
+    .sort((a, b) => b.draw_no - a.draw_no)
+    .slice(0, safeLimit);
+}
 
-    if (oldError) {
-      console.warn(`[strategyStatsRecorder] strategy_stats select failed for ${key}, skipping:`, oldError.message);
-      continue;  // ✅ 單筆查詢失敗跳過，不中斷
+
+function intersectNums(a = [], b = []) {
+  const setB = new Set(parseDrawNumbers(b));
+  return parseDrawNumbers(a).filter((n) => setB.has(n));
+}
+
+function getCompareDrawNumbers(row = {}) {
+  const compareResult = row?.compare_result_json && typeof row.compare_result_json === 'object'
+    ? row.compare_result_json
+    : safeJsonParse(row?.compare_result_json, null);
+
+  return parseDrawNumbers(
+    compareResult?.draw_numbers ||
+      compareResult?.numbers ||
+      compareResult?.open_numbers ||
+      compareResult?.target_numbers ||
+      compareResult?.result_numbers ||
+      []
+  );
+}
+
+function normalizeGroupCompareItem(detail = {}, fallbackGroup = null, idx = 0, compareDrawNumbers = []) {
+  const baseGroup = fallbackGroup && typeof fallbackGroup === 'object' ? fallbackGroup : {};
+  const nums = parseDrawNumbers(
+    detail?.nums ||
+      detail?.numbers ||
+      detail?.group_numbers ||
+      detail?.groupNums ||
+      detail?.picked_numbers ||
+      detail?.pickedNumbers ||
+      baseGroup?.nums ||
+      []
+  );
+
+  const matchedNumbers = parseDrawNumbers(
+    detail?.matched_numbers ||
+      detail?.matchedNumbers ||
+      detail?.hit_numbers ||
+      detail?.hitNumbers ||
+      detail?.matched ||
+      []
+  );
+
+  const finalMatched = matchedNumbers.length
+    ? matchedNumbers
+    : (nums.length && compareDrawNumbers.length ? intersectNums(nums, compareDrawNumbers) : []);
+
+  const hitCountRaw =
+    detail?.hit_count ??
+    detail?.hitCount ??
+    detail?.match_count ??
+    detail?.matchCount ??
+    detail?.matched_count ??
+    detail?.matchedCount ??
+    detail?.hit ??
+    detail?.matched ??
+    null;
+
+  const hitCount = Number.isFinite(Number(hitCountRaw))
+    ? toInt(hitCountRaw, 0)
+    : finalMatched.length;
+
+  return {
+    group_index: toInt(
+      detail?.group_index ??
+        detail?.groupIndex ??
+        detail?.slot_no ??
+        detail?.slotNo ??
+        detail?.group_no ??
+        detail?.groupNo,
+      idx + 1
+    ),
+    key: String(detail?.key || baseGroup?.key || `group_${idx + 1}`),
+    label: String(detail?.label || baseGroup?.label || `第${idx + 1}組`),
+    nums,
+    matched_numbers: finalMatched,
+    hit_count: hitCount,
+    meta: baseGroup?.meta && typeof baseGroup.meta === 'object' ? baseGroup.meta : {}
+  };
+}
+
+function extractGroupCompareItems(row = {}) {
+  const groups = parseGroupsJson(
+    row?.groups_json ||
+      row?.groups ||
+      row?.prediction_groups ||
+      row?.strategies ||
+      []
+  );
+
+  const compareResult = row?.compare_result_json && typeof row.compare_result_json === 'object'
+    ? row.compare_result_json
+    : safeJsonParse(row?.compare_result_json, null);
+
+  const compareHistory = Array.isArray(row?.compare_history_json)
+    ? row.compare_history_json
+    : normalizeCompareHistory(row?.compare_history_json);
+
+  const compareDrawNumbers = getCompareDrawNumbers(row);
+
+  const detailCandidates = [];
+  if (Array.isArray(compareResult?.detail)) {
+    detailCandidates.push(...compareResult.detail);
+  }
+  compareHistory.forEach((historyItem) => {
+    if (Array.isArray(historyItem?.detail)) {
+      detailCandidates.push(...historyItem.detail);
     }
+  });
 
-    const oldRecentHits = safeArrayValue(old?.recent_hits);
-    const oldRecentProfit = safeArrayValue(old?.recent_profit);
-    const oldRecentCost = safeArrayValue(old?.recent_cost);
+  if (detailCandidates.length) {
+    return detailCandidates
+      .map((detail, idx) => normalizeGroupCompareItem(detail, groups[idx] || null, idx, compareDrawNumbers))
+      .filter((item) => item.nums.length >= 3 || item.hit_count > 0)  // ✅ 支援三星
+      .sort((a, b) => a.group_index - b.group_index);
+  }
 
-    const total_rounds = toNum(old?.total_rounds) + 1;
-    const total_hits = toNum(old?.total_hits) + hit;
-    const total_cost = toNum(old?.total_cost) + cost;
-    const total_reward = toNum(old?.total_reward) + reward;
-    const total_profit = total_reward - total_cost;
-    const hit2 = toNum(old?.hit2) + hit2Add;
-    const hit3 = toNum(old?.hit3) + hit3Add;
-    const hit4 = toNum(old?.hit4) + hit4Add;
-    const avg_hit = total_rounds > 0 ? total_hits / total_rounds : 0;
-    const roi = total_cost > 0 ? total_profit / total_cost : 0;
+  return groups.map((group, idx) => normalizeGroupCompareItem({}, group, idx, compareDrawNumbers));
+}
 
-    const recent_hits = tail([...oldRecentHits, hit]);
-    const recent_profit = tail([...oldRecentProfit, profit]);
-    const recent_cost = tail([...oldRecentCost, cost]);
-    const sumRecentProfit = recent_profit.reduce((a, b) => a + toNum(b), 0);
-    const sumRecentCost = recent_cost.reduce((a, b) => a + toNum(b), 0);
+function buildRecentFormalComparePeriods(rows = [], drawRows = [], limit = 5) {
+  const safeLimit = Math.max(1, Math.min(10, toInt(limit, 5)));
+  const drawMap = new Map(
+    (Array.isArray(drawRows) ? drawRows : []).map((row) => [toInt(row?.draw_no, 0), row])
+  );
+  const periodMap = new Map();
 
-    const recent_50_roi = sumRecentCost > 0 ? sumRecentProfit / sumRecentCost : 0;
-    const recent_50_hit_rate = calcRecentHitRate(recent_hits);
-    const recent_50_hit3_rate = calcRecentHit3Rate(recent_hits);
-    const recent_50_hit4_rate = calcRecentHit4Rate(recent_hits);
-    const hit2_rate = calcRate(hit2, total_rounds);
-    const hit3_rate = calcRate(hit3, total_rounds);
-    const hit4_rate = calcRate(hit4, total_rounds);
+  (Array.isArray(rows) ? rows : []).forEach((rawRow) => {
+    const row = normalizePredictionRow(rawRow);
+    if (!row || String(row?.mode || '') !== FORMAL_MODE) return;
 
-    const score = calcStableScore({
-      roi,
-      avg_hit,
-      recent_50_roi,
-      recent_50_hit_rate,
-      total_rounds,
-      hit2,
-      hit3,
-      hit4,
-      hit2_rate,
-      hit3_rate,
-      hit4_rate,
-      recent_50_hit3_rate,
-      recent_50_hit4_rate,
-      recent_hits
+    const compareDrawNo = getCompareDrawNo(row);
+    if (!compareDrawNo) return;
+
+    const compareDraw = drawMap.get(compareDrawNo) || null;
+    const groupItems = extractGroupCompareItems(row);
+
+    const period = periodMap.get(compareDrawNo) || {
+      compare_draw_no: compareDrawNo,
+      compare_draw_time: compareDraw?.draw_time || null,
+      compare_draw_numbers: parseDrawNumbers(compareDraw?.numbers || []),
+      source_draw_no: row?.source_draw_no || 0,
+      batch_count: 0,
+      group_count: 0,
+      hit0_count: 0,
+      hit1_count: 0,
+      hit2_count: 0,
+      hit3_count: 0,
+      hit4_count: 0,
+      batches: []
+    };
+
+    const batchNo = toInt(row?.formal_batch_no, period.batches.length + 1);
+    const batchGroups = groupItems.map((item, idx) => ({
+      ...item,
+      group_index: toInt(item?.group_index, idx + 1)
+    }));
+
+    batchGroups.forEach((group) => {
+      const hit = toInt(group?.hit_count, 0);
+      period.group_count += 1;
+      if (hit <= 0) period.hit0_count += 1;
+      else if (hit === 1) period.hit1_count += 1;
+      else if (hit === 2) period.hit2_count += 1;
+      else if (hit === 3) period.hit3_count += 1;
+      else period.hit4_count += 1;
     });
 
-    const phase_stats_json = updatePhaseStatsJson(old?.phase_stats_json, marketPhase, hit, cost, reward, profit);
-    const phase_best_json = calcPhaseBestJson(phase_stats_json);
+    period.batch_count += 1;
+    period.source_draw_no = period.source_draw_no || row?.source_draw_no || 0;
+    period.batches.push({
+      id: row?.id || `${compareDrawNo}_${batchNo}`,
+      formal_batch_no: batchNo,
+      source_draw_no: row?.source_draw_no || 0,
+      compare_draw_no: compareDrawNo,
+      compare_draw_time: compareDraw?.draw_time || null,
+      compare_draw_numbers: parseDrawNumbers(compareDraw?.numbers || []),
+      created_at: row?.created_at || null,
+      status: row?.status || null,
+      groups: batchGroups
+    });
 
-    // ✅ hit0 hit1 計算
-    const hit0 = toNum(old?.hit0) + (hit <= 0 ? 1 : 0);
-    const hit1 = toNum(old?.hit1) + (hit === 1 ? 1 : 0);
+    periodMap.set(compareDrawNo, period);
+  });
 
-    // ✅ last_result_draw_no：從 compareResult.draw_no 或 detail row 取得
-    const lastResultDrawNo = toNum(
-      row?.draw_no ||
-      compareResult?.draw_no ||
-      compareResult?.compare_draw_no ||
-      old?.last_result_draw_no,
-      0
-    );
+  return [...periodMap.values()]
+    .sort((a, b) => b.compare_draw_no - a.compare_draw_no)
+    .slice(0, safeLimit);
+}
 
-    const nowIso = new Date().toISOString();
+function normalizeLeaderboardRow(row, poolRow = null) {
+  if (!row || !row.strategy_key) return null;
 
-    // ✅ 覆蓋率統計
-    const coverageHit = toNum(row?.coverage_hit, 0); // 這期開獎號碼落在覆蓋範圍幾個
-    const oldRecentCoverageHits = safeArrayValue(old?.recent_coverage_hits);
-    const recent_coverage_hits = tail([...oldRecentCoverageHits, coverageHit]);
-    const total_coverage_hits = toNum(old?.total_coverage_hits, 0) + coverageHit;
-    const avg_coverage_hit = total_rounds > 0 ? round4(total_coverage_hits / total_rounds) : 0;
-    // 覆蓋命中率：開獎20個號碼裡平均幾個在我們的覆蓋範圍
-    const recent_coverage_hit_rate = recent_coverage_hits.length > 0
-      ? round4(recent_coverage_hits.slice(-50).reduce((a, b) => a + toNum(b, 0), 0) / recent_coverage_hits.slice(-50).length)
-      : 0;
+  return {
+    strategy_key: String(row.strategy_key || ''),
+    strategy_name:
+      poolRow?.strategy_name ||
+      String(row.strategy_key || '')
+        .split('_')
+        .filter(Boolean)
+        .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+        .join(' '),
+    status: poolRow?.status || 'active',
+    protected_rank: Boolean(poolRow?.protected_rank),
+    avg_hit: round4(row.avg_hit),
+    roi: round4(row.roi),
+    recent_50_roi: round4(row.recent_50_roi),
+    total_rounds: toInt(row.total_rounds, 0),
+    hit2: toInt(row.hit2, 0),
+    hit3: toInt(row.hit3, 0),
+    hit4: toInt(row.hit4, 0),
+    score: round4(row.score)
+  };
+}
 
-    const payload = {
-      strategy_key: key,
-      total_rounds,
-      total_hits,
-      total_cost,
-      total_reward,
-      total_profit,
-      avg_hit: round4(avg_hit),
-      roi: round4(roi),
-      recent_hits,
-      recent_profit,
-      recent_cost,
-      recent_50_roi: round4(recent_50_roi),
-      recent_50_hit_rate: round4(recent_50_hit_rate),
-      recent_50_hit3_rate: round4(recent_50_hit3_rate),
-      recent_50_hit4_rate: round4(recent_50_hit4_rate),
-      hit0,
-      hit1,
-      hit2,
-      hit3,
-      hit4,
-      hit2_rate: round4(hit2_rate),
-      hit3_rate: round4(hit3_rate),
-      hit4_rate: round4(hit4_rate),
-      phase_stats_json,
-      phase_best_json,
-      score,
-      last_result_draw_no: lastResultDrawNo,
-      last_updated: nowIso,
-      updated_at: nowIso,
-      // ✅ 新增覆蓋率欄位
-      total_coverage_hits,
-      avg_coverage_hit,
-      recent_coverage_hits,
-      recent_coverage_hit_rate
-    };
+async function getLatestRowByMode(mode) {
+  const { data, error } = await supabase
+    .from(PREDICTIONS_TABLE)
+    .select('*')
+    .eq('mode', mode)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
-    const { error: upsertError } = await supabase
+  if (error) throw error;
+  return normalizePredictionRow(data);
+}
+
+async function getLatestFormalSourceDrawNo() {
+  const latestFormal = await getLatestRowByMode(FORMAL_MODE);
+  if (latestFormal?.source_draw_no) return latestFormal.source_draw_no;
+
+  const latestTest = await getLatestRowByMode(TEST_MODE);
+  return latestTest?.source_draw_no || 0;
+}
+
+async function getFormalRowsBySourceDrawNo(sourceDrawNo) {
+  if (!sourceDrawNo) return [];
+
+  const { data, error } = await supabase
+    .from(PREDICTIONS_TABLE)
+    .select('*')
+    .eq('mode', FORMAL_MODE)
+    .eq('source_draw_no', sourceDrawNo)
+    .order('created_at', { ascending: true })
+    .limit(20);
+
+  if (error) throw error;
+
+  return (Array.isArray(data) ? data : [])
+    .map(normalizePredictionRow)
+    .filter(Boolean)
+    .map((row, idx) => ({
+      ...row,
+      formal_batch_no: idx + 1
+    }));
+}
+
+
+async function getRecentComparedRows(limit = 10) {
+  const safeLimit = Math.max(10, Math.min(50, toInt(limit, 10)));
+  const fetchLimit = Math.min(100, safeLimit * 2);
+
+  const { data, error } = await supabase
+    .from(PREDICTIONS_TABLE)
+    .select('*')
+    .eq('mode', 'formal_3star')
+    .eq('status', 'compared')
+
+    .order('created_at', { ascending: false })
+    .limit(fetchLimit);
+
+  if (error) throw error;
+
+  return (Array.isArray(data) ? data : [])
+    .map(normalizePredictionRow)
+    .filter(Boolean);
+}
+
+async function getRecentFormalComparedRows(limit = 5) {
+  const safeLimit = Math.max(1, Math.min(10, toInt(limit, 5)));
+  const fetchLimit = Math.max(200, safeLimit * FORMAL_BATCH_LIMIT * 20);
+
+  const { data, error } = await supabase
+    .from(PREDICTIONS_TABLE)
+    .select('*')
+    .eq('mode', FORMAL_MODE)
+    .eq('status', 'compared')
+
+    .order('created_at', { ascending: false })
+    .limit(fetchLimit);
+
+  if (error) throw error;
+
+  return (Array.isArray(data) ? data : [])
+    .map(normalizePredictionRow)
+    .filter(Boolean)
+    .slice(0, fetchLimit);
+}
+
+async function getRecent3StarComparedRows(limit = 10) {
+  const safeLimit = Math.max(1, Math.min(20, toInt(limit, 10)));
+
+  const { data, error } = await supabase
+    .from(PREDICTIONS_TABLE)
+    .select('*')
+    .eq('mode', 'formal_3star')
+    .eq('status', 'compared')
+
+    .order('created_at', { ascending: false })
+    .limit(safeLimit * 4);
+
+  if (error) throw error;
+
+  return (Array.isArray(data) ? data : [])
+    .map(normalizePredictionRow)
+    .filter(Boolean)
+    .slice(0, safeLimit * 4);
+}
+
+async function getStrategyLeaderboard(limit = 50) {
+  const [{ data: statsRows, error: statsError }, { data: poolRows, error: poolError }] = await Promise.all([
+    supabase
       .from(STRATEGY_STATS_TABLE)
-      .upsert(payload, { onConflict: 'strategy_key' });
+      .select('strategy_key, avg_hit, roi, recent_50_roi, total_rounds, hit2, hit3, hit4, score, avg_coverage_hit, recent_coverage_hit_rate')
+      .order('score', { ascending: false })
+      .limit(limit),
+    supabase
+      .from(STRATEGY_POOL_TABLE)
+      .select('strategy_key, strategy_name, status, protected_rank')
+      .limit(200)
+  ]);
 
-    if (upsertError) {
-      console.warn(`[strategyStatsRecorder] strategy_stats upsert failed for ${key}, skipping:`, upsertError.message);
-      continue;  // ✅ 單筆寫入失敗跳過，不中斷
-    }
+  if (statsError) throw statsError;
+  if (poolError) throw poolError;
 
-    updatedKeys.push(key);
-
-    if (poolInfo.protected_rank || PROTECTED_STATUS.has(currentStatus)) {
-      continue;
-    }
-
-    const disableCheck = shouldDisableStrategy(payload);
-    if (disableCheck.shouldDisable) {
-      disabledKeys.push(key);
-      disabledReasonMap[key] = disableCheck.reason;
+  const poolMap = new Map();
+  for (const row of Array.isArray(poolRows) ? poolRows : []) {
+    if (row?.strategy_key) {
+      poolMap.set(row.strategy_key, row);
     }
   }
 
-  const finalDisabledKeys = [...new Set(disabledKeys)];
-  let disableResult = { updated: 0, disabled_keys: [], disabled_reason_map: {} };
-  if (finalDisabledKeys.length > 0) {
-    disableResult = await disableStrategies(supabase, finalDisabledKeys, disabledReasonMap);
+  return (Array.isArray(statsRows) ? statsRows : [])
+    .map((row) => normalizeLeaderboardRow(row, poolMap.get(row.strategy_key) || null))
+    .filter(Boolean)
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      if (b.recent_50_roi !== a.recent_50_roi) return b.recent_50_roi - a.recent_50_roi;
+      if (b.avg_hit !== a.avg_hit) return b.avg_hit - a.avg_hit;
+      return b.total_rounds - a.total_rounds;
+    })
+    .slice(0, limit);
+}
+
+async function getRecentDrawRows(limit = 20) {
+  const safeLimit = Math.max(5, Math.min(50, toInt(limit, 20)));
+
+  const { data, error } = await supabase
+    .from(DRAWS_TABLE)
+    .select('draw_no, draw_time, numbers')
+    .order('draw_no', { ascending: false })
+    .limit(safeLimit);
+
+  if (error) throw error;
+  return Array.isArray(data) ? data : [];
+}
+
+function buildMarketStreakBuckets(drawRows = []) {
+  const rows = (Array.isArray(drawRows) ? drawRows : [])
+    .map((row) => ({
+      draw_no: toInt(row?.draw_no, 0),
+      draw_time: row?.draw_time || null,
+      numbers: parseDrawNumbers(row?.numbers)
+    }))
+    .filter((row) => row.draw_no > 0);
+
+  if (!rows.length) {
+    return {
+      lookback: 0,
+      latest_draw_no: null,
+      latest_draw_time: null,
+      streak2: [],
+      streak3: [],
+      streak4: []
+    };
+  }
+
+  const streakMap = new Map();
+
+  for (let num = 1; num <= 80; num += 1) {
+    let streak = 0;
+
+    for (let i = 0; i < rows.length; i += 1) {
+      const nums = rows[i]?.numbers || [];
+      if (nums.includes(num)) {
+        streak += 1;
+      } else {
+        break;
+      }
+    }
+
+    if (streak >= 2) {
+      streakMap.set(num, streak);
+    }
+  }
+
+  const toItems = (min, max = Infinity) =>
+    [...streakMap.entries()]
+      .filter(([, streak]) => streak >= min && streak <= max)
+      .sort((a, b) => b[1] - a[1] || a[0] - b[0])
+      .map(([num, streak]) => ({ num, streak }));
+
+  return {
+    lookback: rows.length,
+    latest_draw_no: rows[0]?.draw_no || null,
+    latest_draw_time: rows[0]?.draw_time || null,
+    streak2: toItems(2, 2),
+    streak3: toItems(3, 3),
+    streak4: toItems(4, Infinity)
+  };
+}
+
+function buildCurrentTopStrategies(leaderboard = []) {
+  return leaderboard.slice(0, 4).map((row, idx) => ({
+    rank: idx + 1,
+    strategyKey: row.strategy_key,
+    strategyName: row.strategy_name,
+    avgHit: row.avg_hit,
+    roi: row.roi,
+    recent50Roi: row.recent_50_roi,
+    score: row.score
+  }));
+}
+
+function buildDecisionSummary(leaderboard = [], formalBatchCount = 0, formalSourceDrawNo = null) {
+  const topFour = leaderboard.slice(0, 4);
+  const topOne = topFour[0] || null;
+  const currentTopStrategies = buildCurrentTopStrategies(leaderboard);
+
+  const hasFormalSourceDraw = toInt(formalSourceDrawNo, 0) > 0;
+  const underBatchLimit = toInt(formalBatchCount, 0) < FORMAL_BATCH_LIMIT;
+  const canPressFormal = hasFormalSourceDraw && underBatchLimit;
+
+  if (!topOne) {
+    return {
+      assistantMode: 'decision_support',
+      readyForFormal: canPressFormal,
+      adviceLevel: canPressFormal ? 'ready' : 'watch',
+      summaryLabel: canPressFormal ? '可正式下注' : '暫無資料',
+      summaryText: canPressFormal
+        ? '目前已取得可下注期別，且 formal 批次尚未達上限，可手動建立正式下注組合。'
+        : '目前尚未取得有效的策略排行資料。',
+      currentTopStrategies,
+      formalBatchCount,
+      formalRemainingBatchCount: Math.max(0, FORMAL_BATCH_LIMIT - formalBatchCount),
+      formalSourceDrawNo
+    };
+  }
+
+  let summaryLabel = '可小試';
+  let summaryText = '目前前段策略已有一定穩定度，可用小額方式觀察分工組合表現。';
+  let readyForFormal = false;
+  let adviceLevel = 'watch';
+
+  if (canPressFormal) {
+    summaryLabel = '可正式下注';
+    summaryText = '目前已取得可下注期別，且 formal 批次尚未達上限，可手動建立正式下注組合。';
+    readyForFormal = true;
+    adviceLevel = 'ready';
+  } else if (formalBatchCount >= FORMAL_BATCH_LIMIT) {
+    summaryLabel = '本期已滿';
+    summaryText = '本期 formal 批次已達上限，等待下一期再重新建立正式下注組合。';
+    readyForFormal = false;
+    adviceLevel = 'watch';
+  } else if (topOne.avg_hit >= 2.0 && topOne.recent_50_roi > 0) {
+    summaryLabel = '可正式下注';
+    summaryText = '目前前段策略表現偏強，可採固定四組分工觀察中三突破。';
+    readyForFormal = true;
+    adviceLevel = 'ready';
+  } else if (topOne.avg_hit >= 1.5) {
+    summaryLabel = '可小試';
+    summaryText = '目前前段策略已有一定穩定度，可用小額方式觀察分工組合表現。';
+    readyForFormal = false;
+    adviceLevel = 'near_ready';
+  } else {
+    summaryLabel = '暫不建議正式下注';
+    summaryText = '目前前段策略穩定度仍不足，建議先以訓練與觀察為主。';
+    readyForFormal = false;
+    adviceLevel = 'watch';
   }
 
   return {
-    ok: true,
-    market_phase: marketPhase,
-    updated_keys: [...new Set(updatedKeys)],
-    disabled_keys: disableResult.disabled_keys || [],
-    disabled_reason_map: disableResult.disabled_reason_map || {},
-    disabled_count: toNum(disableResult.updated, 0)
+    assistantMode: 'decision_support',
+    readyForFormal,
+    adviceLevel,
+    summaryLabel,
+    summaryText,
+    currentTopStrategies,
+    formalBatchCount,
+    formalRemainingBatchCount: Math.max(0, FORMAL_BATCH_LIMIT - formalBatchCount),
+    formalSourceDrawNo
   };
 }
+
+function buildFormalDisplayRow(formalBatches = []) {
+  if (!Array.isArray(formalBatches) || !formalBatches.length) return null;
+  return formalBatches[formalBatches.length - 1];
+}
+
+function buildLatestRowsPayload(trainingRow, formalRow, formalCandidateRow) {
+  return {
+    training: {
+      row: trainingRow || null,
+      rows: trainingRow ? [trainingRow] : []
+    },
+    formal: {
+      row: formalRow || null,
+      rows: formalRow ? [formalRow] : []
+    },
+    formal_candidate: {
+      row: formalCandidateRow || null,
+      rows: formalCandidateRow ? [formalCandidateRow] : []
+    }
+  };
+}
+
+export default async function handler(req, res) {
+  if (req.method !== 'GET') {
+    return res.status(405).json({
+      ok: false,
+      api_version: API_VERSION,
+      error: 'Method not allowed'
+    });
+  }
+
+  try {
+    const [trainingRow, latestFormalRow, formalCandidateRow, latest3StarRow, leaderboard, recentDrawRows, allRecentComparedRows, recentFormalComparedRows, recent3StarComparedRows] = await Promise.all([
+      getLatestRowByMode(TEST_MODE),
+      getLatestRowByMode(FORMAL_MODE),
+      getLatestRowByMode(FORMAL_CANDIDATE_MODE),
+      getLatestRowByMode('formal_3star'),
+      getStrategyLeaderboard(50),
+      getRecentDrawRows(20),
+      getRecentComparedRows(10),
+      getRecentFormalComparedRows(5),
+      getRecent3StarComparedRows(10)
+    ]);
+
+    const formalSourceDrawNo =
+      toInt(latestFormalRow?.source_draw_no, 0) ||
+      await getLatestFormalSourceDrawNo();
+
+    const recentDrawSummary = buildRecentDrawSummary(allRecentComparedRows, 10);
+    const recentComparedRows = allRecentComparedRows.slice(0, 10);
+    const recentFormalComparePeriods = buildRecentFormalComparePeriods(recentFormalComparedRows, recentDrawRows, 5);
+    const formalBatches = await getFormalRowsBySourceDrawNo(formalSourceDrawNo);
+    const displayFormalRow = buildFormalDisplayRow(formalBatches) || latestFormalRow || null;
+    const marketStreakBuckets = buildMarketStreakBuckets(recentDrawRows);
+    const decisionSummary = buildDecisionSummary(
+      leaderboard,
+      formalBatches.length,
+      formalSourceDrawNo || null
+    );
+
+    const latestRowsPayload = buildLatestRowsPayload(
+      trainingRow,
+      displayFormalRow,
+      formalCandidateRow
+    );
+
+    return res.status(200).json({
+      ok: true,
+      api_version: API_VERSION,
+
+      ...latestRowsPayload,
+
+      display_formal_row: displayFormalRow || null,
+      formal_batches: formalBatches,
+
+      leaderboard,
+      current_top_strategies: decisionSummary.currentTopStrategies,
+
+      assistant_mode: decisionSummary.assistantMode,
+      ready_for_formal: decisionSummary.readyForFormal,
+      advice_level: decisionSummary.adviceLevel,
+
+      summary_label: decisionSummary.summaryLabel,
+      summary_text: decisionSummary.summaryText,
+
+      formal_batch_limit: FORMAL_BATCH_LIMIT,
+      formal_batch_count: formalBatches.length,
+      formal_remaining_batch_count: Math.max(0, FORMAL_BATCH_LIMIT - formalBatches.length),
+      formal_source_draw_no: formalSourceDrawNo || null,
+
+      market_streak_buckets: marketStreakBuckets,
+      recent_draw_rows: recentDrawRows,
+
+      rows: [
+        ...(displayFormalRow ? [displayFormalRow] : []),
+        ...(trainingRow ? [trainingRow] : []),
+        ...(formalCandidateRow ? [formalCandidateRow] : [])
+      ],
+      predictions: recentComparedRows,
+      recent_prediction_rows: recentComparedRows,
+      recent_compared_rows: recentComparedRows,
+      compare_history_rows: recentComparedRows,
+      recent_draw_summary: recentDrawSummary,
+      recent_formal_compare_periods: recentFormalComparePeriods,
+      recent_formal_compared_rows: recentFormalComparedRows.slice(0, 200),
+
+      auto_train_result: null,
+
+      latest_3star_row: latest3StarRow || null,
+      recent_3star_compared_rows: recent3StarComparedRows || []
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      api_version: API_VERSION,
+      error: error?.message || 'Unknown error'
+    });
+  }
+}
+
+// 修正最新期延遲
+async function getLatestDrawFixed(supabase){const {data}=await supabase.from('bingo_draws').select('*').order('draw_time',{ascending:false}).limit(2); if(!data||!data.length)return null; const now=Date.now(); const latest=data[0]; const second=data[1]; const diff=now-new Date(latest.draw_time).getTime(); if(diff<120000&&second)return second; return latest;}
