@@ -1917,8 +1917,18 @@ async function comparePendingPredictions(db) {
       throw new Error(`prediction compare update failed: ${updateError.message || updateError}`);
     }
 
+    // ✅ 把 coverage_hit 合併進每筆 detail，讓 strategyStatsRecorder 可以讀到
+    const coverageHitMap = new Map(
+      (payload.compareResult?.coverage_hit_per_draw || []).map(c => [c.draw_no, c.coverage_hit])
+    );
+    const detailWithCoverage = (payload.compareResult?.detail || []).map(d => ({
+      ...d,
+      coverage_hit: coverageHitMap.get(d.draw_no) ?? 0
+    }));
+
     const statsResult = await recordStrategyCompareResult({
       ...payload.compareResult,
+      detail: detailWithCoverage,
       market_phase:
         prediction?.market_snapshot_json?.market_phase ||
         prediction?.market_snapshot_json?.phase_context?.market_phase ||
@@ -2544,8 +2554,18 @@ async function runAutoCompareForLatest(db) {
       // ✅ 只有 detail 非空才寫入 strategy_stats
       if (result?.detail?.length) {
         try {
+          // ✅ 把 coverage_hit 合併進每筆 detail
+          const coverageHitMap2 = new Map(
+            (result?.coverage_hit_per_draw || []).map(c => [c.draw_no, c.coverage_hit])
+          );
+          const detailWithCoverage2 = (result?.detail || []).map(d => ({
+            ...d,
+            coverage_hit: coverageHitMap2.get(d.draw_no) ?? 0
+          }));
+
           await recordStrategyCompareResult({
             ...result,
+            detail: detailWithCoverage2,
             market_phase:
               row.market_snapshot_json?.market_phase ||
               row.market_snapshot_json?.phase_context?.market_phase ||
