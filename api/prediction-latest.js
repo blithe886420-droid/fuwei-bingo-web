@@ -23,12 +23,24 @@ const TEST_MODE = 'test';
 const FORMAL_MODE = 'formal';
 const FORMAL_CANDIDATE_MODE = 'formal_candidate';
 
-if (!SUPABASE_URL || !SUPABASE_KEY) {
-  throw new Error('Missing SUPABASE_URL or SUPABASE key');
+// ✅ 修正：不在頂層 throw，改為懶初始化，避免 Vercel 冷啟動時環境變數尚未注入就崩潰
+let _supabase = null;
+function getSupabaseClient() {
+  if (_supabase) return _supabase;
+  if (!SUPABASE_URL || !SUPABASE_KEY) {
+    throw new Error('Missing SUPABASE_URL or SUPABASE key');
+  }
+  _supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+    auth: { persistSession: false }
+  });
+  return _supabase;
 }
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
-  auth: { persistSession: false }
+// 向下相容：保留 supabase 變數供現有程式碼使用（proxy getter）
+const supabase = new Proxy({}, {
+  get(_, prop) {
+    return getSupabaseClient()[prop];
+  }
 });
 
 function toInt(value, fallback = 0) {
