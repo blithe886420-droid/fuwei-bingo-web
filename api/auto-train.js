@@ -2083,6 +2083,7 @@ async function comparePendingPredictions(db) {
     const statsResult = await recordStrategyCompareResult({
       ...payload.compareResult,
       detail: detailWithCoverage,
+      star_mode: prediction?.mode === 'formal_3star' ? 3 : 4,  // ✅ 明確帶入星制，讓 recorder 正確判斷保護邏輯
       market_phase:
         prediction?.market_snapshot_json?.market_phase ||
         prediction?.market_snapshot_json?.phase_context?.market_phase ||
@@ -2680,6 +2681,7 @@ async function runAutoCompareForLatest(db) {
           await recordStrategyCompareResult({
             ...result,
             detail: detailWithCoverage2,
+            star_mode: row.mode === 'formal_3star' ? 3 : 4,  // ✅ 明確帶入星制
             market_phase:
               row.market_snapshot_json?.market_phase ||
               row.market_snapshot_json?.phase_context?.market_phase ||
