@@ -2820,6 +2820,20 @@ function forceInjectPhaseIntoGroups(groups = [], phaseContext = null) {
 // ===== 3星衍生預測（Parallel 3-Star）=====
 async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestDraw, phaseContext) {
   try {
+    // ✅ 修正 Bug3：先檢查同一期是否已有三星，避免和 auto-train 雙重寫入
+    const { data: existing3star } = await db
+      .from(PREDICTIONS_TABLE)
+      .select('id')
+      .eq('mode', 'formal_3star')
+      .eq('source_draw_no', sourceDrawNo)
+      .limit(1)
+      .maybeSingle();
+
+    if (existing3star?.id) {
+      console.log('[3star] 同期已有三星預測，跳過衍生（避免雙重寫入）, draw:', sourceDrawNo);
+      return null;
+    }
+
     // ✅ 真三星：直接用 buildBingoV1Strategies starCount=3 獨立產生，不從四星截頭
     const marketRows = await db
       .from(DRAWS_TABLE)
