@@ -877,7 +877,21 @@ export default async function handler(req, res) {
       auto_train_result: null,
 
       latest_3star_row: latest3StarRow || null,
-      recent_3star_compared_rows: recent3StarComparedRows || []
+      recent_3star_compared_rows: recent3StarComparedRows || [],
+      // ✅ 三星策略競爭排行（按 hit3_rate 排序）
+      three_star_leaderboard: (leaderboard || [])
+        .filter(row => row?.total_rounds > 0)
+        .map(row => ({
+          strategy_key: row.strategy_key,
+          total_rounds: row.total_rounds,
+          hit3: row.hit3,
+          hit2: row.hit2,
+          hit3_rate: row.total_rounds > 0 ? Number((row.hit3 / row.total_rounds * 100).toFixed(2)) : 0,
+          hit2_rate: row.total_rounds > 0 ? Number((row.hit2 / row.total_rounds * 100).toFixed(2)) : 0,
+          avg_coverage_hit: row.avg_coverage_hit || 0
+        }))
+        .sort((a, b) => b.hit3_rate - a.hit3_rate)
+        .slice(0, 20)
     });
   } catch (error) {
     return res.status(500).json({
