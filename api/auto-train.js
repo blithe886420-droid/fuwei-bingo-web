@@ -734,10 +734,10 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
         .order('draw_no', { ascending: false })
         .limit(MARKET_LOOKBACK_LIMIT);
 
-      // ✅ 讀取五個三星策略的近期 hit3_rate（用 hit3_rate 而非 ROI，ROI 初期全負沒有參考價值）
+      // ✅ 讀取五個三星策略的近期數據（hit3_rate + 覆蓋率，作為回饋迴圈依據）
       const statsRows = await db
         .from(STRATEGY_STATS_TABLE)
-        .select('strategy_key, recent_hits, hit3, total_rounds, recent_50_roi')
+        .select('strategy_key, recent_hits, hit3, total_rounds, recent_50_roi, recent_coverage_hits, avg_coverage_hit, recent_coverage_hit_rate')
         .in('strategy_key', ['hot_chase', 'rebound', 'zone_balanced', 'pattern_structure', 'streak_chase']);
 
       const recent10Stats = {};
@@ -754,14 +754,35 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
         // 全期 hit3 率
         const allHit3Rate = totalRounds > 0 ? hit3 / totalRounds : 0;
 
-        // 近10期 hit3 率為主，全期為輔，轉成 ROI 格式（0~1 範圍）讓 decideGroupCountByPerformance 使用
-        // hit3_rate 16.7% = 中3獎500元，成本25元，ROI = (500*0.167 - 25) / 25 = 2.34
-        // 用 hit3_rate * 20 - 1 當作 roi 指標，讓高 hit3 的策略排前面
+        // 覆蓋率回饋：近期覆蓋命中率（開獎20個號碼裡平均幾個在覆蓋範圍）
+        const recentCoverageHits = Array.isArray(row.recent_coverage_hits) ? row.recent_coverage_hits : [];
+        const last10CoverageHits = recentCoverageHits.slice(-10);
+        const avgRecentCoverage = last10CoverageHits.length > 0
+          ? last10CoverageHits.reduce((a, b) => a + toNum(b, 0), 0) / last10CoverageHits.length
+          : toNum(row.avg_coverage_hit, 3); // 預設3個（20個號碼裡覆蓋15個，期望值約3.75）
+
+        // 覆蓋率命中率（近期）
+        const coverageHitRate = toNum(row.recent_coverage_hit_rate, 0);
+
+        // ✅ 綜合分數：hit3_rate 為主（60%），覆蓋命中率為輔（40%）
+        // 覆蓋命中率越高，代表選號方向越準，應該給更多組數
         const hit3Score = last10Hit3Rate > 0
           ? last10Hit3Rate * 20 - 1
           : allHit3Rate * 20 - 1;
 
-        recent10Stats[row.strategy_key] = hit3Score;
+        // 覆蓋率分數：平均覆蓋命中 > 4 代表選號方向好（20個號碼裡中4個以上）
+        const coverageScore = avgRecentCoverage > 0
+          ? (avgRecentCoverage - 3) * 0.5  // 以3為基準，高於3加分，低於3扣分
+          : 0;
+
+        // 綜合分數傳給 decideGroupCountByPerformance
+        recent10Stats[row.strategy_key] = {
+          score: hit3Score * 0.6 + coverageScore * 0.4,
+          hit3Rate: last10Hit3Rate > 0 ? last10Hit3Rate : allHit3Rate,
+          coverageHitRate,
+          avgCoverageHit: avgRecentCoverage,
+          totalRounds
+        };
       });
 
       // ✅ 傳入 marketSnapshot 和 recent10Stats
