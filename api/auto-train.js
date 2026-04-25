@@ -399,11 +399,13 @@ async function fetch3starBettingState(db) {
       };
     }
 
-    // 從每筆記錄中取出 best_hit（每期8組裡最高中幾個）
+    // 從每筆記錄中取出 best_hit（每期所有組裡最高中幾個）
     const recentBestHits = recentCompared.map(row => {
-      const result = row.compare_result_json;
-      // compare_result_json.best_hit 是這期所有組裡最高中幾個
-      const bestHit = toNum(result?.best_hit, 0);
+      // compare_result_json 可能是 string（Supabase text欄位）或已解析的 object
+      const raw = row.compare_result_json;
+      const result = raw && typeof raw === 'string' ? (() => { try { return JSON.parse(raw); } catch { return null; } })() : raw;
+      // 優先用 best_hit，沒有就 fallback 到 hit_count（整筆最高）
+      const bestHit = toNum(result?.best_hit ?? row.hit_count, 0);
       return bestHit;
     });
 
@@ -655,6 +657,7 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
   } else {
     const normalized = normalizeGroups(groups);
 
+    let base;
     if (normalized.length >= 4) {
       base = normalized;
       fallbackMode = 'fallback_normalized';
@@ -1083,7 +1086,10 @@ function normalizePredictionStatus(status = '') {
 }
 
 function normalizePredictionMode(mode = '') {
-  return String(mode || '').trim().toLowerCase() === FORMAL_MODE ? FORMAL_MODE : TEST_MODE;
+  const m = String(mode || '').trim().toLowerCase();
+  if (m === FORMAL_MODE) return FORMAL_MODE;
+  if (m === 'formal_3star') return 'formal_3star';
+  return TEST_MODE;
 }
 
 function countOverlap(a = [], b = []) {
