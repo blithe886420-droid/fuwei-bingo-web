@@ -734,20 +734,34 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
         .order('draw_no', { ascending: false })
         .limit(MARKET_LOOKBACK_LIMIT);
 
-      // ✅ 讀取四個三星策略的近10期 ROI
+      // ✅ 讀取五個三星策略的近期 hit3_rate（用 hit3_rate 而非 ROI，ROI 初期全負沒有參考價值）
       const statsRows = await db
         .from(STRATEGY_STATS_TABLE)
-        .select('strategy_key, recent_hits, recent_profit, recent_50_roi')
+        .select('strategy_key, recent_hits, hit3, total_rounds, recent_50_roi')
         .in('strategy_key', ['hot_chase', 'rebound', 'zone_balanced', 'pattern_structure', 'streak_chase']);
 
       const recent10Stats = {};
       (statsRows?.data || []).forEach(row => {
         const recentHits = Array.isArray(row.recent_hits) ? row.recent_hits : [];
-        const recentProfit = Array.isArray(row.recent_profit) ? row.recent_profit : [];
-        const last10Profit = recentProfit.slice(-10);
-        const last10Cost = last10Profit.length * 25;
-        const last10Sum = last10Profit.reduce((a, b) => a + toNum(b, 0), 0);
-        recent10Stats[row.strategy_key] = last10Cost > 0 ? last10Sum / last10Cost : toNum(row.recent_50_roi, -0.5);
+        const totalRounds = toNum(row.total_rounds, 0);
+        const hit3 = toNum(row.hit3, 0);
+
+        // 近10期 hit3 率
+        const last10Hits = recentHits.slice(-10);
+        const last10Hit3Count = last10Hits.filter(h => toNum(h, 0) >= 3).length;
+        const last10Hit3Rate = last10Hits.length > 0 ? last10Hit3Count / last10Hits.length : 0;
+
+        // 全期 hit3 率
+        const allHit3Rate = totalRounds > 0 ? hit3 / totalRounds : 0;
+
+        // 近10期 hit3 率為主，全期為輔，轉成 ROI 格式（0~1 範圍）讓 decideGroupCountByPerformance 使用
+        // hit3_rate 16.7% = 中3獎500元，成本25元，ROI = (500*0.167 - 25) / 25 = 2.34
+        // 用 hit3_rate * 20 - 1 當作 roi 指標，讓高 hit3 的策略排前面
+        const hit3Score = last10Hit3Rate > 0
+          ? last10Hit3Rate * 20 - 1
+          : allHit3Rate * 20 - 1;
+
+        recent10Stats[row.strategy_key] = hit3Score;
       });
 
       // ✅ 傳入 marketSnapshot 和 recent10Stats
