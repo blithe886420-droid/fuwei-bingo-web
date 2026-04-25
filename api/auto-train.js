@@ -2470,6 +2470,7 @@ function calcDecisionScore(meta={}){const h3=Number(meta.recent_50_hit3_rate||0)
 
 /* =========================
    🔧 FIX: AUTO COMPARE TRIGGER
+   支援 formal_3star，正確傳入 groups + starMode
    ========================= */
 
 async function runAutoCompareForLatest(db) {
@@ -2485,10 +2486,11 @@ async function runAutoCompareForLatest(db) {
 
     const targetDrawNo = Number(latestDraw.draw_no);
 
+    // ✅ 加入 formal_3star
     const { data: pending } = await db
       .from('bingo_predictions')
       .select('*')
-      .in('mode', ['test', 'formal'])
+      .in('mode', ['test', 'formal', 'formal_3star'])
       .eq('compare_status', 'pending')
       .limit(50);
 
@@ -2498,23 +2500,53 @@ async function runAutoCompareForLatest(db) {
       const source = Number(row.source_draw_no || 0);
       if (source + 1 !== targetDrawNo) continue;
 
+      // ✅ 根據 mode 決定 starMode
+      const starMode = row.mode === 'formal_3star' ? 3 : 4;
+
+      // ✅ 正確傳入 groups + drawRows + starMode（原本傳 prediction/draw 是錯的）
       const payload = buildComparePayload({
-        prediction: row,
-        draw: latestDraw
+        groups: row.groups_json || [],
+        drawRows: [latestDraw],
+        costPerGroupPerPeriod: COST_PER_GROUP_PER_PERIOD,
+        starMode
       });
 
-      const result = payload?.result || null;
+      const result = payload?.compareResult || null;
 
       await db
         .from('bingo_predictions')
         .update({
-          compare_status: 'compared',
+          status: 'compared',
+          compare_status: 'done',
+          compare_result: result,
           compare_result_json: result,
-          hit_count: result?.hit_count || 0
+          hit_count: payload?.hitCount || 0,
+          verdict: payload?.verdict || 'bad',
+          compared_at: new Date().toISOString(),
+          latest_draw_numbers: row.latest_draw_numbers || null
         })
         .eq('id', row.id);
 
-      await recordStrategyCompareResult(result);
+      // ✅ 只有 detail 非空才寫入 strategy_stats
+      if (result?.detail?.length) {
+        try {
+          await recordStrategyCompareResult({
+            ...result,
+            market_phase:
+              row.market_snapshot_json?.market_phase ||
+              row.market_snapshot_json?.phase_context?.market_phase ||
+              null,
+            phase_context: {
+              market_phase:
+                row.market_snapshot_json?.market_phase ||
+                row.market_snapshot_json?.phase_context?.market_phase ||
+                null
+            }
+          });
+        } catch (statsErr) {
+          console.warn('[runAutoCompareForLatest] recordStrategyCompareResult failed:', statsErr.message);
+        }
+      }
     }
   } catch (e) {
     console.error('AUTO COMPARE ERROR', e);
