@@ -2827,7 +2827,7 @@ async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestD
       .order('draw_no', { ascending: false })
       .limit(160);
 
-    const result3star = buildBingoV1Strategies(marketRows.data || [], {}, 3);
+    const result3star = buildBingoV1Strategies(marketRows.data || [], {}, 3, {}, {});  // ✅ marketSnapshot/recent10Stats 由 auto-train 那條路補，這裡給空物件讓它正常跑
 
     const threeStarGroups = (result3star.strategies || []).map((s, idx) => ({
       key: s.key,
@@ -2862,6 +2862,8 @@ async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestD
       latest_draw_numbers: JSON.stringify(parseNums(latestDraw?.numbers || [])),
       compare_result_json: null,
       compare_result: null,
+      compare_status: 'pending',  // ✅ 修正：讓 comparePendingPredictions 能找到這筆
+      hit_count: 0,
       compared_history_json: [],
       compared_draw_count: 0,
       verdict: null,
