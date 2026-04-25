@@ -2827,7 +2827,26 @@ async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestD
       .order('draw_no', { ascending: false })
       .limit(160);
 
-    const result3star = buildBingoV1Strategies(marketRows.data || [], {}, 3, {}, {});  // ✅ marketSnapshot/recent10Stats 由 auto-train 那條路補，這裡給空物件讓它正常跑
+    // ✅ 從 strategy_pool 取 active 策略，按 hit3_rate 排序取前8名
+    const poolRows3s = await db.from(STRATEGY_POOL_TABLE).select('strategy_key').eq('status', 'active');
+    const activeKeys3s = (poolRows3s?.data || []).map(r => r.strategy_key).filter(Boolean);
+    const statsRows3s = await db.from(STRATEGY_STATS_TABLE)
+      .select('strategy_key, recent_hits, hit3, hit2, total_rounds')
+      .in('strategy_key', activeKeys3s.length > 0 ? activeKeys3s : ['hot_chase']);
+    const statsMap3s = new Map();
+    (statsRows3s?.data || []).forEach(row => {
+      const rounds = Number(row.total_rounds || 0);
+      const hit3Rate = rounds > 0 ? Number(row.hit3 || 0) / rounds : 0;
+      const hit2Rate = rounds > 0 ? Number(row.hit2 || 0) / rounds : 0;
+      statsMap3s.set(row.strategy_key, { score: hit3Rate * 60 + hit2Rate * 25, totalRounds: rounds });
+    });
+    const sorted3sKeys = activeKeys3s
+      .map(key => ({ key, score: statsMap3s.get(key)?.score ?? -10, rounds: statsMap3s.get(key)?.totalRounds ?? 0 }))
+      .sort((a, b) => { if (a.rounds === 0 && b.rounds > 0) return 1; if (b.rounds === 0 && a.rounds > 0) return -1; return b.score - a.score; })
+      .slice(0, 8).map(x => x.key);
+    const recent10Stats3s = {};
+    sorted3sKeys.forEach(key => { const d = statsMap3s.get(key); recent10Stats3s[key] = d ? { score: d.score, hit3Rate: 0, avgCoverageHit: 3, totalRounds: d.totalRounds } : { score: -10, hit3Rate: 0, avgCoverageHit: 3, totalRounds: 0 }; });
+    const result3star = buildBingoV1Strategies(marketRows.data || [], {}, 3, {}, recent10Stats3s, sorted3sKeys);
 
     const threeStarGroups = (result3star.strategies || []).map((s, idx) => ({
       key: s.key,
