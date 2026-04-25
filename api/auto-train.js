@@ -734,64 +734,94 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
         .order('draw_no', { ascending: false })
         .limit(MARKET_LOOKBACK_LIMIT);
 
-      // ✅ 讀取五個三星策略的近期數據（hit3_rate + 覆蓋率，作為回饋迴圈依據）
-      const statsRows = await db
-        .from(STRATEGY_STATS_TABLE)
-        .select('strategy_key, recent_hits, hit3, total_rounds, recent_50_roi, recent_coverage_hits, avg_coverage_hit, recent_coverage_hit_rate')
-        .in('strategy_key', ['hot_chase', 'rebound', 'zone_balanced', 'pattern_structure', 'streak_chase']);
+      // ✅ 從 strategy_pool 取所有 active 策略（和四星一樣動態競爭）
+      const poolRows3star = await db
+        .from(STRATEGY_POOL_TABLE)
+        .select('strategy_key, strategy_name, status, protected_rank')
+        .eq('status', 'active')
+        .order('updated_at', { ascending: false });
 
-      const recent10Stats = {};
-      (statsRows?.data || []).forEach(row => {
+      const activeKeys3star = (poolRows3star?.data || [])
+        .map(r => r.strategy_key)
+        .filter(Boolean);
+
+      // ✅ 從 strategy_stats 取所有 active 策略的命中數據
+      const statsRows3star = await db
+        .from(STRATEGY_STATS_TABLE)
+        .select('strategy_key, recent_hits, hit3, hit2, total_rounds, avg_coverage_hit, recent_coverage_hits, recent_coverage_hit_rate')
+        .in('strategy_key', activeKeys3star.length > 0 ? activeKeys3star : ['hot_chase']);
+
+      // ✅ 計算每個策略的綜合分數（hit3_rate + 覆蓋率）
+      const statsMap3star = new Map();
+      (statsRows3star?.data || []).forEach(row => {
         const recentHits = Array.isArray(row.recent_hits) ? row.recent_hits : [];
         const totalRounds = toNum(row.total_rounds, 0);
         const hit3 = toNum(row.hit3, 0);
+        const hit2 = toNum(row.hit2, 0);
 
-        // 近10期 hit3 率
         const last10Hits = recentHits.slice(-10);
         const last10Hit3Count = last10Hits.filter(h => toNum(h, 0) >= 3).length;
+        const last10Hit2Count = last10Hits.filter(h => toNum(h, 0) >= 2).length;
         const last10Hit3Rate = last10Hits.length > 0 ? last10Hit3Count / last10Hits.length : 0;
+        const last10Hit2Rate = last10Hits.length > 0 ? last10Hit2Count / last10Hits.length : 0;
 
-        // 全期 hit3 率
         const allHit3Rate = totalRounds > 0 ? hit3 / totalRounds : 0;
+        const allHit2Rate = totalRounds > 0 ? hit2 / totalRounds : 0;
 
-        // 覆蓋率回饋：近期覆蓋命中率（開獎20個號碼裡平均幾個在覆蓋範圍）
         const recentCoverageHits = Array.isArray(row.recent_coverage_hits) ? row.recent_coverage_hits : [];
         const last10CoverageHits = recentCoverageHits.slice(-10);
         const avgRecentCoverage = last10CoverageHits.length > 0
           ? last10CoverageHits.reduce((a, b) => a + toNum(b, 0), 0) / last10CoverageHits.length
-          : toNum(row.avg_coverage_hit, 3); // 預設3個（20個號碼裡覆蓋15個，期望值約3.75）
+          : toNum(row.avg_coverage_hit, 3);
 
-        // 覆蓋率命中率（近期）
-        const coverageHitRate = toNum(row.recent_coverage_hit_rate, 0);
+        // 綜合分數：hit3_rate 最重要，hit2_rate 次之，覆蓋率輔助
+        const hit3Score = (last10Hit3Rate > 0 ? last10Hit3Rate : allHit3Rate) * 60;
+        const hit2Score = (last10Hit2Rate > 0 ? last10Hit2Rate : allHit2Rate) * 25;
+        const coverageScore = (avgRecentCoverage - 3) * 5;
 
-        // ✅ 綜合分數：hit3_rate 為主（60%），覆蓋命中率為輔（40%）
-        // 覆蓋命中率越高，代表選號方向越準，應該給更多組數
-        const hit3Score = last10Hit3Rate > 0
-          ? last10Hit3Rate * 20 - 1
-          : allHit3Rate * 20 - 1;
-
-        // 覆蓋率分數：平均覆蓋命中 > 4 代表選號方向好（20個號碼裡中4個以上）
-        const coverageScore = avgRecentCoverage > 0
-          ? (avgRecentCoverage - 3) * 0.5  // 以3為基準，高於3加分，低於3扣分
-          : 0;
-
-        // 綜合分數傳給 decideGroupCountByPerformance
-        recent10Stats[row.strategy_key] = {
-          score: hit3Score * 0.6 + coverageScore * 0.4,
+        statsMap3star.set(row.strategy_key, {
+          score: hit3Score + hit2Score + coverageScore,
           hit3Rate: last10Hit3Rate > 0 ? last10Hit3Rate : allHit3Rate,
-          coverageHitRate,
+          hit2Rate: last10Hit2Rate > 0 ? last10Hit2Rate : allHit2Rate,
           avgCoverageHit: avgRecentCoverage,
           totalRounds
-        };
+        });
       });
 
-      // ✅ 傳入 marketSnapshot 和 recent10Stats
+      // ✅ 按分數排序，取前8名策略出組（和四星一樣競爭）
+      const TOP_3STAR_COUNT = 8;
+      const sorted3starKeys = activeKeys3star
+        .map(key => ({
+          key,
+          score: statsMap3star.get(key)?.score ?? -10, // 沒有數據的新策略給低分但不排除
+          totalRounds: statsMap3star.get(key)?.totalRounds ?? 0
+        }))
+        .sort((a, b) => {
+          // 有數據的策略按分數排，沒數據的新策略放後面輪流測試
+          if (a.totalRounds === 0 && b.totalRounds > 0) return 1;
+          if (b.totalRounds === 0 && a.totalRounds > 0) return -1;
+          return b.score - a.score;
+        })
+        .slice(0, TOP_3STAR_COUNT)
+        .map(x => x.key);
+
+      // ✅ 建立 recent10Stats 傳給 buildBingoV1Strategies
+      const recent10Stats = {};
+      sorted3starKeys.forEach(key => {
+        const data = statsMap3star.get(key);
+        recent10Stats[key] = data
+          ? { score: data.score, hit3Rate: data.hit3Rate, avgCoverageHit: data.avgCoverageHit, totalRounds: data.totalRounds }
+          : { score: -10, hit3Rate: 0, avgCoverageHit: 3, totalRounds: 0 };
+      });
+
+      // ✅ 傳入 marketSnapshot、recent10Stats 和動態策略清單
       const result3star = buildBingoV1Strategies(
         marketRows.data || [],
         {},
         3,
         predictionRow.market_snapshot_json || {},
-        recent10Stats
+        recent10Stats,
+        sorted3starKeys  // ✅ 新增：動態策略清單
       );
 
       const threeStarGroups = (result3star.strategies || []).map((s, idx) => ({
