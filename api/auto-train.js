@@ -1673,11 +1673,15 @@ function mergePoolWithStats(poolRows = [], statsRows = [], marketSnapshot = {}, 
     const roi = totalCost > 0 ? totalProfit / totalCost : 0;
     const recentRoi50 = toNum(stats?.recent_50_roi, 0);
     const scorePenalty = recentRoi50 < -0.5 ? 0.3 : recentRoi50 < -0.3 ? 0.6 : recentRoi50 < 0 ? 0.85 : 1.0;
+    // ✅ 三星評分：移除 hit4*160，加入 hit2 和覆蓋命中率
+    const avgCoverageHit = toNum(stats?.avg_coverage_hit, 0);
+    const coverageBonus = avgCoverageHit > 6 ? (avgCoverageHit - 6) * 30 : 0;
     const score = round4(
       (totalProfit +
-        avgHit * 100 +
-        toNum(stats?.hit3, 0) * 70 +
-        toNum(stats?.hit4, 0) * 160) * scorePenalty
+        avgHit * 60 +              // 三星理論avg_hit=0.75，降低權重
+        toNum(stats?.hit2, 0) * 8 + // 三星hit2是主要回血，加入計算
+        toNum(stats?.hit3, 0) * 90 + // hit3最重要
+        coverageBonus) * scorePenalty
     );
 
     const recent = calcRecentRates(stats);
@@ -1702,11 +1706,13 @@ function mergePoolWithStats(poolRows = [], statsRows = [], marketSnapshot = {}, 
 
     row.decision = chooseDecision(row);
     if (!Number.isFinite(row.decision_score)) {
+      // ✅ 三星 decision_score：移除 hit4_rate，加入 hit2_rate 和覆蓋命中率
       row.decision_score = round4(
         score * marketFit.market_boost +
-          row.hit3_rate * 220 +
-          row.recent_50_hit3_rate * 300 +
-          row.hit4_rate * 500
+          row.hit2_rate * 120 +          // 三星hit2重要
+          row.hit3_rate * 280 +          // hit3最重要
+          row.recent_50_hit3_rate * 360 +
+          toNum(row.avg_coverage_hit, 0) * 15  // 覆蓋命中率加分
       );
     }
 
@@ -2339,10 +2345,16 @@ async function shrinkStrategiesIfNeeded(db) {
       const hit4 = toNum(stats?.hit4, 0);
       const score = toNum(stats?.score, 0);
 
+      // ✅ 三星淘汰分數：移除 hit4*20，加入 hit2 和覆蓋命中率
+      const avgCovHit = toNum(stats?.avg_coverage_hit, 0);
       const elimScore =
         totalRounds === 0
           ? -500
-          : roi * 40 + recent50Roi * 60 + hit3 * 8 + hit4 * 20 + score * 0.01;
+          : roi * 30 + recent50Roi * 50 +
+            toNum(stats?.hit2, 0) * 3 +    // 三星hit2是主要回血
+            hit3 * 15 +                     // hit3最重要
+            (avgCovHit > 6 ? (avgCovHit - 6) * 10 : 0) + // 覆蓋命中率高的策略保留
+            score * 0.01;
 
       return { key, elimScore };
     })
