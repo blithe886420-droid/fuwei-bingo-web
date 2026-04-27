@@ -1357,10 +1357,11 @@ function getHit3RateFloor(role = 'mix', selection = {}, phaseContext = null) {
 }
 
 function getStabilityFloor(role = 'mix', selection = {}, phaseContext = null) {
-  let floor = 1;
+  // ✅ 三星化：avg_hit 理論值 0.75，原本 floor=1 對三星太嚴苛
+  let floor = 0.5;   // 三星理論avg_hit=0.75，0.5以上才算合格
   if (role === 'guard') floor = 0;
   if (role === 'recent') floor = 0;
-  if (selection.riskMode === 'safe') floor += 1;
+  if (selection.riskMode === 'safe') floor += 0.3;
   return floor;
 }
 
@@ -1466,7 +1467,7 @@ function getStrategySelectionPower(group = {}) {
     recent50HitRate * 2600 +
     hit3Rate * 4200 +
     roi * 320 +
-    avgHit * 90 +
+    avgHit * 50 +   // ✅ 三星理論avg_hit=0.75，降低權重（從90→50）
     Math.min(totalRounds, 200) * 2.5
   );
 }
@@ -1508,15 +1509,17 @@ function scoreGroupForMode(group, role = 'mix', strategyMode = 'mix', riskMode =
   score += recent50HitRate * 2600;
   score += blendedHit3Rate * 3600;
   score += recent50Hit3Rate * 4200;
-  score += avgHit * 65;
+  score += avgHit * 40;   // ✅ 三星理論avg_hit=0.75，降低權重（從65→40）
   score += totalRounds * 1.6;
-  score += toNum(meta.hit4_rate, 0) * 5200;
-  score += toNum(meta.recent_50_hit4_rate, 0) * 6000;
-  score += phaseBucket.hit2Rate * 2400;
-  score += phaseBucket.recent20HitRate * 3000;
+  // ✅ 三星化：移除 hit4_rate（三星不可能hit4），加重 hit2 和覆蓋命中率
+  // score += toNum(meta.hit4_rate, 0) * 5200;  // 三星不適用，移除
+  // score += toNum(meta.recent_50_hit4_rate, 0) * 6000;  // 三星不適用，移除
+  score += toNum(meta.avg_coverage_hit, 0) > 6 ? (toNum(meta.avg_coverage_hit, 0) - 6) * 800 : 0; // 覆蓋命中率加分
+  score += phaseBucket.hit2Rate * 2800;      // 三星hit2加重（從2400→2800）
+  score += phaseBucket.recent20HitRate * 3200;
   score += phaseBucket.hit3Rate * 4200;
   score += phaseBucket.recent20Hit3Rate * 5200;
-  score += phaseBucket.recent20Hit4Rate * 7600;
+  // score += phaseBucket.recent20Hit4Rate * 7600;  // 三星不適用，移除
   score += phaseBucket.recent20Roi * 420;
   score += phaseBest.currentPhaseScore * 0.8;
   if (phaseBest.bestPhaseMatched) score += 380;
@@ -2820,20 +2823,6 @@ function forceInjectPhaseIntoGroups(groups = [], phaseContext = null) {
 // ===== 3星衍生預測（Parallel 3-Star）=====
 async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestDraw, phaseContext) {
   try {
-    // ✅ 修正 Bug3：先檢查同一期是否已有三星，避免和 auto-train 雙重寫入
-    const { data: existing3star } = await db
-      .from(PREDICTIONS_TABLE)
-      .select('id')
-      .eq('mode', 'formal_3star')
-      .eq('source_draw_no', sourceDrawNo)
-      .limit(1)
-      .maybeSingle();
-
-    if (existing3star?.id) {
-      console.log('[3star] 同期已有三星預測，跳過衍生（避免雙重寫入）, draw:', sourceDrawNo);
-      return null;
-    }
-
     // ✅ 真三星：直接用 buildBingoV1Strategies starCount=3 獨立產生，不從四星截頭
     const marketRows = await db
       .from(DRAWS_TABLE)
