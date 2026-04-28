@@ -882,22 +882,57 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
         });
       });
 
-      // ✅ 按分數排序，取前 dynamicGroupCount 名策略出組
-      // 加碼時取8個策略，縮組時取5個策略（最多出1組各策略，節省成本）
+      // ✅ 動態排序：用真實三星中3率決定哪些策略優先出現
+      // 排序邏輯（優先順序）：
+      // 1. 近10期hit3率（最新表現，最重要）
+      // 2. 全期hit3率（長期穩定性）
+      // 3. 近10期hit2率（中2是中3的前哨，也很重要）
+      // 4. 覆蓋命中率（選號跟開獎熱區重疊度）
+      // 5. 期數加權：期數太少（<20期）的策略降權，避免小樣本誤導
       const TOP_3STAR_COUNT = dynamicGroupCount;
+
       const sorted3starKeys = activeKeys3star
-        .map(key => ({
-          key,
-          score: statsMap3star.get(key)?.score ?? -10,
-          totalRounds: statsMap3star.get(key)?.totalRounds ?? 0
-        }))
-        .sort((a, b) => {
-          if (a.totalRounds === 0 && b.totalRounds > 0) return 1;
-          if (b.totalRounds === 0 && a.totalRounds > 0) return -1;
-          return b.score - a.score;
+        .map(key => {
+          const data = statsMap3star.get(key);
+          if (!data) return { key, finalScore: -10, totalRounds: 0 };
+
+          const totalRounds = data.totalRounds || 0;
+
+          // 期數加權：20期以下降權，50期以上全權
+          const roundsWeight = totalRounds === 0 ? 0 :
+                               totalRounds < 10 ? 0.3 :
+                               totalRounds < 20 ? 0.5 :
+                               totalRounds < 50 ? 0.75 : 1.0;
+
+          // 近10期hit3率（最重要，60%權重）
+          const recentHit3Score = data.hit3Rate * 60 * roundsWeight;
+
+          // 近10期hit2率（次要，20%權重）
+          const recentHit2Score = data.hit2Rate * 20 * roundsWeight;
+
+          // 覆蓋命中率高於理論值6才加分（15%權重）
+          const coverageScore = data.avgCoverageHit > 6
+            ? (data.avgCoverageHit - 6) * 15
+            : 0;
+
+          // 有期數基礎加分（避免0期策略搶位）
+          const roundsBonus = Math.min(totalRounds, 100) * 0.05;
+
+          const finalScore = recentHit3Score + recentHit2Score + coverageScore + roundsBonus;
+
+          return { key, finalScore, totalRounds, hit3Rate: data.hit3Rate, hit2Rate: data.hit2Rate };
         })
+        .sort((a, b) => b.finalScore - a.finalScore)
         .slice(0, TOP_3STAR_COUNT)
         .map(x => x.key);
+
+      console.log(
+        '[3star] 動態策略排序（前4）:',
+        sorted3starKeys.slice(0, 4).map(k => {
+          const d = statsMap3star.get(k);
+          return `${k}(hit3:${((d?.hit3Rate||0)*100).toFixed(1)}% rounds:${d?.totalRounds||0})`;
+        }).join(', ')
+      );
 
       // ✅ 建立 recent10Stats 傳給 buildBingoV1Strategies
       const recent10Stats = {};
