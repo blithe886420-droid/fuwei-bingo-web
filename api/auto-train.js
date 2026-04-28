@@ -35,12 +35,13 @@ const COST_PER_GROUP_PER_PERIOD = 25;
 const MAX_CREATED_PREDICTIONS = 20;
 const ALLOW_CREATE_WHEN_EXISTING = true;
 
+// ✅ 三星化：降低 avgHit 門檻（三星理論值0.75，不是1.2）
 const DECISION_CONFIG = {
   hardRejectRoi: -0.85,
   hardRejectScore: -400,
-  softRejectRoi: -0.5,
-  minAvgHitPreferred: 1.2,
-  minRoundsForTrust: 6,
+  softRejectRoi: -0.65,       // 三星本來就虧，門檻放寬
+  minAvgHitPreferred: 0.6,    // 三星理論avg_hit=0.75，0.6以上才算合格
+  minRoundsForTrust: 10,      // 需要更多期數才信任
   strongScoreFloor: 80,
   usableScoreFloor: 10
 };
@@ -192,8 +193,11 @@ function normalizeGroups(groups = []) {
             ? group.values
             : [];
 
+      // ✅ 三星每組3個號碼，四星4個，這裡保留4個是因為 normalizeGroups
+      // 也用在四星的 formal/test mode，所以用 slice(0,4) 但允許3個
+      // 三星的 groups_json 在存入前已確保只有3個號碼
       const nums = uniqueSorted(numsSource).slice(0, 4);
-      if (nums.length !== 4) return null;
+      if (nums.length < 3) return null;  // ✅ 三星只需要3個，不再要求一定要4個
 
       const meta = group.meta && typeof group.meta === 'object' ? group.meta : {};
 
@@ -1614,18 +1618,19 @@ function chooseDecision(row = {}) {
 
   row.decision_score = round4(decisionScore);
 
+  // ✅ 三星化：avgHit 門檻從 1.15/1.2 降到 0.7/0.75（三星理論值0.75）
   if (
     decisionScore >= DECISION_CONFIG.strongScoreFloor * 2.8 ||
-    (recent50Hit3Rate >= 0.06 && avgHit >= 1.15) ||
-    (hit3Rate >= 0.08 && marketBoost >= 1.1 && recent50Hit3Rate >= 0.04)
+    (recent50Hit3Rate >= 0.03 && avgHit >= 0.65) ||  // 三星hit3理論1%，3%以上算優秀
+    (hit3Rate >= 0.04 && marketBoost >= 1.1 && recent50Hit3Rate >= 0.02)
   ) {
     return 'strong';
   }
 
   if (
     decisionScore >= DECISION_CONFIG.strongScoreFloor ||
-    (avgHit >= 1.2 && roi >= -0.1) ||
-    recent50Hit3Rate >= 0.03
+    (avgHit >= 0.7 && roi >= -0.5) ||   // 三星理論avg_hit=0.75
+    recent50Hit3Rate >= 0.02
   ) {
     return 'usable';
   }
@@ -2650,8 +2655,15 @@ export default async function handler(req, res) {
   }
 }
 
-// 進攻型decision
-function calcDecisionScore(meta={}){const h3=Number(meta.recent_50_hit3_rate||0); const h2=Number(meta.hit2_rate||0); const roi=Number(meta.recent_50_roi||0); return h3*60+h2*25+Math.max(roi,-1)*15;}
+// ✅ 三星化 decision score：加重 hit2_rate（三星hit2是主要回血來源）、加入 avg_coverage_hit
+function calcDecisionScore(meta={}){
+  const h3=Number(meta.recent_50_hit3_rate||0);
+  const h2=Number(meta.hit2_rate||0);
+  const roi=Number(meta.recent_50_roi||0);
+  const coverage=Number(meta.avg_coverage_hit||0);
+  const coverageBonus = coverage > 6 ? (coverage - 6) * 5 : 0;
+  return h3*80 + h2*40 + Math.max(roi,-1)*10 + coverageBonus;
+}
 
 
 
