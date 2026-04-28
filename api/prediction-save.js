@@ -2841,7 +2841,8 @@ async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestD
       const rounds = Number(row.total_rounds || 0);
       const hit3Rate = rounds > 0 ? Number(row.hit3 || 0) / rounds : 0;
       const hit2Rate = rounds > 0 ? Number(row.hit2 || 0) / rounds : 0;
-      statsMap3s.set(row.strategy_key, { score: hit3Rate * 60 + hit2Rate * 25, totalRounds: rounds });
+      // ✅ 三星化：加重 hit2Rate 權重（與 auto-train 一致）
+      statsMap3s.set(row.strategy_key, { score: hit3Rate * 80 + hit2Rate * 40, totalRounds: rounds });
     });
     const sorted3sKeys = activeKeys3s
       .map(key => ({ key, score: statsMap3s.get(key)?.score ?? -10, rounds: statsMap3s.get(key)?.totalRounds ?? 0 }))
