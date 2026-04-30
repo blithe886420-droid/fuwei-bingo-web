@@ -872,10 +872,11 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
           ? last10CoverageHits.reduce((a, b) => a + toNum(b, 0), 0) / last10CoverageHits.length
           : toNum(row.avg_coverage_hit, 3);
 
-        // 綜合分數：hit3_rate 最重要，hit2_rate 次之，覆蓋率輔助
+        // ✅ 修正6：coverageScore 基準值從3改成6（理論值是6，不是3）
+        // 覆蓋命中理論值 = 24個號碼 × 20/80 = 6，高於6才算真正有效
         const hit3Score = (last10Hit3Rate > 0 ? last10Hit3Rate : allHit3Rate) * 60;
-        const hit2Score = (last10Hit2Rate > 0 ? last10Hit2Rate : allHit2Rate) * 25;
-        const coverageScore = (avgRecentCoverage - 3) * 5;
+        const hit2Score = (last10Hit2Rate > 0 ? last10Hit2Rate : allHit2Rate) * 40;  // hit2加重
+        const coverageScore = (avgRecentCoverage - 6) * 8;  // 基準從3→6，高於6才加分
 
         statsMap3star.set(row.strategy_key, {
           score: hit3Score + hit2Score + coverageScore,
@@ -902,11 +903,14 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
 
           const totalRounds = data.totalRounds || 0;
 
-          // 期數加權：20期以下降權，50期以上全權
-          const roundsWeight = totalRounds === 0 ? 0 :
-                               totalRounds < 10 ? 0.3 :
-                               totalRounds < 20 ? 0.5 :
-                               totalRounds < 50 ? 0.75 : 1.0;
+          // ✅ 修正5：新策略輪換機制
+          // 原本 totalRounds=0 給 0 權重，新策略永遠排不進前8名，沒機會累積數據
+          // 改為：0期策略給基礎分0.2，讓新策略有機會輪換出場測試
+          // 但有數據的策略仍然優先（0.5以上）
+          const roundsWeight = totalRounds === 0 ? 0.2 :   // 新策略給基礎機會
+                               totalRounds < 10 ? 0.4 :    // 少量數據給更多機會
+                               totalRounds < 20 ? 0.6 :
+                               totalRounds < 50 ? 0.8 : 1.0;
 
           // 近10期hit3率（最重要，60%權重）
           const recentHit3Score = data.hit3Rate * 60 * roundsWeight;
