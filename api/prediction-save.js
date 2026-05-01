@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { buildBingoV1Strategies } from '../lib/buildBingoV1Strategies.js';
+import { buildRecentMarketSignalSnapshot } from '../lib/marketSignalEngine.js';
 
 const API_VERSION = 'prediction-save-e-phase-final-write-v3-force-insert';
 
@@ -1357,11 +1358,10 @@ function getHit3RateFloor(role = 'mix', selection = {}, phaseContext = null) {
 }
 
 function getStabilityFloor(role = 'mix', selection = {}, phaseContext = null) {
-  // ✅ 三星化：avg_hit 理論值 0.75，原本 floor=1 對三星太嚴苛
-  let floor = 0.5;   // 三星理論avg_hit=0.75，0.5以上才算合格
+  let floor = 1;
   if (role === 'guard') floor = 0;
   if (role === 'recent') floor = 0;
-  if (selection.riskMode === 'safe') floor += 0.3;
+  if (selection.riskMode === 'safe') floor += 1;
   return floor;
 }
 
@@ -1467,7 +1467,7 @@ function getStrategySelectionPower(group = {}) {
     recent50HitRate * 2600 +
     hit3Rate * 4200 +
     roi * 320 +
-    avgHit * 50 +   // ✅ 三星理論avg_hit=0.75，降低權重（從90→50）
+    avgHit * 90 +
     Math.min(totalRounds, 200) * 2.5
   );
 }
@@ -1509,17 +1509,15 @@ function scoreGroupForMode(group, role = 'mix', strategyMode = 'mix', riskMode =
   score += recent50HitRate * 2600;
   score += blendedHit3Rate * 3600;
   score += recent50Hit3Rate * 4200;
-  score += avgHit * 40;   // ✅ 三星理論avg_hit=0.75，降低權重（從65→40）
+  score += avgHit * 65;
   score += totalRounds * 1.6;
-  // ✅ 三星化：移除 hit4_rate（三星不可能hit4），加重 hit2 和覆蓋命中率
-  // score += toNum(meta.hit4_rate, 0) * 5200;  // 三星不適用，移除
-  // score += toNum(meta.recent_50_hit4_rate, 0) * 6000;  // 三星不適用，移除
-  score += toNum(meta.avg_coverage_hit, 0) > 6 ? (toNum(meta.avg_coverage_hit, 0) - 6) * 800 : 0; // 覆蓋命中率加分
-  score += phaseBucket.hit2Rate * 2800;      // 三星hit2加重（從2400→2800）
-  score += phaseBucket.recent20HitRate * 3200;
+  score += toNum(meta.hit4_rate, 0) * 5200;
+  score += toNum(meta.recent_50_hit4_rate, 0) * 6000;
+  score += phaseBucket.hit2Rate * 2400;
+  score += phaseBucket.recent20HitRate * 3000;
   score += phaseBucket.hit3Rate * 4200;
   score += phaseBucket.recent20Hit3Rate * 5200;
-  // score += phaseBucket.recent20Hit4Rate * 7600;  // 三星不適用，移除
+  score += phaseBucket.recent20Hit4Rate * 7600;
   score += phaseBucket.recent20Roi * 420;
   score += phaseBest.currentPhaseScore * 0.8;
   if (phaseBest.bestPhaseMatched) score += 380;
@@ -2841,16 +2839,24 @@ async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestD
       const rounds = Number(row.total_rounds || 0);
       const hit3Rate = rounds > 0 ? Number(row.hit3 || 0) / rounds : 0;
       const hit2Rate = rounds > 0 ? Number(row.hit2 || 0) / rounds : 0;
-      // ✅ 三星化：加重 hit2Rate 權重（與 auto-train 一致）
-      statsMap3s.set(row.strategy_key, { score: hit3Rate * 80 + hit2Rate * 40, totalRounds: rounds });
+      // ✅ 三星化：hit2Rate 權重從 25 → 40，與 auto-train 一致
+      statsMap3s.set(row.strategy_key, { score: hit3Rate * 80 + hit2Rate * 40, totalRounds: rounds, hit3Rate, hit2Rate });
     });
     const sorted3sKeys = activeKeys3s
       .map(key => ({ key, score: statsMap3s.get(key)?.score ?? -10, rounds: statsMap3s.get(key)?.totalRounds ?? 0 }))
       .sort((a, b) => { if (a.rounds === 0 && b.rounds > 0) return 1; if (b.rounds === 0 && a.rounds > 0) return -1; return b.score - a.score; })
       .slice(0, 8).map(x => x.key);
     const recent10Stats3s = {};
-    sorted3sKeys.forEach(key => { const d = statsMap3s.get(key); recent10Stats3s[key] = d ? { score: d.score, hit3Rate: 0, avgCoverageHit: 3, totalRounds: d.totalRounds } : { score: -10, hit3Rate: 0, avgCoverageHit: 3, totalRounds: 0 }; });
-    const result3star = buildBingoV1Strategies(marketRows.data || [], {}, 3, {}, recent10Stats3s, sorted3sKeys);
+    sorted3sKeys.forEach(key => {
+      const d = statsMap3s.get(key);
+      recent10Stats3s[key] = d
+        ? { score: d.score, hit3Rate: d.hit3Rate || 0, hit2Rate: d.hit2Rate || 0, avgCoverageHit: 6, totalRounds: d.totalRounds }
+        : { score: -10, hit3Rate: 0, hit2Rate: 0, avgCoverageHit: 6, totalRounds: 0 };
+    });
+    // ✅ 修正：傳入即時 marketSnapshot，讓盤面感知機制能正確運作
+    // 原本傳 {}（空物件），盤面感知拿不到任何資料，完全無法感知盤面
+    const liveSnapshot3s = buildRecentMarketSignalSnapshot(marketRows.data || [], 'numbers');
+    const result3star = buildBingoV1Strategies(marketRows.data || [], {}, 3, liveSnapshot3s, recent10Stats3s, sorted3sKeys);
 
     const threeStarGroups = (result3star.strategies || []).map((s, idx) => ({
       key: s.key,
