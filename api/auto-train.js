@@ -951,15 +951,18 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
           : { score: -10, hit3Rate: 0, avgCoverageHit: 3, totalRounds: 0 };
       });
 
-      // ✅ 傳入 marketSnapshot、recent10Stats、動態策略清單 和 forcedGroupCount
+      // ✅ 傳入即時計算的 marketSnapshot（不用舊的 predictionRow.market_snapshot_json）
+      // 盤面感知機制需要當期最新盤面資料，predictionRow.market_snapshot_json 是上一期的
+      // 用 buildRecentMarketSignalSnapshot 即時從最新開獎資料計算當期盤面
+      const liveMarketSnapshot = buildRecentMarketSignalSnapshot(marketRows.data || [], 'numbers');
       const result3star = buildBingoV1Strategies(
         marketRows.data || [],
         {},
         3,
-        predictionRow.market_snapshot_json || {},
+        liveMarketSnapshot,    // ✅ 改用即時盤面快照
         recent10Stats,
-        sorted3starKeys,   // ✅ 動態策略清單
-        dynamicGroupCount  // ✅ 新增：強制組數（加碼/減碼控制）
+        sorted3starKeys,
+        dynamicGroupCount
       );
 
       const threeStarGroups = (result3star.strategies || []).map((s, idx) => ({
