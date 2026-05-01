@@ -62,13 +62,14 @@ function scoreActiveStrategy(row) {
   const hit4 = toNum(row?.hit4, 0);
   const totalRounds = toNum(row?.total_rounds, 0);
 
-  const explosionScore = hit2 * 2 + hit3 * 8 + hit4 * 20;
+  // ✅ 三星化：移除 hit4*20（三星不可能hit4），降低 avgHit 權重（理論值0.75）
+  const explosionScore = hit2 * 5 + hit3 * 20;  // hit2加重，移除hit4
   const qualityScore =
-    avgHit * 55 +
+    avgHit * 30 +           // 三星理論avg_hit=0.75，從55降到30
     recent50Roi * 45 +
     roi * 10 +
-    hitRate * 18 +
-    recent50HitRate * 12;
+    hitRate * 25 +          // hit2率加重
+    recent50HitRate * 20;
   const matureBonus = totalRounds >= 30 ? 25 : totalRounds >= 15 ? 10 : 0;
 
   return protectedBonus + explosionScore + qualityScore + matureBonus;
@@ -83,12 +84,13 @@ function detectDecisionPhase({
   topStrategyRecent50Roi
 }) {
   const hasRecentWork = comparedLastHour > 0 || createdLastHour > 0;
+  // ✅ 三星化：avg_hit 理論值0.75，原本門檻1.8和1.5是四星標準，永遠不會觸發
   const strongShortTerm =
-    topStrategyAvgHit >= 1.8 && topStrategyRecent50Roi >= 0;
+    topStrategyAvgHit >= 0.85 && topStrategyRecent50Roi >= -0.3;
   const usableShortTerm =
-    topStrategyAvgHit >= 1.5 && topStrategyRecent50Roi >= -0.2;
+    topStrategyAvgHit >= 0.65 && topStrategyRecent50Roi >= -0.5;
   const poorShortTerm =
-    topStrategyAvgHit < 1.2 || topStrategyRecent50Roi < -0.5 || topStrategyRoi < -0.7;
+    topStrategyAvgHit < 0.4 || topStrategyRecent50Roi < -0.75 || topStrategyRoi < -0.85;
 
   if (activeCount <= 0) {
     return {
@@ -178,11 +180,12 @@ function calculateDecisionStrength({
   else if (activeCount >= 5) activeScore = 8;
   else if (activeCount >= 1) activeScore = 4;
 
+  // ✅ 三星化：avgHit 門檻從四星標準（1.2~2.2）改為三星標準（0.5~1.0）
   let avgHitScore = 0;
-  if (topStrategyAvgHit >= 2.2) avgHitScore = 25;
-  else if (topStrategyAvgHit >= 1.8) avgHitScore = 20;
-  else if (topStrategyAvgHit >= 1.5) avgHitScore = 14;
-  else if (topStrategyAvgHit >= 1.2) avgHitScore = 8;
+  if (topStrategyAvgHit >= 1.0) avgHitScore = 25;
+  else if (topStrategyAvgHit >= 0.85) avgHitScore = 20;
+  else if (topStrategyAvgHit >= 0.70) avgHitScore = 14;
+  else if (topStrategyAvgHit >= 0.55) avgHitScore = 8;
   else avgHitScore = 2;
 
   let recentRoiScore = 0;
