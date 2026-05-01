@@ -500,14 +500,15 @@ function isFormalHardRejectCandidate(group = {}, slotNo = 1, phaseContext = null
     return true;
   }
 
-  // 第1、2槽：輪數不足 50 輪且 hit3 = 0，直接拒絕
-  // 避免小樣本假高分策略佔據重要槽位
-  if (slotNo <= 2 && totalRounds < 50 && blendedHit3Rate <= 0) {
+  // ✅ 修正四：原條件 totalRounds<50 && hit3=0 對三星過嚴（三星hit3理論1%，50期內hit3=0機率約60%）
+  // 改為：totalRounds<50 且 hit2Rate=0 且 hit3Rate=0，雙重確認才拒絕
+  if (slotNo <= 2 && totalRounds >= 20 && totalRounds < 50 && stats.hit2Rate <= 0 && stats.hit3Rate <= 0) {
     return true;
   }
 
-  // 第1槽：輪數不足 30 輪直接拒絕，讓有歷史資料的策略優先
-  if (slotNo === 1 && totalRounds < 30) {
+  // ✅ 修正四：原條件 slotNo=1 && totalRounds<30 直接拒絕過於嚴格
+  // 改為：slotNo=1 且 totalRounds<15（給更多策略進入機會）
+  if (slotNo === 1 && totalRounds < 15) {
     return true;
   }
 
@@ -1346,14 +1347,16 @@ function getRecentRoiFloor(role = 'mix', selection = {}, phaseContext = null) {
 }
 
 function getHit3RateFloor(role = 'mix', selection = {}, phaseContext = null) {
-  let floor = 0.01;
-  if (role === 'attack') floor = 0.02;
-  if (role === 'extend') floor = 0.01;
-  if (role === 'guard') floor = 0.004;
-  if (role === 'recent') floor = 0.008;
-  if (selection.strategyMode === 'hot') floor += 0.002;
-  if (selection.riskMode === 'balanced' && role === 'attack') floor += 0.004;
-  if (phaseContext?.marketPhase === 'continuation' && role === 'attack') floor -= 0.002;
+  // ✅ 修正五：三星 hit3 理論值只有 1.06%，attack 槽原門檻 2% 對三星過嚴
+  // 調整為三星合理門檻：attack=0.8%，其他角色對應調低
+  let floor = 0.005;
+  if (role === 'attack') floor = 0.008;  // 三星理論1.06%，0.8%是合理下限
+  if (role === 'extend') floor = 0.004;
+  if (role === 'guard') floor = 0.002;
+  if (role === 'recent') floor = 0.003;
+  if (selection.strategyMode === 'hot') floor += 0.001;
+  if (selection.riskMode === 'balanced' && role === 'attack') floor += 0.002;
+  if (phaseContext?.marketPhase === 'continuation' && role === 'attack') floor -= 0.001;
   return round4(Math.max(0, floor));
 }
 
@@ -1511,13 +1514,18 @@ function scoreGroupForMode(group, role = 'mix', strategyMode = 'mix', riskMode =
   score += recent50Hit3Rate * 4200;
   score += avgHit * 65;
   score += totalRounds * 1.6;
-  score += toNum(meta.hit4_rate, 0) * 5200;
-  score += toNum(meta.recent_50_hit4_rate, 0) * 6000;
+  // ✅ 修正三：移除 hit4_rate（三星不可能hit4，永遠是0，佔用大量無效量尺空間）
+  // 原本 hit4_rate*5200 + recent_50_hit4_rate*6000 = 理論最高11200但永遠是0
+  // 改為加重 hit2_rate（三星主要回血來源）
+  score += toNum(meta.hit2_rate, 0) * 4800;
+  score += toNum(meta.recent_50_hit_rate, 0) * 3200;
   score += phaseBucket.hit2Rate * 2400;
   score += phaseBucket.recent20HitRate * 3000;
   score += phaseBucket.hit3Rate * 4200;
   score += phaseBucket.recent20Hit3Rate * 5200;
-  score += phaseBucket.recent20Hit4Rate * 7600;
+  // ✅ 修正三：移除 phaseBucket.recent20Hit4Rate（三星不可能hit4，永遠是0）
+  // 原本 *7600 完全無效，改為加重 phaseBucket.hit2Rate
+  score += phaseBucket.hit2Rate * 3800;
   score += phaseBucket.recent20Roi * 420;
   score += phaseBest.currentPhaseScore * 0.8;
   if (phaseBest.bestPhaseMatched) score += 380;
