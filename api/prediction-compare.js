@@ -23,12 +23,20 @@ const TEST_MODE = 'test';
 const FORMAL_MODE = 'formal';
 const FORMAL_CANDIDATE_MODE = 'formal_candidate';
 
-if (!SUPABASE_URL || !SUPABASE_KEY) {
-  throw new Error('Missing SUPABASE_URL or SUPABASE key');
+// ✅ 修正：懶初始化，避免 Vercel 冷啟動崩潰
+let _supabase = null;
+function getSupabaseClient() {
+  if (_supabase) return _supabase;
+  if (!SUPABASE_URL || !SUPABASE_KEY) {
+    throw new Error('Missing SUPABASE_URL or SUPABASE key');
+  }
+  _supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+    auth: { persistSession: false }
+  });
+  return _supabase;
 }
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
-  auth: { persistSession: false }
+const supabase = new Proxy({}, {
+  get(_, prop) { return getSupabaseClient()[prop]; }
 });
 
 function toInt(value, fallback = 0) {
@@ -437,19 +445,20 @@ function buildDecisionSummary(leaderboard = [], formalBatchCount = 0, formalSour
     summaryText = '本期 formal 批次已達上限，等待下一期再重新建立正式下注組合。';
     readyForFormal = false;
     adviceLevel = 'watch';
-  } else if (topOne.avg_hit >= 2.0 && topOne.recent_50_roi > 0) {
+  // ✅ 三星化：avg_hit 理論值0.75，原本門檻2.0和1.5永遠不會觸發
+  } else if (toNum(topOne.score, 0) >= 200 && toNum(topOne.recent_50_roi, -1) > -0.6) {
     summaryLabel = '可正式下注';
-    summaryText = '目前前段策略表現偏強，可採固定四組分工觀察中三突破。';
+    summaryText = '目前前段策略表現穩定，中3率有一定水準，可建立正式下注組合。';
     readyForFormal = true;
     adviceLevel = 'ready';
-  } else if (topOne.avg_hit >= 1.5) {
+  } else if (toNum(topOne.score, 0) >= 50) {
     summaryLabel = '可小試';
     summaryText = '目前前段策略已有一定穩定度，可用小額方式觀察分工組合表現。';
     readyForFormal = false;
     adviceLevel = 'near_ready';
   } else {
-    summaryLabel = '暫不建議正式下注';
-    summaryText = '目前前段策略穩定度仍不足，建議先以訓練與觀察為主。';
+    summaryLabel = '先觀察';
+    summaryText = '目前策略數據累積中，建議先以訓練與觀察為主。';
     readyForFormal = false;
     adviceLevel = 'watch';
   }
