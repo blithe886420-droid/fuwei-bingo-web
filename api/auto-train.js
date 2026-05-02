@@ -872,32 +872,28 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
           ? last10CoverageHits.reduce((a, b) => a + toNum(b, 0), 0) / last10CoverageHits.length
           : toNum(row.avg_coverage_hit, 3);
 
-        // ✅ 修正一+六：三星評分統一使用 hit2Rate 為主軸（hit2理論14%，遠比hit3穩定）
-        // coverageScore 兩處統一：低於6不扣分也不加分，高於6才加分
-        const effectiveHit3Rate = last10Hit3Rate > 0 ? last10Hit3Rate : allHit3Rate;
-        const effectiveHit2Rate = last10Hit2Rate > 0 ? last10Hit2Rate : allHit2Rate;
-        // hit3 理論1%，直接用作加分項而非主排序依據
-        const hit3Score = effectiveHit3Rate * 30;
-        // hit2 理論14%，作為主排序依據（權重大幅提升）
-        const hit2Score = effectiveHit2Rate * 80;
-        // coverageScore：低於6給0，高於6才加分（與排序邏輯統一）
+        // ✅ 修正六：coverageScore 統一邏輯，低於6給0不給負數
+        // 兩處計算不一致會導致 statsMap3star.score 跟排序 finalScore 矛盾
+        const hit3Score = (last10Hit3Rate > 0 ? last10Hit3Rate : allHit3Rate) * 60;
+        const hit2Score = (last10Hit2Rate > 0 ? last10Hit2Rate : allHit2Rate) * 40;
         const coverageScore = avgRecentCoverage > 6 ? (avgRecentCoverage - 6) * 8 : 0;
 
         statsMap3star.set(row.strategy_key, {
           score: hit3Score + hit2Score + coverageScore,
-          hit3Rate: effectiveHit3Rate,
-          hit2Rate: effectiveHit2Rate,
+          hit3Rate: last10Hit3Rate > 0 ? last10Hit3Rate : allHit3Rate,
+          hit2Rate: last10Hit2Rate > 0 ? last10Hit2Rate : allHit2Rate,
           avgCoverageHit: avgRecentCoverage,
           totalRounds
         });
       });
 
-      // ✅ 動態排序：三星策略排序改為 hit2Rate 為主（理論14%，資料充足可信）
+      // ✅ 動態排序：用真實三星中3率決定哪些策略優先出現
       // 排序邏輯（優先順序）：
-      // 1. 近10期hit2率（主要依據，理論14%，每期都有機會累積）
-      // 2. 近10期hit3率（次要加分，理論1%，稀少但珍貴）
-      // 3. 覆蓋命中率（選號跟開獎熱區重疊度）
-      // 4. 期數加權：期數太少（<20期）的策略降權，避免小樣本誤導
+      // 1. 近10期hit3率（最新表現，最重要）
+      // 2. 全期hit3率（長期穩定性）
+      // 3. 近10期hit2率（中2是中3的前哨，也很重要）
+      // 4. 覆蓋命中率（選號跟開獎熱區重疊度）
+      // 5. 期數加權：期數太少（<20期）的策略降權，避免小樣本誤導
       const TOP_3STAR_COUNT = dynamicGroupCount;
 
       const sorted3starKeys = activeKeys3star
@@ -916,16 +912,13 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
                                totalRounds < 20 ? 0.6 :
                                totalRounds < 50 ? 0.8 : 1.0;
 
-          // ✅ 修正一：三星排序改為 hit2Rate 為主軸（理論14%，資料量充足）
-          // hit3Rate 只作加分項（理論1%，資料太稀疏無法作主排序依據）
+          // 近10期hit3率（最重要，60%權重）
+          const recentHit3Score = data.hit3Rate * 60 * roundsWeight;
 
-          // hit2 命中率（主要依據，60%權重）
-          const recentHit2Score = data.hit2Rate * 60 * roundsWeight;
+          // 近10期hit2率（次要，20%權重）
+          const recentHit2Score = data.hit2Rate * 20 * roundsWeight;
 
-          // hit3 命中率（次要加分，20%權重）
-          const recentHit3Score = data.hit3Rate * 20 * roundsWeight;
-
-          // 覆蓋命中率高於理論值6才加分（統一邏輯）
+          // 覆蓋命中率高於理論值6才加分（15%權重）
           const coverageScore = data.avgCoverageHit > 6
             ? (data.avgCoverageHit - 6) * 15
             : 0;
