@@ -849,7 +849,9 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
         .select('strategy_key, recent_hits, hit3, hit2, total_rounds, avg_coverage_hit, recent_coverage_hits, recent_coverage_hit_rate')
         .in('strategy_key', activeKeys3star.length > 0 ? activeKeys3star : ['hot_chase']);
 
-      // ✅ 計算每個策略的綜合分數（hit3_rate + 覆蓋率）
+      // ✅ 計算每個策略的綜合分數
+      // 【方向一】縮短評分窗口到近30期：不讓1000期歷史稀釋近期表現
+      // 【方向二】動態冷熱切換：近期熱策略優先，冷策略暫時降權
       const statsMap3star = new Map();
       (statsRows3star?.data || []).forEach(row => {
         const recentHits = Array.isArray(row.recent_hits) ? row.recent_hits : [];
@@ -857,14 +859,30 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
         const hit3 = toNum(row.hit3, 0);
         const hit2 = toNum(row.hit2, 0);
 
+        // 【方向一】只看最近30期，不看全期累積
+        const last30Hits = recentHits.slice(-30);
         const last10Hits = recentHits.slice(-10);
+
+        const last30Hit3Count = last30Hits.filter(h => toNum(h, 0) >= 3).length;
+        const last30Hit2Count = last30Hits.filter(h => toNum(h, 0) >= 2).length;
         const last10Hit3Count = last10Hits.filter(h => toNum(h, 0) >= 3).length;
         const last10Hit2Count = last10Hits.filter(h => toNum(h, 0) >= 2).length;
+
+        const last30Hit3Rate = last30Hits.length > 0 ? last30Hit3Count / last30Hits.length : 0;
+        const last30Hit2Rate = last30Hits.length > 0 ? last30Hit2Count / last30Hits.length : 0;
         const last10Hit3Rate = last10Hits.length > 0 ? last10Hit3Count / last10Hits.length : 0;
         const last10Hit2Rate = last10Hits.length > 0 ? last10Hit2Count / last10Hits.length : 0;
 
+        // 全期數據只作保底參考（權重很低）
         const allHit3Rate = totalRounds > 0 ? hit3 / totalRounds : 0;
         const allHit2Rate = totalRounds > 0 ? hit2 / totalRounds : 0;
+
+        // 【方向二】動態冷熱判斷
+        // 近10期 hit3Rate > 2% 或 hit2Rate > 25% → 熱策略，大幅加權
+        // 近30期 hit3Rate = 0 且 hit2Rate < 5% → 冷策略，大幅降權
+        const isHot = last10Hit3Rate >= 0.02 || last10Hit2Rate >= 0.25;
+        const isCold = last30Hit3Rate <= 0 && last30Hit2Rate < 0.05;
+        const hotBoost = isHot ? 2.5 : isCold ? 0.2 : 1.0;
 
         const recentCoverageHits = Array.isArray(row.recent_coverage_hits) ? row.recent_coverage_hits : [];
         const last10CoverageHits = recentCoverageHits.slice(-10);
@@ -872,28 +890,54 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
           ? last10CoverageHits.reduce((a, b) => a + toNum(b, 0), 0) / last10CoverageHits.length
           : toNum(row.avg_coverage_hit, 3);
 
-        // ✅ 修正六：coverageScore 統一邏輯，低於6給0不給負數
-        // 兩處計算不一致會導致 statsMap3star.score 跟排序 finalScore 矛盾
-        const hit3Score = (last10Hit3Rate > 0 ? last10Hit3Rate : allHit3Rate) * 60;
-        const hit2Score = (last10Hit2Rate > 0 ? last10Hit2Rate : allHit2Rate) * 40;
         const coverageScore = avgRecentCoverage > 6 ? (avgRecentCoverage - 6) * 8 : 0;
 
+        // 【方向一+二】近30期為主（70%），近10期為輔（30%），全期只作保底
+        const effectiveHit3Rate = last30Hits.length >= 10
+          ? last30Hit3Rate * 0.7 + last10Hit3Rate * 0.3
+          : allHit3Rate;
+        const effectiveHit2Rate = last30Hits.length >= 10
+          ? last30Hit2Rate * 0.7 + last10Hit2Rate * 0.3
+          : allHit2Rate;
+
+        const hit3Score = effectiveHit3Rate * 60;
+        const hit2Score = effectiveHit2Rate * 40;
+
         statsMap3star.set(row.strategy_key, {
-          score: hit3Score + hit2Score + coverageScore,
-          hit3Rate: last10Hit3Rate > 0 ? last10Hit3Rate : allHit3Rate,
-          hit2Rate: last10Hit2Rate > 0 ? last10Hit2Rate : allHit2Rate,
+          score: (hit3Score + hit2Score + coverageScore) * hotBoost,
+          hit3Rate: effectiveHit3Rate,
+          hit2Rate: effectiveHit2Rate,
           avgCoverageHit: avgRecentCoverage,
-          totalRounds
+          totalRounds,
+          isHot,
+          isCold
         });
       });
 
-      // ✅ 動態排序：用真實三星中3率決定哪些策略優先出現
-      // 排序邏輯（優先順序）：
-      // 1. 近10期hit3率（最新表現，最重要）
-      // 2. 全期hit3率（長期穩定性）
-      // 3. 近10期hit2率（中2是中3的前哨，也很重要）
-      // 4. 覆蓋命中率（選號跟開獎熱區重疊度）
-      // 5. 期數加權：期數太少（<20期）的策略降權，避免小樣本誤導
+      // 【方向三】號碼頻率直接選號：計算最近20期每個號碼的出現頻率
+      // 高頻號碼組成「熱區號碼池」，選號時優先從這個池子裡選
+      const recentDrawsForFreq = (marketRows.data || []).slice(0, 20);
+      const numFreqMap = new Map();
+      for (let n = 1; n <= 80; n++) numFreqMap.set(n, 0);
+      recentDrawsForFreq.forEach(row => {
+        const nums = parseNums(row?.numbers || row?.draw_numbers || []);
+        nums.forEach(n => numFreqMap.set(n, (numFreqMap.get(n) || 0) + 1));
+      });
+      // 出現頻率高於平均值(20*20/80=5次)的號碼列為熱區
+      const hotFreqNums = [...numFreqMap.entries()]
+        .filter(([, freq]) => freq >= 6)
+        .sort((a, b) => b[1] - a[1])
+        .map(([n]) => n);
+      // 出現頻率低於2次的列為冷號（可能即將補出）
+      const coldFreqNums = [...numFreqMap.entries()]
+        .filter(([, freq]) => freq <= 2)
+        .sort((a, b) => a[1] - b[1])
+        .map(([n]) => n);
+
+      console.log('[3star] 熱區號碼(近20期高頻):', hotFreqNums.slice(0, 10).join(','));
+      console.log('[3star] 冷號(近20期低頻):', coldFreqNums.slice(0, 10).join(','));
+
+      // 【方向一+二】動態排序：近30期表現為主，熱策略優先，冷策略降權
       const TOP_3STAR_COUNT = dynamicGroupCount;
 
       const sorted3starKeys = activeKeys3star
@@ -901,34 +945,31 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
           const data = statsMap3star.get(key);
           if (!data) return { key, finalScore: -10, totalRounds: 0 };
 
+          // 【方向二】冷策略直接給負分，不讓它搶位
+          if (data.isCold) return { key, finalScore: -5, totalRounds: data.totalRounds };
+
           const totalRounds = data.totalRounds || 0;
 
-          // ✅ 修正5：新策略輪換機制
-          // 原本 totalRounds=0 給 0 權重，新策略永遠排不進前8名，沒機會累積數據
-          // 改為：0期策略給基礎分0.2，讓新策略有機會輪換出場測試
-          // 但有數據的策略仍然優先（0.5以上）
-          const roundsWeight = totalRounds === 0 ? 0.2 :   // 新策略給基礎機會
-                               totalRounds < 10 ? 0.4 :    // 少量數據給更多機會
-                               totalRounds < 20 ? 0.6 :
-                               totalRounds < 50 ? 0.8 : 1.0;
+          // 期數加權：太新的策略（<10期）給低權重，有足夠數據才可信
+          const roundsWeight = totalRounds === 0 ? 0.2 :
+                               totalRounds < 10 ? 0.5 :
+                               totalRounds < 20 ? 0.7 : 1.0;
 
-          // 近10期hit3率（最重要，60%權重）
+          // 【方向一】近期表現評分（已包含冷熱boost在score裡）
           const recentHit3Score = data.hit3Rate * 60 * roundsWeight;
+          const recentHit2Score = data.hit2Rate * 40 * roundsWeight;
 
-          // 近10期hit2率（次要，20%權重）
-          const recentHit2Score = data.hit2Rate * 20 * roundsWeight;
-
-          // 覆蓋命中率高於理論值6才加分（15%權重）
           const coverageScore = data.avgCoverageHit > 6
-            ? (data.avgCoverageHit - 6) * 15
-            : 0;
+            ? (data.avgCoverageHit - 6) * 15 : 0;
 
-          // 有期數基礎加分（避免0期策略搶位）
           const roundsBonus = Math.min(totalRounds, 100) * 0.05;
 
-          const finalScore = recentHit3Score + recentHit2Score + coverageScore + roundsBonus;
+          // 【方向二】熱策略額外加分
+          const hotBonus = data.isHot ? 8 : 0;
 
-          return { key, finalScore, totalRounds, hit3Rate: data.hit3Rate, hit2Rate: data.hit2Rate };
+          const finalScore = (recentHit3Score + recentHit2Score + coverageScore + roundsBonus + hotBonus) * (data.isHot ? 1.5 : 1.0);
+
+          return { key, finalScore, totalRounds, hit3Rate: data.hit3Rate, hit2Rate: data.hit2Rate, isHot: data.isHot };
         })
         .sort((a, b) => b.finalScore - a.finalScore)
         .slice(0, TOP_3STAR_COUNT)
@@ -938,28 +979,45 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
         '[3star] 動態策略排序（前4）:',
         sorted3starKeys.slice(0, 4).map(k => {
           const d = statsMap3star.get(k);
-          return `${k}(hit3:${((d?.hit3Rate||0)*100).toFixed(1)}% rounds:${d?.totalRounds||0})`;
+          return `${k}(hit3:${((d?.hit3Rate||0)*100).toFixed(1)}% hit2:${((d?.hit2Rate||0)*100).toFixed(1)}% ${d?.isHot?'🔥':''}rounds:${d?.totalRounds||0})`;
         }).join(', ')
       );
 
       // ✅ 建立 recent10Stats 傳給 buildBingoV1Strategies
+      // 【方向三】同時傳入熱區號碼池，讓選號函數優先從高頻號碼選
       const recent10Stats = {};
       sorted3starKeys.forEach(key => {
         const data = statsMap3star.get(key);
         recent10Stats[key] = data
-          ? { score: data.score, hit3Rate: data.hit3Rate, avgCoverageHit: data.avgCoverageHit, totalRounds: data.totalRounds }
-          : { score: -10, hit3Rate: 0, avgCoverageHit: 3, totalRounds: 0 };
+          ? {
+              score: data.score,
+              hit3Rate: data.hit3Rate,
+              hit2Rate: data.hit2Rate,
+              avgCoverageHit: data.avgCoverageHit,
+              totalRounds: data.totalRounds,
+              isHot: data.isHot || false,
+              // 【方向三】熱區號碼池直接注入
+              hotFreqNums: hotFreqNums.slice(0, 20),
+              coldFreqNums: coldFreqNums.slice(0, 10)
+            }
+          : { score: -10, hit3Rate: 0, hit2Rate: 0, avgCoverageHit: 3, totalRounds: 0, isHot: false, hotFreqNums: hotFreqNums.slice(0, 20), coldFreqNums: coldFreqNums.slice(0, 10) };
       });
 
-      // ✅ 傳入即時計算的 marketSnapshot（不用舊的 predictionRow.market_snapshot_json）
-      // 盤面感知機制需要當期最新盤面資料，predictionRow.market_snapshot_json 是上一期的
-      // 用 buildRecentMarketSignalSnapshot 即時從最新開獎資料計算當期盤面
+      // ✅ 傳入即時計算的 marketSnapshot
+      // 【方向三】同時把熱區號碼頻率數據注入 snapshot，讓選號優先用高頻號碼
       const liveMarketSnapshot = buildRecentMarketSignalSnapshot(marketRows.data || [], 'numbers');
+      // 把近20期頻率數據直接掛到 snapshot 上
+      liveMarketSnapshot.freq20_hot_nums = hotFreqNums.slice(0, 24);
+      liveMarketSnapshot.freq20_cold_nums = coldFreqNums.slice(0, 16);
+      liveMarketSnapshot.num_freq_map = Object.fromEntries(
+        [...numFreqMap.entries()].map(([n, f]) => [String(n), f])
+      );
+
       const result3star = buildBingoV1Strategies(
         marketRows.data || [],
         {},
         3,
-        liveMarketSnapshot,    // ✅ 改用即時盤面快照
+        liveMarketSnapshot,
         recent10Stats,
         sorted3starKeys,
         dynamicGroupCount
