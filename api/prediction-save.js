@@ -2867,17 +2867,13 @@ async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestD
         : (rounds > 0 ? Number(row.hit2||0)/rounds : 0);
 
       // 【方向二】冷熱判斷
-      const isHot = last10Hit3Rate >= 0.02 || last10Hit2Rate >= 0.25;
-      const isCold = last30Hit3Rate <= 0 && last30Hit2Rate < 0.05;
-      const hotBoost = isHot ? 2.5 : isCold ? 0.2 : 1.0;
-
       statsMap3s.set(row.strategy_key, {
-        score: (effectiveHit3Rate * 80 + effectiveHit2Rate * 40) * hotBoost,
+        score: (effectiveHit3Rate * 80 + effectiveHit2Rate * 40) * hotBoost3s,
         totalRounds: rounds,
         hit3Rate: effectiveHit3Rate,
         hit2Rate: effectiveHit2Rate,
-        isHot,
-        isCold
+        isHot: isHot3s,
+        isCold: isTrulyBad3s
       });
     });
     const sorted3sKeys = activeKeys3s
