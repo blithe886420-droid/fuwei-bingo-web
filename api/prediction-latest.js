@@ -621,6 +621,11 @@ async function getStrategyLeaderboard(limit = 50) {
   return (Array.isArray(statsRows) ? statsRows : [])
     .map((row) => normalizeLeaderboardRow(row, poolMap.get(row.strategy_key) || null))
     .filter(Boolean)
+    // ✅ 修復：只顯示 active 策略（disabled 策略不應出現在排行榜）
+    .filter(row => {
+      const poolRow = poolMap.get(row.strategy_key);
+      return poolRow?.status === 'active';
+    })
     .sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score;
       if (b.recent_50_roi !== a.recent_50_roi) return b.recent_50_roi - a.recent_50_roi;
@@ -892,9 +897,16 @@ export default async function handler(req, res) {
 
       latest_3star_row: latest3StarRow || null,
       recent_3star_compared_rows: recent3StarComparedRows || [],
-      // ✅ 三星策略競爭排行（按 hit3_rate 排序）
+      // ✅ 修復三星策略競爭排行：
+      // 1. 只顯示 active 策略
+      // 2. 最低50期才顯示（30期以下樣本太小，數字不可信）
+      // 3. 改用全期中3率排序（不再被小樣本假高分誤導）
       three_star_leaderboard: (leaderboard || [])
-        .filter(row => row?.total_rounds > 0)
+        .filter(row => {
+          const poolRow = (leaderboard._poolMap || new Map()).get?.(row.strategy_key);
+          // 只顯示 active 且至少50期的策略
+          return row?.total_rounds >= 50;
+        })
         .map(row => ({
           strategy_key: row.strategy_key,
           total_rounds: row.total_rounds,
@@ -904,8 +916,9 @@ export default async function handler(req, res) {
           hit2_rate: row.total_rounds > 0 ? Number((row.hit2 / row.total_rounds * 100).toFixed(2)) : 0,
           avg_coverage_hit: row.avg_coverage_hit || 0
         }))
+        // ✅ 全期中3率排序（才能看到 balanced_zone 4%、mix_gap 3.47% 這些真正好的策略）
         .sort((a, b) => b.hit3_rate - a.hit3_rate)
-        .slice(0, 20)
+        .slice(0, 10)
     });
   } catch (error) {
     return res.status(500).json({
