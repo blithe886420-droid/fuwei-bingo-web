@@ -909,7 +909,7 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
           avgCoverageHit: avgRecentCoverage,
           totalRounds,
           isHot,
-          isCold
+          isCold: isTrulyBad
         });
       });
 
