@@ -892,13 +892,20 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
 
         const coverageScore = avgRecentCoverage > 6 ? (avgRecentCoverage - 6) * 8 : 0;
 
-        // 【方向一+二】近30期為主（70%），近10期為輔（30%），全期只作保底
-        const effectiveHit3Rate = last30Hits.length >= 10
-          ? last30Hit3Rate * 0.7 + last10Hit3Rate * 0.3
-          : allHit3Rate;
-        const effectiveHit2Rate = last30Hits.length >= 10
-          ? last30Hit2Rate * 0.7 + last10Hit2Rate * 0.3
-          : allHit2Rate;
+        // ✅ 修正：改回全期為主（70%），近期為輔（30%）
+        // 原本近30期70%+全期30%，導致近期短暫低迷的好策略（如balanced_zone 4%）被排除
+        // balanced_zone 全期4.01%、mix_gap 3.47% 這些長期優質策略近期冷掉就被降權，不合理
+        // 改為：全期70% + 近30期20% + 近10期10%，讓長期表現主導，近期只作微調
+        const effectiveHit3Rate = totalRounds >= 50
+          ? allHit3Rate * 0.7 + last30Hit3Rate * 0.2 + last10Hit3Rate * 0.1
+          : last30Hits.length >= 10
+            ? last30Hit3Rate * 0.6 + last10Hit3Rate * 0.4
+            : allHit3Rate;
+        const effectiveHit2Rate = totalRounds >= 50
+          ? allHit2Rate * 0.7 + last30Hit2Rate * 0.2 + last10Hit2Rate * 0.1
+          : last30Hits.length >= 10
+            ? last30Hit2Rate * 0.6 + last10Hit2Rate * 0.4
+            : allHit2Rate;
 
         const hit3Score = effectiveHit3Rate * 60;
         const hit2Score = effectiveHit2Rate * 40;
