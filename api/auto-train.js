@@ -877,12 +877,12 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
         const allHit3Rate = totalRounds > 0 ? hit3 / totalRounds : 0;
         const allHit2Rate = totalRounds > 0 ? hit2 / totalRounds : 0;
 
-        // 【方向二】動態冷熱判斷
-        // 近10期 hit3Rate > 2% 或 hit2Rate > 25% → 熱策略，大幅加權
-        // 近30期 hit3Rate = 0 且 hit2Rate < 5% → 冷策略，大幅降權
+        // ✅ 修正：近30期60% + 全期20% + 近10期20%
+        // 移除 isCold 懲罰——balanced_zone 全期4%短暫低迷不應被大幅降權
+        // 只有全期本來就差的策略才真正降權
         const isHot = last10Hit3Rate >= 0.02 || last10Hit2Rate >= 0.25;
-        const isCold = last30Hit3Rate <= 0 && last30Hit2Rate < 0.05;
-        const hotBoost = isHot ? 2.5 : isCold ? 0.2 : 1.0;
+        const isTrulyBad = allHit3Rate < 0.005 && last30Hit3Rate <= 0 && last30Hit2Rate < 0.05;
+        const hotBoost = isHot ? 1.5 : isTrulyBad ? 0.3 : 1.0;
 
         const recentCoverageHits = Array.isArray(row.recent_coverage_hits) ? row.recent_coverage_hits : [];
         const last10CoverageHits = recentCoverageHits.slice(-10);
@@ -892,20 +892,12 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
 
         const coverageScore = avgRecentCoverage > 6 ? (avgRecentCoverage - 6) * 8 : 0;
 
-        // ✅ 修正：改回全期為主（70%），近期為輔（30%）
-        // 原本近30期70%+全期30%，導致近期短暫低迷的好策略（如balanced_zone 4%）被排除
-        // balanced_zone 全期4.01%、mix_gap 3.47% 這些長期優質策略近期冷掉就被降權，不合理
-        // 改為：全期70% + 近30期20% + 近10期10%，讓長期表現主導，近期只作微調
-        const effectiveHit3Rate = totalRounds >= 50
-          ? allHit3Rate * 0.7 + last30Hit3Rate * 0.2 + last10Hit3Rate * 0.1
-          : last30Hits.length >= 10
-            ? last30Hit3Rate * 0.6 + last10Hit3Rate * 0.4
-            : allHit3Rate;
-        const effectiveHit2Rate = totalRounds >= 50
-          ? allHit2Rate * 0.7 + last30Hit2Rate * 0.2 + last10Hit2Rate * 0.1
-          : last30Hits.length >= 10
-            ? last30Hit2Rate * 0.6 + last10Hit2Rate * 0.4
-            : allHit2Rate;
+        const effectiveHit3Rate = last30Hits.length >= 10
+          ? last30Hit3Rate * 0.6 + allHit3Rate * 0.2 + last10Hit3Rate * 0.2
+          : allHit3Rate;
+        const effectiveHit2Rate = last30Hits.length >= 10
+          ? last30Hit2Rate * 0.6 + allHit2Rate * 0.2 + last10Hit2Rate * 0.2
+          : allHit2Rate;
 
         const hit3Score = effectiveHit3Rate * 60;
         const hit2Score = effectiveHit2Rate * 40;
