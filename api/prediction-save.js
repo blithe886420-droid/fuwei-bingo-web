@@ -2854,8 +2854,17 @@ async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestD
       const last10Hit3Rate = last10Hits.length > 0 ? last10Hits.filter(h => Number(h||0) >= 3).length / last10Hits.length : 0;
       const last10Hit2Rate = last10Hits.length > 0 ? last10Hits.filter(h => Number(h||0) >= 2).length / last10Hits.length : 0;
 
-      const effectiveHit3Rate = last30Hits.length >= 10 ? last30Hit3Rate * 0.7 + last10Hit3Rate * 0.3 : (rounds > 0 ? Number(row.hit3||0)/rounds : 0);
-      const effectiveHit2Rate = last30Hits.length >= 10 ? last30Hit2Rate * 0.7 + last10Hit2Rate * 0.3 : (rounds > 0 ? Number(row.hit2||0)/rounds : 0);
+      // ✅ 修正：全期70% + 近30期20% + 近10期10%
+      const effectiveHit3Rate = rounds >= 50
+        ? (rounds > 0 ? Number(row.hit3||0)/rounds : 0) * 0.7 + last30Hit3Rate * 0.2 + last10Hit3Rate * 0.1
+        : last30Hits.length >= 10
+          ? last30Hit3Rate * 0.6 + last10Hit3Rate * 0.4
+          : (rounds > 0 ? Number(row.hit3||0)/rounds : 0);
+      const effectiveHit2Rate = rounds >= 50
+        ? (rounds > 0 ? Number(row.hit2||0)/rounds : 0) * 0.7 + last30Hit2Rate * 0.2 + last10Hit2Rate * 0.1
+        : last30Hits.length >= 10
+          ? last30Hit2Rate * 0.6 + last10Hit2Rate * 0.4
+          : (rounds > 0 ? Number(row.hit2||0)/rounds : 0);
 
       // 【方向二】冷熱判斷
       const isHot = last10Hit3Rate >= 0.02 || last10Hit2Rate >= 0.25;
