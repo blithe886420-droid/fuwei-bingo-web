@@ -974,53 +974,17 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
         .slice(0, TOP_3STAR_COUNT)
         .map(x => x.key);
 
-      // ✅ 好策略多出場：根據全期中3率決定每個策略出幾組
-      // balanced_zone(4%) → 3組, mix_gap(3.47%) → 3組, gap_zone_rotation(3.44%) → 3組
-      // 2~3% → 2組, 1~2% → 1組, <1% → 不出場
-      // 總組數固定8組，從高分策略開始分配
-      const useKeys = [];
-      const sortedWithData = sorted3starKeys.map(key => {
-        const data = statsMap3star.get(key);
-        const allHit3Rate = data?.totalRounds > 0
-          ? toNum(data.hit3Rate, 0)
-          : 0;
-        return { key, allHit3Rate, data };
-      }).sort((a, b) => b.allHit3Rate - a.allHit3Rate);
-
-      let remainingSlots = dynamicGroupCount;
-      for (const { key, allHit3Rate } of sortedWithData) {
-        if (remainingSlots <= 0) break;
-        // 決定這個策略出幾組
-        let slots;
-        if (allHit3Rate >= 0.03) slots = 3;        // 全期中3率3%以上 → 3組
-        else if (allHit3Rate >= 0.02) slots = 2;   // 2~3% → 2組
-        else if (allHit3Rate >= 0.01) slots = 1;   // 1~2% → 1組
-        else slots = 0;                             // <1% → 不出場
-
-        slots = Math.min(slots, remainingSlots);
-        for (let i = 0; i < slots; i++) {
-          useKeys.push(key);
-        }
-        remainingSlots -= slots;
-      }
-
-      // 如果好策略不夠填滿8組，用剩餘策略補足
-      if (remainingSlots > 0) {
-        for (const { key } of sortedWithData) {
-          if (remainingSlots <= 0) break;
-          if (!useKeys.includes(key)) {
-            useKeys.push(key);
-            remainingSlots--;
-          }
-        }
-      }
-
-      console.log('[3star] 策略出場分配:', useKeys.join(', '));
+      console.log(
+        '[3star] 動態策略排序（前4）:',
+        sorted3starKeys.slice(0, 4).map(k => {
+          const d = statsMap3star.get(k);
+          return `${k}(hit3:${((d?.hit3Rate||0)*100).toFixed(1)}% hit2:${((d?.hit2Rate||0)*100).toFixed(1)}% rounds:${d?.totalRounds||0})`;
+        }).join(', ')
+      );
 
       // ✅ 建立 recent10Stats 傳給 buildBingoV1Strategies
-      // 用 useKeys（已含重複策略）讓好策略對應多組選號
       const recent10Stats = {};
-      useKeys.forEach(key => {
+      sorted3starKeys.forEach(key => {
         const data = statsMap3star.get(key);
         recent10Stats[key] = data
           ? {
@@ -1052,7 +1016,7 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
         3,
         liveMarketSnapshot,
         recent10Stats,
-        useKeys,
+        sorted3starKeys,
         dynamicGroupCount
       );
 
