@@ -2866,52 +2866,62 @@ async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestD
       });
     });
 
-    // ✅ 梯隊競爭機制（與 auto-train v8 一致）
+    // ✅ v9 純相對競爭梯隊機制（與 auto-train 一致）
     const allStrategyData3s = activeKeys3s.map(key => {
-      const d = statsMap3s.get(key);
+      const row = (statsRows3s?.data || []).find(r => r.strategy_key === key);
+      const recentHits = Array.isArray(row?.recent_hits) ? row.recent_hits : [];
+      const totalRounds = Number(row?.total_rounds || 0);
+      const hit3 = Number(row?.hit3 || 0);
+      const allHit3Rate = totalRounds > 0 ? hit3 / totalRounds : 0;
+
+      const last10Hits = recentHits.slice(-10);
+      const last10Hit3Count = last10Hits.filter(h => Number(h||0) >= 3).length;
+      const last30Hits = recentHits.slice(-30);
+      const last30Hit3Rate = last30Hits.length > 0
+        ? last30Hits.filter(h => Number(h||0) >= 3).length / last30Hits.length : 0;
+      const hasRecentHit3 = last10Hit3Count > 0;
+
       return {
         key,
-        allHit3Rate: d?.allHit3Rate || 0,
-        last30Hit3Rate: d?.last30Hit3Rate || 0,
-        totalRounds: d?.totalRounds || 0,
-        hit3Rate: d?.hit3Rate || 0,
-        hit2Rate: d?.hit2Rate || 0,
-        isHot: d?.isHot || false
+        allHit3Rate,
+        last10Hit3Count,
+        last30Hit3Rate,
+        totalRounds,
+        hasRecentHit3,
+        hit3Rate: last30Hit3Rate,
+        hit2Rate: last30Hits.length > 0
+          ? last30Hits.filter(h => Number(h||0) >= 2).length / last30Hits.length : 0,
+        isHot: last10Hit3Count >= 2
       };
     });
 
-    // 按全期中3率排序分梯隊（至少20期才有資格）
     const sorted3sByAll = [...allStrategyData3s]
-      .filter(d => d.totalRounds >= 20)
       .sort((a, b) => b.allHit3Rate - a.allHit3Rate);
 
-    const t1 = sorted3sByAll.slice(0, 10);
-    const t2 = sorted3sByAll.slice(10, 25);
-    const t3 = sorted3sByAll.slice(25);
-
-    const t2Avg = t2.length > 0 ? t2.reduce((s, d) => s + d.last30Hit3Rate, 0) / t2.length : 0;
-    const t3Avg = t3.length > 0 ? t3.reduce((s, d) => s + d.last30Hit3Rate, 0) / t3.length : 0;
-
-    const finalTier3s = [];
-    for (const s of t1) {
-      const shouldReplace = s.last30Hit3Rate < t2Avg &&
-        t2.some(t => t.last30Hit3Rate > s.last30Hit3Rate * 1.2);
-      if (!shouldReplace) finalTier3s.push(s);
+    const t1_3s = [], t2_3s = [], t3_3s = [];
+    for (const s of sorted3sByAll) {
+      if (t1_3s.length + t2_3s.length < 10) {
+        if (s.hasRecentHit3) t1_3s.push(s);
+        else t2_3s.push(s);
+      } else {
+        t3_3s.push(s);
+      }
     }
 
-    const t2Sorted = [...t2].sort((a, b) => b.last30Hit3Rate - a.last30Hit3Rate);
-    for (const t of t2Sorted) {
-      if (finalTier3s.length >= 8) break;
-      if (t.last30Hit3Rate >= t3Avg) finalTier3s.push(t);
-    }
-
-    // 不夠則補足
-    const remaining3s = allStrategyData3s
-      .filter(d => !finalTier3s.some(f => f.key === d.key))
+    const t3WithHit3 = t3_3s.filter(s => s.hasRecentHit3)
       .sort((a, b) => b.allHit3Rate - a.allHit3Rate);
-    for (const r of remaining3s) {
+
+    const finalTier3s = [...t1_3s];
+    for (const s of t3WithHit3) {
       if (finalTier3s.length >= 8) break;
-      finalTier3s.push(r);
+      finalTier3s.push(s);
+    }
+
+    if (finalTier3s.length < 8) {
+      for (const s of [...t2_3s, ...t3_3s]) {
+        if (finalTier3s.length >= 8) break;
+        if (!finalTier3s.some(f => f.key === s.key)) finalTier3s.push(s);
+      }
     }
 
     const sorted3sKeys = finalTier3s.slice(0, 8).map(d => d.key);
