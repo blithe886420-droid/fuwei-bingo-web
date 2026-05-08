@@ -2838,11 +2838,18 @@ async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestD
     // ✅ 從 strategy_pool 取 active 策略，按 hit3_rate 排序取前8名
     const poolRows3s = await db.from(STRATEGY_POOL_TABLE).select('strategy_key').eq('status', 'active');
     const activeKeys3s = (poolRows3s?.data || []).map(r => r.strategy_key).filter(Boolean);
+    // ✅ v10：從 strategy_stats 改用 strategy_name 為主鍵查詢
+    // HOT|mix_gap 和 COLD|mix_gap 各自有獨立統計，梯隊真正按含前綴名稱競爭
     const statsRows3s = await db.from(STRATEGY_STATS_TABLE)
-      .select('strategy_key, recent_hits, hit3, hit2, total_rounds')
-      .in('strategy_key', activeKeys3s.length > 0 ? activeKeys3s : ['hot_chase']);
+      .select('strategy_name, strategy_key, recent_hits, hit3, hit2, total_rounds');
+    // 只保留 active strategy_key 相關的 strategy_name 記錄
+    const activeKeySet3s = new Set(activeKeys3s);
+    const filteredStats3s = (statsRows3s?.data || []).filter(r =>
+      activeKeySet3s.has(r.strategy_key) && r.strategy_name
+    );
+
     const statsMap3s = new Map();
-    (statsRows3s?.data || []).forEach(row => {
+    filteredStats3s.forEach(row => {
       const rounds = Number(row.total_rounds || 0);
       const recentHits = Array.isArray(row.recent_hits) ? row.recent_hits : [];
       const last30Hits = recentHits.slice(-30);
@@ -2853,7 +2860,9 @@ async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestD
       const last10Hit3Rate = last10Hits.length > 0 ? last10Hits.filter(h => Number(h||0) >= 3).length / last10Hits.length : 0;
       const last10Hit2Rate = last10Hits.length > 0 ? last10Hits.filter(h => Number(h||0) >= 2).length / last10Hits.length : 0;
 
-      statsMap3s.set(row.strategy_key, {
+      // ✅ v10：用 strategy_name（含前綴）為 Map key
+      statsMap3s.set(row.strategy_name, {
+        strategy_key: row.strategy_key,
         allHit3Rate,
         last30Hit3Rate,
         last30Hit2Rate,
@@ -2866,31 +2875,22 @@ async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestD
       });
     });
 
-    // ✅ v9 純相對競爭梯隊機制（與 auto-train 一致）
-    const allStrategyData3s = activeKeys3s.map(key => {
-      const row = (statsRows3s?.data || []).find(r => r.strategy_key === key);
-      const recentHits = Array.isArray(row?.recent_hits) ? row.recent_hits : [];
-      const totalRounds = Number(row?.total_rounds || 0);
-      const hit3 = Number(row?.hit3 || 0);
-      const allHit3Rate = totalRounds > 0 ? hit3 / totalRounds : 0;
-
-      const last10Hits = recentHits.slice(-10);
-      const last10Hit3Count = last10Hits.filter(h => Number(h||0) >= 3).length;
-      const last30Hits = recentHits.slice(-30);
-      const last30Hit3Rate = last30Hits.length > 0
-        ? last30Hits.filter(h => Number(h||0) >= 3).length / last30Hits.length : 0;
+    // ✅ v10：梯隊競爭改用 strategy_name（含前綴）
+    // 例如 HOT|mix_gap 和 COLD|mix_gap 是兩個不同參賽者
+    const allStrategyData3s = [...statsMap3s.entries()].map(([namKey, stat]) => {
+      const last10Hit3Count = Math.round(stat.last10Hit3Rate * 10);
       const hasRecentHit3 = last10Hit3Count > 0;
 
       return {
-        key,
-        allHit3Rate,
+        key: namKey,              // ✅ v10：key 改為 strategy_name（含前綴）
+        strategy_key: stat.strategy_key, // 保留原始 key 供選號用
+        allHit3Rate: stat.allHit3Rate,
         last10Hit3Count,
-        last30Hit3Rate,
-        totalRounds,
+        last30Hit3Rate: stat.last30Hit3Rate,
+        totalRounds: stat.totalRounds,
         hasRecentHit3,
-        hit3Rate: last30Hit3Rate,
-        hit2Rate: last30Hits.length > 0
-          ? last30Hits.filter(h => Number(h||0) >= 2).length / last30Hits.length : 0,
+        hit3Rate: stat.hit3Rate,
+        hit2Rate: stat.hit2Rate,
         isHot: last10Hit3Count >= 2
       };
     });
@@ -2924,13 +2924,15 @@ async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestD
       }
     }
 
-    const sorted3sKeys = finalTier3s.slice(0, 8).map(d => d.key);
+    // ✅ v10：finalTier3s 的 key 是 strategy_name，要取出 strategy_key 給選號函數用
+    const sorted3sKeys = finalTier3s.slice(0, 8).map(d => d.strategy_key || d.key);
 
     const recent10Stats3s = {};
-    sorted3sKeys.forEach(key => {
-      const d = statsMap3s.get(key);
-      recent10Stats3s[key] = d
-        ? { score: d.score, hit3Rate: d.hit3Rate || 0, hit2Rate: d.hit2Rate || 0, avgCoverageHit: 6, totalRounds: d.totalRounds, isHot: d.isHot || false }
+    finalTier3s.slice(0, 8).forEach(d => {
+      const statKey = d.strategy_key || d.key;
+      const stat = statsMap3s.get(d.key);
+      recent10Stats3s[statKey] = stat
+        ? { score: 0, hit3Rate: stat.hit3Rate || 0, hit2Rate: stat.hit2Rate || 0, avgCoverageHit: 6, totalRounds: stat.totalRounds, isHot: stat.isHot || false }
         : { score: -10, hit3Rate: 0, hit2Rate: 0, avgCoverageHit: 6, totalRounds: 0, isHot: false };
     });
 
