@@ -843,17 +843,23 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
         .map(r => r.strategy_key)
         .filter(Boolean);
 
-      // ✅ 從 strategy_stats 取所有 active 策略的命中數據
+      // ✅ v10：從 strategy_stats 改用 strategy_name 為主鍵查詢
+      // HOT|mix_gap 和 COLD|mix_gap 各自有獨立統計，梯隊真正按含前綴名稱競爭
       const statsRows3star = await db
         .from(STRATEGY_STATS_TABLE)
-        .select('strategy_key, recent_hits, hit3, hit2, total_rounds, avg_coverage_hit, recent_coverage_hits, recent_coverage_hit_rate')
-        .in('strategy_key', activeKeys3star.length > 0 ? activeKeys3star : ['hot_chase']);
+        .select('strategy_name, strategy_key, recent_hits, hit3, hit2, total_rounds, avg_coverage_hit, recent_coverage_hits, recent_coverage_hit_rate');
+
+      // 只保留 active strategy_key 相關的 strategy_name 記錄
+      const activeKeySet3star = new Set(activeKeys3star);
+      const filteredStats3star = (statsRows3star?.data || []).filter(r =>
+        activeKeySet3star.has(r.strategy_key) && r.strategy_name
+      );
 
       // ✅ 計算每個策略的綜合分數
       // 【方向一】縮短評分窗口到近30期：不讓1000期歷史稀釋近期表現
       // 【方向二】動態冷熱切換：近期熱策略優先，冷策略暫時降權
       const statsMap3star = new Map();
-      (statsRows3star?.data || []).forEach(row => {
+      filteredStats3star.forEach(row => {
         const recentHits = Array.isArray(row.recent_hits) ? row.recent_hits : [];
         const totalRounds = toNum(row.total_rounds, 0);
         const hit3 = toNum(row.hit3, 0);
@@ -902,7 +908,9 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
         const hit3Score = effectiveHit3Rate * 60;
         const hit2Score = effectiveHit2Rate * 40;
 
-        statsMap3star.set(row.strategy_key, {
+        // ✅ v10：用 strategy_name（含前綴）為 Map key
+        statsMap3star.set(row.strategy_name, {
+          strategy_key: row.strategy_key,
           score: (hit3Score + hit2Score + coverageScore) * hotBoost,
           hit3Rate: effectiveHit3Rate,
           hit2Rate: effectiveHit2Rate,
@@ -936,13 +944,9 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
       console.log('[3star] 熱區號碼(近20期高頻):', hotFreqNums.slice(0, 10).join(','));
       console.log('[3star] 冷號(近20期低頻):', coldFreqNums.slice(0, 10).join(','));
 
-      // ✅ v9 純相對競爭梯隊機制
-      // 邏輯：所有策略按全期中3率排列，近10期無hit3立刻降級
-      // 不需要固定回歸機制，純粹靠相對表現競爭
-
-      // Step 1：計算所有策略的全期中3率和近10期hit3次數
-      const allStrategyData = activeKeys3star.map(key => {
-        const row = (statsRows3star?.data || []).find(r => r.strategy_key === key);
+      // ✅ v10：梯隊競爭改用 strategy_name（含前綴）
+      // Step 1：計算所有 strategy_name 的全期中3率和近10期hit3次數
+      const allStrategyData = filteredStats3star.map(row => {
         const recentHits = Array.isArray(row?.recent_hits) ? row.recent_hits : [];
         const totalRounds = toNum(row?.total_rounds, 0);
         const hit3 = toNum(row?.hit3, 0);
@@ -956,11 +960,11 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
         const last30Hit3Count = last30Hits.filter(h => toNum(h, 0) >= 3).length;
         const last30Hit3Rate = last30Hits.length > 0 ? last30Hit3Count / last30Hits.length : 0;
 
-        // 近10期有沒有hit3
         const hasRecentHit3 = last10Hit3Count > 0;
 
         return {
-          key,
+          key: row.strategy_name,           // ✅ v10：key 改為 strategy_name（含前綴）
+          strategy_key: row.strategy_key,   // 保留原始 key 供選號用
           allHit3Rate,
           last10Hit3Rate,
           last10Hit3Count,
@@ -1016,24 +1020,25 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
         }
       }
 
+      // ✅ v10：finalTier1 的 key 是 strategy_name，要取出 strategy_key 給選號函數用
       const sorted3starKeys = finalTier1
         .slice(0, dynamicGroupCount)
-        .map(d => d.key);
+        .map(d => d.strategy_key || d.key);
 
       console.log(
-        '[3star] v9梯隊競爭（前4）:',
-        sorted3starKeys.slice(0, 4).map(k => {
-          const d = allStrategyData.find(x => x.key === k);
-          return `${k}(全期:${((d?.allHit3Rate||0)*100).toFixed(1)}% 近10hit3:${d?.last10Hit3Count||0}次 ${d?.hasRecentHit3?'✅':'❌'})`;
+        '[3star] v10梯隊競爭（前4）:',
+        finalTier1.slice(0, 4).map(d => {
+          return `${d.key}(全期:${((d?.allHit3Rate||0)*100).toFixed(1)}% 近10hit3:${d?.last10Hit3Count||0}次 ${d?.hasRecentHit3?'✅':'❌'})`;
         }).join(', ')
       );
       console.log('[3star] 降級策略:', tier2.map(s => s.key).join(', ') || '無');
 
-      // ✅ 建立 recent10Stats 傳給 buildBingoV1Strategies
+      // ✅ v10：recent10Stats 用 strategy_key 為 key（傳給 buildBingoV1Strategies）
       const recent10Stats = {};
-      sorted3starKeys.forEach(key => {
-        const data = statsMap3star.get(key);
-        recent10Stats[key] = data
+      finalTier1.slice(0, dynamicGroupCount).forEach(d => {
+        const statKey = d.strategy_key || d.key;
+        const data = statsMap3star.get(d.key);
+        recent10Stats[statKey] = data
           ? {
               score: data.score,
               hit3Rate: data.hit3Rate,
