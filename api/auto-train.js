@@ -936,93 +936,84 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
       console.log('[3star] 熱區號碼(近20期高頻):', hotFreqNums.slice(0, 10).join(','));
       console.log('[3star] 冷號(近20期低頻):', coldFreqNums.slice(0, 10).join(','));
 
-      // ✅ 動態梯隊競爭機制
-      // 概念：策略像球員一樣競爭上場資格，用相對排名而非固定門檻
-      // 第一梯隊：全期中3率排名前8名，固定出場
-      // 第二梯隊：排名9~20名，當第一梯隊有人近期表現低於第二梯隊平均時替補
-      // 第三梯隊：排名21名以後，只有第二梯隊跌到低於第三梯隊平均時才有機會
+      // ✅ v9 純相對競爭梯隊機制
+      // 邏輯：所有策略按全期中3率排列，近10期無hit3立刻降級
+      // 不需要固定回歸機制，純粹靠相對表現競爭
 
-      // Step 1：計算所有策略的全期中3率和近30期中3率
+      // Step 1：計算所有策略的全期中3率和近10期hit3次數
       const allStrategyData = activeKeys3star.map(key => {
-        const data = statsMap3star.get(key);
-        const totalRounds = data?.totalRounds || 0;
-        const allHit3Rate = totalRounds > 0
-          ? toNum(data?.hit3Rate, 0)
-          : 0;
+        const row = (statsRows3star?.data || []).find(r => r.strategy_key === key);
+        const recentHits = Array.isArray(row?.recent_hits) ? row.recent_hits : [];
+        const totalRounds = toNum(row?.total_rounds, 0);
+        const hit3 = toNum(row?.hit3, 0);
+        const allHit3Rate = totalRounds > 0 ? hit3 / totalRounds : 0;
 
-        // 近30期中3率（從 effectiveHit3Rate 裡單獨算）
-        const recentHits = Array.isArray(
-          (statsRows3star?.data || []).find(r => r.strategy_key === key)?.recent_hits
-        ) ? (statsRows3star?.data || []).find(r => r.strategy_key === key).recent_hits : [];
-        const last30 = recentHits.slice(-30);
-        const last30Hit3Rate = last30.length > 0
-          ? last30.filter(h => toNum(h, 0) >= 3).length / last30.length
-          : 0;
+        const last10Hits = recentHits.slice(-10);
+        const last10Hit3Count = last10Hits.filter(h => toNum(h, 0) >= 3).length;
+        const last10Hit3Rate = last10Hits.length > 0 ? last10Hit3Count / last10Hits.length : 0;
+
+        const last30Hits = recentHits.slice(-30);
+        const last30Hit3Count = last30Hits.filter(h => toNum(h, 0) >= 3).length;
+        const last30Hit3Rate = last30Hits.length > 0 ? last30Hit3Count / last30Hits.length : 0;
+
+        // 近10期有沒有hit3
+        const hasRecentHit3 = last10Hit3Count > 0;
 
         return {
           key,
           allHit3Rate,
+          last10Hit3Rate,
+          last10Hit3Count,
           last30Hit3Rate,
           totalRounds,
-          score: data?.score || 0,
-          isHot: data?.isHot || false,
-          isCold: data?.isCold || false
+          hasRecentHit3
         };
       });
 
-      // Step 2：按全期中3率排序，分梯隊
-      const sortedByAllHit3 = [...allStrategyData]
-        .filter(d => d.totalRounds >= 20) // 至少20期才有資格入梯隊
+      // Step 2：按全期中3率排序（不限期數）
+      const sortedByAll = [...allStrategyData]
         .sort((a, b) => b.allHit3Rate - a.allHit3Rate);
 
-      const tier1Candidates = sortedByAllHit3.slice(0, 10);  // 第一梯隊候選（前10名）
-      const tier2Candidates = sortedByAllHit3.slice(10, 25); // 第二梯隊候選（11~25名）
-      const tier3Candidates = sortedByAllHit3.slice(25);     // 第三梯隊（25名以後）
+      // Step 3：第一梯隊候選（全期排名前10）
+      // 但近10期無hit3的降到後面等待
+      const tier1 = [];  // 近10期有hit3的前10名
+      const tier2 = [];  // 近10期無hit3的前10名（降級等待）
+      const tier3 = [];  // 排名10名以後的策略
 
-      // Step 3：計算各梯隊的近30期平均中3率
-      const tier2Avg30 = tier2Candidates.length > 0
-        ? tier2Candidates.reduce((s, d) => s + d.last30Hit3Rate, 0) / tier2Candidates.length
-        : 0;
-      const tier3Avg30 = tier3Candidates.length > 0
-        ? tier3Candidates.reduce((s, d) => s + d.last30Hit3Rate, 0) / tier3Candidates.length
-        : 0;
-
-      // Step 4：動態調整——第一梯隊近30期低於第二梯隊平均 → 被替補
-      const finalTier1 = [];
-      const replacements = [];
-
-      for (const strategy of tier1Candidates) {
-        // 降級條件：近30期中3率低於第二梯隊平均，且第二梯隊有表現更好的策略
-        const shouldReplace = strategy.last30Hit3Rate < tier2Avg30 &&
-          tier2Candidates.some(t2 => t2.last30Hit3Rate > strategy.last30Hit3Rate * 1.2);
-
-        if (shouldReplace) {
-          replacements.push(strategy.key);
+      for (const s of sortedByAll) {
+        if (tier1.length + tier2.length < 10) {
+          // 屬於前10名範圍
+          if (s.hasRecentHit3) {
+            tier1.push(s); // 近10期有hit3 → 正常出場
+          } else {
+            tier2.push(s); // 近10期無hit3 → 降級等待
+          }
         } else {
-          finalTier1.push(strategy);
+          tier3.push(s); // 排名10名以外
         }
       }
 
-      // Step 5：從第二梯隊找替補（近30期表現最好的補上來）
-      const tier2Sorted = [...tier2Candidates]
-        .sort((a, b) => b.last30Hit3Rate - a.last30Hit3Rate);
+      // Step 4：從第二梯隊以外補足第一梯隊
+      // 先從tier3裡找近10期有hit3的補上來
+      const tier3WithHit3 = tier3.filter(s => s.hasRecentHit3)
+        .sort((a, b) => b.last10Hit3Rate - a.last10Hit3Rate);
 
-      for (const t2 of tier2Sorted) {
+      const finalTier1 = [...tier1];
+
+      for (const s of tier3WithHit3) {
         if (finalTier1.length >= dynamicGroupCount) break;
-        // 升級條件：近30期中3率高於第三梯隊平均（相對競爭）
-        if (t2.last30Hit3Rate >= tier3Avg30) {
-          finalTier1.push(t2);
-        }
+        finalTier1.push(s);
       }
 
-      // Step 6：如果還不夠，用新策略或期數少的補足
-      const remainingKeys = allStrategyData
-        .filter(d => !finalTier1.some(f => f.key === d.key))
-        .sort((a, b) => b.score - a.score);
-
-      for (const r of remainingKeys) {
-        if (finalTier1.length >= dynamicGroupCount) break;
-        finalTier1.push(r);
+      // Step 5：如果還不夠（全部都沒有近期hit3），
+      // 就讓原本的前10名繼續出場（大家一起低潮就一起撐）
+      if (finalTier1.length < dynamicGroupCount) {
+        for (const s of [...tier2, ...tier3]) {
+          if (finalTier1.length >= dynamicGroupCount) break;
+          if (!finalTier1.some(f => f.key === s.key)) {
+            finalTier1.push(s);
+          }
+        }
       }
 
       const sorted3starKeys = finalTier1
@@ -1030,15 +1021,13 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
         .map(d => d.key);
 
       console.log(
-        '[3star] 梯隊競爭結果（第一梯隊）:',
+        '[3star] v9梯隊競爭（前4）:',
         sorted3starKeys.slice(0, 4).map(k => {
           const d = allStrategyData.find(x => x.key === k);
-          return `${k}(全期:${((d?.allHit3Rate||0)*100).toFixed(1)}% 近30:${((d?.last30Hit3Rate||0)*100).toFixed(1)}%)`;
+          return `${k}(全期:${((d?.allHit3Rate||0)*100).toFixed(1)}% 近10hit3:${d?.last10Hit3Count||0}次 ${d?.hasRecentHit3?'✅':'❌'})`;
         }).join(', ')
       );
-      if (replacements.length > 0) {
-        console.log('[3star] 降級策略:', replacements.join(', '));
-      }
+      console.log('[3star] 降級策略:', tier2.map(s => s.key).join(', ') || '無');
 
       // ✅ 建立 recent10Stats 傳給 buildBingoV1Strategies
       const recent10Stats = {};
