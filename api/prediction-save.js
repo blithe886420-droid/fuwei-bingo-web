@@ -2845,53 +2845,76 @@ async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestD
     (statsRows3s?.data || []).forEach(row => {
       const rounds = Number(row.total_rounds || 0);
       const recentHits = Array.isArray(row.recent_hits) ? row.recent_hits : [];
-
-      // 【方向一】近30期為主
       const last30Hits = recentHits.slice(-30);
       const last10Hits = recentHits.slice(-10);
+      const allHit3Rate = rounds > 0 ? Number(row.hit3||0) / rounds : 0;
       const last30Hit3Rate = last30Hits.length > 0 ? last30Hits.filter(h => Number(h||0) >= 3).length / last30Hits.length : 0;
       const last30Hit2Rate = last30Hits.length > 0 ? last30Hits.filter(h => Number(h||0) >= 2).length / last30Hits.length : 0;
       const last10Hit3Rate = last10Hits.length > 0 ? last10Hits.filter(h => Number(h||0) >= 3).length / last10Hits.length : 0;
       const last10Hit2Rate = last10Hits.length > 0 ? last10Hits.filter(h => Number(h||0) >= 2).length / last10Hits.length : 0;
 
-      // ✅ 近30期60% + 全期20% + 近10期20%，移除isCold懲罰
-      const isHot3s = last10Hit3Rate >= 0.02 || last10Hit2Rate >= 0.25;
-      const isTrulyBad3s = (rounds > 0 ? Number(row.hit3||0)/rounds : 0) < 0.005 && last30Hit3Rate <= 0 && last30Hit2Rate < 0.05;
-      const hotBoost3s = isHot3s ? 1.5 : isTrulyBad3s ? 0.3 : 1.0;
-
-      const effectiveHit3Rate = last30Hits.length >= 10
-        ? last30Hit3Rate * 0.6 + (rounds > 0 ? Number(row.hit3||0)/rounds : 0) * 0.2 + last10Hit3Rate * 0.2
-        : (rounds > 0 ? Number(row.hit3||0)/rounds : 0);
-      const effectiveHit2Rate = last30Hits.length >= 10
-        ? last30Hit2Rate * 0.6 + (rounds > 0 ? Number(row.hit2||0)/rounds : 0) * 0.2 + last10Hit2Rate * 0.2
-        : (rounds > 0 ? Number(row.hit2||0)/rounds : 0);
-
-      // 【方向二】冷熱判斷
       statsMap3s.set(row.strategy_key, {
-        score: (effectiveHit3Rate * 80 + effectiveHit2Rate * 40) * hotBoost3s,
+        allHit3Rate,
+        last30Hit3Rate,
+        last30Hit2Rate,
+        last10Hit3Rate,
+        last10Hit2Rate,
         totalRounds: rounds,
-        hit3Rate: effectiveHit3Rate,
-        hit2Rate: effectiveHit2Rate,
-        isHot: isHot3s,
-        isCold: isTrulyBad3s
+        hit3Rate: last30Hit3Rate * 0.6 + allHit3Rate * 0.2 + last10Hit3Rate * 0.2,
+        hit2Rate: last30Hit2Rate * 0.6 + (rounds > 0 ? Number(row.hit2||0)/rounds : 0) * 0.2 + last10Hit2Rate * 0.2,
+        isHot: last10Hit3Rate >= 0.02 || last10Hit2Rate >= 0.25
       });
     });
-    const sorted3sKeys = activeKeys3s
-      .map(key => ({
+
+    // ✅ 梯隊競爭機制（與 auto-train v8 一致）
+    const allStrategyData3s = activeKeys3s.map(key => {
+      const d = statsMap3s.get(key);
+      return {
         key,
-        score: statsMap3s.get(key)?.score ?? -10,
-        rounds: statsMap3s.get(key)?.totalRounds ?? 0,
-        isCold: statsMap3s.get(key)?.isCold ?? false
-      }))
-      // 【方向二】冷策略排最後
-      .sort((a, b) => {
-        if (a.isCold && !b.isCold) return 1;
-        if (!a.isCold && b.isCold) return -1;
-        if (a.rounds === 0 && b.rounds > 0) return 1;
-        if (b.rounds === 0 && a.rounds > 0) return -1;
-        return b.score - a.score;
-      })
-      .slice(0, 8).map(x => x.key);
+        allHit3Rate: d?.allHit3Rate || 0,
+        last30Hit3Rate: d?.last30Hit3Rate || 0,
+        totalRounds: d?.totalRounds || 0,
+        hit3Rate: d?.hit3Rate || 0,
+        hit2Rate: d?.hit2Rate || 0,
+        isHot: d?.isHot || false
+      };
+    });
+
+    // 按全期中3率排序分梯隊（至少20期才有資格）
+    const sorted3sByAll = [...allStrategyData3s]
+      .filter(d => d.totalRounds >= 20)
+      .sort((a, b) => b.allHit3Rate - a.allHit3Rate);
+
+    const t1 = sorted3sByAll.slice(0, 10);
+    const t2 = sorted3sByAll.slice(10, 25);
+    const t3 = sorted3sByAll.slice(25);
+
+    const t2Avg = t2.length > 0 ? t2.reduce((s, d) => s + d.last30Hit3Rate, 0) / t2.length : 0;
+    const t3Avg = t3.length > 0 ? t3.reduce((s, d) => s + d.last30Hit3Rate, 0) / t3.length : 0;
+
+    const finalTier3s = [];
+    for (const s of t1) {
+      const shouldReplace = s.last30Hit3Rate < t2Avg &&
+        t2.some(t => t.last30Hit3Rate > s.last30Hit3Rate * 1.2);
+      if (!shouldReplace) finalTier3s.push(s);
+    }
+
+    const t2Sorted = [...t2].sort((a, b) => b.last30Hit3Rate - a.last30Hit3Rate);
+    for (const t of t2Sorted) {
+      if (finalTier3s.length >= 8) break;
+      if (t.last30Hit3Rate >= t3Avg) finalTier3s.push(t);
+    }
+
+    // 不夠則補足
+    const remaining3s = allStrategyData3s
+      .filter(d => !finalTier3s.some(f => f.key === d.key))
+      .sort((a, b) => b.allHit3Rate - a.allHit3Rate);
+    for (const r of remaining3s) {
+      if (finalTier3s.length >= 8) break;
+      finalTier3s.push(r);
+    }
+
+    const sorted3sKeys = finalTier3s.slice(0, 8).map(d => d.key);
 
     const recent10Stats3s = {};
     sorted3sKeys.forEach(key => {
