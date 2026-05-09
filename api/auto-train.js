@@ -5,7 +5,7 @@ import { recordStrategyCompareResult } from '../lib/strategyStatsRecorder.js';
 import { ensureStrategyPoolStrategies } from '../lib/ensureStrategyPoolStrategies.js';
 import { buildRecentMarketSignalSnapshot, buildStrategyDecisionFromSnapshot } from '../lib/marketSignalEngine.js';
 
-const API_VERSION = 'auto-train-c-phase-aware-v2-phase-balance-tuned';
+const API_VERSION = 'auto-train-v10-strategy-name-tier';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
