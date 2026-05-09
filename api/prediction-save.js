@@ -2,7 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import { buildBingoV1Strategies } from '../lib/buildBingoV1Strategies.js';
 import { buildRecentMarketSignalSnapshot } from '../lib/marketSignalEngine.js';
 
-const API_VERSION = 'prediction-save-e-phase-final-write-v3-force-insert';
+const API_VERSION = 'prediction-save-v10-strategy-name-tier';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
