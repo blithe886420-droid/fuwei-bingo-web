@@ -5,7 +5,7 @@ import { recordStrategyCompareResult } from '../lib/strategyStatsRecorder.js';
 import { ensureStrategyPoolStrategies } from '../lib/ensureStrategyPoolStrategies.js';
 import { buildRecentMarketSignalSnapshot, buildStrategyDecisionFromSnapshot } from '../lib/marketSignalEngine.js';
 
-const API_VERSION = 'auto-train-v11-5period-tier';
+const API_VERSION = 'auto-train-v12-weighted-rank';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -965,17 +965,34 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
           key: row.strategy_name,
           strategy_key: row.strategy_key,
           allHit3Rate,
-          last10Hit3Rate: last5Hit3Rate,   // 保留變數名相容
-          last10Hit3Count: last5Hit3Count, // 保留變數名相容
+          last10Hit3Rate: last5Hit3Rate,
+          last10Hit3Count: last5Hit3Count,
           last30Hit3Rate,
           totalRounds,
           hasRecentHit3
         };
       });
 
-      // Step 2：按全期中3率排序（不限期數）
+      // ✅ v12：期數加權排名
+      // 期數少的策略（<30期）近5期命中可能只是運氣，全期中3率為主
+      // 期數夠的策略（>=30期）才讓近5期表現有較高權重
+      function calcRankScore(s) {
+        const rounds = s.totalRounds;
+        if (rounds < 30) {
+          // 期數太少：全期中3率90% + 近5期10%（避免小樣本虛高）
+          return s.allHit3Rate * 0.9 + s.last10Hit3Rate * 0.1;
+        } else if (rounds < 100) {
+          // 期數中等：全期中3率70% + 近5期30%
+          return s.allHit3Rate * 0.7 + s.last10Hit3Rate * 0.3;
+        } else {
+          // 期數充足：全期中3率40% + 近30期30% + 近5期30%
+          return s.allHit3Rate * 0.4 + s.last30Hit3Rate * 0.3 + s.last10Hit3Rate * 0.3;
+        }
+      }
+
+      // Step 2：按加權分數排序
       const sortedByAll = [...allStrategyData]
-        .sort((a, b) => b.allHit3Rate - a.allHit3Rate);
+        .sort((a, b) => calcRankScore(b) - calcRankScore(a));
 
       // Step 3：第一梯隊候選（全期排名前10）
       // 但近10期無hit3的降到後面等待
