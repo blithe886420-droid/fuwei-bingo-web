@@ -2156,37 +2156,49 @@ export default function App() {
               <div style={styles.marketPanel}>
                 <div style={styles.marketPanelTitle}>上一期八組比對結果</div>
                 {(() => {
-                  const lastBatch = formalBatches[0];
-                  if (!lastBatch) return <div style={styles.emptyBox}>尚無比對資料。</div>;
-                  const groups = toArray(lastBatch?.groups_json || lastBatch?.groups);
-                  if (!groups.length) return <div style={styles.emptyBox}>尚無組別資料。</div>;
+                  const row3 = predictionSummary.latest3StarRow;
+                  const groups3 = toArray(row3?.groups_json);
+                  const compareResult = row3?.compare_result;
+                  const detail = toArray(compareResult?.detail);
+                  const isDone = row3?.compare_status === 'done';
+
+                  if (!row3) return <div style={styles.emptyBox}>尚無三星比對資料。</div>;
+                  if (!groups3.length) return <div style={styles.emptyBox}>尚無組別資料。</div>;
+
                   return (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                       <div style={{ fontSize: 12, color: '#7b6e5c', marginBottom: 4 }}>
-                        期數：{fmtText(lastBatch?.source_draw_no || lastBatch?.sourceDrawNo)} ／ 盤相：{fmtText(lastBatch?.market_phase || lastBatch?.marketPhase, '--')}
+                        期數：{fmtText(row3?.source_draw_no)} ／ 狀態：{isDone ? '已比對' : '待開獎'}
                       </div>
-                      {groups.map((g, idx) => {
-                        const nums = parseNums(g?.nums || g?.numbers || []);
-                        const hit = toNum(g?.meta?.hit ?? g?.hit, 0);
+                      {groups3.map((g, idx) => {
+                        const nums = toArray(g?.nums);
+                        const matchDetail = detail.find(d => String(d?.strategy_key) === String(g?.key || g?.meta?.strategy_key));
+                        const hit = matchDetail ? toNum(matchDetail.hit, -1) : -1;
                         const hitColor = hit >= 3 ? '#dc2626' : hit >= 2 ? '#0f766e' : '#b45309';
                         const hitBg = hit >= 3 ? '#fef2f2' : hit >= 2 ? '#f0fdf4' : '#f8f1e6';
+                        const hitBorder = hit >= 3 ? '#fecaca' : hit >= 2 ? '#86efac' : '#d9c7a8';
                         return (
-                          <div key={idx} style={{ background: hitBg, border: `2px solid ${hitColor}`, borderRadius: 12, padding: '10px 14px' }}>
+                          <div key={g?.key || idx} style={{ background: hitBg, border: `2px solid ${hitBorder}`, borderRadius: 12, padding: '10px 14px' }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                              <span style={{ fontSize: 12, fontWeight: 800, color: '#7b6e5c' }}>
+                              <span style={{ fontSize: 12, fontWeight: 800, color: '#0f766e' }}>
                                 第{idx + 1}組 {fmtText(g?.label || g?.key, '')}
                               </span>
-                              <span style={{ fontSize: 16, fontWeight: 900, color: hitColor }}>
-                                中{hit}
-                              </span>
+                              {isDone && hit >= 0 && (
+                                <span style={{ fontSize: 16, fontWeight: 900, color: hitColor }}>
+                                  中{hit}
+                                </span>
+                              )}
                             </div>
-                            <div style={styles.marketBallsWrap}>
+                            <div style={{ display: 'flex', gap: 8 }}>
                               {nums.map((n) => (
-                                <MarketBall
-                                  key={n}
-                                  n={n}
-                                  highlight={latestNumbers.includes(n)}
-                                />
+                                <div key={n} style={{
+                                  ...styles.pickBall,
+                                  width: 44, height: 44, fontSize: 16,
+                                  background: latestNumbers.includes(n) ? '#0f766e' : '#e8dcc8',
+                                  color: latestNumbers.includes(n) ? '#fff' : '#23413a'
+                                }}>
+                                  {formatBallNumber(n)}
+                                </div>
                               ))}
                             </div>
                           </div>
