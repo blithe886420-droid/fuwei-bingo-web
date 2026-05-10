@@ -2,7 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import { buildBingoV1Strategies } from '../lib/buildBingoV1Strategies.js';
 import { buildRecentMarketSignalSnapshot } from '../lib/marketSignalEngine.js';
 
-const API_VERSION = 'prediction-save-v11-5period-tier';
+const API_VERSION = 'prediction-save-v12-weighted-rank';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -2884,7 +2884,7 @@ async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestD
         key: namKey,
         strategy_key: stat.strategy_key,
         allHit3Rate: stat.allHit3Rate,
-        last10Hit3Count: last5Hit3Count, // 保留變數名相容
+        last10Hit3Count: last5Hit3Count,
         last30Hit3Rate: stat.last30Hit3Rate,
         totalRounds: stat.totalRounds,
         hasRecentHit3,
@@ -2894,8 +2894,20 @@ async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestD
       };
     });
 
+    // ✅ v12：期數加權排名，避免小樣本策略虛高
+    function calcRankScore3s(s) {
+      const rounds = s.totalRounds;
+      if (rounds < 30) {
+        return s.allHit3Rate * 0.9 + (s.last10Hit3Rate || 0) * 0.1;
+      } else if (rounds < 100) {
+        return s.allHit3Rate * 0.7 + (s.last10Hit3Rate || 0) * 0.3;
+      } else {
+        return s.allHit3Rate * 0.4 + s.last30Hit3Rate * 0.3 + (s.last10Hit3Rate || 0) * 0.3;
+      }
+    }
+
     const sorted3sByAll = [...allStrategyData3s]
-      .sort((a, b) => b.allHit3Rate - a.allHit3Rate);
+      .sort((a, b) => calcRankScore3s(b) - calcRankScore3s(a));
 
     const t1_3s = [], t2_3s = [], t3_3s = [];
     for (const s of sorted3sByAll) {
@@ -2908,7 +2920,7 @@ async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestD
     }
 
     const t3WithHit3 = t3_3s.filter(s => s.hasRecentHit3)
-      .sort((a, b) => b.allHit3Rate - a.allHit3Rate);
+      .sort((a, b) => calcRankScore3s(b) - calcRankScore3s(a));
 
     const finalTier3s = [...t1_3s];
     for (const s of t3WithHit3) {
