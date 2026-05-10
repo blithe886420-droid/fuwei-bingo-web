@@ -5,7 +5,7 @@ import { recordStrategyCompareResult } from '../lib/strategyStatsRecorder.js';
 import { ensureStrategyPoolStrategies } from '../lib/ensureStrategyPoolStrategies.js';
 import { buildRecentMarketSignalSnapshot, buildStrategyDecisionFromSnapshot } from '../lib/marketSignalEngine.js';
 
-const API_VERSION = 'auto-train-v10-strategy-name-tier';
+const API_VERSION = 'auto-train-v11-5period-tier';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -867,42 +867,41 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
 
         // 【方向一】只看最近30期，不看全期累積
         const last30Hits = recentHits.slice(-30);
-        const last10Hits = recentHits.slice(-10);
+        // ✅ v11：近期窗口從10期改為5期，快速反應梯隊切換
+        const last5Hits = recentHits.slice(-5);
 
         const last30Hit3Count = last30Hits.filter(h => toNum(h, 0) >= 3).length;
         const last30Hit2Count = last30Hits.filter(h => toNum(h, 0) >= 2).length;
-        const last10Hit3Count = last10Hits.filter(h => toNum(h, 0) >= 3).length;
-        const last10Hit2Count = last10Hits.filter(h => toNum(h, 0) >= 2).length;
+        const last5Hit3Count = last5Hits.filter(h => toNum(h, 0) >= 3).length;
+        const last5Hit2Count = last5Hits.filter(h => toNum(h, 0) >= 2).length;
 
         const last30Hit3Rate = last30Hits.length > 0 ? last30Hit3Count / last30Hits.length : 0;
         const last30Hit2Rate = last30Hits.length > 0 ? last30Hit2Count / last30Hits.length : 0;
-        const last10Hit3Rate = last10Hits.length > 0 ? last10Hit3Count / last10Hits.length : 0;
-        const last10Hit2Rate = last10Hits.length > 0 ? last10Hit2Count / last10Hits.length : 0;
+        const last5Hit3Rate = last5Hits.length > 0 ? last5Hit3Count / last5Hits.length : 0;
+        const last5Hit2Rate = last5Hits.length > 0 ? last5Hit2Count / last5Hits.length : 0;
 
         // 全期數據只作保底參考（權重很低）
         const allHit3Rate = totalRounds > 0 ? hit3 / totalRounds : 0;
         const allHit2Rate = totalRounds > 0 ? hit2 / totalRounds : 0;
 
-        // ✅ 修正：近30期60% + 全期20% + 近10期20%
-        // 移除 isCold 懲罰——balanced_zone 全期4%短暫低迷不應被大幅降權
-        // 只有全期本來就差的策略才真正降權
-        const isHot = last10Hit3Rate >= 0.02 || last10Hit2Rate >= 0.25;
+        // ✅ v11：近30期60% + 全期20% + 近5期20%
+        const isHot = last5Hit3Rate >= 0.02 || last5Hit2Rate >= 0.25;
         const isTrulyBad = allHit3Rate < 0.005 && last30Hit3Rate <= 0 && last30Hit2Rate < 0.05;
         const hotBoost = isHot ? 1.5 : isTrulyBad ? 0.3 : 1.0;
 
         const recentCoverageHits = Array.isArray(row.recent_coverage_hits) ? row.recent_coverage_hits : [];
-        const last10CoverageHits = recentCoverageHits.slice(-10);
-        const avgRecentCoverage = last10CoverageHits.length > 0
-          ? last10CoverageHits.reduce((a, b) => a + toNum(b, 0), 0) / last10CoverageHits.length
+        const last5CoverageHits = recentCoverageHits.slice(-5);
+        const avgRecentCoverage = last5CoverageHits.length > 0
+          ? last5CoverageHits.reduce((a, b) => a + toNum(b, 0), 0) / last5CoverageHits.length
           : toNum(row.avg_coverage_hit, 3);
 
         const coverageScore = avgRecentCoverage > 6 ? (avgRecentCoverage - 6) * 8 : 0;
 
-        const effectiveHit3Rate = last30Hits.length >= 10
-          ? last30Hit3Rate * 0.6 + allHit3Rate * 0.2 + last10Hit3Rate * 0.2
+        const effectiveHit3Rate = last30Hits.length >= 5
+          ? last30Hit3Rate * 0.6 + allHit3Rate * 0.2 + last5Hit3Rate * 0.2
           : allHit3Rate;
-        const effectiveHit2Rate = last30Hits.length >= 10
-          ? last30Hit2Rate * 0.6 + allHit2Rate * 0.2 + last10Hit2Rate * 0.2
+        const effectiveHit2Rate = last30Hits.length >= 5
+          ? last30Hit2Rate * 0.6 + allHit2Rate * 0.2 + last5Hit2Rate * 0.2
           : allHit2Rate;
 
         const hit3Score = effectiveHit3Rate * 60;
@@ -944,30 +943,30 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
       console.log('[3star] 熱區號碼(近20期高頻):', hotFreqNums.slice(0, 10).join(','));
       console.log('[3star] 冷號(近20期低頻):', coldFreqNums.slice(0, 10).join(','));
 
-      // ✅ v10：梯隊競爭改用 strategy_name（含前綴）
-      // Step 1：計算所有 strategy_name 的全期中3率和近10期hit3次數
+      // ✅ v11：梯隊競爭近期窗口從10期改為5期
+      // Step 1：計算所有 strategy_name 的全期中3率和近5期hit3次數
       const allStrategyData = filteredStats3star.map(row => {
         const recentHits = Array.isArray(row?.recent_hits) ? row.recent_hits : [];
         const totalRounds = toNum(row?.total_rounds, 0);
         const hit3 = toNum(row?.hit3, 0);
         const allHit3Rate = totalRounds > 0 ? hit3 / totalRounds : 0;
 
-        const last10Hits = recentHits.slice(-10);
-        const last10Hit3Count = last10Hits.filter(h => toNum(h, 0) >= 3).length;
-        const last10Hit3Rate = last10Hits.length > 0 ? last10Hit3Count / last10Hits.length : 0;
+        const last5Hits = recentHits.slice(-5);
+        const last5Hit3Count = last5Hits.filter(h => toNum(h, 0) >= 3).length;
+        const last5Hit3Rate = last5Hits.length > 0 ? last5Hit3Count / last5Hits.length : 0;
 
         const last30Hits = recentHits.slice(-30);
         const last30Hit3Count = last30Hits.filter(h => toNum(h, 0) >= 3).length;
         const last30Hit3Rate = last30Hits.length > 0 ? last30Hit3Count / last30Hits.length : 0;
 
-        const hasRecentHit3 = last10Hit3Count > 0;
+        const hasRecentHit3 = last5Hit3Count > 0;
 
         return {
-          key: row.strategy_name,           // ✅ v10：key 改為 strategy_name（含前綴）
-          strategy_key: row.strategy_key,   // 保留原始 key 供選號用
+          key: row.strategy_name,
+          strategy_key: row.strategy_key,
           allHit3Rate,
-          last10Hit3Rate,
-          last10Hit3Count,
+          last10Hit3Rate: last5Hit3Rate,   // 保留變數名相容
+          last10Hit3Count: last5Hit3Count, // 保留變數名相容
           last30Hit3Rate,
           totalRounds,
           hasRecentHit3
@@ -1026,9 +1025,9 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
         .map(d => d.strategy_key || d.key);
 
       console.log(
-        '[3star] v10梯隊競爭（前4）:',
+        '[3star] v11梯隊競爭（前4）:',
         finalTier1.slice(0, 4).map(d => {
-          return `${d.key}(全期:${((d?.allHit3Rate||0)*100).toFixed(1)}% 近10hit3:${d?.last10Hit3Count||0}次 ${d?.hasRecentHit3?'✅':'❌'})`;
+          return `${d.key}(全期:${((d?.allHit3Rate||0)*100).toFixed(1)}% 近5hit3:${d?.last10Hit3Count||0}次 ${d?.hasRecentHit3?'✅':'❌'})`;
         }).join(', ')
       );
       console.log('[3star] 降級策略:', tier2.map(s => s.key).join(', ') || '無');
