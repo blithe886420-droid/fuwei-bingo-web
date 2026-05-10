@@ -2211,6 +2211,8 @@ export default function App() {
                   const groups3 = toArray(row3?.groups_json);
                   const compareResult = row3?.compare_result;
                   const detail = toArray(compareResult?.detail);
+                  // ✅ 從 compareResult 取開獎號碼（不用 latestNumbers）
+                  const drawnNums = toArray(compareResult?.draw_numbers || compareResult?.numbers || compareResult?.result_numbers || []).map(Number);
 
                   if (!row3) return <div style={styles.emptyBox}>尚無已開獎的比對資料。</div>;
                   if (!groups3.length) return <div style={styles.emptyBox}>尚無組別資料。</div>;
@@ -2222,8 +2224,16 @@ export default function App() {
                       </div>
                       {groups3.map((g, idx) => {
                         const nums = toArray(g?.nums);
-                        const matchDetail = detail.find(d => String(d?.strategy_key) === String(g?.key || g?.meta?.strategy_key));
-                        const hit = matchDetail ? toNum(matchDetail.hit, -1) : -1;
+                        // ✅ 用 strategy_name 或 strategy_key 比對 detail
+                        const matchDetail = detail.find(d =>
+                          String(d?.strategy_name) === String(g?.label || g?.meta?.strategy_name) ||
+                          String(d?.strategy_key) === String(g?.key || g?.meta?.strategy_key)
+                        ) || detail[idx] || {};
+                        // ✅ 用 normalizeComparedGroupItem 取正確的命中號碼
+                        const compareDrawNumbers = getCompareDrawNumbers(row3);
+                        const normalized = normalizeComparedGroupItem(matchDetail, g, idx, compareDrawNumbers);
+                        const hit = normalized.hit_count >= 0 ? normalized.hit_count : toNum(matchDetail?.hit, 0);
+                        const hitNums = normalized.matched_numbers || [];
                         const hitColor = hit >= 3 ? '#dc2626' : hit >= 2 ? '#0f766e' : '#b45309';
                         const hitBg = hit >= 3 ? '#fef2f2' : hit >= 2 ? '#f0fdf4' : '#f8f1e6';
                         const hitBorder = hit >= 3 ? '#fecaca' : hit >= 2 ? '#86efac' : '#d9c7a8';
@@ -2233,23 +2243,25 @@ export default function App() {
                               <span style={{ fontSize: 12, fontWeight: 800, color: '#0f766e' }}>
                                 第{idx + 1}組 {fmtText(g?.label || g?.key, '')}
                               </span>
-                              {hit >= 0 && (
-                                <span style={{ fontSize: 16, fontWeight: 900, color: hitColor }}>
-                                  中{hit}
-                                </span>
-                              )}
+                              <span style={{ fontSize: 16, fontWeight: 900, color: hitColor }}>
+                                中{hit}
+                              </span>
                             </div>
                             <div style={{ display: 'flex', gap: 8 }}>
-                              {nums.map((n) => (
-                                <div key={n} style={{
-                                  ...styles.pickBall,
-                                  width: 44, height: 44, fontSize: 16,
-                                  background: latestNumbers.includes(n) ? '#0f766e' : '#e8dcc8',
-                                  color: latestNumbers.includes(n) ? '#fff' : '#23413a'
-                                }}>
-                                  {formatBallNumber(n)}
-                                </div>
-                              ))}
+                              {nums.map((n) => {
+                                const isHit = hitNums.includes(n);
+                                return (
+                                  <div key={n} style={{
+                                    ...styles.pickBall,
+                                    width: 44, height: 44, fontSize: 16,
+                                    background: isHit ? '#dc2626' : '#e8dcc8',
+                                    color: isHit ? '#fff' : '#23413a',
+                                    border: isHit ? '2px solid #dc2626' : '2px solid #d9c7a8'
+                                  }}>
+                                    {formatBallNumber(n)}
+                                  </div>
+                                );
+                              })}
                             </div>
                           </div>
                         );
