@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
-const API_VERSION = 'prediction-latest-v7-tier-leaderboard';
+const API_VERSION = 'prediction-latest-v7-tier-leaderboard-safe';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -705,42 +705,56 @@ function buildMarketStreakBuckets(drawRows = []) {
 
 // ✅ v7：取含前綴策略的近5期表現排行（梯隊競爭真實狀況）
 async function getTierLeaderboard() {
-  const { data, error } = await supabase
-    .from(STRATEGY_STATS_TABLE)
-    .select('strategy_name, strategy_key, total_rounds, hit3, hit3_rate, recent_hits')
-    .not('strategy_name', 'is', null)
-    .neq('strategy_name', '')
-    .order('total_rounds', { ascending: false })
-    .limit(50);
+  try {
+    const { data, error } = await supabase
+      .from(STRATEGY_STATS_TABLE)
+      .select('strategy_name, strategy_key, total_rounds, hit3, hit3_rate, recent_hits')
+      .not('strategy_name', 'is', null)
+      .neq('strategy_name', '')
+      .order('total_rounds', { ascending: false })
+      .limit(50);
 
-  if (error || !data) return [];
+    if (error || !data) return [];
 
-  return data
-    .filter(row => row.strategy_name && row.strategy_name !== row.strategy_key)
-    .map(row => {
-      const recentHits = Array.isArray(row.recent_hits) ? row.recent_hits : [];
-      const last5 = recentHits.slice(-5);
-      const last5Hit3 = last5.filter(h => Number(h || 0) >= 3).length;
-      const last5Hit2 = last5.filter(h => Number(h || 0) >= 2).length;
-      const last5Hit3Rate = last5.length > 0 ? last5Hit3 / last5.length : 0;
-      const hasRecentHit3 = last5Hit3 > 0;
+    return data
+      .filter(row => row.strategy_name && row.strategy_name !== row.strategy_key)
+      .map(row => {
+        try {
+          const recentHitsRaw = row.recent_hits;
+          const recentHits = Array.isArray(recentHitsRaw)
+            ? recentHitsRaw
+            : typeof recentHitsRaw === 'string'
+              ? JSON.parse(recentHitsRaw)
+              : [];
+          const last5 = recentHits.slice(-5);
+          const last5Hit3 = last5.filter(h => Number(h || 0) >= 3).length;
+          const last5Hit2 = last5.filter(h => Number(h || 0) >= 2).length;
+          const last5Hit3Rate = last5.length > 0 ? last5Hit3 / last5.length : 0;
+          const hasRecentHit3 = last5Hit3 > 0;
 
-      return {
-        strategy_name: row.strategy_name,
-        strategy_key: row.strategy_key,
-        total_rounds: row.total_rounds,
-        all_hit3_rate: round4(toNum(row.hit3_rate, 0)),
-        last5_hit3_count: last5Hit3,
-        last5_hit2_count: last5Hit2,
-        last5_hit3_rate: round4(last5Hit3Rate),
-        recent_hits: last5, // 只回傳最近5筆
-        has_recent_hit3: hasRecentHit3,
-        // 排名分數：近5期有中3加分，全期中3率為底
-        rank_score: last5Hit3Rate * 0.7 + toNum(row.hit3_rate, 0) * 0.3
-      };
-    })
-    .sort((a, b) => b.rank_score - a.rank_score)
-    .slice(0, 20);
+          return {
+            strategy_name: row.strategy_name,
+            strategy_key: row.strategy_key,
+            total_rounds: row.total_rounds,
+            all_hit3_rate: round4(toNum(row.hit3_rate, 0)),
+            last5_hit3_count: last5Hit3,
+            last5_hit2_count: last5Hit2,
+            last5_hit3_rate: round4(last5Hit3Rate),
+            recent_hits: last5,
+            has_recent_hit3: hasRecentHit3,
+            rank_score: last5Hit3Rate * 0.7 + toNum(row.hit3_rate, 0) * 0.3
+          };
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.rank_score - a.rank_score)
+      .slice(0, 20);
+  } catch (err) {
+    console.warn('[getTierLeaderboard] failed:', err?.message);
+    return [];
+  }
 }
 
 function buildCurrentTopStrategies(leaderboard = []) {
