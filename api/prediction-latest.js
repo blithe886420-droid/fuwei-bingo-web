@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
-const API_VERSION = 'prediction-latest-market-role-v6-ui-compare-bridge-v4-appsync-summary-sync-v2';
+const API_VERSION = 'prediction-latest-v7-tier-leaderboard';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -703,6 +703,46 @@ function buildMarketStreakBuckets(drawRows = []) {
   };
 }
 
+// ✅ v7：取含前綴策略的近5期表現排行（梯隊競爭真實狀況）
+async function getTierLeaderboard() {
+  const { data, error } = await supabase
+    .from(STRATEGY_STATS_TABLE)
+    .select('strategy_name, strategy_key, total_rounds, hit3, hit3_rate, recent_hits')
+    .not('strategy_name', 'is', null)
+    .neq('strategy_name', '')
+    .order('total_rounds', { ascending: false })
+    .limit(50);
+
+  if (error || !data) return [];
+
+  return data
+    .filter(row => row.strategy_name && row.strategy_name !== row.strategy_key)
+    .map(row => {
+      const recentHits = Array.isArray(row.recent_hits) ? row.recent_hits : [];
+      const last5 = recentHits.slice(-5);
+      const last5Hit3 = last5.filter(h => Number(h || 0) >= 3).length;
+      const last5Hit2 = last5.filter(h => Number(h || 0) >= 2).length;
+      const last5Hit3Rate = last5.length > 0 ? last5Hit3 / last5.length : 0;
+      const hasRecentHit3 = last5Hit3 > 0;
+
+      return {
+        strategy_name: row.strategy_name,
+        strategy_key: row.strategy_key,
+        total_rounds: row.total_rounds,
+        all_hit3_rate: round4(toNum(row.hit3_rate, 0)),
+        last5_hit3_count: last5Hit3,
+        last5_hit2_count: last5Hit2,
+        last5_hit3_rate: round4(last5Hit3Rate),
+        recent_hits: last5, // 只回傳最近5筆
+        has_recent_hit3: hasRecentHit3,
+        // 排名分數：近5期有中3加分，全期中3率為底
+        rank_score: last5Hit3Rate * 0.7 + toNum(row.hit3_rate, 0) * 0.3
+      };
+    })
+    .sort((a, b) => b.rank_score - a.rank_score)
+    .slice(0, 20);
+}
+
 function buildCurrentTopStrategies(leaderboard = []) {
   return leaderboard.slice(0, 4).map((row, idx) => ({
     rank: idx + 1,
@@ -819,7 +859,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const [trainingRow, latestFormalRow, formalCandidateRow, latest3StarRow, leaderboard, recentDrawRows, allRecentComparedRows, recentFormalComparedRows, recent3StarComparedRows] = await Promise.all([
+    const [trainingRow, latestFormalRow, formalCandidateRow, latest3StarRow, leaderboard, recentDrawRows, allRecentComparedRows, recentFormalComparedRows, recent3StarComparedRows, tierLeaderboard] = await Promise.all([
       getLatestRowByMode(TEST_MODE),
       getLatestRowByMode(FORMAL_MODE),
       getLatestRowByMode(FORMAL_CANDIDATE_MODE),
@@ -828,7 +868,8 @@ export default async function handler(req, res) {
       getRecentDrawRows(20),
       getRecentComparedRows(10),
       getRecentFormalComparedRows(5),
-      getRecent3StarComparedRows(10)
+      getRecent3StarComparedRows(10),
+      getTierLeaderboard()
     ]);
 
     const formalSourceDrawNo =
@@ -897,6 +938,8 @@ export default async function handler(req, res) {
 
       latest_3star_row: latest3StarRow || null,
       recent_3star_compared_rows: recent3StarComparedRows || [],
+      // ✅ v7：含前綴策略的梯隊競爭排行（近5期表現）
+      tier_leaderboard: tierLeaderboard || [],
       // ✅ 修復三星策略競爭排行：
       // 1. 只顯示 active 策略
       // 2. 最低50期才顯示（30期以下樣本太小，數字不可信）
