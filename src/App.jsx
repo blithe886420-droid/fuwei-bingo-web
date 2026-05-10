@@ -8,8 +8,8 @@ const TABS = {
 
 const TAB_ITEMS = [
   { key: TABS.DASHBOARD, label: 'AI狀態', icon: '🏠' },
-  { key: TABS.PREDICT, label: '預測下注', icon: '🎯' },
-  { key: TABS.MARKET, label: '市場資料', icon: '📊' }
+  { key: TABS.MARKET, label: '開獎回顧', icon: '🎯' },
+  { key: TABS.PREDICT, label: '預測下注', icon: '📊' }
 ];
 
 const LOOP_INTERVAL_MS = 180000;
@@ -1849,6 +1849,18 @@ export default function App() {
             <Card
               title="首頁決策"
               subtitle="先看雙分數，再決定要不要直接產生正式下注。"
+              right={
+                <span style={{
+                  background: decisionColor === '#dc2626' ? '#fef2f2' : decisionColor === '#0f766e' ? '#f0fdf4' : '#fefce8',
+                  color: decisionColor,
+                  border: `2px solid ${decisionColor}`,
+                  borderRadius: 20,
+                  padding: '4px 14px',
+                  fontSize: 14,
+                  fontWeight: 900,
+                  letterSpacing: 1
+                }}>{decisionTitle}</span>
+              }
             >
               <div style={{ display: 'flex', gap: 10, marginBottom: 4 }}>
                 <div style={{ flex: 1, background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 14, padding: 14 }}>
@@ -1860,22 +1872,6 @@ export default function App() {
                   <div style={{ fontSize: 13, color: '#7b6e5c', marginBottom: 6 }}>市場適應度</div>
                   <div style={{ fontSize: 32, fontWeight: 900, color: decisionColor, lineHeight: 1 }}>{marketFitScore}<span style={{ fontSize: 16, color: '#7b6e5c' }}> / 100</span></div>
                   <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 6 }}>期數 {fmtText(latestDrawNo)}</div>
-                </div>
-              </div>
-
-              <div style={styles.resultPanel}>
-                <div style={styles.resultTitle}>綜合建議</div>
-                <div style={styles.decisionHeadline}>
-                  <span style={{ ...styles.decisionBadge, color: decisionColor }}>
-                    {decisionTitle}
-                  </span>
-                </div>
-                <div style={styles.resultText}>{decisionSubtitle}</div>
-                <div style={{ ...styles.metaChipRow, marginTop: 12 }}>
-                  <MetaChip label="本輪摘要" value={lastCycleSummary} />
-                  <MetaChip label="formal 批次" value={formalBatchProgressText} />
-                  <MetaChip label="有效組數" value={formalGroupCoverageText} />
-                  <MetaChip label="自動訓練" value={autoTrainEnabled ? '運行中' : '停止'} />
                 </div>
               </div>
 
@@ -1898,39 +1894,12 @@ export default function App() {
                     <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 4 }}>單組命中1</div>
                   </div>
                   <div style={{ background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 14, padding: 14 }}>
-                    <div style={{ fontSize: 13, color: '#7b6e5c', marginBottom: 4 }}>樣本</div>
-                    <div style={{ fontSize: 28, fontWeight: 900, color: '#23413a', lineHeight: 1.1 }}>{hitFeedback.sampleCount} <span style={{ fontSize: 14 }}>期</span></div>
-                    <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 4 }}>中0 {hitFeedback.hit0}</div>
+                    <div style={{ fontSize: 13, color: '#7b6e5c', marginBottom: 4 }}>中0</div>
+                    <div style={{ fontSize: 28, fontWeight: 900, color: '#23413a', lineHeight: 1.1 }}>{hitFeedback.hit0} <span style={{ fontSize: 14 }}>期</span></div>
+                    <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 4 }}>未命中</div>
                   </div>
-                </div>
-                <div style={{ ...styles.metaChipRow, marginTop: 12 }}>
-                  <MetaChip label="最近樣本" value={`${hitFeedback.sampleCount} 期`} />
-                  <MetaChip label="最新來源期數" value={hitFeedback.latestSourceDrawNo} />
-                  <MetaChip label="加碼建議" value={hitFeedback.addBetAdvice} />
                 </div>
                 <div style={{ ...styles.resultText, marginTop: 10 }}>{hitFeedback.note}</div>
-              </div>
-
-              <div style={{ background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 14, padding: 14, marginTop: 4 }}>
-                <div style={{ fontSize: 16, fontWeight: 900, color: '#0f766e', marginBottom: 12 }}>AI 目前決策</div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 }}>
-                  <div style={{ background: '#efe8db', borderRadius: 10, padding: '10px 12px' }}>
-                    <div style={{ fontSize: 11, color: '#7b6e5c', marginBottom: 3 }}>分析期數</div>
-                    <div style={{ fontSize: 16, fontWeight: 800, color: '#23413a' }}>{displayedAnalysisPeriod} 期</div>
-                  </div>
-                  <div style={{ background: '#efe8db', borderRadius: 10, padding: '10px 12px' }}>
-                    <div style={{ fontSize: 11, color: '#7b6e5c', marginBottom: 3 }}>策略模式</div>
-                    <div style={{ fontSize: 16, fontWeight: 800, color: '#23413a' }}>{getStrategyModeLabel(displayedStrategyMode)}</div>
-                  </div>
-                  <div style={{ background: '#efe8db', borderRadius: 10, padding: '10px 12px' }}>
-                    <div style={{ fontSize: 11, color: '#7b6e5c', marginBottom: 3 }}>下注風格</div>
-                    <div style={{ fontSize: 16, fontWeight: 800, color: '#23413a' }}>{getRiskModeLabel(displayedRiskMode)}</div>
-                  </div>
-                  <div style={{ background: '#efe8db', borderRadius: 10, padding: '10px 12px' }}>
-                    <div style={{ fontSize: 11, color: '#7b6e5c', marginBottom: 3 }}>盤相</div>
-                    <div style={{ fontSize: 16, fontWeight: 800, color: '#23413a' }}>{fmtText(displayedSelection.marketPhase, '--')}</div>
-                  </div>
-                </div>
               </div>
             </Card>
 
@@ -2169,33 +2138,10 @@ export default function App() {
         {!loading && activeTab === TABS.MARKET && (
           <div style={styles.sectionStack}>
             <Card
-              title="最新開獎盤面"
-              subtitle="市場資料不是水晶球，但至少比閉著眼睛好。"
+              title="開獎回顧"
+              subtitle="上一期八組號碼的開獎比對結果。"
               right={<div style={styles.predictTopTag}>現在時間：{marketNowText}</div>}
             >
-              <div style={styles.statsGrid4}>
-                <StatBox
-                  label="最新期數"
-                  value={fmtText(latestDrawNo)}
-                  hint={`開獎時間：${fmtText(latestDrawTime)}`}
-                />
-                <StatBox
-                  label="分析期數"
-                  value={`${displayedAnalysisPeriod} 期`}
-                  hint="由後台 AI 自動判斷"
-                />
-                <StatBox
-                  label="策略模式"
-                  value={getStrategyModeLabel(displayedStrategyMode)}
-                  hint={displayedSelection.marketPhase ? `盤相：${fmtText(displayedSelection.marketPhase)} / 信心 ${displayedSelection.confidenceScore || '--'}` : '後端會依盤面自動微調'}
-                />
-                <StatBox
-                  label="下注風格"
-                  value={getRiskModeLabel(displayedRiskMode)}
-                  hint="由後台 AI 自動分配保守 / 平衡 / 進攻 / 衝高"
-                />
-              </div>
-
               <div style={styles.marketPanel}>
                 <div style={styles.marketPanelTitle}>最新 20 顆號碼</div>
                 <div style={styles.marketBallsWrap}>
@@ -2205,6 +2151,50 @@ export default function App() {
                     <div style={styles.emptyBox}>目前沒有最新開獎號碼。</div>
                   )}
                 </div>
+              </div>
+
+              <div style={styles.marketPanel}>
+                <div style={styles.marketPanelTitle}>上一期八組比對結果</div>
+                {(() => {
+                  const lastBatch = formalBatches[0];
+                  if (!lastBatch) return <div style={styles.emptyBox}>尚無比對資料。</div>;
+                  const groups = toArray(lastBatch?.groups_json || lastBatch?.groups);
+                  if (!groups.length) return <div style={styles.emptyBox}>尚無組別資料。</div>;
+                  return (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <div style={{ fontSize: 12, color: '#7b6e5c', marginBottom: 4 }}>
+                        期數：{fmtText(lastBatch?.source_draw_no || lastBatch?.sourceDrawNo)} ／ 盤相：{fmtText(lastBatch?.market_phase || lastBatch?.marketPhase, '--')}
+                      </div>
+                      {groups.map((g, idx) => {
+                        const nums = parseNums(g?.nums || g?.numbers || []);
+                        const hit = toNum(g?.meta?.hit ?? g?.hit, 0);
+                        const hitColor = hit >= 3 ? '#dc2626' : hit >= 2 ? '#0f766e' : '#b45309';
+                        const hitBg = hit >= 3 ? '#fef2f2' : hit >= 2 ? '#f0fdf4' : '#f8f1e6';
+                        return (
+                          <div key={idx} style={{ background: hitBg, border: `2px solid ${hitColor}`, borderRadius: 12, padding: '10px 14px' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                              <span style={{ fontSize: 12, fontWeight: 800, color: '#7b6e5c' }}>
+                                第{idx + 1}組 {fmtText(g?.label || g?.key, '')}
+                              </span>
+                              <span style={{ fontSize: 16, fontWeight: 900, color: hitColor }}>
+                                中{hit}
+                              </span>
+                            </div>
+                            <div style={styles.marketBallsWrap}>
+                              {nums.map((n) => (
+                                <MarketBall
+                                  key={n}
+                                  n={n}
+                                  highlight={latestNumbers.includes(n)}
+                                />
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
               </div>
 
               <div style={styles.marketPanel}>
@@ -2236,32 +2226,6 @@ export default function App() {
                       </div>
                     );
                   })}
-                </div>
-              </div>
-
-              <div style={styles.marketPanel}>
-                <div style={styles.marketPanelTitle}>近期資料列</div>
-                <div style={styles.historyRows}>
-                  {recent20.slice(0, 5).length ? (
-                    recent20.slice(0, 5).map((row, idx) => {
-                      const nums = parseNums(row?.numbers || row?.nums);
-                      return (
-                        <div key={`${row?.draw_no || idx}`} style={styles.historyRow}>
-                          <div style={styles.historyMeta}>
-                            <span>期數：{fmtText(row?.draw_no || row?.drawNo)}</span>
-                            <span>時間：{fmtText(row?.draw_time || row?.drawTime, '--')}</span>
-                          </div>
-                          <div style={styles.historyBalls}>
-                            {nums.map((n) => (
-                              <MarketBall key={`${row?.draw_no || idx}_${n}`} n={n} />
-                            ))}
-                          </div>
-                        </div>
-                      );
-                    })
-                  ) : (
-                    <div style={styles.emptyBox}>目前沒有近期資料列。</div>
-                  )}
                 </div>
               </div>
             </Card>
