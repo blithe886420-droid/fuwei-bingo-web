@@ -2230,7 +2230,7 @@ export default function App() {
                           String(d?.strategy_key) === String(g?.key || g?.meta?.strategy_key)
                         ) || detail[idx] || {};
                         // ✅ 用 normalizeComparedGroupItem 取正確的命中號碼
-                        const compareDrawNumbers = getCompareDrawNumbers(row3);
+                        const compareDrawNumbers = getCompareDrawNumbersFromRow(row3);
                         const normalized = normalizeComparedGroupItem(matchDetail, g, idx, compareDrawNumbers);
                         const hit = normalized.hit_count >= 0 ? normalized.hit_count : toNum(matchDetail?.hit, 0);
                         const hitNums = normalized.matched_numbers || [];
