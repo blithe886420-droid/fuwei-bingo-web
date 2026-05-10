@@ -1904,6 +1904,45 @@ export default function App() {
             </Card>
 
             <Card
+              title="⭐ 最新三星預測號碼"
+              subtitle="本期第一梯隊選出的八組號碼，開獎前即時顯示。"
+              right={
+                <div style={styles.metaChipRow}>
+                  <MetaChip label="期號" value={fmtText(predictionSummary.latest3StarRow?.source_draw_no, '--')} />
+                  <MetaChip label="狀態" value={predictionSummary.latest3StarRow?.compare_status === 'done' ? '已開獎' : '待開獎'} />
+                </div>
+              }
+            >
+              {(() => {
+                const row3 = predictionSummary.latest3StarRow;
+                const groups3 = toArray(row3?.groups_json);
+                if (!row3) return <div style={styles.emptyBox}>尚無預測資料，等待自動產生中...</div>;
+                if (!groups3.length) return <div style={styles.emptyBox}>尚無組別資料。</div>;
+                return (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {groups3.map((g, idx) => {
+                      const nums = toArray(g?.nums);
+                      return (
+                        <div key={g?.key || idx} style={{ background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 12, padding: '10px 14px' }}>
+                          <div style={{ fontSize: 12, fontWeight: 800, color: '#0f766e', marginBottom: 6 }}>
+                            第{idx + 1}組 {fmtText(g?.label || g?.key, '')}
+                          </div>
+                          <div style={{ display: 'flex', gap: 8 }}>
+                            {nums.map((n) => (
+                              <div key={n} style={{ ...styles.pickBall, width: 44, height: 44, fontSize: 16 }}>
+                                {formatBallNumber(n)}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+            </Card>
+
+            <Card
               title="近期連續號碼（連2／連3／連4）"
               subtitle="連續出現的號碼，可作為三星選號參考。"
             >
@@ -2156,19 +2195,21 @@ export default function App() {
               <div style={styles.marketPanel}>
                 <div style={styles.marketPanelTitle}>上一期八組比對結果</div>
                 {(() => {
-                  const row3 = predictionSummary.latest3StarRow;
+                  // ✅ 抓已開獎（done）的最新一筆
+                  const doneRow = toArray(predictionSummary?.recent3StarComparedRows)
+                    .find(r => r?.compare_status === 'done');
+                  const row3 = doneRow || null;
                   const groups3 = toArray(row3?.groups_json);
                   const compareResult = row3?.compare_result;
                   const detail = toArray(compareResult?.detail);
-                  const isDone = row3?.compare_status === 'done';
 
-                  if (!row3) return <div style={styles.emptyBox}>尚無三星比對資料。</div>;
+                  if (!row3) return <div style={styles.emptyBox}>尚無已開獎的比對資料。</div>;
                   if (!groups3.length) return <div style={styles.emptyBox}>尚無組別資料。</div>;
 
                   return (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                       <div style={{ fontSize: 12, color: '#7b6e5c', marginBottom: 4 }}>
-                        期數：{fmtText(row3?.source_draw_no)} ／ 狀態：{isDone ? '已比對' : '待開獎'}
+                        期數：{fmtText(row3?.source_draw_no)} ／ 已開獎比對
                       </div>
                       {groups3.map((g, idx) => {
                         const nums = toArray(g?.nums);
@@ -2183,7 +2224,7 @@ export default function App() {
                               <span style={{ fontSize: 12, fontWeight: 800, color: '#0f766e' }}>
                                 第{idx + 1}組 {fmtText(g?.label || g?.key, '')}
                               </span>
-                              {isDone && hit >= 0 && (
+                              {hit >= 0 && (
                                 <span style={{ fontSize: 16, fontWeight: 900, color: hitColor }}>
                                   中{hit}
                                 </span>
