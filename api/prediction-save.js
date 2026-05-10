@@ -2,7 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import { buildBingoV1Strategies } from '../lib/buildBingoV1Strategies.js';
 import { buildRecentMarketSignalSnapshot } from '../lib/marketSignalEngine.js';
 
-const API_VERSION = 'prediction-save-v10-strategy-name-tier';
+const API_VERSION = 'prediction-save-v11-5period-tier';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -2853,45 +2853,44 @@ async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestD
       const rounds = Number(row.total_rounds || 0);
       const recentHits = Array.isArray(row.recent_hits) ? row.recent_hits : [];
       const last30Hits = recentHits.slice(-30);
-      const last10Hits = recentHits.slice(-10);
+      const last5Hits = recentHits.slice(-5); // ✅ v11：5期窗口
       const allHit3Rate = rounds > 0 ? Number(row.hit3||0) / rounds : 0;
       const last30Hit3Rate = last30Hits.length > 0 ? last30Hits.filter(h => Number(h||0) >= 3).length / last30Hits.length : 0;
       const last30Hit2Rate = last30Hits.length > 0 ? last30Hits.filter(h => Number(h||0) >= 2).length / last30Hits.length : 0;
-      const last10Hit3Rate = last10Hits.length > 0 ? last10Hits.filter(h => Number(h||0) >= 3).length / last10Hits.length : 0;
-      const last10Hit2Rate = last10Hits.length > 0 ? last10Hits.filter(h => Number(h||0) >= 2).length / last10Hits.length : 0;
+      const last5Hit3Rate = last5Hits.length > 0 ? last5Hits.filter(h => Number(h||0) >= 3).length / last5Hits.length : 0;
+      const last5Hit2Rate = last5Hits.length > 0 ? last5Hits.filter(h => Number(h||0) >= 2).length / last5Hits.length : 0;
 
-      // ✅ v10：用 strategy_name（含前綴）為 Map key
+      // ✅ v11：用 strategy_name（含前綴）為 Map key，5期窗口
       statsMap3s.set(row.strategy_name, {
         strategy_key: row.strategy_key,
         allHit3Rate,
         last30Hit3Rate,
         last30Hit2Rate,
-        last10Hit3Rate,
-        last10Hit2Rate,
+        last10Hit3Rate: last5Hit3Rate,   // 保留變數名相容
+        last10Hit2Rate: last5Hit2Rate,   // 保留變數名相容
         totalRounds: rounds,
-        hit3Rate: last30Hit3Rate * 0.6 + allHit3Rate * 0.2 + last10Hit3Rate * 0.2,
-        hit2Rate: last30Hit2Rate * 0.6 + (rounds > 0 ? Number(row.hit2||0)/rounds : 0) * 0.2 + last10Hit2Rate * 0.2,
-        isHot: last10Hit3Rate >= 0.02 || last10Hit2Rate >= 0.25
+        hit3Rate: last30Hit3Rate * 0.6 + allHit3Rate * 0.2 + last5Hit3Rate * 0.2,
+        hit2Rate: last30Hit2Rate * 0.6 + (rounds > 0 ? Number(row.hit2||0)/rounds : 0) * 0.2 + last5Hit2Rate * 0.2,
+        isHot: last5Hit3Rate >= 0.02 || last5Hit2Rate >= 0.25
       });
     });
 
-    // ✅ v10：梯隊競爭改用 strategy_name（含前綴）
-    // 例如 HOT|mix_gap 和 COLD|mix_gap 是兩個不同參賽者
+    // ✅ v11：梯隊競爭用 strategy_name（含前綴），5期窗口
     const allStrategyData3s = [...statsMap3s.entries()].map(([namKey, stat]) => {
-      const last10Hit3Count = Math.round(stat.last10Hit3Rate * 10);
-      const hasRecentHit3 = last10Hit3Count > 0;
+      const last5Hit3Count = Math.round(stat.last10Hit3Rate * 5);
+      const hasRecentHit3 = last5Hit3Count > 0;
 
       return {
-        key: namKey,              // ✅ v10：key 改為 strategy_name（含前綴）
-        strategy_key: stat.strategy_key, // 保留原始 key 供選號用
+        key: namKey,
+        strategy_key: stat.strategy_key,
         allHit3Rate: stat.allHit3Rate,
-        last10Hit3Count,
+        last10Hit3Count: last5Hit3Count, // 保留變數名相容
         last30Hit3Rate: stat.last30Hit3Rate,
         totalRounds: stat.totalRounds,
         hasRecentHit3,
         hit3Rate: stat.hit3Rate,
         hit2Rate: stat.hit2Rate,
-        isHot: last10Hit3Count >= 2
+        isHot: last5Hit3Count >= 1
       };
     });
 
