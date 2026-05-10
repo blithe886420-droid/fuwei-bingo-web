@@ -775,7 +775,8 @@ function normalizePredictionLatest(data) {
 
     latest3StarRow: latest?.latest_3star_row || null,
     recent3StarComparedRows: toArray(latest?.recent_3star_compared_rows).map(normalizePredictionRow).filter(Boolean),
-    threeStarLeaderboard: toArray(latest?.three_star_leaderboard)
+    threeStarLeaderboard: toArray(latest?.three_star_leaderboard),
+    tierLeaderboard: toArray(latest?.tier_leaderboard)
   };
 }
 
@@ -1173,7 +1174,8 @@ export default function App() {
     recentFormalComparePeriods: [],
     latest3StarRow: null,
     recent3StarComparedRows: [],
-    threeStarLeaderboard: []
+    threeStarLeaderboard: [],
+    tierLeaderboard: []
   });
   const [aiPlayer, setAiPlayer] = useState(normalizeAiPlayer({}));
   const [lastAutoTrainResult, setLastAutoTrainResult] = useState(null);
@@ -1231,7 +1233,8 @@ export default function App() {
         recentFormalComparePeriods: normalizedPrediction.recentFormalComparePeriods,
         latest3StarRow: normalizedPrediction.latest3StarRow || null,
         recent3StarComparedRows: normalizedPrediction.recent3StarComparedRows || [],
-        threeStarLeaderboard: normalizedPrediction.threeStarLeaderboard || []
+        threeStarLeaderboard: normalizedPrediction.threeStarLeaderboard || [],
+        tierLeaderboard: normalizedPrediction.tierLeaderboard || []
       });
 
       setAiPlayer(normalizeAiPlayer(aiPlayerRes));
@@ -2128,40 +2131,46 @@ export default function App() {
             </Card>
 
             <Card
-              title="⭐ 3星策略競爭排行"
-              subtitle="按每組中3率排序（中3次數÷總組數），反映真實選號命中率。"
+              title="🏆 梯隊競爭排行"
+              subtitle="含前綴策略的近5期表現，反映真實梯隊輪番上場狀況。"
             >
               {(() => {
-                const lb = toArray(predictionSummary?.threeStarLeaderboard).slice(0, 10);
-                if (!lb.length) return <div style={styles.emptyBox}>累積數據中...</div>;
+                const tierLb = toArray(predictionSummary?.tierLeaderboard).slice(0, 15);
+                if (!tierLb.length) return <div style={styles.emptyBox}>累積數據中，請稍後再看...</div>;
                 return (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    {/* ✅ 說明欄：讓使用者清楚數字意義 */}
                     <div style={{ background: '#faf6f0', border: '1px dashed #d3b88e', borderRadius: 10, padding: '8px 12px', fontSize: 12, color: '#7b6e5c', lineHeight: 1.6 }}>
-                      每組中3率 = 這個策略選出的號碼，每100組中有幾組中3。理論值約1.06%，越高越好。
+                      近5期有命中✅ = 目前狀態熱，可能在第一梯隊出場。近5期全空❌ = 狀態冷，已被降級等待。
                     </div>
-                    {lb.map((row, idx) => {
-                      // ✅ 計算真實的每組中3率（中3次數 ÷ 總組數）
-                      const perGroupHit3Rate = row.total_rounds > 0
-                        ? ((row.hit3 / row.total_rounds) * 100).toFixed(2)
-                        : '0.00';
-                      const perGroupHit2Rate = row.total_rounds > 0
-                        ? ((row.hit2 / row.total_rounds) * 100).toFixed(1)
-                        : '0.0';
-                      const rateColor = parseFloat(perGroupHit3Rate) >= 2.0 ? '#dc2626'
-                        : parseFloat(perGroupHit3Rate) >= 1.06 ? '#0f766e'
+                    {tierLb.map((row, idx) => {
+                      const hasHit = row.has_recent_hit3;
+                      const rateColor = row.last5_hit3_rate >= 0.2 ? '#dc2626'
+                        : row.last5_hit3_rate > 0 ? '#0f766e'
                         : '#b45309';
+                      const bgColor = hasHit ? (idx === 0 ? '#f0fdf4' : '#f8fffe') : '#f8f1e6';
+                      const borderColor = hasHit ? '#86efac' : '#d9c7a8';
                       return (
-                        <div key={row.strategy_key} style={{ background: idx === 0 ? '#f0fdf4' : '#f8f1e6', border: `2px solid ${idx === 0 ? '#86efac' : '#d9c7a8'}`, borderRadius: 12, padding: '10px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div key={row.strategy_name} style={{ background: bgColor, border: `2px solid ${borderColor}`, borderRadius: 12, padding: '10px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                           <div>
-                            <span style={{ fontSize: 13, fontWeight: 800, color: '#0f766e' }}>#{idx + 1} {row.strategy_key}</span>
-                            <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 2 }}>期數：{row.total_rounds} | 中3：{row.hit3}次 | 中2：{row.hit2}次</div>
-                            <div style={{ fontSize: 11, color: '#7b6e5c', marginTop: 1 }}>中2率：{perGroupHit2Rate}%</div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+                              <span style={{ fontSize: 13, fontWeight: 900, color: '#0f766e' }}>#{idx + 1}</span>
+                              <span style={{ fontSize: 13, fontWeight: 800, color: '#23413a' }}>{row.strategy_name}</span>
+                              <span style={{ fontSize: 16 }}>{hasHit ? '✅' : '❌'}</span>
+                            </div>
+                            <div style={{ fontSize: 11, color: '#7b6e5c' }}>
+                              總期數：{row.total_rounds} ｜ 全期中3率：{(row.all_hit3_rate * 100).toFixed(2)}%
+                            </div>
+                            <div style={{ fontSize: 11, color: '#7b6e5c', marginTop: 2 }}>
+                              近5期：{(row.recent_hits || []).map((h, i) => (
+                                <span key={i} style={{ marginRight: 4, fontWeight: h >= 3 ? 900 : 400, color: h >= 3 ? '#dc2626' : h >= 2 ? '#0f766e' : '#b0a090' }}>{h}</span>
+                              ))}
+                            </div>
                           </div>
                           <div style={{ textAlign: 'right' }}>
-                            <div style={{ fontSize: 16, fontWeight: 900, color: rateColor }}>{perGroupHit3Rate}%</div>
-                            <div style={{ fontSize: 11, color: '#7b6e5c' }}>每組中3率</div>
-                            <div style={{ fontSize: 10, color: '#b0a090', marginTop: 2 }}>理論值 1.06%</div>
+                            <div style={{ fontSize: 18, fontWeight: 900, color: rateColor }}>
+                              {row.last5_hit3_count}次
+                            </div>
+                            <div style={{ fontSize: 11, color: '#7b6e5c' }}>近5期中3</div>
                           </div>
                         </div>
                       );
