@@ -2,7 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import { buildBingoV1Strategies } from '../lib/buildBingoV1Strategies.js';
 import { buildRecentMarketSignalSnapshot } from '../lib/marketSignalEngine.js';
 
-const API_VERSION = 'prediction-save-v12-weighted-rank';
+const API_VERSION = 'prediction-save-v13-retire-bench-onfire';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -2876,26 +2876,42 @@ async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestD
     });
 
     // ✅ v11：梯隊競爭用 strategy_name（含前綴），5期窗口
+    // ✅ v13：加入退役、冷板凳、熱身加速判斷
     const allStrategyData3s = [...statsMap3s.entries()].map(([namKey, stat]) => {
       const last5Hit3Count = Math.round(stat.last10Hit3Rate * 5);
       const hasRecentHit3 = last5Hit3Count > 0;
+      const hit3Total = Math.round(stat.allHit3Rate * stat.totalRounds);
+
+      // 退役：累積≥100期且全期中3=0
+      const isRetired = stat.totalRounds >= 100 && hit3Total === 0;
+      // 冷板凳：累積≥50期且全期中3=0
+      const isBench = !isRetired && stat.totalRounds >= 50 && hit3Total === 0;
+      // 熱身加速：近5期中3≥2次
+      const isOnFire = last5Hit3Count >= 2;
 
       return {
         key: namKey,
         strategy_key: stat.strategy_key,
         allHit3Rate: stat.allHit3Rate,
         last10Hit3Count: last5Hit3Count,
+        last10Hit3Rate: stat.last10Hit3Rate,
         last30Hit3Rate: stat.last30Hit3Rate,
         totalRounds: stat.totalRounds,
         hasRecentHit3,
         hit3Rate: stat.hit3Rate,
         hit2Rate: stat.hit2Rate,
-        isHot: last5Hit3Count >= 1
+        isHot: last5Hit3Count >= 1,
+        isRetired,
+        isBench,
+        isOnFire
       };
-    });
+    })
+    // 退役策略完全過濾
+    .filter(s => !s.isRetired);
 
-    // ✅ v12：期數加權排名，避免小樣本策略虛高
+    // ✅ v13：期數加權排名，冷板凳強制最低
     function calcRankScore3s(s) {
+      if (s.isBench) return -999;
       const rounds = s.totalRounds;
       if (rounds < 30) {
         return s.allHit3Rate * 0.9 + (s.last10Hit3Rate || 0) * 0.1;
@@ -2906,11 +2922,16 @@ async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestD
       }
     }
 
+    // ✅ v13：熱身加速策略強制進第一梯隊
+    const onFire3s = allStrategyData3s.filter(s => s.isOnFire && !s.isBench);
+
     const sorted3sByAll = [...allStrategyData3s]
       .sort((a, b) => calcRankScore3s(b) - calcRankScore3s(a));
 
-    const t1_3s = [], t2_3s = [], t3_3s = [];
+    const t1_3s = [...onFire3s]; // 先放入熱身加速策略
+    const t2_3s = [], t3_3s = [];
     for (const s of sorted3sByAll) {
+      if (onFire3s.some(f => f.key === s.key)) continue; // 跳過已加入的
       if (t1_3s.length + t2_3s.length < 10) {
         if (s.hasRecentHit3) t1_3s.push(s);
         else t2_3s.push(s);
@@ -2919,7 +2940,7 @@ async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestD
       }
     }
 
-    const t3WithHit3 = t3_3s.filter(s => s.hasRecentHit3)
+    const t3WithHit3 = t3_3s.filter(s => s.hasRecentHit3 && !s.isBench)
       .sort((a, b) => calcRankScore3s(b) - calcRankScore3s(a));
 
     const finalTier3s = [...t1_3s];
@@ -2929,7 +2950,7 @@ async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestD
     }
 
     if (finalTier3s.length < 8) {
-      for (const s of [...t2_3s, ...t3_3s]) {
+      for (const s of [...t2_3s, ...t3_3s.filter(s => !s.isBench), ...t3_3s.filter(s => s.isBench)]) {
         if (finalTier3s.length >= 8) break;
         if (!finalTier3s.some(f => f.key === s.key)) finalTier3s.push(s);
       }
