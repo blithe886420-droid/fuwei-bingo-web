@@ -2,7 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import { buildBingoV1Strategies } from '../lib/buildBingoV1Strategies.js';
 import { buildRecentMarketSignalSnapshot } from '../lib/marketSignalEngine.js';
 
-const API_VERSION = 'prediction-save-v14-hit3raw-fix';
+const API_VERSION = 'prediction-save-v14-dedup-keys';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -2958,8 +2958,16 @@ async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestD
       }
     }
 
-    // ✅ v10：finalTier3s 的 key 是 strategy_name，要取出 strategy_key 給選號函數用
-    const sorted3sKeys = finalTier3s.slice(0, 8).map(d => d.strategy_key || d.key);
+    // ✅ v14：sorted3sKeys 去重，避免同一 strategy_key 出現兩次導致出場組數翻倍
+    const seen3sKeys = new Set();
+    const sorted3sKeys = [];
+    for (const d of finalTier3s.slice(0, 8)) {
+      const sk = d.strategy_key || d.key;
+      if (!seen3sKeys.has(sk)) {
+        seen3sKeys.add(sk);
+        sorted3sKeys.push(sk);
+      }
+    }
 
     const recent10Stats3s = {};
     finalTier3s.slice(0, 8).forEach(d => {
