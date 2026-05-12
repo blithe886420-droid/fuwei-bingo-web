@@ -2,7 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import { buildBingoV1Strategies } from '../lib/buildBingoV1Strategies.js';
 import { buildRecentMarketSignalSnapshot } from '../lib/marketSignalEngine.js';
 
-const API_VERSION = 'prediction-save-v13-retire-bench-onfire';
+const API_VERSION = 'prediction-save-v14-hit3raw-fix';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -2864,10 +2864,11 @@ async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestD
       statsMap3s.set(row.strategy_name, {
         strategy_key: row.strategy_key,
         allHit3Rate,
+        hit3Raw: Number(row.hit3 || 0), // ✅ v14：保存原始hit3值，避免浮點數計算誤差
         last30Hit3Rate,
         last30Hit2Rate,
-        last10Hit3Rate: last5Hit3Rate,   // 保留變數名相容
-        last10Hit2Rate: last5Hit2Rate,   // 保留變數名相容
+        last10Hit3Rate: last5Hit3Rate,
+        last10Hit2Rate: last5Hit2Rate,
         totalRounds: rounds,
         hit3Rate: last30Hit3Rate * 0.6 + allHit3Rate * 0.2 + last5Hit3Rate * 0.2,
         hit2Rate: last30Hit2Rate * 0.6 + (rounds > 0 ? Number(row.hit2||0)/rounds : 0) * 0.2 + last5Hit2Rate * 0.2,
@@ -2880,7 +2881,8 @@ async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestD
     const allStrategyData3s = [...statsMap3s.entries()].map(([namKey, stat]) => {
       const last5Hit3Count = Math.round(stat.last10Hit3Rate * 5);
       const hasRecentHit3 = last5Hit3Count > 0;
-      const hit3Total = Math.round(stat.allHit3Rate * stat.totalRounds);
+      // ✅ v14：直接用原始 hit3 值，不用浮點數計算（避免 0.0046×219=1 的誤差）
+      const hit3Total = stat.hit3Raw || 0;
 
       // 退役：累積≥100期且全期中3=0
       const isRetired = stat.totalRounds >= 100 && hit3Total === 0;
