@@ -5,7 +5,7 @@ import { recordStrategyCompareResult } from '../lib/strategyStatsRecorder.js';
 import { ensureStrategyPoolStrategies } from '../lib/ensureStrategyPoolStrategies.js';
 import { buildRecentMarketSignalSnapshot, buildStrategyDecisionFromSnapshot } from '../lib/marketSignalEngine.js';
 
-const API_VERSION = 'auto-train-v12-weighted-rank';
+const API_VERSION = 'auto-train-v13-retire-bench-onfire';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -943,8 +943,7 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
       console.log('[3star] 熱區號碼(近20期高頻):', hotFreqNums.slice(0, 10).join(','));
       console.log('[3star] 冷號(近20期低頻):', coldFreqNums.slice(0, 10).join(','));
 
-      // ✅ v11：梯隊競爭近期窗口從10期改為5期
-      // Step 1：計算所有 strategy_name 的全期中3率和近5期hit3次數
+      // ✅ v13：三層篩選機制
       const allStrategyData = filteredStats3star.map(row => {
         const recentHits = Array.isArray(row?.recent_hits) ? row.recent_hits : [];
         const totalRounds = toNum(row?.total_rounds, 0);
@@ -961,6 +960,15 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
 
         const hasRecentHit3 = last5Hit3Count > 0;
 
+        // ✅ v13：退役（累積≥100期且全期中3=0）→ 完全不出場
+        const isRetired = totalRounds >= 100 && hit3 === 0;
+
+        // ✅ v13：冷板凳（累積≥50期且全期中3=0）→ 排名最後
+        const isBench = !isRetired && totalRounds >= 50 && hit3 === 0;
+
+        // ✅ v13：熱身加速（近5期中3≥2次）→ 強制第一梯隊
+        const isOnFire = last5Hit3Count >= 2;
+
         return {
           key: row.strategy_name,
           strategy_key: row.strategy_key,
@@ -969,23 +977,25 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
           last10Hit3Count: last5Hit3Count,
           last30Hit3Rate,
           totalRounds,
-          hasRecentHit3
+          hasRecentHit3,
+          isRetired,
+          isBench,
+          isOnFire
         };
-      });
+      })
+      // ✅ v13：退役策略完全過濾掉
+      .filter(s => !s.isRetired);
 
-      // ✅ v12：期數加權排名
-      // 期數少的策略（<30期）近5期命中可能只是運氣，全期中3率為主
-      // 期數夠的策略（>=30期）才讓近5期表現有較高權重
+      // ✅ v13：期數加權排名，冷板凳策略分數強制最低
       function calcRankScore(s) {
+        // 冷板凳策略排名最後
+        if (s.isBench) return -999;
         const rounds = s.totalRounds;
         if (rounds < 30) {
-          // 期數太少：全期中3率90% + 近5期10%（避免小樣本虛高）
           return s.allHit3Rate * 0.9 + s.last10Hit3Rate * 0.1;
         } else if (rounds < 100) {
-          // 期數中等：全期中3率70% + 近5期30%
           return s.allHit3Rate * 0.7 + s.last10Hit3Rate * 0.3;
         } else {
-          // 期數充足：全期中3率40% + 近30期30% + 近5期30%
           return s.allHit3Rate * 0.4 + s.last30Hit3Rate * 0.3 + s.last10Hit3Rate * 0.3;
         }
       }
@@ -994,28 +1004,31 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
       const sortedByAll = [...allStrategyData]
         .sort((a, b) => calcRankScore(b) - calcRankScore(a));
 
-      // Step 3：第一梯隊候選（全期排名前10）
-      // 但近10期無hit3的降到後面等待
-      const tier1 = [];  // 近10期有hit3的前10名
-      const tier2 = [];  // 近10期無hit3的前10名（降級等待）
-      const tier3 = [];  // 排名10名以後的策略
+      // ✅ v13：熱身加速策略（近5期中3≥2次）強制進第一梯隊
+      const onFireStrategies = allStrategyData.filter(s => s.isOnFire && !s.isBench);
+
+      // Step 3：第一梯隊候選
+      const tier1 = [...onFireStrategies]; // 先放入熱身加速策略
+      const tier2 = [];
+      const tier3 = [];
+      const tier3 = [];  // 排名10名以外的策略
 
       for (const s of sortedByAll) {
+        // ✅ v13：熱身加速策略已在tier1，跳過
+        if (onFireStrategies.some(f => f.key === s.key)) continue;
         if (tier1.length + tier2.length < 10) {
-          // 屬於前10名範圍
           if (s.hasRecentHit3) {
-            tier1.push(s); // 近10期有hit3 → 正常出場
+            tier1.push(s);
           } else {
-            tier2.push(s); // 近10期無hit3 → 降級等待
+            tier2.push(s);
           }
         } else {
-          tier3.push(s); // 排名10名以外
+          tier3.push(s);
         }
       }
 
-      // Step 4：從第二梯隊以外補足第一梯隊
-      // 先從tier3裡找近10期有hit3的補上來
-      const tier3WithHit3 = tier3.filter(s => s.hasRecentHit3)
+      // Step 4：從tier3補足第一梯隊
+      const tier3WithHit3 = tier3.filter(s => s.hasRecentHit3 && !s.isBench)
         .sort((a, b) => b.last10Hit3Rate - a.last10Hit3Rate);
 
       const finalTier1 = [...tier1];
@@ -1025,10 +1038,9 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
         finalTier1.push(s);
       }
 
-      // Step 5：如果還不夠（全部都沒有近期hit3），
-      // 就讓原本的前10名繼續出場（大家一起低潮就一起撐）
+      // Step 5：全員低潮時，冷板凳策略最後才補
       if (finalTier1.length < dynamicGroupCount) {
-        for (const s of [...tier2, ...tier3]) {
+        for (const s of [...tier2, ...tier3.filter(s => !s.isBench), ...tier3.filter(s => s.isBench)]) {
           if (finalTier1.length >= dynamicGroupCount) break;
           if (!finalTier1.some(f => f.key === s.key)) {
             finalTier1.push(s);
@@ -1036,18 +1048,21 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
         }
       }
 
-      // ✅ v10：finalTier1 的 key 是 strategy_name，要取出 strategy_key 給選號函數用
+      // ✅ v13：finalTier1 的 key 是 strategy_name
       const sorted3starKeys = finalTier1
         .slice(0, dynamicGroupCount)
         .map(d => d.strategy_key || d.key);
 
       console.log(
-        '[3star] v11梯隊競爭（前4）:',
+        '[3star] v13梯隊競爭（前4）:',
         finalTier1.slice(0, 4).map(d => {
-          return `${d.key}(全期:${((d?.allHit3Rate||0)*100).toFixed(1)}% 近5hit3:${d?.last10Hit3Count||0}次 ${d?.hasRecentHit3?'✅':'❌'})`;
+          const tag = d.isOnFire ? '🔥' : d.isBench ? '🧊' : d.hasRecentHit3 ? '✅' : '❌';
+          return `${d.key}(全期:${((d?.allHit3Rate||0)*100).toFixed(1)}% 近5hit3:${d?.last10Hit3Count||0}次 ${tag})`;
         }).join(', ')
       );
-      console.log('[3star] 降級策略:', tier2.map(s => s.key).join(', ') || '無');
+      console.log('[3star] 熱身加速:', onFireStrategies.map(s => s.key).join(', ') || '無');
+      console.log('[3star] 冷板凳:', allStrategyData.filter(s => s.isBench).map(s => s.key).join(', ') || '無');
+      console.log('[3star] 退役:', filteredStats3star.filter(r => toNum(r.total_rounds,0) >= 100 && toNum(r.hit3,0) === 0).map(r => r.strategy_name).join(', ') || '無');
 
       // ✅ v10：recent10Stats 用 strategy_key 為 key（傳給 buildBingoV1Strategies）
       const recent10Stats = {};
