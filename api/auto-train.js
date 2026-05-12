@@ -1010,7 +1010,6 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
       // Step 3：第一梯隊候選
       const tier1 = [...onFireStrategies]; // 先放入熱身加速策略
       const tier2 = [];
-      const tier3 = [];
       const tier3 = [];  // 排名10名以外的策略
 
       for (const s of sortedByAll) {
