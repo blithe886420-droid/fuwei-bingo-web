@@ -5,7 +5,7 @@ import { recordStrategyCompareResult } from '../lib/strategyStatsRecorder.js';
 import { ensureStrategyPoolStrategies } from '../lib/ensureStrategyPoolStrategies.js';
 import { buildRecentMarketSignalSnapshot, buildStrategyDecisionFromSnapshot } from '../lib/marketSignalEngine.js';
 
-const API_VERSION = 'auto-train-v14-dedup-keys';
+const API_VERSION = 'auto-train-v15-stale-skip';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -2185,7 +2185,60 @@ function buildCompareHistoryEntry(payload = {}, drawRows = [], latestDrawNumbers
   };
 }
 
+// ✅ v15：自動 skip 超時的 formal_3star pending 記錄
+// 條件：compare_status=pending 且 source_draw_no 落後當前超過 PENDING_TIMEOUT_PERIODS 期
+const PENDING_TIMEOUT_PERIODS = 3;
+
+async function autoSkipStalePendingPredictions(db) {
+  try {
+    const { data: latestDraw } = await db
+      .from(DRAWS_TABLE)
+      .select('draw_no')
+      .order('draw_no', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (!latestDraw?.draw_no) return;
+    const latestDrawNo = Number(latestDraw.draw_no);
+
+    // 抓所有 compare_status=pending 且 source_draw_no 落後超過 PENDING_TIMEOUT_PERIODS 期的記錄
+    const { data: stale } = await db
+      .from(PREDICTIONS_TABLE)
+      .select('id, mode, source_draw_no, compare_status')
+      .in('mode', COMPARE_MODES)
+      .eq('compare_status', 'pending')
+      .limit(100);
+
+    if (!Array.isArray(stale) || !stale.length) return;
+
+    const toSkip = stale.filter(row => {
+      const source = Number(row.source_draw_no || 0);
+      return source > 0 && (latestDrawNo - source) > PENDING_TIMEOUT_PERIODS;
+    });
+
+    if (!toSkip.length) return;
+
+    const ids = toSkip.map(r => r.id);
+    await db
+      .from(PREDICTIONS_TABLE)
+      .update({
+        status: 'compared',
+        compare_status: 'done',
+        verdict: 'skip_timeout',
+        compared_at: new Date().toISOString()
+      })
+      .in('id', ids);
+
+    console.log(`[autoSkipStale] skipped ${ids.length} stale pending predictions:`, toSkip.map(r => `${r.mode}#${r.source_draw_no}`).join(', '));
+  } catch (err) {
+    console.warn('[autoSkipStale] failed:', err.message);
+  }
+}
+
 async function comparePendingPredictions(db) {
+  // ✅ v15：先清理超時的 pending 記錄，避免卡住整條流程
+  await autoSkipStalePendingPredictions(db);
+
   const { data: predictions, error } = await db
     .from(PREDICTIONS_TABLE)
     .select('*')
@@ -2757,8 +2810,8 @@ export default async function handler(req, res) {
 
     const create = await createLatestTestPrediction(db, latestDrawNo, marketSnapshot);
 
-    await runAutoCompareForLatest(db);
-
+    // ✅ v15：移除 runAutoCompareForLatest（條件 source+1===target 太嚴格，易卡 pending）
+    // 統一改由 comparePendingPredictions 處理，內含 autoSkipStalePendingPredictions 保護
     const compareAfterCreate = await comparePendingPredictions(db);
 
     const strategyCandidates = await fetchStrategyCandidates(db, marketSnapshot, market);
@@ -2818,8 +2871,10 @@ function calcDecisionScore(meta={}){
 
 
 /* =========================
-   🔧 FIX: AUTO COMPARE TRIGGER
-   支援 formal_3star，正確傳入 groups + starMode
+   🔧 DEPRECATED: runAutoCompareForLatest
+   v15起已不在主流程呼叫。
+   改由 comparePendingPredictions（含 autoSkipStalePendingPredictions）統一處理。
+   保留此函數僅供萬一需要手動觸發時使用，內含 timeout skip 保護。
    ========================= */
 
 async function runAutoCompareForLatest(db) {
@@ -2847,6 +2902,23 @@ async function runAutoCompareForLatest(db) {
 
     for (const row of pending) {
       const source = Number(row.source_draw_no || 0);
+
+      // ✅ v15：超過 PENDING_TIMEOUT_PERIODS 期自動 skip，不再永久卡住
+      const agePeriods = targetDrawNo - source;
+      if (agePeriods > PENDING_TIMEOUT_PERIODS) {
+        await db
+          .from('bingo_predictions')
+          .update({
+            status: 'compared',
+            compare_status: 'done',
+            verdict: 'skip_timeout',
+            compared_at: new Date().toISOString()
+          })
+          .eq('id', row.id);
+        console.log(`[runAutoCompare] skip_timeout id=${row.id} mode=${row.mode} source=${source} age=${agePeriods}`);
+        continue;
+      }
+
       if (source + 1 !== targetDrawNo) continue;
 
       // ✅ 根據 mode 決定 starMode
@@ -2912,5 +2984,5 @@ async function runAutoCompareForLatest(db) {
   }
 }
 
-/* 👉 自動比對觸發（已啟用） */
-// await runAutoCompareForLatest(getSupabase());
+/* 👉 v15：已改由 comparePendingPredictions 內的 autoSkipStalePendingPredictions 統一處理 */
+// await runAutoCompareForLatest(getSupabase()); // DEPRECATED
