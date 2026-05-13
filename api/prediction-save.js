@@ -2,7 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import { buildBingoV1Strategies } from '../lib/buildBingoV1Strategies.js';
 import { buildRecentMarketSignalSnapshot } from '../lib/marketSignalEngine.js';
 
-const API_VERSION = 'prediction-save-v14-dedup-keys';
+const API_VERSION = 'prediction-save-v15-3star-sync';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -2840,13 +2840,56 @@ async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestD
     const activeKeys3s = (poolRows3s?.data || []).map(r => r.strategy_key).filter(Boolean);
     // ✅ v10：從 strategy_stats 改用 strategy_name 為主鍵查詢
     // HOT|mix_gap 和 COLD|mix_gap 各自有獨立統計，梯隊真正按含前綴名稱競爭
+    // ✅ v15 sync：補上 avg_coverage_hit 和 recent_coverage_hits（與 auto-train 同步）
     const statsRows3s = await db.from(STRATEGY_STATS_TABLE)
-      .select('strategy_name, strategy_key, recent_hits, hit3, hit2, total_rounds');
+      .select('strategy_name, strategy_key, recent_hits, hit3, hit2, total_rounds, avg_coverage_hit, recent_coverage_hits');
     // 只保留 active strategy_key 相關的 strategy_name 記錄
     const activeKeySet3s = new Set(activeKeys3s);
     const filteredStats3s = (statsRows3s?.data || []).filter(r =>
       activeKeySet3s.has(r.strategy_key) && r.strategy_name
     );
+
+    // ✅ v15 sync：動態加碼/減碼（與 auto-train 同步）
+    // 讀取近期三星命中狀態，決定本次出幾組（5~8）
+    const STAR3_MIN_GROUPS_PS = 5;
+    const STAR3_MAX_GROUPS_PS = 8;
+    const STAR3_REDUCE_AFTER_NO_HIT2_PS = 3;
+    let dynamicGroupCount3s = STAR3_MAX_GROUPS_PS;
+    try {
+      const { data: recentCompared3s } = await db
+        .from(PREDICTIONS_TABLE)
+        .select('hit_count, compare_result_json, verdict, compared_at')
+        .eq('mode', 'formal_3star')
+        .eq('compare_status', 'done')
+        .order('compared_at', { ascending: false })
+        .limit(10);
+
+      if (Array.isArray(recentCompared3s) && recentCompared3s.length > 0) {
+        const recentBestHits3s = recentCompared3s.map(row => {
+          const raw = row.compare_result_json;
+          const result = raw && typeof raw === 'string' ? (() => { try { return JSON.parse(raw); } catch { return null; } })() : raw;
+          return toNum(result?.best_hit ?? row.hit_count, 0);
+        });
+        let consecutiveNoHit2 = 0;
+        for (const hit of recentBestHits3s) {
+          if (hit < 2) consecutiveNoHit2 += 1;
+          else break;
+        }
+        let consecutiveHit2 = 0;
+        for (const hit of recentBestHits3s) {
+          if (hit >= 2) consecutiveHit2 += 1;
+          else break;
+        }
+        const lastHit3 = recentBestHits3s[0] >= 3;
+        if (lastHit3 || consecutiveHit2 >= 1) {
+          dynamicGroupCount3s = STAR3_MAX_GROUPS_PS;
+        } else if (consecutiveNoHit2 >= STAR3_REDUCE_AFTER_NO_HIT2_PS) {
+          dynamicGroupCount3s = STAR3_MIN_GROUPS_PS;
+        }
+      }
+    } catch (bettingStateErr) {
+      console.warn('[3star prediction-save] bettingState failed, use default:', bettingStateErr.message);
+    }
 
     const statsMap3s = new Map();
     filteredStats3s.forEach(row => {
@@ -2860,6 +2903,14 @@ async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestD
       const last5Hit3Rate = last5Hits.length > 0 ? last5Hits.filter(h => Number(h||0) >= 3).length / last5Hits.length : 0;
       const last5Hit2Rate = last5Hits.length > 0 ? last5Hits.filter(h => Number(h||0) >= 2).length / last5Hits.length : 0;
 
+      // ✅ v15 sync：coverageHit 計算（與 auto-train 同步）
+      const recentCoverageHits = Array.isArray(row.recent_coverage_hits) ? row.recent_coverage_hits : [];
+      const last5CoverageHits = recentCoverageHits.slice(-5);
+      const avgRecentCoverage = last5CoverageHits.length > 0
+        ? last5CoverageHits.reduce((a, b) => a + toNum(b, 0), 0) / last5CoverageHits.length
+        : toNum(row.avg_coverage_hit, 3);
+      const coverageScore = avgRecentCoverage > 6 ? (avgRecentCoverage - 6) * 8 : 0;
+
       // ✅ v11：用 strategy_name（含前綴）為 Map key，5期窗口
       statsMap3s.set(row.strategy_name, {
         strategy_key: row.strategy_key,
@@ -2872,6 +2923,8 @@ async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestD
         totalRounds: rounds,
         hit3Rate: last30Hit3Rate * 0.6 + allHit3Rate * 0.2 + last5Hit3Rate * 0.2,
         hit2Rate: last30Hit2Rate * 0.6 + (rounds > 0 ? Number(row.hit2||0)/rounds : 0) * 0.2 + last5Hit2Rate * 0.2,
+        avgCoverageHit: avgRecentCoverage,
+        coverageScore,
         isHot: last5Hit3Rate >= 0.02 || last5Hit2Rate >= 0.25
       });
     });
@@ -2973,8 +3026,9 @@ async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestD
     finalTier3s.slice(0, 8).forEach(d => {
       const statKey = d.strategy_key || d.key;
       const stat = statsMap3s.get(d.key);
+      // ✅ v15 sync：補上 avgCoverageHit（與 auto-train 同步）
       recent10Stats3s[statKey] = stat
-        ? { score: 0, hit3Rate: stat.hit3Rate || 0, hit2Rate: stat.hit2Rate || 0, avgCoverageHit: 6, totalRounds: stat.totalRounds, isHot: stat.isHot || false }
+        ? { score: stat.coverageScore || 0, hit3Rate: stat.hit3Rate || 0, hit2Rate: stat.hit2Rate || 0, avgCoverageHit: stat.avgCoverageHit || 6, totalRounds: stat.totalRounds, isHot: stat.isHot || false }
         : { score: -10, hit3Rate: 0, hit2Rate: 0, avgCoverageHit: 6, totalRounds: 0, isHot: false };
     });
 
@@ -2998,7 +3052,7 @@ async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestD
     liveSnapshot3s.num_freq_map = Object.fromEntries(
       [...numFreqMap3s.entries()].map(([n, f]) => [String(n), f])
     );
-    const result3star = buildBingoV1Strategies(marketRows.data || [], {}, 3, liveSnapshot3s, recent10Stats3s, sorted3sKeys);
+    const result3star = buildBingoV1Strategies(marketRows.data || [], {}, 3, liveSnapshot3s, recent10Stats3s, sorted3sKeys, dynamicGroupCount3s);
 
     const threeStarGroups = (result3star.strategies || []).map((s, idx) => ({
       key: s.key,
