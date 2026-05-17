@@ -173,8 +173,19 @@ function getRecentRows(data) {
   return [];
 }
 
+// ✅ v18：所有 API 呼叫改走 Railway，Vercel 只負責前端靜態頁面
+const RAILWAY_URL = 'https://fuwei-bingo-backend-production.up.railway.app';
+
+function resolveApiUrl(path) {
+  if (path.startsWith('/api/')) {
+    return `${RAILWAY_URL}${path}`;
+  }
+  return path;
+}
+
 function safeFetchJson(url, options = {}) {
-  return fetch(url, {
+  const resolvedUrl = resolveApiUrl(url);
+  return fetch(resolvedUrl, {
     cache: 'no-store',
     ...options,
     headers: {
@@ -191,7 +202,7 @@ function safeFetchJson(url, options = {}) {
     }
 
     if (!res.ok) {
-      throw new Error(json?.error || json?.message || `${url} ${res.status}`);
+      throw new Error(json?.error || json?.message || `${resolvedUrl} ${res.status}`);
     }
 
     return json;
@@ -199,7 +210,8 @@ function safeFetchJson(url, options = {}) {
 }
 
 async function safeFetchJsonAllowHttpError(url, options = {}) {
-  const res = await fetch(url, {
+  const resolvedUrl = resolveApiUrl(url);
+  const res = await fetch(resolvedUrl, {
     cache: 'no-store',
     ...options,
     headers: {
