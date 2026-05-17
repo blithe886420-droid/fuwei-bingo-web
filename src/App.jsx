@@ -12,7 +12,7 @@ const TAB_ITEMS = [
   { key: TABS.PREDICT, label: '預測下注', icon: '📊' }
 ];
 
-const LOOP_INTERVAL_MS = 180000;
+const LOOP_INTERVAL_MS = 60000; // ✅ v18：改為60秒刷新一次，讓UI更即時
 const NIGHT_STOP_START_MINUTES = 0;
 const NIGHT_STOP_END_MINUTES = 7 * 60;
 
