@@ -540,9 +540,10 @@ async function getRecentComparedRows(limit = 10) {
 
   const { data, error } = await supabase
     .from(PREDICTIONS_TABLE)
-    .select('id, mode, status, source_draw_no, target_periods, created_at, compared_at, groups_json, compare_result_json, compare_result, hit_count, compare_status') // ✅ 只選需要的欄位
+    .select('*')
     .eq('mode', 'formal_3star')
     .eq('status', 'compared')
+
     .order('created_at', { ascending: false })
     .limit(fetchLimit);
 
@@ -555,11 +556,11 @@ async function getRecentComparedRows(limit = 10) {
 
 async function getRecentFormalComparedRows(limit = 5) {
   const safeLimit = Math.max(1, Math.min(10, toInt(limit, 5)));
-  const fetchLimit = Math.min(60, safeLimit * FORMAL_BATCH_LIMIT * 4); // ✅ 從300降到最多60筆
+  const fetchLimit = Math.min(60, safeLimit * FORMAL_BATCH_LIMIT * 4); // ✅ 從300降到60
 
   const { data, error } = await supabase
     .from(PREDICTIONS_TABLE)
-    .select('id, mode, status, source_draw_no, target_periods, created_at, compared_at, formal_batch_no, groups_json, compare_result_json, compare_result, hit_count, compare_status') // ✅ 只選需要的欄位，移除大型JSONB
+    .select('*')
     .eq('mode', FORMAL_MODE)
     .eq('status', 'compared')
     .order('created_at', { ascending: false })
@@ -578,9 +579,10 @@ async function getRecent3StarComparedRows(limit = 10) {
 
   const { data, error } = await supabase
     .from(PREDICTIONS_TABLE)
-    .select('id, mode, status, source_draw_no, target_periods, created_at, compared_at, groups_json, compare_result_json, compare_result, hit_count, compare_status') // ✅ 只選需要的欄位
+    .select('*')
     .eq('mode', 'formal_3star')
     .eq('status', 'compared')
+
     .order('created_at', { ascending: false })
     .limit(safeLimit * 4);
 
