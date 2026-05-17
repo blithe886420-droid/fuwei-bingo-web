@@ -1334,50 +1334,25 @@ export default function App() {
         return;
       }
 
+      // ✅ v18：auto-train 完全交給 Railway cron 負責（每個 :04/:09 分自動跑）
+      // 前端只負責讀取最新資料，不再呼叫 auto-train，避免重複寫入
       setLoopStatusText('同步期數中...');
       await safeFetchJson('/api/sync', { method: 'POST' }).catch(async () => {
         await safeFetchJson('/api/sync');
       });
 
-      setLoopStatusText('更新 recent20 中...');
+      setLoopStatusText('更新資料中...');
       await safeFetchJson('/api/recent20').catch(() => ({}));
 
-      setLoopStatusText('補抓遺漏期數中...');
-      await safeFetchJson('/api/catchup', { method: 'POST' }).catch(async () => {
-        await safeFetchJson('/api/catchup');
-      });
-
-      setLoopStatusText('自動模擬中...');
-
-      const autoTrainHttp = await safeFetchJsonAllowHttpError('/api/auto-train', { method: 'POST' }).catch(async () => {
-        return await safeFetchJsonAllowHttpError('/api/auto-train', { method: 'GET' });
-      });
-
-      const autoTrainResult = normalizeAutoTrainResult(autoTrainHttp?.json, autoTrainHttp?.status);
-
-      if (!autoTrainResult?.ok) {
-        throw new Error(autoTrainResult?.error || 'AI 循環失敗');
-      }
-
-      setLastAutoTrainResult(autoTrainResult);
-      setLoopStatusText(buildLoopStatusText(autoTrainResult));
-      setError('');
+      setLoopStatusText('讀取最新預測...');
       await loadAll();
+
+      setLoopStatusText('AI 運作中（Railway 自動訓練）');
+      setError('');
+
     } catch (err) {
-      if (isDuplicateOrAlreadyExistsMessage(err?.message)) {
-        const normalized = {
-          ok: true,
-          skipped: true,
-          reason: 'Prediction already exists for current draw and mode'
-        };
-        setLastAutoTrainResult(normalized);
-        setLoopStatusText('本期已存在（AI 正常運作中）');
-        setError('');
-        await loadAll();
-      } else {
-        setLoopStatusText(`循環失敗：${err.message || '未知錯誤'}`);
-        setError(err.message || 'AI 循環失敗');
-      }
+      setLoopStatusText(`更新失敗：${err.message || '未知錯誤'}`);
+      setError(err.message || '更新失敗');
     } finally {
       cycleRunningRef.current = false;
     }
