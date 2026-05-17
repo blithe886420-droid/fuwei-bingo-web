@@ -261,7 +261,7 @@ async function getLatestFormalPrediction(supabase) {
   const { data, error } = await supabase
     .from(PREDICTIONS_TABLE)
     .select('id, mode, status, created_at, source_draw_no, target_periods, groups_json')
-    .eq('mode', 'formal')
+    .in('mode', ['formal', 'formal_3star'])
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();
