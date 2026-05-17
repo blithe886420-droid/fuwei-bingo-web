@@ -1522,10 +1522,10 @@ export default function App() {
   // 3星比對歷史數據
   const recent3StarRows = toArray(predictionSummary?.recent3StarComparedRows);
   const recent3StarSummary = useMemo(() => {
-    const rows = recent3StarRows.filter(r => r?.compare_result?.detail);
+    const rows = recent3StarRows.filter(r => r?.compare_result?.detail || r?.compare_result_json?.detail);
     let hit0 = 0, hit1 = 0, hit2 = 0, hit3 = 0, groupCount = 0;
     rows.forEach(row => {
-      toArray(row?.compare_result?.detail).forEach(d => {
+      toArray((row?.compare_result?.detail) || (row?.compare_result_json?.detail)).forEach(d => {
         const h = toNum(d?.hit, 0);
         groupCount++;
         if (h === 0) hit0++;
