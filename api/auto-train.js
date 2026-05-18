@@ -2267,6 +2267,19 @@ async function comparePendingPredictions(db) {
   let waiting = 0;
   const disabledKeysAll = [];
 
+  // ✅ 修復第六階段：預先撈最近開獎資料，用於即時計算 market_phase
+  let liveMarketPhase = 'rotation';
+  try {
+    const liveMarketRows = await fetchMarketRows(db);
+    if (liveMarketRows.length >= 5) {
+      const liveMarket = buildMarketState(liveMarketRows);
+      const liveSnapshot = buildMarketPhase(liveMarket);
+      liveMarketPhase = liveSnapshot?.market_phase || 'rotation';
+    }
+  } catch (marketErr) {
+    console.warn('[comparePending] liveMarketPhase calc failed:', marketErr.message);
+  }
+
   for (const prediction of predictions || []) {
     const mode = normalizePredictionMode(prediction?.mode);
     const targetPeriods = Math.max(1, toNum(prediction?.target_periods, TARGET_PERIODS));
@@ -2333,15 +2346,9 @@ async function comparePendingPredictions(db) {
       ...payload.compareResult,
       detail: detailWithCoverage,
       star_mode: prediction?.mode === 'formal_3star' ? 3 : 4,  // ✅ 明確帶入星制，讓 recorder 正確判斷保護邏輯
-      market_phase:
-        prediction?.market_snapshot_json?.market_phase ||
-        prediction?.market_snapshot_json?.phase_context?.market_phase ||
-        null,
+      market_phase: liveMarketPhase,  // ✅ 修復第六階段：用即時計算的 market_phase
       phase_context: {
-        market_phase:
-          prediction?.market_snapshot_json?.market_phase ||
-          prediction?.market_snapshot_json?.phase_context?.market_phase ||
-          null
+        market_phase: liveMarketPhase
       }
     });
 
@@ -2966,12 +2973,12 @@ async function runAutoCompareForLatest(db) {
             market_phase:
               row.market_snapshot_json?.market_phase ||
               row.market_snapshot_json?.phase_context?.market_phase ||
-              null,
+              liveMarketPhase || 'rotation',  // ✅ fallback 到即時計算
             phase_context: {
               market_phase:
                 row.market_snapshot_json?.market_phase ||
                 row.market_snapshot_json?.phase_context?.market_phase ||
-                null
+                liveMarketPhase || 'rotation'
             }
           });
         } catch (statsErr) {
