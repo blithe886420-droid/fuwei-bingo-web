@@ -1522,10 +1522,10 @@ export default function App() {
   // 3星比對歷史數據
   const recent3StarRows = toArray(predictionSummary?.recent3StarComparedRows);
   const recent3StarSummary = useMemo(() => {
-    const rows = recent3StarRows.filter(r => r?.compare_result?.detail || r?.compare_result_json?.detail);
+    const rows = recent3StarRows.filter(r => r?.compare_result?.detail);
     let hit0 = 0, hit1 = 0, hit2 = 0, hit3 = 0, groupCount = 0;
     rows.forEach(row => {
-      toArray((row?.compare_result?.detail) || (row?.compare_result_json?.detail)).forEach(d => {
+      toArray(row?.compare_result?.detail).forEach(d => {
         const h = toNum(d?.hit, 0);
         groupCount++;
         if (h === 0) hit0++;
@@ -1834,6 +1834,101 @@ export default function App() {
         {error ? <div style={styles.errorBanner}>{error}</div> : null}
         {loading ? <div style={styles.loading}>讀取中...</div> : null}
 
+        {!loading && activeTab === TABS.QUICK && (
+          <div style={styles.sectionStack}>
+            {/* 快速決策橫幅 */}
+            <div style={{
+              borderRadius: 16, padding: '14px 16px',
+              background: 'linear-gradient(135deg, #e8f5f1, #d4ede7)',
+              border: '2px solid #a8d8cc',
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{ fontSize: 28 }}>
+                  {decisionColor === '#0f766e' ? '✅' : decisionColor === '#dc2626' ? '🚫' : '⏳'}
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: '#7b6e5c' }}>本期建議</div>
+                  <div style={{ fontSize: 20, fontWeight: 900, color: decisionColor }}>{decisionTitle}</div>
+                </div>
+              </div>
+              <div style={{ textAlign: 'right' }}>
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <div style={{ textAlign: 'center' }}>
+                    <div style={{ fontSize: 22, fontWeight: 900, color: '#0f766e', lineHeight: 1 }}>{strategyStabilityScore}</div>
+                    <div style={{ fontSize: 10, color: '#7b6e5c' }}>策略穩定</div>
+                  </div>
+                  <div style={{ textAlign: 'center' }}>
+                    <div style={{ fontSize: 22, fontWeight: 900, color: decisionColor, lineHeight: 1 }}>{marketFitScore}</div>
+                    <div style={{ fontSize: 10, color: '#7b6e5c' }}>市場適應</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* 命中速報 */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              <div style={{ background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 12, padding: '10px 12px' }}>
+                <div style={{ fontSize: 11, color: '#7b6e5c', marginBottom: 2 }}>中2（近10期）</div>
+                <div style={{ fontSize: 22, fontWeight: 900, color: '#0f766e', lineHeight: 1.1 }}>{hitFeedback.hit2} <span style={{ fontSize: 12 }}>期</span></div>
+                <div style={{ fontSize: 10, color: '#7b6e5c', marginTop: 2 }}>中2+ {hitFeedback.sampleCount ? Math.round(((hitFeedback.hit2 + hitFeedback.hit3) / hitFeedback.sampleCount) * 100) : 0}%</div>
+              </div>
+              <div style={{ background: '#f8f1e6', border: '2px solid #fecaca', borderRadius: 12, padding: '10px 12px' }}>
+                <div style={{ fontSize: 11, color: '#7b6e5c', marginBottom: 2 }}>中3（近10期）</div>
+                <div style={{ fontSize: 22, fontWeight: 900, color: '#dc2626', lineHeight: 1.1 }}>{hitFeedback.hit3} <span style={{ fontSize: 12 }}>期</span></div>
+                <div style={{ fontSize: 10, color: '#7b6e5c', marginTop: 2 }}>中3率 {hitFeedback.sampleCount ? Math.round((hitFeedback.hit3 / hitFeedback.sampleCount) * 100) : 0}%</div>
+              </div>
+            </div>
+
+            {/* 本期八組號碼（緊湊2欄） */}
+            {(() => {
+              const row3 = predictionSummary.latest3StarRow;
+              const groups3 = toArray(row3?.groups_json);
+              if (!row3) return <div style={styles.emptyBox}>尚無預測資料，等待自動產生中...</div>;
+              return (
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                    <div style={{ fontSize: 14, fontWeight: 900, color: '#0f766e' }}>🌟 本期八組號碼</div>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <span style={{ fontSize: 11, background: '#e8f5f1', color: '#0f766e', border: '1px solid #a8d8cc', borderRadius: 20, padding: '2px 8px', fontWeight: 700 }}>
+                        期號 {fmtText(row3?.source_draw_no, '--')}
+                      </span>
+                      <span style={{ fontSize: 11, background: '#f0f0f0', color: '#555', border: '1px solid #ddd', borderRadius: 20, padding: '2px 8px', fontWeight: 700 }}>
+                        {row3?.compare_status === 'done' ? '已開獎' : '待開獎'}
+                      </span>
+                    </div>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 7 }}>
+                    {groups3.map((g, idx) => {
+                      const nums = toArray(g?.nums);
+                      const label = fmtText(g?.label || g?.key, '');
+                      const tier = String(g?.meta?.tier || g?.tier || '').toUpperCase();
+                      const tierColor = tier === 'HOT' ? '#0f766e' : tier === 'STREAK' ? '#d97706' : tier === 'COLD' ? '#6b7280' : tier === 'RECENT' ? '#3b82f6' : '#0f766e';
+                      const tierBg = tier === 'HOT' ? '#e8f5f1' : tier === 'STREAK' ? '#fffbeb' : tier === 'COLD' ? '#f3f4f6' : tier === 'RECENT' ? '#eff6ff' : '#f8f1e6';
+                      return (
+                        <div key={g?.key || idx} style={{ background: tierBg, border: '1.5px solid #d9c7a8', borderRadius: 12, padding: '9px 10px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                            <span style={{ fontSize: 10, fontWeight: 700, color: '#7b6e5c' }}>第{idx + 1}組</span>
+                            {tier ? <span style={{ fontSize: 9, fontWeight: 700, color: tierColor, background: '#fff', borderRadius: 8, padding: '1px 5px', border: '1px solid #d9c7a8' }}>{tier}</span> : null}
+                          </div>
+                          <div style={{ fontSize: 10, color: '#7b6e5c', marginBottom: 6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</div>
+                          <div style={{ display: 'flex', gap: 5 }}>
+                            {nums.map((n) => (
+                              <div key={n} style={{ width: 30, height: 30, borderRadius: '50%', background: tierColor, color: 'white', fontSize: 12, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                {formatBallNumber(n)}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        )}
+
         {!loading && activeTab === TABS.DASHBOARD && (
           <div style={styles.sectionStack}>
             <Card
@@ -1909,17 +2004,23 @@ export default function App() {
                 if (!row3) return <div style={styles.emptyBox}>尚無預測資料，等待自動產生中...</div>;
                 if (!groups3.length) return <div style={styles.emptyBox}>尚無組別資料。</div>;
                 return (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 7 }}>
                     {groups3.map((g, idx) => {
                       const nums = toArray(g?.nums);
+                      const label = fmtText(g?.label || g?.key, '');
+                      const tier = String(g?.meta?.tier || g?.tier || '').toUpperCase();
+                      const tierColor = tier === 'HOT' ? '#0f766e' : tier === 'STREAK' ? '#d97706' : tier === 'COLD' ? '#6b7280' : tier === 'RECENT' ? '#3b82f6' : '#0f766e';
+                      const tierBg = tier === 'HOT' ? '#e8f5f1' : tier === 'STREAK' ? '#fffbeb' : tier === 'COLD' ? '#f3f4f6' : tier === 'RECENT' ? '#eff6ff' : '#f8f1e6';
                       return (
-                        <div key={g?.key || idx} style={{ background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 12, padding: '10px 14px' }}>
-                          <div style={{ fontSize: 12, fontWeight: 800, color: '#0f766e', marginBottom: 6 }}>
-                            第{idx + 1}組 {fmtText(g?.label || g?.key, '')}
+                        <div key={g?.key || idx} style={{ background: tierBg, border: '1.5px solid #d9c7a8', borderRadius: 12, padding: '9px 10px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 5 }}>
+                            <span style={{ fontSize: 10, fontWeight: 700, color: '#7b6e5c' }}>第{idx + 1}組</span>
+                            {tier ? <span style={{ fontSize: 9, fontWeight: 700, color: tierColor, background: '#fff', borderRadius: 8, padding: '1px 5px', border: '1px solid #d9c7a8' }}>{tier}</span> : null}
                           </div>
-                          <div style={{ display: 'flex', gap: 8 }}>
+                          <div style={{ fontSize: 10, color: '#7b6e5c', marginBottom: 6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</div>
+                          <div style={{ display: 'flex', gap: 5 }}>
                             {nums.map((n) => (
-                              <div key={n} style={{ ...styles.pickBall, width: 44, height: 44, fontSize: 16 }}>
+                              <div key={n} style={{ width: 32, height: 32, borderRadius: '50%', background: tierColor, color: 'white', fontSize: 12, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                                 {formatBallNumber(n)}
                               </div>
                             ))}
@@ -2205,18 +2306,17 @@ export default function App() {
                   if (!groups3.length) return <div style={styles.emptyBox}>尚無組別資料。</div>;
 
                   return (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                      <div style={{ fontSize: 12, color: '#7b6e5c', marginBottom: 4 }}>
+                    <div>
+                      <div style={{ fontSize: 12, color: '#7b6e5c', marginBottom: 8 }}>
                         期數：{fmtText(row3?.source_draw_no)} ／ 已開獎比對
                       </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 7 }}>
                       {groups3.map((g, idx) => {
                         const nums = toArray(g?.nums);
-                        // ✅ 用 strategy_name 或 strategy_key 比對 detail
                         const matchDetail = detail.find(d =>
                           String(d?.strategy_name) === String(g?.label || g?.meta?.strategy_name) ||
                           String(d?.strategy_key) === String(g?.key || g?.meta?.strategy_key)
                         ) || detail[idx] || {};
-                        // ✅ 用 normalizeComparedGroupItem 取正確的命中號碼
                         const compareDrawNumbers = getCompareDrawNumbersFromRow(row3);
                         const normalized = normalizeComparedGroupItem(matchDetail, g, idx, compareDrawNumbers);
                         const hit = normalized.hit_count >= 0 ? normalized.hit_count : toNum(matchDetail?.hit, 0);
@@ -2224,26 +2324,23 @@ export default function App() {
                         const hitColor = hit >= 3 ? '#dc2626' : hit >= 2 ? '#0f766e' : '#b45309';
                         const hitBg = hit >= 3 ? '#fef2f2' : hit >= 2 ? '#f0fdf4' : '#f8f1e6';
                         const hitBorder = hit >= 3 ? '#fecaca' : hit >= 2 ? '#86efac' : '#d9c7a8';
+                        const label = fmtText(g?.label || g?.key, '');
                         return (
-                          <div key={g?.key || idx} style={{ background: hitBg, border: `2px solid ${hitBorder}`, borderRadius: 12, padding: '10px 14px' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                              <span style={{ fontSize: 12, fontWeight: 800, color: '#0f766e' }}>
-                                第{idx + 1}組 {fmtText(g?.label || g?.key, '')}
-                              </span>
-                              <span style={{ fontSize: 16, fontWeight: 900, color: hitColor }}>
-                                中{hit}
-                              </span>
+                          <div key={g?.key || idx} style={{ background: hitBg, border: `1.5px solid ${hitBorder}`, borderRadius: 12, padding: '9px 10px' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                              <span style={{ fontSize: 10, fontWeight: 700, color: '#7b6e5c' }}>第{idx + 1}組</span>
+                              <span style={{ fontSize: 13, fontWeight: 900, color: hitColor }}>中{hit}</span>
                             </div>
-                            <div style={{ display: 'flex', gap: 8 }}>
+                            <div style={{ fontSize: 10, color: '#7b6e5c', marginBottom: 5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</div>
+                            <div style={{ display: 'flex', gap: 4 }}>
                               {nums.map((n) => {
                                 const isHit = hitNums.includes(n);
                                 return (
                                   <div key={n} style={{
-                                    ...styles.pickBall,
-                                    width: 44, height: 44, fontSize: 16,
+                                    width: 28, height: 28, borderRadius: '50%', fontSize: 11, fontWeight: 700,
+                                    display: 'flex', alignItems: 'center', justifyContent: 'center',
                                     background: isHit ? '#dc2626' : '#e8dcc8',
                                     color: isHit ? '#fff' : '#23413a',
-                                    border: isHit ? '2px solid #dc2626' : '2px solid #d9c7a8'
                                   }}>
                                     {formatBallNumber(n)}
                                   </div>
@@ -2253,6 +2350,7 @@ export default function App() {
                           </div>
                         );
                       })}
+                      </div>
                     </div>
                   );
                 })()}
@@ -2337,7 +2435,7 @@ const styles = {
   },
   tabBar: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+    gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
     gap: 8
   },
   tabButton: {
