@@ -2273,8 +2273,9 @@ async function comparePendingPredictions(db) {
     const liveMarketRows = await fetchMarketRows(db);
     if (liveMarketRows.length >= 5) {
       const liveMarket = buildMarketState(liveMarketRows);
-      const liveSnapshot = buildMarketPhase(liveMarket);
+      const liveSnapshot = enrichMarketSnapshotWithPhase({}, liveMarket); // ✅ 正確呼叫鏈
       liveMarketPhase = liveSnapshot?.market_phase || 'rotation';
+      console.log('[comparePending] liveMarketPhase:', liveMarketPhase);
     }
   } catch (marketErr) {
     console.warn('[comparePending] liveMarketPhase calc failed:', marketErr.message);
