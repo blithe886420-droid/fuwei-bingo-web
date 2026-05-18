@@ -1,12 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 const TABS = {
+  QUICK: 'quick',
   DASHBOARD: 'dashboard',
   PREDICT: 'predict',
   MARKET: 'market'
 };
 
 const TAB_ITEMS = [
+  { key: TABS.QUICK, label: '快速', icon: '⚡' },
   { key: TABS.DASHBOARD, label: 'AI狀態', icon: '🏠' },
   { key: TABS.MARKET, label: '開獎回顧', icon: '🎯' },
   { key: TABS.PREDICT, label: '預測下注', icon: '📊' }
@@ -2418,10 +2420,11 @@ const styles = {
     padding: '4px 2px 0'
   },
   brand: {
-    fontSize: 24,
+    fontSize: 16,
     fontWeight: 900,
     color: '#0f766e',
-    letterSpacing: '0.5px'
+    letterSpacing: '0.5px',
+    whiteSpace: 'nowrap'
   },
   headerSub: {
     marginTop: 4,
@@ -2443,16 +2446,16 @@ const styles = {
     background: '#f7f1e7',
     color: '#23413a',
     borderRadius: 14,
-    padding: '12px 8px',
-    fontSize: 16,
+    padding: '9px 4px',
+    fontSize: 12,
     fontWeight: 800,
     cursor: 'pointer',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
+    gap: 4,
     transition: 'all .15s ease',
-    minHeight: 52
+    minHeight: 44
   },
   tabButtonActive: {
     background: '#0f766e',
