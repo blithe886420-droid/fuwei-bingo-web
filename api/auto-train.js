@@ -349,6 +349,30 @@ function buildMarketPhase(snapshot = {}) {
 }
 
 function enrichMarketSnapshotWithPhase(marketSnapshot = {}, market = {}) {
+  // ✅ 從 recent20 計算 streak（連續出現號碼）
+  const recent20Rows = market?.recent20 || [];
+  const streakMap = new Map();
+  for (let n = 1; n <= 80; n++) streakMap.set(n, 0);
+  for (let i = 0; i < recent20Rows.length; i++) {
+    const nums = recent20Rows[i]?.numbers || [];
+    for (const n of nums) {
+      if (streakMap.get(n) === i) streakMap.set(n, i + 1);
+    }
+  }
+  const streak2 = [], streak3 = [], streak4 = [];
+  for (const [n, s] of streakMap.entries()) {
+    if (s >= 4) { streak4.push(n); streak3.push(n); streak2.push(n); }
+    else if (s >= 3) { streak3.push(n); streak2.push(n); }
+    else if (s >= 2) { streak2.push(n); }
+  }
+
+  // ✅ 計算 recent_repeat_ratio（最新一期與前5期的號碼重複率）
+  const latest = market?.latest || [];
+  const prev5Nums = new Set((recent20Rows.slice(1, 6) || []).flatMap(r => r?.numbers || []));
+  const recentRepeatRatio = latest.length > 0
+    ? latest.filter(n => prev5Nums.has(n)).length / latest.length
+    : 0;
+
   const snapshot = {
     ...(marketSnapshot || {}),
     latest_numbers: uniqueSorted(market?.latest || marketSnapshot?.latest_numbers || []),
@@ -364,10 +388,16 @@ function enrichMarketSnapshotWithPhase(marketSnapshot = {}, market = {}) {
     gap_numbers: uniqueSorted(market?.gap || marketSnapshot?.gap_numbers || []),
     cold_numbers: uniqueSorted(market?.cold || marketSnapshot?.cold_numbers || []),
     zone_freq: Object.fromEntries(Array.from((market?.zoneFreq20 || marketSnapshot?.zone_freq || new Map()).entries?.() || [])),
-    tail_freq: Object.fromEntries(Array.from((market?.tailFreq20 || marketSnapshot?.tail_freq || new Map()).entries?.() || []))
+    tail_freq: Object.fromEntries(Array.from((market?.tailFreq20 || marketSnapshot?.tail_freq || new Map()).entries?.() || [])),
+    // ✅ 加入 streak 和 repeat_ratio
+    streak2: uniqueSorted(streak2),
+    streak3: uniqueSorted(streak3),
+    streak4: uniqueSorted(streak4),
+    recent_repeat_ratio: recentRepeatRatio
   };
 
   const phaseInfo = buildMarketPhase(snapshot);
+  console.log('[enrichMarketSnapshot] phase:', phaseInfo.market_phase, 'streak3:', streak3.length, 'streak4:', streak4.length, 'repeatRatio:', recentRepeatRatio.toFixed(2));
   return {
     ...snapshot,
     ...phaseInfo
@@ -2267,15 +2297,16 @@ async function comparePendingPredictions(db) {
   let waiting = 0;
   const disabledKeysAll = [];
 
-  // ✅ 修復第六階段：預先撈最近開獎資料，用於即時計算 market_phase
+  // ✅ 修復第六階段：用跟 runCreate3StarFormalPrediction 完全相同的方式計算 market_phase
   let liveMarketPhase = 'rotation';
   try {
     const liveMarketRows = await fetchMarketRows(db);
     if (liveMarketRows.length >= 5) {
+      const baseSnapshot = buildRecentMarketSignalSnapshot(liveMarketRows, 'numbers');
       const liveMarket = buildMarketState(liveMarketRows);
-      const liveSnapshot = enrichMarketSnapshotWithPhase({}, liveMarket); // ✅ 正確呼叫鏈
+      const liveSnapshot = enrichMarketSnapshotWithPhase(baseSnapshot, liveMarket);
       liveMarketPhase = liveSnapshot?.market_phase || 'rotation';
-      console.log('[comparePending] liveMarketPhase:', liveMarketPhase);
+      console.log('[comparePending] liveMarketPhase:', liveMarketPhase, 'streak3:', liveSnapshot?.streak3?.length || 0);
     }
   } catch (marketErr) {
     console.warn('[comparePending] liveMarketPhase calc failed:', marketErr.message);
