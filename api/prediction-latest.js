@@ -535,8 +535,8 @@ async function getFormalRowsBySourceDrawNo(sourceDrawNo) {
 
 
 async function getRecentComparedRows(limit = 10) {
-  const safeLimit = Math.max(10, Math.min(50, toInt(limit, 10)));
-  const fetchLimit = Math.min(100, safeLimit * 2);
+  const safeLimit = Math.max(5, Math.min(20, toInt(limit, 10)));
+  const fetchLimit = Math.min(20, safeLimit * 2); // ✅ 前端只用10筆，20筆足夠
 
   const { data, error } = await supabase
     .from(PREDICTIONS_TABLE)
