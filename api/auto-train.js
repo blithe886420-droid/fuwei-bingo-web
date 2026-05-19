@@ -397,10 +397,16 @@ function enrichMarketSnapshotWithPhase(marketSnapshot = {}, market = {}) {
   };
 
   const phaseInfo = buildMarketPhase(snapshot);
-  console.log('[enrichMarketSnapshot] phase:', phaseInfo.market_phase, 'streak3:', streak3.length, 'streak4:', streak4.length, 'repeatRatio:', recentRepeatRatio.toFixed(2));
+  // ✅ 關鍵修復：如果 marketSnapshot 已有 buildRecentMarketSignalSnapshot 算好的 market_phase，優先保留它
+  // buildMarketPhase 的 rotationScore 永遠偏高（gap/cold 問題），不如 marketSignalEngine 的判斷準確
+  const finalMarketPhase = (marketSnapshot?.market_phase && marketSnapshot.market_phase !== 'rotation')
+    ? marketSnapshot.market_phase  // 保留 marketSignalEngine 算好的
+    : phaseInfo.market_phase;       // fallback 到 buildMarketPhase
+  console.log('[enrichMarketSnapshot] marketSignalPhase:', marketSnapshot?.market_phase, '→ final:', finalMarketPhase, 'streak3:', streak3.length);
   return {
     ...snapshot,
-    ...phaseInfo
+    ...phaseInfo,
+    market_phase: finalMarketPhase  // ✅ 確保不被覆蓋
   };
 }
 
