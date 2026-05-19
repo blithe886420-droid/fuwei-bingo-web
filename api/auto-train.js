@@ -385,8 +385,8 @@ function enrichMarketSnapshotWithPhase(marketSnapshot = {}, market = {}) {
     hot_20_numbers: uniqueSorted(
       marketSnapshot?.hot_windows?.hot_20?.numbers || marketSnapshot?.hot_20_numbers || (market?.hot || []).slice(0, 20)
     ),
-    gap_numbers: uniqueSorted(market?.gap || marketSnapshot?.gap_numbers || []),
-    cold_numbers: uniqueSorted(market?.cold || marketSnapshot?.cold_numbers || []),
+    gap_numbers: uniqueSorted((market?.gap || marketSnapshot?.gap_numbers || []).slice(0, 15)),
+    cold_numbers: uniqueSorted((market?.cold || marketSnapshot?.cold_numbers || []).slice(0, 15)),
     zone_freq: Object.fromEntries(Array.from((market?.zoneFreq20 || marketSnapshot?.zone_freq || new Map()).entries?.() || [])),
     tail_freq: Object.fromEntries(Array.from((market?.tailFreq20 || marketSnapshot?.tail_freq || new Map()).entries?.() || [])),
     // ✅ 加入 streak 和 repeat_ratio
