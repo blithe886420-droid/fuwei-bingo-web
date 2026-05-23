@@ -574,24 +574,23 @@ async function getRecentFormalComparedRows(limit = 5) {
     .slice(0, fetchLimit);
 }
 
-async function getRecent3StarComparedRows(limit = 10) {
-  const safeLimit = Math.max(1, Math.min(20, toInt(limit, 10)));
+async function getRecent3StarComparedRows(limit = 40) {
+  const safeLimit = Math.max(10, Math.min(40, toInt(limit, 40))); // ✅ 固定40期追蹤
 
   const { data, error } = await supabase
     .from(PREDICTIONS_TABLE)
     .select('id, mode, status, source_draw_no, target_periods, created_at, compared_at, compare_status, verdict, hit_count, groups_json, compare_result_json, compare_result, compare_history_json, best_single_hit, confidence_score, market_phase, last_hit_level')
     .eq('mode', 'formal_3star')
     .eq('status', 'compared')
-
     .order('created_at', { ascending: false })
-    .limit(safeLimit * 4);
+    .limit(safeLimit);
 
   if (error) throw error;
 
   return (Array.isArray(data) ? data : [])
     .map(normalizePredictionRow)
     .filter(Boolean)
-    .slice(0, safeLimit * 4);
+    .slice(0, safeLimit);
 }
 
 async function getStrategyLeaderboard(limit = 50) {
@@ -881,7 +880,7 @@ export default async function handler(req, res) {
       getRecentDrawRows(20),
       getRecentComparedRows(10),
       getRecentFormalComparedRows(5),
-      getRecent3StarComparedRows(10),
+      getRecent3StarComparedRows(40),
       getTierLeaderboard()
     ]);
 
