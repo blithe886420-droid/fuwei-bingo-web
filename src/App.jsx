@@ -1589,9 +1589,9 @@ export default function App() {
       drawSummaryRows.forEach((row) => {
         summary.sampleCount += 1;
         if ((row.hit1_count + row.hit2_count + row.hit3_count + row.hit4_count) <= 0) summary.hit0 += 1;
-        if (row.hit1_count > 0) summary.hit1 += 1;
-        if (row.hit2_count > 0) summary.hit2 += 1;
-        if (row.hit3_count > 0) summary.hit3 += 1;
+        summary.hit1 += toNum(row.hit1_count, 0);
+        summary.hit2 += toNum(row.hit2_count, 0);  // ✅ 累計組數，不是期數
+        summary.hit3 += toNum(row.hit3_count, 0);  // ✅ 累計組數，不是期數
         if (row.hit4_count > 0) summary.hit4Plus += 1;
       });
 
@@ -1873,13 +1873,13 @@ export default function App() {
             {/* 命中速報 */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
               <div style={{ background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 12, padding: '10px 12px' }}>
-                <div style={{ fontSize: 11, color: '#7b6e5c', marginBottom: 2 }}>中2（近10期）</div>
-                <div style={{ fontSize: 22, fontWeight: 900, color: '#0f766e', lineHeight: 1.1 }}>{hitFeedback.hit2} <span style={{ fontSize: 12 }}>期</span></div>
+                <div style={{ fontSize: 11, color: '#7b6e5c', marginBottom: 2 }}>中2組數（近10期）</div>
+                <div style={{ fontSize: 22, fontWeight: 900, color: '#0f766e', lineHeight: 1.1 }}>{hitFeedback.hit2} <span style={{ fontSize: 12 }}>組</span></div>
                 <div style={{ fontSize: 10, color: '#7b6e5c', marginTop: 2 }}>中2+ {hitFeedback.sampleCount ? Math.round(((hitFeedback.hit2 + hitFeedback.hit3) / hitFeedback.sampleCount) * 100) : 0}%</div>
               </div>
               <div style={{ background: '#f8f1e6', border: '2px solid #fecaca', borderRadius: 12, padding: '10px 12px' }}>
-                <div style={{ fontSize: 11, color: '#7b6e5c', marginBottom: 2 }}>中3（近10期）</div>
-                <div style={{ fontSize: 22, fontWeight: 900, color: '#dc2626', lineHeight: 1.1 }}>{hitFeedback.hit3} <span style={{ fontSize: 12 }}>期</span></div>
+                <div style={{ fontSize: 11, color: '#7b6e5c', marginBottom: 2 }}>中3組數（近10期）</div>
+                <div style={{ fontSize: 22, fontWeight: 900, color: '#dc2626', lineHeight: 1.1 }}>{hitFeedback.hit3} <span style={{ fontSize: 12 }}>組</span></div>
                 <div style={{ fontSize: 10, color: '#7b6e5c', marginTop: 2 }}>中3率 {hitFeedback.sampleCount ? Math.round((hitFeedback.hit3 / hitFeedback.sampleCount) * 100) : 0}%</div>
               </div>
             </div>
@@ -1965,16 +1965,16 @@ export default function App() {
               </div>
 
               <div style={styles.resultPanel}>
-                <div style={styles.resultTitle}>最近 10 期即時命中回饋</div>
+                <div style={styles.resultTitle}>最近 10 期即時命中回饋（組數）</div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
                   <div style={{ background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 14, padding: 14 }}>
                     <div style={{ fontSize: 13, color: '#7b6e5c', marginBottom: 4 }}>中2</div>
-                    <div style={{ fontSize: 28, fontWeight: 900, color: '#0f766e', lineHeight: 1.1 }}>{hitFeedback.hit2} <span style={{ fontSize: 14 }}>期</span></div>
+                    <div style={{ fontSize: 28, fontWeight: 900, color: '#0f766e', lineHeight: 1.1 }}>{hitFeedback.hit2} <span style={{ fontSize: 14 }}>組</span></div>
                     <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 4 }}>中2+ {hitFeedback.sampleCount ? Math.round(((hitFeedback.hit2 + hitFeedback.hit3) / hitFeedback.sampleCount) * 100) : 0}%</div>
                   </div>
                   <div style={{ background: '#f8f1e6', border: '2px solid #fecaca', borderRadius: 14, padding: 14 }}>
                     <div style={{ fontSize: 13, color: '#7b6e5c', marginBottom: 4 }}>中3</div>
-                    <div style={{ fontSize: 28, fontWeight: 900, color: '#dc2626', lineHeight: 1.1 }}>{hitFeedback.hit3} <span style={{ fontSize: 14 }}>期</span></div>
+                    <div style={{ fontSize: 28, fontWeight: 900, color: '#dc2626', lineHeight: 1.1 }}>{hitFeedback.hit3} <span style={{ fontSize: 14 }}>組</span></div>
                     <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 4 }}>中3率 {hitFeedback.sampleCount ? Math.round((hitFeedback.hit3 / hitFeedback.sampleCount) * 100) : 0}%</div>
                   </div>
                   <div style={{ background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 14, padding: 14 }}>
