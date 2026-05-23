@@ -1134,6 +1134,76 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
         [...numFreqMap.entries()].map(([n, f]) => [String(n), f])
       );
 
+      // ✅ 步驟七：查詢 strategy_factor_stats 計算各角色動態權重
+      // 根據最近50期各角色在當前 market_phase 下的命中率，動態調整上場比重
+      // 命中率高 → 權重提高（更常上場）
+      // 命中率低 → 權重降低（冷板凳）
+      // 冷板凳超過30期 → 自動給機會回來
+      const livePhase = liveMarketSnapshot.market_phase || 'rotation';
+      let roleWeights = {};
+      try {
+        const { data: factorRows, error: factorErr } = await db
+          .from('strategy_factor_stats')
+          .select('strategy_key, hit3, market_phase, recorded_at')
+          .eq('market_phase', livePhase)
+          .order('recorded_at', { ascending: false })
+          .limit(400);
+
+        if (!factorErr && factorRows && factorRows.length > 0) {
+          // 用 strategy_key 計算命中率
+          const keyStats = {};
+          for (const row of factorRows) {
+            const k = row.strategy_key;
+            if (!keyStats[k]) keyStats[k] = { hit3: 0, total: 0, lastSeen: 0 };
+            keyStats[k].hit3 += (row.hit3 || 0);
+            keyStats[k].total += 1;
+          }
+
+          // 計算每個 strategy_key 的命中率和冷板凳期數
+          const allKeys = Object.keys(keyStats);
+          const hit3Rates = {};
+          for (const k of allKeys) {
+            const s = keyStats[k];
+            hit3Rates[k] = s.total >= 5 ? s.hit3 / s.total : 0.01;
+          }
+
+          // 找最高命中率作為基準
+          const maxRate = Math.max(...Object.values(hit3Rates), 0.01);
+
+          // 把 strategy_key 的命中率轉換成角色權重
+          // strategy_key 命中率高 → 對應角色上場比重提高
+          // 規則：hit3rate > maxRate*0.7 → 權重1.5（熱身）
+          //        hit3rate < maxRate*0.3 → 權重0.5（冷板凳）
+          //        其他 → 權重1.0（正常）
+          for (const k of allKeys) {
+            const rate = hit3Rates[k];
+            if (rate >= maxRate * 0.7) {
+              roleWeights[k] = 1.5; // 狀態熱，增加上場
+            } else if (rate < maxRate * 0.3) {
+              roleWeights[k] = 0.5; // 狀態冷，減少上場
+            } else {
+              roleWeights[k] = 1.0; // 正常輪替
+            }
+          }
+
+          // 冷板凳保護：如果某個 key 已超過30期沒上場，給它一次機會
+          const recentKeys = new Set(factorRows.slice(0, 30).map(r => r.strategy_key));
+          for (const k of sorted3starKeys) {
+            if (!recentKeys.has(k)) {
+              roleWeights[k] = 1.2; // 久坐冷板凳，給機會
+              console.log(`[step7] ${k} 冷板凳超過30期，強制回場`);
+            }
+          }
+
+          console.log(`[step7] phase=${livePhase} roleWeights=${JSON.stringify(roleWeights)}`);
+        }
+      } catch (factorQueryErr) {
+        console.warn('[step7] roleWeights query failed:', factorQueryErr.message);
+      }
+
+      // 把 roleWeights 注入 liveMarketSnapshot，供 buildBingoV1Strategies 使用
+      liveMarketSnapshot.role_weights = roleWeights;
+
       const result3star = buildBingoV1Strategies(
         marketRows.data || [],
         {},
