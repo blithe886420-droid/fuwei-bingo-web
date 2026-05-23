@@ -1524,10 +1524,12 @@ export default function App() {
   // 3星比對歷史數據
   const recent3StarRows = toArray(predictionSummary?.recent3StarComparedRows);
   const recent3StarSummary = useMemo(() => {
-    const rows = recent3StarRows.filter(r => r?.compare_result?.detail);
+    // ✅ 修復：compare_result_json 是正確的欄位名稱（normalizePredictionRow 輸出）
+    const rows = recent3StarRows.filter(r => r?.compare_result_json?.detail || r?.compare_result?.detail);
     let hit0 = 0, hit1 = 0, hit2 = 0, hit3 = 0, groupCount = 0;
     rows.forEach(row => {
-      toArray(row?.compare_result?.detail).forEach(d => {
+      const detail = row?.compare_result_json?.detail || row?.compare_result?.detail;
+      toArray(detail).forEach(d => {
         const h = toNum(d?.hit, 0);
         groupCount++;
         if (h === 0) hit0++;
