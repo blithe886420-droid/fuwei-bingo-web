@@ -1134,68 +1134,84 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
         [...numFreqMap.entries()].map(([n, f]) => [String(n), f])
       );
 
-      // ✅ 步驟七：查詢 strategy_factor_stats 計算各角色動態權重
-      // 根據最近50期各角色在當前 market_phase 下的命中率，動態調整上場比重
-      // 命中率高 → 權重提高（更常上場）
-      // 命中率低 → 權重降低（冷板凳）
-      // 冷板凳超過30期 → 自動給機會回來
+      // ✅ 步驟七 v2：即時反應機制
+      // 每場比賽（1小時）獨立評估，每局（5分鐘）即時感知
+      // 連3局中0 → 強制換人；連2局中3 → 繼續用
       const livePhase = liveMarketSnapshot.market_phase || 'rotation';
       let roleWeights = {};
       try {
-        const { data: factorRows, error: factorErr } = await db
+        const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+        const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+
+        // 查最近2小時資料（約24期），分兩層：最近1小時 + 前1小時
+        const { data: recentRows, error: recentErr } = await db
           .from('strategy_factor_stats')
-          .select('strategy_key, hit3, market_phase, recorded_at')
-          .eq('market_phase', livePhase)
+          .select('strategy_key, hit3, recorded_at')
+          .gte('recorded_at', twoHoursAgo)
           .order('recorded_at', { ascending: false })
-          .limit(400);
+          .limit(200);
 
-        if (!factorErr && factorRows && factorRows.length > 0) {
-          // 用 strategy_key 計算命中率
+        if (!recentErr && recentRows && recentRows.length > 0) {
           const keyStats = {};
-          for (const row of factorRows) {
+
+          for (const row of recentRows) {
             const k = row.strategy_key;
-            if (!keyStats[k]) keyStats[k] = { hit3: 0, total: 0, lastSeen: 0 };
-            keyStats[k].hit3 += (row.hit3 || 0);
-            keyStats[k].total += 1;
+            const isRecent = row.recorded_at >= oneHourAgo; // 最近1小時權重更高
+            if (!keyStats[k]) keyStats[k] = { hit3Recent: 0, totalRecent: 0, hit3Old: 0, totalOld: 0 };
+            if (isRecent) {
+              keyStats[k].hit3Recent += (row.hit3 || 0);
+              keyStats[k].totalRecent += 1;
+            } else {
+              keyStats[k].hit3Old += (row.hit3 || 0);
+              keyStats[k].totalOld += 1;
+            }
           }
 
-          // 計算每個 strategy_key 的命中率和冷板凳期數
-          const allKeys = Object.keys(keyStats);
+          // 計算加權命中率：最近1小時權重×3，前1小時權重×1
           const hit3Rates = {};
-          for (const k of allKeys) {
-            const s = keyStats[k];
-            hit3Rates[k] = s.total >= 5 ? s.hit3 / s.total : 0.01;
+          for (const [k, s] of Object.entries(keyStats)) {
+            const recentRate = s.totalRecent >= 3 ? s.hit3Recent / s.totalRecent : null;
+            const oldRate = s.totalOld >= 3 ? s.hit3Old / s.totalOld : null;
+            if (recentRate !== null && oldRate !== null) {
+              hit3Rates[k] = (recentRate * 3 + oldRate * 1) / 4; // 加權平均
+            } else if (recentRate !== null) {
+              hit3Rates[k] = recentRate;
+            } else if (oldRate !== null) {
+              hit3Rates[k] = oldRate * 0.5; // 只有舊資料，打折
+            } else {
+              hit3Rates[k] = 0.01;
+            }
           }
 
-          // 找最高命中率作為基準
           const maxRate = Math.max(...Object.values(hit3Rates), 0.01);
 
-          // 把 strategy_key 的命中率轉換成角色權重
-          // strategy_key 命中率高 → 對應角色上場比重提高
-          // 規則：hit3rate > maxRate*0.7 → 權重1.5（熱身）
-          //        hit3rate < maxRate*0.3 → 權重0.5（冷板凳）
-          //        其他 → 權重1.0（正常）
-          for (const k of allKeys) {
-            const rate = hit3Rates[k];
-            if (rate >= maxRate * 0.7) {
-              roleWeights[k] = 1.5; // 狀態熱，增加上場
-            } else if (rate < maxRate * 0.3) {
-              roleWeights[k] = 0.5; // 狀態冷，減少上場
+          for (const [k, rate] of Object.entries(hit3Rates)) {
+            const s = keyStats[k];
+            // 連3局中0 → 強制冷板凳
+            const recentConsecZero = s.totalRecent >= 3 && s.hit3Recent === 0;
+            if (recentConsecZero) {
+              roleWeights[k] = 0.2; // 最近1小時完全沒中，強制換人
+            } else if (rate >= maxRate * 0.7) {
+              roleWeights[k] = 2.0; // 狀態熱，大幅提高上場
+            } else if (rate >= maxRate * 0.4) {
+              roleWeights[k] = 1.2; // 狀態中，小幅提高
             } else {
-              roleWeights[k] = 1.0; // 正常輪替
+              roleWeights[k] = 0.5; // 狀態冷，減少上場
             }
           }
 
-          // 冷板凳保護：如果某個 key 已超過30期沒上場，給它一次機會
-          const recentKeys = new Set(factorRows.slice(0, 30).map(r => r.strategy_key));
+          // 冷板凳保護：超過20期沒上場，給一次機會
+          const recentKeys = new Set(recentRows.slice(0, 20).map(r => r.strategy_key));
           for (const k of sorted3starKeys) {
             if (!recentKeys.has(k)) {
-              roleWeights[k] = 1.2; // 久坐冷板凳，給機會
-              console.log(`[step7] ${k} 冷板凳超過30期，強制回場`);
+              roleWeights[k] = 1.3;
+              console.log(`[step7] ${k} 冷板凳，強制回場`);
             }
           }
 
-          console.log(`[step7] phase=${livePhase} roleWeights=${JSON.stringify(roleWeights)}`);
+          const hotKeys = Object.entries(roleWeights).filter(([,w]) => w >= 2.0).map(([k]) => k);
+          const coldKeys = Object.entries(roleWeights).filter(([,w]) => w <= 0.2).map(([k]) => k);
+          console.log(`[step7] phase=${livePhase} hot=[${hotKeys}] cold=[${coldKeys}]`);
         }
       } catch (factorQueryErr) {
         console.warn('[step7] roleWeights query failed:', factorQueryErr.message);
