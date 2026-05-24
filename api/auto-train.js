@@ -1210,22 +1210,29 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
 
           for (const [k, score] of Object.entries(finalScores)) {
             const rs = recentStats[k];
-            // 層三：即時換人信號（連3局中0 → 強制冷板凳，不管長期多好）
+            const longRate = longRates[k] || 0;
+            const latestRate = rs && rs.totalLatest >= 3 ? rs.hit3Latest / rs.totalLatest : null;
+
+            // ✅ 底層思維：短期狀態比長期重要，即時反應
+            // 最近1小時完全沒中 → 連3局掛蛋信號
             const recentConsecZero = rs && rs.totalLatest >= 3 && rs.hit3Latest === 0;
+            // 最近1小時表現優異 → 球員發燙
+            const recentHot = latestRate !== null && latestRate >= 0.02;
+            // 長期好球員 → 背景調查佳
+            const longGood = longRate >= maxLongRate * 0.6;
 
-            // 長期好但最近差：給機會但減量（可能是低潮，不是壞球員）
-            const longGoodRecentBad = (longRates[k] || 0) >= maxLongRate * 0.6 && recentConsecZero;
-
-            if (recentConsecZero && !longGoodRecentBad) {
-              roleWeights[k] = 0.2; // 狀態差且長期一般：深度冷板凳
-            } else if (recentConsecZero && longGoodRecentBad) {
-              roleWeights[k] = 0.6; // 長期好球員低潮：減少但不完全換出
-            } else if (score >= maxScore * 0.75) {
-              roleWeights[k] = 2.0; // 長期好+最近好：大膽用
-            } else if (score >= maxScore * 0.45) {
-              roleWeights[k] = 1.2; // 表現中等：正常輪替
+            if (recentConsecZero && longGood) {
+              roleWeights[k] = 0.6; // 長期好但最近低潮：減量觀察
+            } else if (recentConsecZero && !longGood) {
+              roleWeights[k] = 0.2; // 長期一般又最近掛蛋：深度冷板凳
+            } else if (recentHot && longGood) {
+              roleWeights[k] = 2.0; // 長期好+最近熱：大膽用
+            } else if (recentHot && !longGood) {
+              roleWeights[k] = 1.5; // 最近熱但長期一般：謹慎加碼
+            } else if (score >= maxScore * 0.6) {
+              roleWeights[k] = 1.3; // 整體表現不錯：小幅加碼
             } else {
-              roleWeights[k] = 0.5; // 表現偏差：減少出場
+              roleWeights[k] = 0.8; // 表現普通：正常出場
             }
           }
 
