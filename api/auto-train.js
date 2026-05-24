@@ -1134,78 +1134,107 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
         [...numFreqMap.entries()].map(([n, f]) => [String(n), f])
       );
 
-      // ✅ 步驟七 v2：即時反應機制
-      // 每場比賽（1小時）獨立評估，每局（5分鐘）即時感知
-      // 連3局中0 → 強制換人；連2局中3 → 繼續用
+      // ✅ 步驟七 v3：三層評估機制（背景調查 + 場次表現 + 即時狀態）
+      // 長期400期：球員背景戰績（決定基礎能力）
+      // 最近2小時：本場比賽表現（決定今天狀態）
+      // 連3局中0：即時換人信號（緊急調度）
       const livePhase = liveMarketSnapshot.market_phase || 'rotation';
       let roleWeights = {};
       try {
         const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
         const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
 
-        // 查最近2小時資料（約24期），分兩層：最近1小時 + 前1小時
-        const { data: recentRows, error: recentErr } = await db
-          .from('strategy_factor_stats')
-          .select('strategy_key, hit3, recorded_at')
-          .gte('recorded_at', twoHoursAgo)
-          .order('recorded_at', { ascending: false })
-          .limit(200);
+        // 同時查：長期400期（背景）+ 最近2小時（即時）
+        const [longTermRes, recentRes] = await Promise.all([
+          db.from('strategy_factor_stats')
+            .select('strategy_key, hit3')
+            .order('recorded_at', { ascending: false })
+            .limit(400),
+          db.from('strategy_factor_stats')
+            .select('strategy_key, hit3, recorded_at')
+            .gte('recorded_at', twoHoursAgo)
+            .order('recorded_at', { ascending: false })
+            .limit(200)
+        ]);
 
-        if (!recentErr && recentRows && recentRows.length > 0) {
-          const keyStats = {};
+        const longTermRows = (!longTermRes.error && longTermRes.data) ? longTermRes.data : [];
+        const recentRows = (!recentRes.error && recentRes.data) ? recentRes.data : [];
 
+        if (longTermRows.length > 0 || recentRows.length > 0) {
+          // 層一：長期戰績（背景調查）
+          const longStats = {};
+          for (const row of longTermRows) {
+            const k = row.strategy_key;
+            if (!longStats[k]) longStats[k] = { hit3: 0, total: 0 };
+            longStats[k].hit3 += (row.hit3 || 0);
+            longStats[k].total += 1;
+          }
+          const longRates = {};
+          for (const [k, s] of Object.entries(longStats)) {
+            longRates[k] = s.total >= 10 ? s.hit3 / s.total : 0.01;
+          }
+          const maxLongRate = Math.max(...Object.values(longRates), 0.01);
+
+          // 層二：最近2小時（場次表現）
+          const recentStats = {};
           for (const row of recentRows) {
             const k = row.strategy_key;
-            const isRecent = row.recorded_at >= oneHourAgo; // 最近1小時權重更高
-            if (!keyStats[k]) keyStats[k] = { hit3Recent: 0, totalRecent: 0, hit3Old: 0, totalOld: 0 };
-            if (isRecent) {
-              keyStats[k].hit3Recent += (row.hit3 || 0);
-              keyStats[k].totalRecent += 1;
+            const isLatest = row.recorded_at >= oneHourAgo;
+            if (!recentStats[k]) recentStats[k] = { hit3Latest: 0, totalLatest: 0, hit3Prev: 0, totalPrev: 0 };
+            if (isLatest) {
+              recentStats[k].hit3Latest += (row.hit3 || 0);
+              recentStats[k].totalLatest += 1;
             } else {
-              keyStats[k].hit3Old += (row.hit3 || 0);
-              keyStats[k].totalOld += 1;
+              recentStats[k].hit3Prev += (row.hit3 || 0);
+              recentStats[k].totalPrev += 1;
             }
           }
 
-          // 計算加權命中率：最近1小時權重×3，前1小時權重×1
-          const hit3Rates = {};
-          for (const [k, s] of Object.entries(keyStats)) {
-            const recentRate = s.totalRecent >= 3 ? s.hit3Recent / s.totalRecent : null;
-            const oldRate = s.totalOld >= 3 ? s.hit3Old / s.totalOld : null;
-            if (recentRate !== null && oldRate !== null) {
-              hit3Rates[k] = (recentRate * 3 + oldRate * 1) / 4; // 加權平均
-            } else if (recentRate !== null) {
-              hit3Rates[k] = recentRate;
-            } else if (oldRate !== null) {
-              hit3Rates[k] = oldRate * 0.5; // 只有舊資料，打折
+          // 綜合評分：長期×1 + 最近1小時×3 + 前1小時×2
+          const allKeys = new Set([...Object.keys(longRates), ...Object.keys(recentStats)]);
+          const finalScores = {};
+          for (const k of allKeys) {
+            const longRate = longRates[k] || 0.01;
+            const rs = recentStats[k];
+            const latestRate = rs && rs.totalLatest >= 3 ? rs.hit3Latest / rs.totalLatest : null;
+            const prevRate = rs && rs.totalPrev >= 3 ? rs.hit3Prev / rs.totalPrev : null;
+
+            let score = longRate * 1; // 長期基礎分
+            if (latestRate !== null) score += latestRate * 3; // 最近1小時最重要
+            if (prevRate !== null) score += prevRate * 2; // 前1小時次之
+            const denominator = 1 + (latestRate !== null ? 3 : 0) + (prevRate !== null ? 2 : 0);
+            finalScores[k] = score / denominator;
+          }
+
+          const maxScore = Math.max(...Object.values(finalScores), 0.01);
+
+          for (const [k, score] of Object.entries(finalScores)) {
+            const rs = recentStats[k];
+            // 層三：即時換人信號（連3局中0 → 強制冷板凳，不管長期多好）
+            const recentConsecZero = rs && rs.totalLatest >= 3 && rs.hit3Latest === 0;
+
+            // 長期好但最近差：給機會但減量（可能是低潮，不是壞球員）
+            const longGoodRecentBad = (longRates[k] || 0) >= maxLongRate * 0.6 && recentConsecZero;
+
+            if (recentConsecZero && !longGoodRecentBad) {
+              roleWeights[k] = 0.2; // 狀態差且長期一般：深度冷板凳
+            } else if (recentConsecZero && longGoodRecentBad) {
+              roleWeights[k] = 0.6; // 長期好球員低潮：減少但不完全換出
+            } else if (score >= maxScore * 0.75) {
+              roleWeights[k] = 2.0; // 長期好+最近好：大膽用
+            } else if (score >= maxScore * 0.45) {
+              roleWeights[k] = 1.2; // 表現中等：正常輪替
             } else {
-              hit3Rates[k] = 0.01;
+              roleWeights[k] = 0.5; // 表現偏差：減少出場
             }
           }
 
-          const maxRate = Math.max(...Object.values(hit3Rates), 0.01);
-
-          for (const [k, rate] of Object.entries(hit3Rates)) {
-            const s = keyStats[k];
-            // 連3局中0 → 強制冷板凳
-            const recentConsecZero = s.totalRecent >= 3 && s.hit3Recent === 0;
-            if (recentConsecZero) {
-              roleWeights[k] = 0.2; // 最近1小時完全沒中，強制換人
-            } else if (rate >= maxRate * 0.7) {
-              roleWeights[k] = 2.0; // 狀態熱，大幅提高上場
-            } else if (rate >= maxRate * 0.4) {
-              roleWeights[k] = 1.2; // 狀態中，小幅提高
-            } else {
-              roleWeights[k] = 0.5; // 狀態冷，減少上場
-            }
-          }
-
-          // 冷板凳保護：超過20期沒上場，給一次機會
-          const recentKeys = new Set(recentRows.slice(0, 20).map(r => r.strategy_key));
+          // 冷板凳保護：超過20期沒出現在最近資料，給一次回場機會
+          const recentKeySet = new Set(recentRows.slice(0, 20).map(r => r.strategy_key));
           for (const k of sorted3starKeys) {
-            if (!recentKeys.has(k)) {
-              roleWeights[k] = 1.3;
-              console.log(`[step7] ${k} 冷板凳，強制回場`);
+            if (!recentKeySet.has(k) && !roleWeights[k]) {
+              roleWeights[k] = 1.3; // 久坐冷板凳，給機會
+              console.log(`[step7] ${k} 久未上場，強制回場`);
             }
           }
 
