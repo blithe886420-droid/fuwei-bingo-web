@@ -24,7 +24,7 @@ const SUPABASE_KEY =
 const TEST_MODE = 'test';
 const FORMAL_MODE = 'formal';
 const FORMAL_CANDIDATE_MODE = 'formal_candidate';
-const COMPARE_MODES = [TEST_MODE, FORMAL_MODE, 'formal_3star'];
+const COMPARE_MODES = ['formal_3star']; // 4star disabled
 
 const BET_GROUP_COUNT = 4;
 const TARGET_PERIODS = 1;
@@ -63,11 +63,13 @@ const SOFT_SHRINK_TRIGGER = MAX_ACTIVE_STRATEGY + 1;
 const HARD_SHRINK_TRIGGER = 120;
 const EXTREME_SHRINK_TRIGGER = 160;
 
-// ✅ 三星加碼減碼設定
-const STAR3_MIN_GROUPS = 5;   // 連續沒中2時的最少組數
-const STAR3_MAX_GROUPS = 8;   // 正常/加碼時的最大組數
-const STAR3_DEFAULT_GROUPS = 8; // 預設出幾組（初始 / 中3後維持）
-const STAR3_REDUCE_AFTER_NO_HIT2 = 3; // 連續幾期沒中2就縮組
+// ✅ 三星加碼減碼設定 v2（含跳過機制）
+const STAR3_SKIP_GROUPS = 0;   // 跳過這期，不压
+const STAR3_MIN_GROUPS = 3;    // 低潮期最少压幾組（原本5，降低成本）
+const STAR3_DEFAULT_GROUPS = 6; // 預設組數（原本8，改為中等）
+const STAR3_MAX_GROUPS = 8;    // 發燙期最大組數
+const STAR3_REDUCE_AFTER_NO_HIT2 = 3;  // 連續幾期沒中2就縮組
+const STAR3_SKIP_AFTER_NO_HIT2 = 6;    // 連續幾期沒中2就跳過（深度低潮）
 
 const KNOWN_GENES = [
   'hot',
@@ -475,22 +477,26 @@ async function fetch3starBettingState(db) {
     let groupCount;
     let reason;
 
-    if (lastHit3) {
+    if (consecutiveNoHit2 >= STAR3_SKIP_AFTER_NO_HIT2) {
+      // 連續6期以上沒中2 → 深度低潮，跳過這期，節省成本
+      groupCount = STAR3_SKIP_GROUPS;
+      reason = `skip_deep_slump_${consecutiveNoHit2}_periods`;
+    } else if (lastHit3) {
       // 中3後維持最大組數繼續追
       groupCount = STAR3_MAX_GROUPS;
       reason = 'hit3_maintain_max';
-    } else if (consecutiveNoHit2 >= STAR3_REDUCE_AFTER_NO_HIT2) {
-      // 連續3期以上沒中2 → 縮組省成本
-      groupCount = STAR3_MIN_GROUPS;
-      reason = `consecutive_no_hit2_${consecutiveNoHit2}_reduce_to_${STAR3_MIN_GROUPS}`;
     } else if (consecutiveHit2 >= 2) {
       // 連續2期以上中2 → 加碼追中3
       groupCount = STAR3_MAX_GROUPS;
       reason = `consecutive_hit2_${consecutiveHit2}_boost_to_${STAR3_MAX_GROUPS}`;
     } else if (consecutiveHit2 >= 1) {
       // 剛中一次2 → 維持正常組數
-      groupCount = STAR3_MAX_GROUPS;
-      reason = 'hit2_maintain_max';
+      groupCount = STAR3_DEFAULT_GROUPS;
+      reason = 'hit2_maintain';
+    } else if (consecutiveNoHit2 >= STAR3_REDUCE_AFTER_NO_HIT2) {
+      // 連續3~5期沒中2 → 縮組省成本
+      groupCount = STAR3_MIN_GROUPS;
+      reason = `consecutive_no_hit2_${consecutiveNoHit2}_reduce_to_${STAR3_MIN_GROUPS}`;
     } else {
       // 其他情況（1~2期沒中2）→ 維持預設
       groupCount = STAR3_DEFAULT_GROUPS;
@@ -867,6 +873,11 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
       // ✅ 動態加碼/減碼：讀取近期三星命中狀態，決定本期出幾組
       const bettingState = await fetch3starBettingState(db);
       const dynamicGroupCount = bettingState.groupCount;
+
+      // ✅ v2 跳過機制：深度低潮時 groupCount=0，不建立三星預測，但繼續其他流程
+      if (dynamicGroupCount === STAR3_SKIP_GROUPS) {
+        console.log(`[3star] 跳過本期：${bettingState.reason}，深度低潮 consecutiveNoHit2=${bettingState.consecutiveNoHit2}，不建立預測`);
+      } else {
 
       // ✅ 從 strategy_pool 取所有 active 策略（和四星一樣動態競爭）
       const poolRows3star = await db
@@ -1494,6 +1505,7 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
           `盤相: ${result3star.marketPhase}`
         );
       }
+      } // end else (dynamicGroupCount !== 0)
     }
   } catch (err3) {
     console.warn('[3star] 真三星產生失敗:', err3.message);
@@ -3166,10 +3178,10 @@ export default async function handler(req, res) {
     const market = buildMarketState(marketRows);
     marketSnapshot = enrichMarketSnapshotWithPhase(marketSnapshot, market);
 
-    const spawn = await spawnStrategiesIfNeeded(db, latestDrawNo);
-    const shrink = await shrinkStrategiesIfNeeded(db);
-
-    const create = await createLatestTestPrediction(db, latestDrawNo, marketSnapshot);
+    // 4star disabled - spawn/shrink/createTestPrediction all stopped
+    const spawn = { skipped: true, reason: '4star_disabled' };
+    const shrink = { skipped: true, reason: '4star_disabled' };
+    const create = { created_count: 0, active_created_prediction: null, skipped: true, reason: '4star_disabled' };
 
     // ✅ v15：移除 runAutoCompareForLatest（條件 source+1===target 太嚴格，易卡 pending）
     // 統一改由 comparePendingPredictions 處理，內含 autoSkipStalePendingPredictions 保護
