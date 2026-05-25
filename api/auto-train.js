@@ -1268,13 +1268,30 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
           }
 
           // 異常保護：冷板凳超過一半時重置
-          const coldKeys = Object.entries(roleWeights).filter(([,w]) => w <= 0.3).map(([k]) => k);
+          // ✅ v2：門檻從 0.3 放寬到 0.1，避免資料累積初期誤觸發
+          const coldKeys = Object.entries(roleWeights).filter(([,w]) => w <= 0.1).map(([k]) => k);
           const hotKeys = Object.entries(roleWeights).filter(([,w]) => w >= 2.0).map(([k]) => k);
           const totalKeys = Object.keys(roleWeights).length;
 
           if (totalKeys > 0 && coldKeys.length > totalKeys * 0.5) {
-            console.log(`[step7] 異常保護：冷板凳比例過高(${coldKeys.length}/${totalKeys})，重置為預設權重`);
+            console.log(`[step7] 異常保護：冷板凳比例過高(${coldKeys.length}/${totalKeys})，重置為預設權重並套用盤相 ${livePhase}`);
+            // ✅ v2：重置後套用當前盤相的基礎角色配置，而不是全部 1.0
+            // 這樣 bias 盤重置後還是拿 bias 配置，不會變成 rotation 配置
+            const resetBaseRoles = {
+              continuation: { streak: 2, cold: 2, recent: 2, hot: 1, zone_fill: 1 },
+              bias: { zone_fill: 2, cold: 2, gap_zone: 1, hot: 1, recent: 1, scatter: 1 },
+              chaos: { scatter: 2, cold: 2, anti_hot: 1, balance: 1, zone_fill: 1, recent: 1 },
+              rotation: { cold: 2, recent: 2, hot: 1, zone_fill: 1, scatter: 1, balance: 1 }
+            };
+            const resetBase = resetBaseRoles[livePhase] || resetBaseRoles.rotation;
+            // 重置為 1.0，再對盤相核心角色加碼到 1.3
             for (const k of Object.keys(roleWeights)) roleWeights[k] = 1.0;
+            const resetRoleKeys = Object.keys(resetBase);
+            for (const k of Object.keys(roleWeights)) {
+              const keyLower = k.toLowerCase();
+              const matched = resetRoleKeys.some(role => keyLower.includes(role));
+              if (matched) roleWeights[k] = 1.3;
+            }
           }
 
           console.log(`[step7] phase=${livePhase} hot=[${hotKeys.join(',')}] cold=[${coldKeys.join(',')}]`);
