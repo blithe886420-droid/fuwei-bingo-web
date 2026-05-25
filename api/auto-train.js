@@ -1139,8 +1139,73 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
       // 步驟七直接輸出「角色分配數量」，不只是排序
       // 發燙的角色多出場，低潮的角色少出場，完全動態
       const livePhase = liveMarketSnapshot.market_phase || 'rotation';
-      let roleWeights = {};
       let dynamicRoleAllocation = null; // 步驟七直接輸出的角色分配
+
+      // ✅ v3：基於 5/17~5/25 歷史資料(13072筆)的初始權重
+      // 各策略在各盤相的實測 hit3_rate，直接作為起點，不再從 1.0 盲目開始
+      // bias(30.7%) / continuation(41.5%) / rotation(27.8%)
+      const historicalBaseWeights = {
+        bias: {
+          dynamic_zone_fill_6: 2.0,  // 3.92% 最強
+          dynamic_cold_5:      1.8,  // 3.17%
+          board_6:             1.4,  // 1.99%
+          cold_zone_cover:     1.2,  // 1.39%
+          zone_rotation_hot_2: 1.1,  // 1.20%
+          mix_gap:             1.1,  // 1.19%
+          board_5:             1.0,  // 1.00%
+          hot_zone_cover_1:    0.8,  // 0.79%
+          rebound:             0.6,  // 0.60% 明顯弱
+          mix_zone_3:          0.5,  // 0.40% 弱
+          dynamic_recent_5:    0.3,  // 0.00% 完全沒中
+          dynamic_recent_6:    0.3,  // 0.00%
+          dynamic_hot_5:       0.3,  // 0.00%
+          balanced_zone:       0.3,  // 0.00%
+          dynamic_cold_6:      0.1,  // 0.00% 廢物
+        },
+        continuation: {
+          dynamic_hot_5:       1.8,  // 2.56% 最強
+          rebound:             1.8,  // 2.54%
+          dynamic_recent_5:    1.7,  // 2.26%
+          dynamic_recent_6:    1.6,  // 3.23% (樣本少，給中等)
+          dynamic_cold_5:      1.3,  // 1.79%
+          mix_zone_3:          1.2,  // 1.46%
+          hot_zone_cover_1:    1.1,  // 1.32%
+          board_5:             1.1,  // 1.30%
+          board_6:             1.1,  // 1.30%
+          zone_rotation_hot_2: 1.0,  // 1.17%
+          cold_zone_cover:     1.0,  // 1.17%
+          mix_gap:             0.6,  // 0.58% 弱
+          dynamic_zone_fill_6: 0.5,  // 0.47% 弱
+          dynamic_cold_6:      0.1,  // 0.00% 廢物
+          balanced_zone:       0.3,  // 0.00%
+        },
+        rotation: {
+          board_6:             1.5,  // 1.56% 最強
+          mix_gap:             1.3,  // 1.32%
+          hot_zone_cover_1:    1.3,  // 1.31%
+          rebound:             1.3,  // 1.31%
+          cold_zone_cover:     1.1,  // 1.09%
+          balanced_zone:       1.0,  // 1.05%
+          zone_rotation_hot_2: 0.9,  // 0.89%
+          board_5:             0.9,  // 0.85%
+          mix_zone_3:          0.7,  // 0.66%
+          // rotation盤樣本少的策略給中性值
+          dynamic_cold_5:      1.0,
+          dynamic_recent_5:    1.0,
+          dynamic_hot_5:       1.0,
+          dynamic_zone_fill_6: 1.0,
+          dynamic_cold_6:      0.1,  // 全盤相都是0%，直接封殺
+        }
+      };
+
+      // 套用初始權重（根據當前盤相）
+      const phaseBaseWeights = historicalBaseWeights[livePhase] || historicalBaseWeights.rotation;
+      let roleWeights = {};
+      for (const k of sorted3starKeys) {
+        // 用歷史資料初始值，沒有對應的給 1.0
+        roleWeights[k] = phaseBaseWeights[k] ?? 1.0;
+      }
+      console.log(`[step7 v3] 套用歷史初始權重 phase=${livePhase}，策略數=${Object.keys(roleWeights).length}`);
       try {
         const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
         const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
@@ -1268,29 +1333,16 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
           }
 
           // 異常保護：冷板凳超過一半時重置
-          // ✅ v2：門檻從 0.3 放寬到 0.1，避免資料累積初期誤觸發
+          // ✅ v3：門檻從 0.3 放寬到 0.1，避免資料少時誤觸發
           const coldKeys = Object.entries(roleWeights).filter(([,w]) => w <= 0.1).map(([k]) => k);
           const hotKeys = Object.entries(roleWeights).filter(([,w]) => w >= 2.0).map(([k]) => k);
           const totalKeys = Object.keys(roleWeights).length;
 
           if (totalKeys > 0 && coldKeys.length > totalKeys * 0.5) {
-            console.log(`[step7] 異常保護：冷板凳比例過高(${coldKeys.length}/${totalKeys})，重置為預設權重並套用盤相 ${livePhase}`);
-            // ✅ v2：重置後套用當前盤相的基礎角色配置，而不是全部 1.0
-            // 這樣 bias 盤重置後還是拿 bias 配置，不會變成 rotation 配置
-            const resetBaseRoles = {
-              continuation: { streak: 2, cold: 2, recent: 2, hot: 1, zone_fill: 1 },
-              bias: { zone_fill: 2, cold: 2, gap_zone: 1, hot: 1, recent: 1, scatter: 1 },
-              chaos: { scatter: 2, cold: 2, anti_hot: 1, balance: 1, zone_fill: 1, recent: 1 },
-              rotation: { cold: 2, recent: 2, hot: 1, zone_fill: 1, scatter: 1, balance: 1 }
-            };
-            const resetBase = resetBaseRoles[livePhase] || resetBaseRoles.rotation;
-            // 重置為 1.0，再對盤相核心角色加碼到 1.3
-            for (const k of Object.keys(roleWeights)) roleWeights[k] = 1.0;
-            const resetRoleKeys = Object.keys(resetBase);
+            console.log(`[step7] 異常保護：冷板凳比例過高(${coldKeys.length}/${totalKeys})，回歸歷史初始權重 phase=${livePhase}`);
+            // ✅ v3：重置回歷史初始權重，不是全部 1.0
             for (const k of Object.keys(roleWeights)) {
-              const keyLower = k.toLowerCase();
-              const matched = resetRoleKeys.some(role => keyLower.includes(role));
-              if (matched) roleWeights[k] = 1.3;
+              roleWeights[k] = phaseBaseWeights[k] ?? 1.0;
             }
           }
 
