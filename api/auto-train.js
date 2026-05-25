@@ -1134,13 +1134,13 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
         [...numFreqMap.entries()].map(([n, f]) => [String(n), f])
       );
 
-      // ✅ 步驟七 v4：三層評估機制（底層思維驅動）
-      // 第一層：最近30分鐘 × 4（最重要，即時狀態）
-      // 第二層：最近1小時 × 2（今天這場比賽）
-      // 第三層：長期400期 × 1（球員背景戰績）
-      // 冷板凳：連6局中0才降，長期好球員最低0.5保護
+      // ✅ 步驟七 v5：真正串聯步驟五六七
+      // 步驟五的數據 → 告訴步驟七哪個角色在當前盤面最有效
+      // 步驟七直接輸出「角色分配數量」，不只是排序
+      // 發燙的角色多出場，低潮的角色少出場，完全動態
       const livePhase = liveMarketSnapshot.market_phase || 'rotation';
       let roleWeights = {};
+      let dynamicRoleAllocation = null; // 步驟七直接輸出的角色分配
       try {
         const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
         const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
@@ -1278,13 +1278,95 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
           }
 
           console.log(`[step7] phase=${livePhase} hot=[${hotKeys.join(',')}] cold=[${coldKeys.join(',')}]`);
+
+          // ✅ 步驟七核心：直接計算角色分配數量
+          // 根據 strategy_key 的命中表現，對應到角色名稱，決定每個角色出幾組
+          // 這樣步驟五六七才真正串聯：數據→盤面→角色數量
+          const roleHitMap = {
+            hot: 0, cold: 0, recent: 0, streak: 0,
+            zone_fill: 0, scatter: 0, tail_hot: 0, tail_cold: 0,
+            repeat: 0, anti_hot: 0, gap_zone: 0, chain: 0,
+            dominant: 0, sleeper: 0, mid_zone: 0, edge_zone: 0,
+            odd_bias: 0, sum_low: 0, sum_high: 0, balance: 0
+          };
+          const roleCountMap = { ...roleHitMap };
+
+          // 把 strategy_key 的表現對應到角色
+          for (const [k, w] of Object.entries(roleWeights)) {
+            const key = k.toLowerCase();
+            const addToRole = (role) => {
+              roleHitMap[role] = (roleHitMap[role] || 0) + w;
+              roleCountMap[role] = (roleCountMap[role] || 0) + 1;
+            };
+            if (key.includes('hot') && !key.includes('cold')) addToRole('hot');
+            if (key.includes('cold') || key.includes('rebound')) addToRole('cold');
+            if (key.includes('recent')) addToRole('recent');
+            if (key.includes('streak') || key.includes('chain')) addToRole('streak');
+            if (key.includes('zone') && !key.includes('hot') && !key.includes('cold')) addToRole('zone_fill');
+            if (key.includes('scatter')) addToRole('scatter');
+            if (key.includes('balanced') || key.includes('balance')) addToRole('balance');
+          }
+
+          // 計算每個角色的平均權重
+          const roleAvgWeight = {};
+          for (const role of Object.keys(roleHitMap)) {
+            roleAvgWeight[role] = roleCountMap[role] > 0
+              ? roleHitMap[role] / roleCountMap[role]
+              : 1.0;
+          }
+
+          // 根據當前 market_phase 決定基礎陣容，再用步驟七的權重調整數量
+          // 基礎8組，根據角色權重動態分配
+          const baseRoles = {
+            continuation: { streak: 2, cold: 2, recent: 2, hot: 1, zone_fill: 1 },
+            bias: { zone_fill: 2, cold: 2, gap_zone: 1, hot: 1, recent: 1, scatter: 1 },
+            chaos: { scatter: 2, cold: 2, anti_hot: 1, balance: 1, zone_fill: 1, recent: 1 },
+            rotation: { cold: 2, recent: 2, hot: 1, zone_fill: 1, scatter: 1, balance: 1 }
+          };
+
+          const base = baseRoles[livePhase] || baseRoles.rotation;
+
+          // 根據步驟七的權重調整分配：權重高的角色可以多1組，權重低的減1組
+          const adjusted = { ...base };
+          let totalGroups8 = Object.values(adjusted).reduce((a, b) => a + b, 0);
+
+          // 找最高權重角色加1組，最低權重角色減1組
+          const sortedByWeight = Object.keys(roleAvgWeight)
+            .filter(r => adjusted[r] !== undefined)
+            .sort((a, b) => roleAvgWeight[b] - roleAvgWeight[a]);
+
+          if (sortedByWeight.length >= 2) {
+            const hotRole = sortedByWeight[0];
+            const coldRole = sortedByWeight[sortedByWeight.length - 1];
+            if (roleAvgWeight[hotRole] >= 1.5 && adjusted[coldRole] > 1) {
+              adjusted[hotRole] = (adjusted[hotRole] || 0) + 1;
+              adjusted[coldRole] = adjusted[coldRole] - 1;
+              console.log(`[step7] 加碼 ${hotRole}(w=${roleAvgWeight[hotRole].toFixed(2)}) 減量 ${coldRole}(w=${roleAvgWeight[coldRole].toFixed(2)})`);
+            }
+          }
+
+          // 展開成角色陣列
+          dynamicRoleAllocation = [];
+          for (const [role, count] of Object.entries(adjusted)) {
+            for (let i = 0; i < count; i++) {
+              dynamicRoleAllocation.push(role);
+            }
+          }
+          // 確保恰好8組
+          while (dynamicRoleAllocation.length < 8) dynamicRoleAllocation.push('scatter');
+          dynamicRoleAllocation = dynamicRoleAllocation.slice(0, 8);
+
+          console.log(`[step7 v5] 動態角色分配: ${dynamicRoleAllocation.join(',')}`);
         }
       } catch (factorQueryErr) {
         console.warn('[step7] roleWeights query failed:', factorQueryErr.message);
       }
 
-      // 把 roleWeights 注入 liveMarketSnapshot，供 buildBingoV1Strategies 使用
+      // 把 roleWeights 和動態角色分配注入 liveMarketSnapshot
       liveMarketSnapshot.role_weights = roleWeights;
+      if (dynamicRoleAllocation) {
+        liveMarketSnapshot.dynamic_role_allocation = dynamicRoleAllocation;
+      }
 
       const result3star = buildBingoV1Strategies(
         marketRows.data || [],
