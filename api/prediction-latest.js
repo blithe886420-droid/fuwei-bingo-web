@@ -404,7 +404,8 @@ function buildRecentFormalComparePeriods(rows = [], drawRows = [], limit = 5) {
 
   (Array.isArray(rows) ? rows : []).forEach((rawRow) => {
     const row = normalizePredictionRow(rawRow);
-    if (!row || String(row?.mode || '') !== FORMAL_MODE) return;
+    // 4star disabled: support formal_3star too
+    if (!row || (String(row?.mode || '') !== FORMAL_MODE && String(row?.mode || '') !== 'formal_3star')) return;
 
     const compareDrawNo = getCompareDrawNo(row);
     if (!compareDrawNo) return;
@@ -504,6 +505,10 @@ async function getLatestRowByMode(mode) {
 }
 
 async function getLatestFormalSourceDrawNo() {
+  // 4star disabled: check formal_3star first
+  const latest3star = await getLatestRowByMode('formal_3star');
+  if (latest3star?.source_draw_no) return latest3star.source_draw_no;
+
   const latestFormal = await getLatestRowByMode(FORMAL_MODE);
   if (latestFormal?.source_draw_no) return latestFormal.source_draw_no;
 
@@ -561,7 +566,7 @@ async function getRecentFormalComparedRows(limit = 5) {
   const { data, error } = await supabase
     .from(PREDICTIONS_TABLE)
     .select('id, mode, status, source_draw_no, target_periods, created_at, compared_at, compare_status, verdict, hit_count, groups_json, compare_result_json, compare_result, compare_history_json, best_single_hit, confidence_score, market_phase, last_hit_level')
-    .eq('mode', FORMAL_MODE)
+    .eq('mode', 'formal_3star') // 4star disabled
     .eq('status', 'compared')
     .order('created_at', { ascending: false })
     .limit(fetchLimit);
