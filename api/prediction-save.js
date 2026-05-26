@@ -134,6 +134,9 @@ function parseGroupsJson(value) {
   return Array.isArray(parsed) ? parsed : [];
 }
 
+// ⚠️ fix 三：此函數僅用於四星（formal/test）流程的 group 正規化
+// 三星流程（insertThreeStarDerivative）有獨立路徑，不經過此函數
+// nums.length !== 4 的檢查對三星是錯誤的（三星只有3顆），切勿在三星流程呼叫此函數
 function normalizeGroup(group, idx = 0, sourceDraw = null) {
   if (!group || typeof group !== 'object') return null;
 
@@ -147,6 +150,7 @@ function normalizeGroup(group, idx = 0, sourceDraw = null) {
           : []
   ).slice(0, 4);
 
+  // 四星專用：嚴格要求4顆號碼
   if (nums.length !== 4) return null;
 
   const sourceMeta = group.meta && typeof group.meta === 'object' ? group.meta : {};
@@ -2849,12 +2853,16 @@ async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestD
       activeKeySet3s.has(r.strategy_key) && r.strategy_name
     );
 
-    // ✅ v15 sync：動態加碼/減碼（與 auto-train 同步）
-    // 讀取近期三星命中狀態，決定本次出幾組（5~8）
-    const STAR3_MIN_GROUPS_PS = 5;
-    const STAR3_MAX_GROUPS_PS = 8;
-    const STAR3_REDUCE_AFTER_NO_HIT2_PS = 3;
-    let dynamicGroupCount3s = STAR3_MAX_GROUPS_PS;
+    // ✅ fix 二：動態加碼/減碼，完整同步 auto-train 的 fetch3starBettingState 邏輯
+    // 與 auto-train 對齊的常數定義
+    const STAR3_SKIP_GROUPS_PS = 0;    // 深度低潮跳過
+    const STAR3_MIN_GROUPS_PS = 3;     // 低潮縮減（原為5，同步改為3）
+    const STAR3_DEFAULT_GROUPS_PS = 6; // 預設組數（原預設直接給MAX=8，同步改為6）
+    const STAR3_MAX_GROUPS_PS = 8;     // 發燙期最大組數
+    const STAR3_REDUCE_AFTER_NO_HIT2_PS = 3;  // 連續幾期沒中2就縮組
+    const STAR3_SKIP_AFTER_NO_HIT2_PS = 6;    // 連續幾期沒中2就跳過（深度低潮）
+    let dynamicGroupCount3s = STAR3_DEFAULT_GROUPS_PS;
+    let bettingReason3s = 'default';
     try {
       const { data: recentCompared3s } = await db
         .from(PREDICTIONS_TABLE)
@@ -2870,6 +2878,7 @@ async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestD
           const result = raw && typeof raw === 'string' ? (() => { try { return JSON.parse(raw); } catch { return null; } })() : raw;
           return toNum(result?.best_hit ?? row.hit_count, 0);
         });
+
         let consecutiveNoHit2 = 0;
         for (const hit of recentBestHits3s) {
           if (hit < 2) consecutiveNoHit2 += 1;
@@ -2881,11 +2890,37 @@ async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestD
           else break;
         }
         const lastHit3 = recentBestHits3s[0] >= 3;
-        if (lastHit3 || consecutiveHit2 >= 1) {
+
+        // ✅ 完整同步 auto-train 的六種狀態分支
+        if (consecutiveNoHit2 >= STAR3_SKIP_AFTER_NO_HIT2_PS) {
+          // 深度低潮：手動觸發時不跳過（改為縮到最少），避免手動觸發白跑
+          dynamicGroupCount3s = STAR3_MIN_GROUPS_PS;
+          bettingReason3s = `manual_trigger_deep_slump_${consecutiveNoHit2}_use_min`;
+        } else if (lastHit3) {
           dynamicGroupCount3s = STAR3_MAX_GROUPS_PS;
+          bettingReason3s = 'hit3_maintain_max';
+        } else if (consecutiveHit2 >= 2 && consecutiveHit2 <= 4) {
+          dynamicGroupCount3s = STAR3_MAX_GROUPS_PS;
+          bettingReason3s = `consecutive_hit2_${consecutiveHit2}_boost_to_${STAR3_MAX_GROUPS_PS}`;
+        } else if (consecutiveHit2 > 4) {
+          // 高原保護：連續中2超過4期但沒中3，維持預設不繼續加碼
+          dynamicGroupCount3s = STAR3_DEFAULT_GROUPS_PS;
+          bettingReason3s = `hit2_plateau_${consecutiveHit2}_maintain_default`;
+        } else if (consecutiveHit2 >= 1) {
+          dynamicGroupCount3s = STAR3_DEFAULT_GROUPS_PS;
+          bettingReason3s = 'hit2_maintain';
         } else if (consecutiveNoHit2 >= STAR3_REDUCE_AFTER_NO_HIT2_PS) {
           dynamicGroupCount3s = STAR3_MIN_GROUPS_PS;
+          bettingReason3s = `consecutive_no_hit2_${consecutiveNoHit2}_reduce_to_${STAR3_MIN_GROUPS_PS}`;
+        } else {
+          dynamicGroupCount3s = STAR3_DEFAULT_GROUPS_PS;
+          bettingReason3s = 'default';
         }
+
+        console.log(
+          `[3star prediction-save] groupCount=${dynamicGroupCount3s} reason=${bettingReason3s}`,
+          `consecutiveNoHit2=${consecutiveNoHit2} consecutiveHit2=${consecutiveHit2} lastHit3=${lastHit3}`
+        );
       }
     } catch (bettingStateErr) {
       console.warn('[3star prediction-save] bettingState failed, use default:', bettingStateErr.message);
@@ -3083,16 +3118,21 @@ async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestD
       mode: 'formal_3star',
       status: 'created',
       source_draw_no: String(sourceDrawNo),
+      // ✅ fix 一：補入 source_draw_time，與 auto-train payload3star 欄位一致
+      source_draw_time: latestDraw?.draw_time || null,
       target_periods: 1,
-      latest_draw_numbers: JSON.stringify(parseNums(latestDraw?.numbers || [])),
+      // ✅ fix 一：parseNums 直接回傳 Array，不需 JSON.stringify（與 auto-train 一致）
+      latest_draw_numbers: parseNums(latestDraw?.numbers || []),
       compare_result_json: null,
       compare_result: null,
-      compare_status: 'pending',  // ✅ 修正：讓 comparePendingPredictions 能找到這筆
+      compare_status: 'pending',
       hit_count: 0,
       compared_history_json: [],
       compared_draw_count: 0,
       verdict: null,
-      compared_at: null
+      compared_at: null,
+      // ✅ fix 一：明確帶入 created_at，與 auto-train 行為一致
+      created_at: new Date().toISOString()
     };
 
     const { data, error } = await db
