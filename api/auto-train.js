@@ -1471,14 +1471,14 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
 
           console.log(`[step7 v5] 動態角色分配: ${dynamicRoleAllocation.join(',')}`);
         }
-        } else {
-          // ✅ fix：strategy_factor_stats 完全無資料（如剛清空）時，直接套用歷史初始權重
-          // 避免 roleWeights 停留在 historicalBaseWeights 初始值但完全不進入調整邏輯的歧義狀態
+      } else {
+          // ✅ fix：strategy_factor_stats 完全無資料時，直接套用歷史初始權重
           console.log(`[step7] 無即時資料，全部套用歷史初始權重 phase=${livePhase}`);
           for (const k of sorted3starKeys) {
             roleWeights[k] = phaseBaseWeights[k] ?? 1.0;
           }
-        }
+      }
+      } catch (factorQueryErr) {
         console.warn('[step7] roleWeights query failed:', factorQueryErr.message);
       }
 
