@@ -679,7 +679,8 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
   if (!predictionRow?.id || !predictionRow?.groups_json) return null;
 
   const mode = String(predictionRow?.mode || '').trim().toLowerCase();
-  if (mode !== TEST_MODE) return null;
+  // v4: accept 'direct' mode for 3star when 4star is disabled
+  if (mode !== TEST_MODE && mode !== 'direct') return null;
 
   const sourceDrawNo = toNum(predictionRow?.source_draw_no, 0);
   if (!sourceDrawNo) return null;
@@ -3204,6 +3205,11 @@ export default async function handler(req, res) {
     const spawn = { skipped: true, reason: '4star_disabled' };
     const shrink = { skipped: true, reason: '4star_disabled' };
     const create = { created_count: 0, active_created_prediction: null, skipped: true, reason: '4star_disabled' };
+
+    // ✅ v4: 四星停用後，三星流程直接在 handler 裡呼叫
+    // 不再依賴 upsertFormalCandidateFromTest（那個函數需要 test mode predictionRow）
+    const fakeTestRow = { id: 'direct', mode: 'test', source_draw_no: latestDrawNo, groups_json: [], market_snapshot_json: marketSnapshot };
+    await upsertFormalCandidateFromTest(db, fakeTestRow);
 
     // ✅ v15：移除 runAutoCompareForLatest（條件 source+1===target 太嚴格，易卡 pending）
     // 統一改由 comparePendingPredictions 處理，內含 autoSkipStalePendingPredictions 保護
