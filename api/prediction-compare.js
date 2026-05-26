@@ -293,12 +293,15 @@ async function getStrategyLeaderboard(limit = 50) {
   const [{ data: statsRows, error: statsError }, { data: poolRows, error: poolError }] = await Promise.all([
     supabase
       .from(STRATEGY_STATS_TABLE)
-      .select('strategy_key, avg_hit, roi, recent_50_roi, total_rounds, hit2, hit3, hit4, score')
+      // ✅ fix A：補齊 strategy_name, avg_coverage_hit, recent_coverage_hit_rate, hit3_rate, recent_hits
+      // 與 prediction-latest.js 保持一致，確保 leaderboard 欄位完整
+      .select('strategy_key, strategy_name, avg_hit, roi, recent_50_roi, total_rounds, hit2, hit3, hit4, score, avg_coverage_hit, recent_coverage_hit_rate, hit3_rate, recent_hits')
       .order('score', { ascending: false })
       .limit(limit),
     supabase
       .from(STRATEGY_POOL_TABLE)
       .select('strategy_key, strategy_name, status, protected_rank')
+      .limit(200)
   ]);
 
   if (statsError) throw statsError;
@@ -314,6 +317,12 @@ async function getStrategyLeaderboard(limit = 50) {
   return (Array.isArray(statsRows) ? statsRows : [])
     .map((row) => normalizeLeaderboardRow(row, poolMap.get(row.strategy_key) || null))
     .filter(Boolean)
+    // ✅ fix B：只顯示 active 策略，與 prediction-latest.js 一致
+    // disabled/retired 策略不應出現在排行榜
+    .filter(row => {
+      const poolRow = poolMap.get(row.strategy_key);
+      return poolRow?.status === 'active';
+    })
     .sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score;
       if (b.recent_50_roi !== a.recent_50_roi) return b.recent_50_roi - a.recent_50_roi;
