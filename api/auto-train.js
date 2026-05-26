@@ -1470,14 +1470,13 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
           dynamicRoleAllocation = dynamicRoleAllocation.slice(0, 8);
 
           console.log(`[step7 v5] 動態角色分配: ${dynamicRoleAllocation.join(',')}`);
-        }
-      } else {
+        } else {
           // ✅ fix：strategy_factor_stats 完全無資料時，直接套用歷史初始權重
           console.log(`[step7] 無即時資料，全部套用歷史初始權重 phase=${livePhase}`);
           for (const k of sorted3starKeys) {
             roleWeights[k] = phaseBaseWeights[k] ?? 1.0;
           }
-      }
+        }
       } catch (factorQueryErr) {
         console.warn('[step7] roleWeights query failed:', factorQueryErr.message);
       }
@@ -3300,8 +3299,7 @@ function calcDecisionScore(meta={}){
    ========================= */
 
 async function runAutoCompareForLatest(db) {
-  // ✅ fix：此函數已 deprecated，liveMarketPhase 在此作用域內無法動態計算，改用固定 fallback
-  // 若未來需要重新啟用，請在 try 內重新計算 liveMarketPhase
+  // ✅ fix：此函數已 deprecated，liveMarketPhase 在此作用域內無法動態計算
   const liveMarketPhase = 'rotation';
   try {
     const { data: latestDraw } = await db
