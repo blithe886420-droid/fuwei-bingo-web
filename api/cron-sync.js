@@ -251,6 +251,10 @@ export default async function handler(req, res) {
       method: 'POST'
     });
 
+    // keep-alive: ping prediction-latest to prevent Vercel cold start
+    // fire-and-forget, don't await, don't block the response
+    callInternalApi(baseUrl, '/api/prediction-latest').catch(() => {});
+
     return res.status(200).json({
       ok: flow.ok && autoTrainResult.ok,
       mode: 'cron-sync',
