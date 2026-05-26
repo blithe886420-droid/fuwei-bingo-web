@@ -700,59 +700,9 @@ function buildMarketStreakBuckets(drawRows = []) {
   };
 }
 
-// ✅ v7：取含前綴策略的近5期表現排行（梯隊競爭真實狀況）
-async function getTierLeaderboard() {
-  try {
-    const { data, error } = await supabase
-      .from(STRATEGY_STATS_TABLE)
-      .select('strategy_name, strategy_key, total_rounds, hit3, hit3_rate, recent_hits')
-      .not('strategy_name', 'is', null)
-      .neq('strategy_name', '')
-      .order('total_rounds', { ascending: false })
-      .limit(50);
-
-    if (error || !data) return [];
-
-    return data
-      .filter(row => row.strategy_name && row.strategy_name !== row.strategy_key)
-      .map(row => {
-        try {
-          const recentHitsRaw = row.recent_hits;
-          const recentHits = Array.isArray(recentHitsRaw)
-            ? recentHitsRaw
-            : typeof recentHitsRaw === 'string'
-              ? JSON.parse(recentHitsRaw)
-              : [];
-          const last5 = recentHits.slice(-5);
-          const last5Hit3 = last5.filter(h => Number(h || 0) >= 3).length;
-          const last5Hit2 = last5.filter(h => Number(h || 0) >= 2).length;
-          const last5Hit3Rate = last5.length > 0 ? last5Hit3 / last5.length : 0;
-          const hasRecentHit3 = last5Hit3 > 0;
-
-          return {
-            strategy_name: row.strategy_name,
-            strategy_key: row.strategy_key,
-            total_rounds: row.total_rounds,
-            all_hit3_rate: round4(toNum(row.hit3_rate, 0)),
-            last5_hit3_count: last5Hit3,
-            last5_hit2_count: last5Hit2,
-            last5_hit3_rate: round4(last5Hit3Rate),
-            recent_hits: last5,
-            has_recent_hit3: hasRecentHit3,
-            rank_score: last5Hit3Rate * 0.7 + toNum(row.hit3_rate, 0) * 0.3
-          };
-        } catch {
-          return null;
-        }
-      })
-      .filter(Boolean)
-      .sort((a, b) => b.rank_score - a.rank_score)
-      .slice(0, 20);
-  } catch (err) {
-    console.warn('[getTierLeaderboard] failed:', err?.message);
-    return [];
-  }
-}
+// ✅ getTierLeaderboard 已廢棄刪除（v7）
+// tierLeaderboard 現在直接從 getStrategyLeaderboard 結果衍生（handler 第 886 行）
+// 不再對 DB 發起額外查詢
 
 function buildCurrentTopStrategies(leaderboard = []) {
   return leaderboard.slice(0, 4).map((row, idx) => ({
