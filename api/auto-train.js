@@ -1527,8 +1527,16 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
           compare_result_json: null,
           hit_count: 0,
           verdict: null,
-          latest_draw_numbers: null,
+          latest_draw_numbers: JSON.stringify((marketRows?.data?.[0]?.numbers || '').split(/[,\s]+/).filter(Boolean).map(Number).filter(Number.isFinite)),
           market_snapshot_json: marketSnapshot || null,
+          market_phase: String(result3star.marketPhase || liveMarketSnapshot?.market_phase || 'rotation').toLowerCase(),
+          market_signal: result3star.marketPhase || null,
+          confidence_score: null,
+          weight_profile: null,
+          source_draw_time: marketRows?.data?.[0]?.draw_time || null,
+          compared_history_json: [],
+          compared_draw_count: 0,
+          compared_at: null,
           created_at: nowIso
         };
         await db.from(PREDICTIONS_TABLE).insert(payload3star);
