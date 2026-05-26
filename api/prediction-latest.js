@@ -505,15 +505,9 @@ async function getLatestRowByMode(mode) {
 }
 
 async function getLatestFormalSourceDrawNo() {
-  // 4star disabled: check formal_3star first
+  // 4star disabled: only check formal_3star, no serial fallback queries
   const latest3star = await getLatestRowByMode('formal_3star');
-  if (latest3star?.source_draw_no) return latest3star.source_draw_no;
-
-  const latestFormal = await getLatestRowByMode(FORMAL_MODE);
-  if (latestFormal?.source_draw_no) return latestFormal.source_draw_no;
-
-  const latestTest = await getLatestRowByMode(TEST_MODE);
-  return latestTest?.source_draw_no || 0;
+  return latest3star?.source_draw_no || 0;
 }
 
 async function getFormalRowsBySourceDrawNo(sourceDrawNo) {
