@@ -244,11 +244,9 @@ async function getLatestRowByMode(mode) {
 }
 
 async function getLatestFormalSourceDrawNo() {
-  const latestFormal = await getLatestRowByMode(FORMAL_MODE);
-  if (latestFormal?.source_draw_no) return latestFormal.source_draw_no;
-
-  const latestTest = await getLatestRowByMode(TEST_MODE);
-  return latestTest?.source_draw_no || 0;
+  // 4star disabled: only check formal_3star
+  const latest3star = await getLatestRowByMode('formal_3star');
+  return latest3star?.source_draw_no || 0;
 }
 
 async function getFormalRowsBySourceDrawNo(sourceDrawNo) {
@@ -257,7 +255,7 @@ async function getFormalRowsBySourceDrawNo(sourceDrawNo) {
   const { data, error } = await supabase
     .from(PREDICTIONS_TABLE)
     .select('*')
-    .eq('mode', FORMAL_MODE)
+    .eq('mode', 'formal_3star') // 4star disabled
     .eq('source_draw_no', sourceDrawNo)
     .order('created_at', { ascending: true });
 
@@ -280,7 +278,7 @@ async function getRecentComparedRows(limit = 12) {
     .from(PREDICTIONS_TABLE)
     .select('*')
     .eq('status', 'compared')
-    .in('mode', [FORMAL_MODE, TEST_MODE, FORMAL_CANDIDATE_MODE])
+    .in('mode', ['formal_3star']) // 4star disabled
     .order('created_at', { ascending: false })
     .limit(safeLimit);
 
@@ -508,18 +506,18 @@ export default async function handler(req, res) {
   }
 
   try {
-    const [trainingRow, latestFormalRow, formalCandidateRow, leaderboard, recentDrawRows, recentComparedRows] = await Promise.all([
-      getLatestRowByMode(TEST_MODE),
-      getLatestRowByMode(FORMAL_MODE),
-      getLatestRowByMode(FORMAL_CANDIDATE_MODE),
+    // 4star disabled: removed TEST/FORMAL/FORMAL_CANDIDATE queries
+    const trainingRow = null;
+    const latestFormalRow = null;
+    const formalCandidateRow = null;
+    const [leaderboard, recentDrawRows, recentComparedRows, latest3StarRow] = await Promise.all([
       getStrategyLeaderboard(50),
       getRecentDrawRows(20),
-      getRecentComparedRows(12)
+      getRecentComparedRows(12),
+      getLatestRowByMode('formal_3star')
     ]);
 
-    const formalSourceDrawNo =
-      toInt(latestFormalRow?.source_draw_no, 0) ||
-      await getLatestFormalSourceDrawNo();
+    const formalSourceDrawNo = toInt(latest3StarRow?.source_draw_no, 0);
 
     const formalBatches = await getFormalRowsBySourceDrawNo(formalSourceDrawNo);
     const displayFormalRow = buildFormalDisplayRow(formalBatches) || latestFormalRow || null;
