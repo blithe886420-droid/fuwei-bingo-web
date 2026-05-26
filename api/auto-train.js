@@ -1471,7 +1471,14 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
 
           console.log(`[step7 v5] 動態角色分配: ${dynamicRoleAllocation.join(',')}`);
         }
-      } catch (factorQueryErr) {
+        } else {
+          // ✅ fix：strategy_factor_stats 完全無資料（如剛清空）時，直接套用歷史初始權重
+          // 避免 roleWeights 停留在 historicalBaseWeights 初始值但完全不進入調整邏輯的歧義狀態
+          console.log(`[step7] 無即時資料，全部套用歷史初始權重 phase=${livePhase}`);
+          for (const k of sorted3starKeys) {
+            roleWeights[k] = phaseBaseWeights[k] ?? 1.0;
+          }
+        }
         console.warn('[step7] roleWeights query failed:', factorQueryErr.message);
       }
 
@@ -1527,7 +1534,7 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
           compare_result_json: null,
           hit_count: 0,
           verdict: null,
-          latest_draw_numbers: JSON.stringify((marketRows?.data?.[0]?.numbers || '').split(/[,\s]+/).filter(Boolean).map(Number).filter(Number.isFinite)),
+          latest_draw_numbers: parseNums(marketRows?.data?.[0]?.numbers || []),
           market_snapshot_json: marketSnapshot || null,
           market_phase: String(result3star.marketPhase || liveMarketSnapshot?.market_phase || 'rotation').toLowerCase(),
           market_signal: result3star.marketPhase || null,
@@ -3293,6 +3300,9 @@ function calcDecisionScore(meta={}){
    ========================= */
 
 async function runAutoCompareForLatest(db) {
+  // ✅ fix：此函數已 deprecated，liveMarketPhase 在此作用域內無法動態計算，改用固定 fallback
+  // 若未來需要重新啟用，請在 try 內重新計算 liveMarketPhase
+  const liveMarketPhase = 'rotation';
   try {
     const { data: latestDraw } = await db
       .from('bingo_draws')
