@@ -870,6 +870,7 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
   if (!sourceDrawNo) return;
   // ===== ✅ 真三星預測（市場感知版 + 動態加碼/減碼）=====
   try {
+    const nowIso = new Date().toISOString();
     const check3star = await db
       .from(PREDICTIONS_TABLE)
       .select('id')
