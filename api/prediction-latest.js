@@ -596,7 +596,7 @@ async function getStrategyLeaderboard(limit = 50) {
   const [{ data: statsRows, error: statsError }, { data: poolRows, error: poolError }] = await Promise.all([
     supabase
       .from(STRATEGY_STATS_TABLE)
-      .select('strategy_key, avg_hit, roi, recent_50_roi, total_rounds, hit2, hit3, hit4, score, avg_coverage_hit, recent_coverage_hit_rate')
+      .select('strategy_key, strategy_name, avg_hit, roi, recent_50_roi, total_rounds, hit2, hit3, hit4, score, avg_coverage_hit, recent_coverage_hit_rate, hit3_rate, recent_hits')
       .order('score', { ascending: false })
       .limit(limit),
     supabase
@@ -874,15 +874,39 @@ export default async function handler(req, res) {
     const trainingRow = null;
     const latestFormalRow = null;
     const formalCandidateRow = null;
-    const [latest3StarRow, leaderboard, recentDrawRows, allRecentComparedRows, recentFormalComparedRows, recent3StarComparedRows, tierLeaderboard] = await Promise.all([
+    const [latest3StarRow, leaderboard, recentDrawRows, allRecentComparedRows, recentFormalComparedRows, recent3StarComparedRows] = await Promise.all([
       getLatestRowByMode('formal_3star'),
       getStrategyLeaderboard(50),
       getRecentDrawRows(20),
       getRecentComparedRows(10),
       getRecentFormalComparedRows(5),
-      getRecent3StarComparedRows(20),
-      getTierLeaderboard()
+      getRecent3StarComparedRows(20)
     ]);
+    // v2: build tierLeaderboard from leaderboard data instead of extra DB query
+    const tierLeaderboard = leaderboard
+      .filter(row => row.strategy_name && row.strategy_name !== row.strategy_key)
+      .map(row => {
+        const recentHitsRaw = row.recent_hits || [];
+        const recentHits = Array.isArray(recentHitsRaw) ? recentHitsRaw : [];
+        const last5 = recentHits.slice(-5);
+        const last5Hit3 = last5.filter(h => Number(h||0) >= 3).length;
+        const last5Hit2 = last5.filter(h => Number(h||0) >= 2).length;
+        const last5Hit3Rate = last5.length > 0 ? last5Hit3 / last5.length : 0;
+        return {
+          strategy_name: row.strategy_name,
+          strategy_key: row.strategy_key,
+          total_rounds: row.total_rounds,
+          all_hit3_rate: row.hit3_rate || 0,
+          last5_hit3_count: last5Hit3,
+          last5_hit2_count: last5Hit2,
+          last5_hit3_rate: last5Hit3Rate,
+          recent_hits: last5,
+          has_recent_hit3: last5Hit3 > 0,
+          rank_score: last5Hit3Rate * 0.7 + (row.hit3_rate || 0) * 0.3
+        };
+      })
+      .sort((a, b) => b.rank_score - a.rank_score)
+      .slice(0, 20);
 
     const formalSourceDrawNo = toInt(latest3StarRow?.source_draw_no, 0);
 
