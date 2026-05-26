@@ -1526,8 +1526,8 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
           compare_result_json: null,
           hit_count: 0,
           verdict: null,
-          latest_draw_numbers: predictionRow.latest_draw_numbers || null,
-          market_snapshot_json: predictionRow.market_snapshot_json || null,
+          latest_draw_numbers: null,
+          market_snapshot_json: marketSnapshot || null,
           created_at: nowIso
         };
         await db.from(PREDICTIONS_TABLE).insert(payload3star);
