@@ -485,10 +485,14 @@ async function fetch3starBettingState(db) {
       // 中3後維持最大組數繼續追
       groupCount = STAR3_MAX_GROUPS;
       reason = 'hit3_maintain_max';
-    } else if (consecutiveHit2 >= 2) {
-      // 連續2期以上中2 → 加碼追中3
+    } else if (consecutiveHit2 >= 2 && consecutiveHit2 <= 4) {
+      // 連續2~4期中2 → 加碼追中3
       groupCount = STAR3_MAX_GROUPS;
       reason = `consecutive_hit2_${consecutiveHit2}_boost_to_${STAR3_MAX_GROUPS}`;
+    } else if (consecutiveHit2 > 4) {
+      // 連續中2超過4期卻沒中3 → 原地踏，維持預設組數即可
+      groupCount = STAR3_DEFAULT_GROUPS;
+      reason = `hit2_plateau_${consecutiveHit2}_maintain_default`;
     } else if (consecutiveHit2 >= 1) {
       // 剛中一次2 → 維持正常組數
       groupCount = STAR3_DEFAULT_GROUPS;
@@ -896,11 +900,29 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
         .from(STRATEGY_STATS_TABLE)
         .select('strategy_name, strategy_key, recent_hits, hit3, hit2, total_rounds, avg_coverage_hit, recent_coverage_hits, recent_coverage_hit_rate');
 
-      // 只保留 active strategy_key 相關的 strategy_name 記錄
+      // v4: active strategy_key 相關記錄 + 沒有stats的空記錄也加入競爭
       const activeKeySet3star = new Set(activeKeys3star);
+      const statsKeySet = new Set((statsRows3star?.data || []).map(r => r.strategy_key).filter(Boolean));
+      // 有stats的保留
       const filteredStats3star = (statsRows3star?.data || []).filter(r =>
         activeKeySet3star.has(r.strategy_key) && r.strategy_name
       );
+      // 沒有stats的active策略，補一筆預設空記錄，讓它們也能參與競爭
+      for (const key of activeKeys3star) {
+        if (!statsKeySet.has(key)) {
+          filteredStats3star.push({
+            strategy_key: key,
+            strategy_name: key,
+            recent_hits: [],
+            hit3: 0,
+            hit2: 0,
+            total_rounds: 0,
+            avg_coverage_hit: 0,
+            recent_coverage_hits: [],
+            recent_coverage_hit_rate: 0
+          });
+        }
+      }
 
       // ✅ 計算每個策略的綜合分數
       // 【方向一】縮短評分窗口到近30期：不讓1000期歷史稀釋近期表現
