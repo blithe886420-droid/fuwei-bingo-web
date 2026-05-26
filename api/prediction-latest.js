@@ -870,22 +870,21 @@ export default async function handler(req, res) {
   }
 
   try {
-    const [trainingRow, latestFormalRow, formalCandidateRow, latest3StarRow, leaderboard, recentDrawRows, allRecentComparedRows, recentFormalComparedRows, recent3StarComparedRows, tierLeaderboard] = await Promise.all([
-      getLatestRowByMode(TEST_MODE),
-      getLatestRowByMode(FORMAL_MODE),
-      getLatestRowByMode(FORMAL_CANDIDATE_MODE),
+    // 4star disabled: removed TEST/FORMAL/FORMAL_CANDIDATE queries
+    const trainingRow = null;
+    const latestFormalRow = null;
+    const formalCandidateRow = null;
+    const [latest3StarRow, leaderboard, recentDrawRows, allRecentComparedRows, recentFormalComparedRows, recent3StarComparedRows, tierLeaderboard] = await Promise.all([
       getLatestRowByMode('formal_3star'),
       getStrategyLeaderboard(50),
       getRecentDrawRows(20),
       getRecentComparedRows(10),
       getRecentFormalComparedRows(5),
-      getRecent3StarComparedRows(40),
+      getRecent3StarComparedRows(20),
       getTierLeaderboard()
     ]);
 
-    const formalSourceDrawNo =
-      toInt(latestFormalRow?.source_draw_no, 0) ||
-      await getLatestFormalSourceDrawNo();
+    const formalSourceDrawNo = toInt(latest3StarRow?.source_draw_no, 0);
 
     const recentDrawSummary = buildRecentDrawSummary(allRecentComparedRows, 10);
     const recentComparedRows = allRecentComparedRows.slice(0, 10);
