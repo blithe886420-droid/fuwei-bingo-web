@@ -601,7 +601,7 @@ function buildRecentFormalComparePeriodsFromRows(rows, limit = 5) {
   toArray(rows)
     .map(normalizePredictionRow)
     .filter(Boolean)
-    .filter((row) => String(row?.mode || '').trim().toLowerCase() === 'formal')
+    .filter((row) => ['formal', 'formal_3star'].includes(String(row?.mode || '').trim().toLowerCase()))
     .forEach((row) => {
       const compareDrawNo = getCompareDrawNoFromRow(row);
       if (!compareDrawNo) return;
@@ -1318,7 +1318,7 @@ export default function App() {
           'x-trigger-source': 'app_button'
         },
         body: JSON.stringify({
-          mode: 'formal',
+          mode: 'formal_3star',
           manual: true,
           trigger_source: 'app_button'
         })
@@ -1663,14 +1663,11 @@ export default function App() {
 
   const formalButtonDisabled =
     busyKey !== '' ||
-    !canFormalBet ||
-    formalRemainingBatchCount <= 0;
+    !canFormalBet;
 
   const formalButtonLabel = !canFormalBet
-    ? '暫不建議正式下注'
-    : formalRemainingBatchCount <= 0
-      ? '本期已達 3 批上限'
-      : '手動產生一批正式下注';
+    ? '暫不建議下注'
+    : '手動產生三星預測';
 
   const actualFormalGroupCount = formalDisplayGroups.length;
   const formalGroupCoverageRatio = FORMAL_GROUP_COUNT > 0
@@ -2110,7 +2107,7 @@ export default function App() {
                   {formalButtonLabel}
                 </button>
                 <div style={styles.formalActionHint}>
-                  手動產生正式下注（同時衍生3星）
+                  手動產生三星預測
                 </div>
               </div>
 
