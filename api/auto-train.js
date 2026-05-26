@@ -859,6 +859,15 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
     if (insertFormalError) throw insertFormalError;
   }
 
+  // v4: call independent 3star function
+  await create3StarPrediction(db, sourceDrawNo, marketSnapshot);
+
+  return candidateRow;
+}
+
+
+async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
+  if (!sourceDrawNo) return;
   // ===== ✅ 真三星預測（市場感知版 + 動態加碼/減碼）=====
   try {
     const check3star = await db
@@ -1533,10 +1542,7 @@ async function upsertFormalCandidateFromTest(db, predictionRow) {
   } catch (err3) {
     console.warn('[3star] 真三星產生失敗:', err3.message);
   }
-
-  return candidateRow;
 }
-
 function normalizeHitRate(raw) {
   const value = toNum(raw, 0);
   if (value <= 0) return 0;
@@ -3208,8 +3214,7 @@ export default async function handler(req, res) {
 
     // ✅ v4: 四星停用後，三星流程直接在 handler 裡呼叫
     // 不再依賴 upsertFormalCandidateFromTest（那個函數需要 test mode predictionRow）
-    const fakeTestRow = { id: 'direct', mode: 'test', source_draw_no: latestDrawNo, groups_json: [], market_snapshot_json: marketSnapshot };
-    await upsertFormalCandidateFromTest(db, fakeTestRow);
+    await create3StarPrediction(db, latestDrawNo, marketSnapshot);
 
     // ✅ v15：移除 runAutoCompareForLatest（條件 source+1===target 太嚴格，易卡 pending）
     // 統一改由 comparePendingPredictions 處理，內含 autoSkipStalePendingPredictions 保護
