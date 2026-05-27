@@ -1198,18 +1198,11 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
       liveMarketSnapshot.num_freq_map = Object.fromEntries(
         [...numFreqMap.entries()].map(([n, f]) => [String(n), f])
       );
-      // ✅ fix：enrichMarketSnapshotWithPhase 回傳新物件，必須接回來覆蓋 liveMarketSnapshot
-      // 原本只有 buildRecentMarketSignalSnapshot，它的 market_phase 可能是 null 或 rotation
-      // 必須經過 enrichMarketSnapshotWithPhase 才能拿到步驟六正確的盤相判斷結果
-      // 注意：enrichMarketSnapshotWithPhase 第二個參數需要 recent20Rows，從 marketRows 取
-      const enrichedSnapshot = enrichMarketSnapshotWithPhase(liveMarketSnapshot, {
-        recent20: (marketRows?.data || []).slice(0, 20).map(r => ({ numbers: parseNums(r.numbers || []) })),
-        latest: parseNums(marketRows?.data?.[0]?.numbers || []),
-        hot: liveMarketSnapshot.freq20_hot_nums || [],
-        cold: liveMarketSnapshot.freq20_cold_nums || [],
-        gap: liveMarketSnapshot.gap_numbers || []
-      });
-      // 把 enriched 的盤相結果掛回 liveMarketSnapshot（保留頻率數據）
+      // ✅ fix：用與 comparePendingPredictions 完全相同的模式呼叫 enrichMarketSnapshotWithPhase
+      // buildMarketState 提供正確的 market 結構（recent20/latest/hot/cold/gap/zoneFreq/tailFreq）
+      // enrichMarketSnapshotWithPhase 回傳新物件，接回來覆蓋 market_phase 和 streak 資料
+      const liveMarketState = buildMarketState(marketRows.data || []);
+      const enrichedSnapshot = enrichMarketSnapshotWithPhase(liveMarketSnapshot, liveMarketState);
       liveMarketSnapshot.market_phase = enrichedSnapshot.market_phase;
       liveMarketSnapshot.streak2 = enrichedSnapshot.streak2;
       liveMarketSnapshot.streak3 = enrichedSnapshot.streak3;
