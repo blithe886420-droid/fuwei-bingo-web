@@ -1545,12 +1545,16 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
           compared_at: null,
           created_at: nowIso
         };
-        await db.from(PREDICTIONS_TABLE).insert(payload3star);
-        console.log(
-          `[3star] 市場感知三星選號成功, draw: ${sourceDrawNo}`,
-          `組數: ${threeStarGroups.length}（${bettingState.reason}）`,
-          `盤相: ${result3star.marketPhase}`
-        );
+        const { error: insertErr3star } = await db.from(PREDICTIONS_TABLE).insert(payload3star);
+        if (insertErr3star) {
+          console.error(`[3star] INSERT 失敗, draw: ${sourceDrawNo}`, insertErr3star.message, insertErr3star.code);
+        } else {
+          console.log(
+            `[3star] 市場感知三星選號成功, draw: ${sourceDrawNo}`,
+            `組數: ${threeStarGroups.length}（${bettingState.reason}）`,
+            `盤相: ${result3star.marketPhase}`
+          );
+        }
       }
       } // end else (dynamicGroupCount !== 0)
     }
