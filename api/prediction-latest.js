@@ -469,6 +469,12 @@ function buildRecentFormalComparePeriods(rows = [], drawRows = [], limit = 5) {
 function normalizeLeaderboardRow(row, poolRow = null) {
   if (!row || !row.strategy_key) return null;
 
+  // ✅ fix：補入 hit3_rate 和 recent_hits，tierLeaderboard 需要這兩個欄位
+  const recentHitsRaw = row.recent_hits;
+  const recentHits = Array.isArray(recentHitsRaw)
+    ? recentHitsRaw
+    : (typeof recentHitsRaw === 'string' ? (() => { try { return JSON.parse(recentHitsRaw); } catch { return []; } })() : []);
+
   return {
     strategy_key: String(row.strategy_key || ''),
     strategy_name:
@@ -487,7 +493,11 @@ function normalizeLeaderboardRow(row, poolRow = null) {
     hit2: toInt(row.hit2, 0),
     hit3: toInt(row.hit3, 0),
     hit4: toInt(row.hit4, 0),
-    score: round4(row.score)
+    score: round4(row.score),
+    hit3_rate: round4(row.hit3_rate || 0),         // ✅ 補入
+    recent_hits: recentHits,                         // ✅ 補入（已解析為 Array）
+    avg_coverage_hit: round4(row.avg_coverage_hit || 0),
+    recent_coverage_hit_rate: round4(row.recent_coverage_hit_rate || 0)
   };
 }
 
@@ -833,8 +843,9 @@ export default async function handler(req, res) {
       getRecent3StarComparedRows(20)
     ]);
     // v2: build tierLeaderboard from leaderboard data instead of extra DB query
+    // ✅ fix：改用 total_rounds > 0 過濾，避免因 strategy_name 邏輯誤殺有效策略
     const tierLeaderboard = leaderboard
-      .filter(row => row.strategy_name && row.strategy_name !== row.strategy_key)
+      .filter(row => row.total_rounds > 0)
       .map(row => {
         const recentHitsRaw = row.recent_hits || [];
         const recentHits = Array.isArray(recentHitsRaw) ? recentHitsRaw : [];
