@@ -1219,23 +1219,29 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
       // ✅ v3：基於 5/17~5/25 歷史資料(13072筆)的初始權重
       // 各策略在各盤相的實測 hit3_rate，直接作為起點，不再從 1.0 盲目開始
       // bias(30.7%) / continuation(41.5%) / rotation(27.8%)
+      // ✅ v2：根據 5/28 實測數據重新校準初始權重
+      // bias盤實測：zone_rotation_hot_2(5.71%) > hot_zone_cover_1(2.86%) = rebound(2.86%)
+      //             mix_zone_3(0%) cold_zone_cover(0%) mix_gap(0%) dynamic_gap_zone_5(0%)
+      // rotation盤實測：rebound(5.26%) > dynamic_hot_5(4.17%)
+      //                 zone_rotation_hot_2(0%) mix_zone_3(0%) cold_zone_cover(0%) mix_gap(0%)
       const historicalBaseWeights = {
         bias: {
-          dynamic_zone_fill_6: 2.0,  // 3.92% 最強
-          dynamic_cold_5:      1.8,  // 3.17%
-          board_6:             1.4,  // 1.99%
-          cold_zone_cover:     1.2,  // 1.39%
-          zone_rotation_hot_2: 1.1,  // 1.20%
-          mix_gap:             1.1,  // 1.19%
-          board_5:             1.0,  // 1.00%
-          hot_zone_cover_1:    0.8,  // 0.79%
-          rebound:             0.6,  // 0.60% 明顯弱
-          mix_zone_3:          0.5,  // 0.40% 弱
-          dynamic_recent_5:    0.3,  // 0.00% 完全沒中
-          dynamic_recent_6:    0.3,  // 0.00%
-          dynamic_hot_5:       0.3,  // 0.00%
-          balanced_zone:       0.3,  // 0.00%
-          dynamic_cold_6:      0.1,  // 0.00% 廢物
+          zone_rotation_hot_2: 2.0,  // 5.71% 實測最強 ↑↑
+          hot_zone_cover_1:    1.8,  // 2.86% 實測強 ↑↑
+          rebound:             1.8,  // 2.86% 實測強 ↑↑
+          dynamic_hot_5:       1.2,  // 未有足夠樣本，給中性偏高
+          dynamic_zone_fill_6: 1.0,  // 降權（原2.0，實測0%）
+          dynamic_cold_5:      1.0,  // 降權（原1.8，實測無足夠樣本）
+          board_6:             0.9,  // 降權（原1.4）
+          board_5:             0.8,  // 降權（原1.0）
+          mix_gap:             0.4,  // 降權（實測0%）↓↓
+          cold_zone_cover:     0.4,  // 降權（實測0%）↓↓
+          mix_zone_3:          0.3,  // 降權（實測0%）↓↓
+          dynamic_gap_zone_5:  0.3,  // 降權（實測0%）↓↓
+          dynamic_recent_5:    0.3,
+          dynamic_recent_6:    0.3,
+          balanced_zone:       0.3,
+          dynamic_cold_6:      0.1,  // 廢物，封殺
         },
         continuation: {
           dynamic_hot_5:       1.8,  // 2.56% 最強
@@ -1243,33 +1249,35 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
           dynamic_recent_5:    1.7,  // 2.26%
           dynamic_recent_6:    1.6,  // 3.23% (樣本少，給中等)
           dynamic_cold_5:      1.3,  // 1.79%
-          mix_zone_3:          1.2,  // 1.46%
-          hot_zone_cover_1:    1.1,  // 1.32%
-          board_5:             1.1,  // 1.30%
-          board_6:             1.1,  // 1.30%
-          zone_rotation_hot_2: 1.0,  // 1.17%
-          cold_zone_cover:     1.0,  // 1.17%
-          mix_gap:             0.6,  // 0.58% 弱
-          dynamic_zone_fill_6: 0.5,  // 0.47% 弱
-          dynamic_cold_6:      0.1,  // 0.00% 廢物
-          balanced_zone:       0.3,  // 0.00%
+          hot_zone_cover_1:    1.2,  // 加強（bias實測有效）
+          zone_rotation_hot_2: 1.2,  // 加強（bias實測最強）
+          mix_zone_3:          1.0,  // 降權（原1.2）
+          board_5:             1.0,
+          board_6:             1.0,
+          cold_zone_cover:     0.6,  // 降權（實測0%）
+          mix_gap:             0.5,  // 降權（實測0%）
+          dynamic_zone_fill_6: 0.5,
+          dynamic_gap_zone_5:  0.4,  // 降權（實測0%）
+          balanced_zone:       0.3,
+          dynamic_cold_6:      0.1,  // 廢物，封殺
         },
         rotation: {
-          board_6:             1.5,  // 1.56% 最強
-          mix_gap:             1.3,  // 1.32%
-          hot_zone_cover_1:    1.3,  // 1.31%
-          rebound:             1.3,  // 1.31%
-          cold_zone_cover:     1.1,  // 1.09%
-          balanced_zone:       1.0,  // 1.05%
-          zone_rotation_hot_2: 0.9,  // 0.89%
-          board_5:             0.9,  // 0.85%
-          mix_zone_3:          0.7,  // 0.66%
-          // rotation盤樣本少的策略給中性值
-          dynamic_cold_5:      1.0,
-          dynamic_recent_5:    1.0,
-          dynamic_hot_5:       1.0,
-          dynamic_zone_fill_6: 1.0,
-          dynamic_cold_6:      0.1,  // 全盤相都是0%，直接封殺
+          rebound:             2.0,  // 5.26% 實測最強 ↑↑
+          dynamic_hot_5:       1.8,  // 4.17% 實測強 ↑↑
+          hot_zone_cover_1:    1.3,  // 維持
+          board_6:             1.2,  // 降權（原1.5）
+          zone_rotation_hot_2: 1.0,  // 降權（實測0%）
+          board_5:             0.9,
+          cold_zone_cover:     0.5,  // 降權（實測0%）↓↓
+          mix_gap:             0.5,  // 降權（實測0%）↓↓
+          mix_zone_3:          0.4,  // 降權（實測0%）↓↓
+          cold_zone_cover:     0.4,
+          dynamic_cold_5:      0.9,
+          dynamic_recent_5:    0.9,
+          dynamic_zone_fill_6: 0.9,
+          dynamic_gap_zone_5:  0.4,  // 降權（實測0%）↓↓
+          balanced_zone:       0.5,
+          dynamic_cold_6:      0.1,  // 全盤相都是0%，封殺
         }
       };
 
