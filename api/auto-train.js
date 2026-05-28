@@ -401,9 +401,10 @@ function enrichMarketSnapshotWithPhase(marketSnapshot = {}, market = {}) {
   const phaseInfo = buildMarketPhase(snapshot);
   // ✅ 關鍵修復：如果 marketSnapshot 已有 buildRecentMarketSignalSnapshot 算好的 market_phase，優先保留它
   // buildMarketPhase 的 rotationScore 永遠偏高（gap/cold 問題），不如 marketSignalEngine 的判斷準確
-  const finalMarketPhase = (marketSnapshot?.market_phase && marketSnapshot.market_phase !== 'rotation')
-    ? marketSnapshot.market_phase  // 保留 marketSignalEngine 算好的
-    : phaseInfo.market_phase;       // fallback 到 buildMarketPhase
+  // ✅ fix：marketSignalEngine 的結果永遠優先
+  // 原邏輯：rotation 就 fallback 到 buildMarketPhase，導致步驟六完全沒用
+  // 新邏輯：只要 marketSignalEngine 有算出來就用，buildMarketPhase 只在完全沒資料時才用
+  const finalMarketPhase = marketSnapshot?.market_phase || phaseInfo.market_phase;
   console.log('[enrichMarketSnapshot] marketSignalPhase:', marketSnapshot?.market_phase, '→ final:', finalMarketPhase, 'streak3:', streak3.length);
   return {
     ...snapshot,
