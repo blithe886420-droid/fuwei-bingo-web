@@ -1743,6 +1743,10 @@ export default function App() {
   const marketPhaseBase =
     derivedMarketPhase === 'rotation' ? 66 :
     derivedMarketPhase === 'continuation' ? 74 :
+    derivedMarketPhase === 'hot_bias' ? 76 :    // ✅ 熱區偏移：高分
+    derivedMarketPhase === 'hot_streak' ? 78 :  // ✅ 熱號爆發：最高分
+    derivedMarketPhase === 'bias' ? 70 :
+    derivedMarketPhase === 'chaos' ? 48 :
     derivedMarketPhase === 'strong_trend' ? 78 :
     derivedMarketPhase === 'weak_trend' ? 68 :
     derivedMarketPhase === 'random' ? 56 : 52;
