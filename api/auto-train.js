@@ -1262,22 +1262,56 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
           dynamic_cold_6:      0.1,  // 廢物，封殺
         },
         rotation: {
-          rebound:             2.0,  // 5.26% 實測最強 ↑↑
-          dynamic_hot_5:       1.8,  // 4.17% 實測強 ↑↑
-          hot_zone_cover_1:    1.3,  // 維持
-          board_6:             1.2,  // 降權（原1.5）
-          zone_rotation_hot_2: 1.0,  // 降權（實測0%）
+          rebound:             2.0,  // 5.26% 實測最強
+          dynamic_hot_5:       1.8,  // 4.17% 實測強
+          hot_zone_cover_1:    1.3,
+          board_6:             1.2,
+          zone_rotation_hot_2: 1.0,
           board_5:             0.9,
-          cold_zone_cover:     0.5,  // 降權（實測0%）↓↓
-          mix_gap:             0.5,  // 降權（實測0%）↓↓
-          mix_zone_3:          0.4,  // 降權（實測0%）↓↓
-          cold_zone_cover:     0.4,
           dynamic_cold_5:      0.9,
           dynamic_recent_5:    0.9,
           dynamic_zone_fill_6: 0.9,
-          dynamic_gap_zone_5:  0.4,  // 降權（實測0%）↓↓
           balanced_zone:       0.5,
-          dynamic_cold_6:      0.1,  // 全盤相都是0%，封殺
+          cold_zone_cover:     0.5,
+          mix_gap:             0.5,
+          mix_zone_3:          0.4,
+          dynamic_gap_zone_5:  0.4,
+          dynamic_cold_6:      0.1,
+        },
+        // ✅ v2 新增盤相：hot_bias（bias盤中熱號穩定）
+        // 特徵：zoneBias>=12 且 latestHot10Hit>=7，熱號集中在特定區段
+        // 策略：以熱區策略為主，配合區段選號
+        hot_bias: {
+          zone_rotation_hot_2: 2.2,  // 熱區偏移型，zone策略最適合
+          hot_zone_cover_1:    2.0,
+          dynamic_hot_5:       1.8,
+          dynamic_hot_6:       1.8,
+          rebound:             1.5,
+          dynamic_zone_fill_6: 1.3,
+          board_6:             1.0,
+          mix_gap:             0.5,
+          cold_zone_cover:     0.4,
+          mix_zone_3:          0.3,
+          dynamic_cold_5:      0.3,
+          dynamic_cold_6:      0.1,
+        },
+        // ✅ v2 新增盤相：hot_streak（熱號持續大量命中）
+        // 特徵：latestHot10Hit>=9 且 avgRecent5HotHit>=8，熱號極度集中
+        // 策略：大膽追熱，熱區策略全力出擊
+        hot_streak: {
+          hot_zone_cover_1:    2.2,  // 熱號極度集中，熱區覆蓋最有效
+          dynamic_hot_5:       2.0,
+          dynamic_hot_6:       2.0,
+          zone_rotation_hot_2: 1.8,
+          rebound:             1.5,
+          dynamic_recent_5:    1.3,
+          dynamic_recent_6:    1.3,
+          board_6:             1.0,
+          mix_gap:             0.4,
+          cold_zone_cover:     0.3,
+          mix_zone_3:          0.3,
+          dynamic_cold_5:      0.3,
+          dynamic_cold_6:      0.1,
         }
       };
 
