@@ -264,6 +264,8 @@ function getPhaseRoleTargets(marketPhase = '') {
 
   if (phase === 'continuation') return ['attack', 'attack', 'extend', 'guard'];
   if (phase === 'bias') return ['attack', 'attack', 'guard', 'extend'];
+  if (phase === 'hot_bias') return ['attack', 'attack', 'attack', 'extend'];  // ✅ 熱區偏移：三攻一延伸
+  if (phase === 'hot_streak') return ['attack', 'attack', 'attack', 'guard'];  // ✅ 熱號爆發：三攻一守
   if (phase === 'chaos') return ['guard', 'guard', 'extend', 'recent'];
   return ['guard', 'extend', 'extend', 'attack'];
 }
@@ -1987,6 +1989,22 @@ function buildDecisionPools(market = {}, marketSnapshot = {}) {
     extendHot20Take = 6;
     guardHot20Take = 16;
     recentHot5Take = 8;
+  } else if (phase === 'hot_bias') {
+    // ✅ 熱區偏移：比 bias 更激進追熱
+    attackHotTake = 14;
+    attackStreak2Take = 3;
+    extendHot10Take = 12;
+    extendHot20Take = 4;
+    guardHot20Take = 14;
+    recentHot5Take = 10;
+  } else if (phase === 'hot_streak') {
+    // ✅ 熱號爆發：全力追熱
+    attackHotTake = 16;
+    attackStreak2Take = 2;
+    extendHot10Take = 14;
+    extendHot20Take = 2;
+    guardHot20Take = 12;
+    recentHot5Take = 12;
   } else if (phase === 'chaos') {
     attackHotTake = 6;
     attackStreak2Take = 1;
