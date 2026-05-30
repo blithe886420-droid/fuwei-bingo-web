@@ -1511,9 +1511,11 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
           // 根據當前 market_phase 決定基礎陣容，再用步驟七的權重調整數量
           // 基礎8組，根據角色權重動態分配
           const baseRoles = {
-            continuation: { streak: 2, cold: 2, recent: 2, hot: 1, zone_fill: 1 },
+            continuation: { streak: 2, cold: 1, recent: 2, hot: 2, zone_fill: 1 },    // ✅ 連號延續：追熱+連號
             bias: { zone_fill: 2, cold: 2, gap_zone: 1, hot: 1, recent: 1, scatter: 1 },
-            chaos: { scatter: 2, cold: 2, anti_hot: 1, balance: 1, zone_fill: 1, recent: 1 },
+            hot_bias: { hot: 3, zone_fill: 2, recent: 1, gap_zone: 1, scatter: 1 },    // ✅ 熱區偏移：大量追熱
+            hot_streak: { hot: 3, recent: 2, zone_fill: 2, cold: 1 },                  // ✅ 熱號爆發：全力追熱
+            chaos: { scatter: 2, cold: 2, recent: 1, balance: 1, zone_fill: 1, gap_zone: 1 }, // ✅ 混沌：分散選號
             rotation: { cold: 2, recent: 2, hot: 1, zone_fill: 1, scatter: 1, balance: 1 }
           };
 
