@@ -1331,20 +1331,20 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
         const [longTermRes, midRes, shortRes] = await Promise.all([
           // 長期400期：背景調查（只看當前盤相）
           db.from('strategy_factor_stats')
-            .select('strategy_key, hit3')
+            .select('strategy_key, hit3, hit2')  // ✅ 加入 hit2
             .eq('market_phase', livePhase)
             .order('recorded_at', { ascending: false })
             .limit(400),
           // 最近1小時：今天場次表現（只看當前盤相）
           db.from('strategy_factor_stats')
-            .select('strategy_key, hit3, recorded_at')
+            .select('strategy_key, hit3, hit2, recorded_at')  // ✅ 加入 hit2
             .eq('market_phase', livePhase)
             .gte('recorded_at', oneHourAgo)
             .order('recorded_at', { ascending: false })
             .limit(120),
           // 最近30分鐘：即時狀態（只看當前盤相）
           db.from('strategy_factor_stats')
-            .select('strategy_key, hit3, recorded_at')
+            .select('strategy_key, hit3, hit2, recorded_at')  // ✅ 加入 hit2
             .eq('market_phase', livePhase)
             .gte('recorded_at', thirtyMinAgo)
             .order('recorded_at', { ascending: false })
@@ -1374,8 +1374,9 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
           const midStats = {};
           for (const row of midRows) {
             const k = row.strategy_key;
-            if (!midStats[k]) midStats[k] = { hit3: 0, total: 0 };
+            if (!midStats[k]) midStats[k] = { hit3: 0, hit2: 0, total: 0 };  // ✅ 加入 hit2
             midStats[k].hit3 += (row.hit3 || 0);
+            midStats[k].hit2 += (row.hit2 || 0);  // ✅ 累計 hit2
             midStats[k].total += 1;
           }
 
@@ -1383,8 +1384,9 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
           const shortStats = {};
           for (const row of shortRows) {
             const k = row.strategy_key;
-            if (!shortStats[k]) shortStats[k] = { hit3: 0, total: 0 };
+            if (!shortStats[k]) shortStats[k] = { hit3: 0, hit2: 0, total: 0 };  // ✅ 加入 hit2
             shortStats[k].hit3 += (row.hit3 || 0);
+            shortStats[k].hit2 += (row.hit2 || 0);  // ✅ 累計 hit2
             shortStats[k].total += 1;
           }
 
