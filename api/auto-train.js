@@ -1329,22 +1329,27 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
         const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
         const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
 
-        // 同時查三層資料
+        // ✅ fix：三層資料查詢全部加入 market_phase 篩選
+        // 原本沒有篩選，所有盤相混在一起，步驟七學到的是混淆資料
+        // 現在只查當前盤相的資料，讓步驟七真正按盤相學習
         const [longTermRes, midRes, shortRes] = await Promise.all([
-          // 長期400期：背景調查
+          // 長期400期：背景調查（只看當前盤相）
           db.from('strategy_factor_stats')
             .select('strategy_key, hit3')
+            .eq('market_phase', livePhase)
             .order('recorded_at', { ascending: false })
             .limit(400),
-          // 最近1小時：今天場次表現
+          // 最近1小時：今天場次表現（只看當前盤相）
           db.from('strategy_factor_stats')
             .select('strategy_key, hit3, recorded_at')
+            .eq('market_phase', livePhase)
             .gte('recorded_at', oneHourAgo)
             .order('recorded_at', { ascending: false })
             .limit(120),
-          // 最近30分鐘：即時狀態
+          // 最近30分鐘：即時狀態（只看當前盤相）
           db.from('strategy_factor_stats')
             .select('strategy_key, hit3, recorded_at')
+            .eq('market_phase', livePhase)
             .gte('recorded_at', thirtyMinAgo)
             .order('recorded_at', { ascending: false })
             .limit(60)
