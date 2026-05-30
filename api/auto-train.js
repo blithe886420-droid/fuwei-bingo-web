@@ -1221,98 +1221,94 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
       // ✅ v3：基於 5/17~5/25 歷史資料(13072筆)的初始權重
       // 各策略在各盤相的實測 hit3_rate，直接作為起點，不再從 1.0 盲目開始
       // bias(30.7%) / continuation(41.5%) / rotation(27.8%)
-      // ✅ v2：根據 5/28 實測數據重新校準初始權重
-      // bias盤實測：zone_rotation_hot_2(5.71%) > hot_zone_cover_1(2.86%) = rebound(2.86%)
-      //             mix_zone_3(0%) cold_zone_cover(0%) mix_gap(0%) dynamic_gap_zone_5(0%)
-      // rotation盤實測：rebound(5.26%) > dynamic_hot_5(4.17%)
-      //                 zone_rotation_hot_2(0%) mix_zone_3(0%) cold_zone_cover(0%) mix_gap(0%)
+      // ✅ v3：根據 5/28~5/30 實測數據全面重新校準初始權重
+      // 實測各策略整體命中率（全盤相合計）：
+      // dynamic_recent_6(2.82%) > rebound(2.12%) > dynamic_hot_6(1.73%) = dynamic_gap_zone_5(1.73%)
+      // zone_rotation_hot_2(1.57%) > dynamic_hot_5(1.52%) > hot_zone_cover_1(1.22%) > mix_gap(1.19%)
+      // dynamic_zone_fill_6(1.11%) > mix_zone_3(1.05%) > cold_zone_cover(0.70%)
+      // dynamic_cold_4(0%) = dynamic_recent_5(0%) ← 直接封殺
       const historicalBaseWeights = {
         bias: {
-          zone_rotation_hot_2: 2.0,  // 5.71% 實測最強 ↑↑
-          hot_zone_cover_1:    1.8,  // 2.86% 實測強 ↑↑
-          rebound:             1.8,  // 2.86% 實測強 ↑↑
-          dynamic_hot_5:       1.2,  // 未有足夠樣本，給中性偏高
-          dynamic_zone_fill_6: 1.0,  // 降權（原2.0，實測0%）
-          dynamic_cold_5:      1.0,  // 降權（原1.8，實測無足夠樣本）
-          board_6:             0.9,  // 降權（原1.4）
-          board_5:             0.8,  // 降權（原1.0）
-          mix_gap:             0.4,  // 降權（實測0%）↓↓
-          cold_zone_cover:     0.4,  // 降權（實測0%）↓↓
-          mix_zone_3:          0.3,  // 降權（實測0%）↓↓
-          dynamic_gap_zone_5:  0.3,  // 降權（實測0%）↓↓
-          dynamic_recent_5:    0.3,
-          dynamic_recent_6:    0.3,
-          balanced_zone:       0.3,
+          dynamic_recent_6:    2.2,  // 實測最強(2.82%)，大幅加權
+          rebound:             2.0,  // 實測強(2.12%)
+          dynamic_hot_6:       1.8,  // 實測強(1.73%)
+          dynamic_gap_zone_5:  1.8,  // 實測強(1.73%)
+          zone_rotation_hot_2: 1.6,  // 實測中上(1.57%)
+          dynamic_hot_5:       1.5,  // 實測中上(1.52%)
+          hot_zone_cover_1:    1.2,  // 實測中等(1.22%)
+          mix_gap:             1.0,  // 實測中等(1.19%)
+          dynamic_zone_fill_6: 1.0,  // 實測中等(1.11%)
+          mix_zone_3:          0.8,  // 實測偏弱(1.05%)
+          cold_zone_cover:     0.4,  // 實測最差(0.70%)
+          dynamic_recent_5:    0.1,  // 實測0%，封殺
+          dynamic_cold_4:      0.1,  // 實測0%，封殺
           dynamic_cold_6:      0.1,  // 廢物，封殺
         },
         continuation: {
-          dynamic_hot_5:       1.8,  // 2.56% 最強
-          rebound:             1.8,  // 2.54%
-          dynamic_recent_5:    1.7,  // 2.26%
-          dynamic_recent_6:    1.6,  // 3.23% (樣本少，給中等)
-          dynamic_cold_5:      1.3,  // 1.79%
-          hot_zone_cover_1:    1.2,  // 加強（bias實測有效）
-          zone_rotation_hot_2: 1.2,  // 加強（bias實測最強）
-          mix_zone_3:          1.0,  // 降權（原1.2）
-          board_5:             1.0,
-          board_6:             1.0,
-          cold_zone_cover:     0.6,  // 降權（實測0%）
-          mix_gap:             0.5,  // 降權（實測0%）
-          dynamic_zone_fill_6: 0.5,
-          dynamic_gap_zone_5:  0.4,  // 降權（實測0%）
-          balanced_zone:       0.3,
-          dynamic_cold_6:      0.1,  // 廢物，封殺
+          dynamic_recent_6:    2.2,
+          rebound:             2.0,
+          dynamic_hot_6:       1.8,
+          dynamic_gap_zone_5:  1.8,
+          zone_rotation_hot_2: 1.6,
+          dynamic_hot_5:       1.5,
+          hot_zone_cover_1:    1.2,
+          mix_gap:             1.0,
+          dynamic_zone_fill_6: 1.0,
+          mix_zone_3:          0.8,
+          cold_zone_cover:     0.4,
+          dynamic_recent_5:    0.1,
+          dynamic_cold_4:      0.1,
+          dynamic_cold_6:      0.1,
         },
         rotation: {
-          rebound:             2.0,  // 5.26% 實測最強
-          dynamic_hot_5:       1.8,  // 4.17% 實測強
-          hot_zone_cover_1:    1.3,
-          board_6:             1.2,
-          zone_rotation_hot_2: 1.0,
-          board_5:             0.9,
-          dynamic_cold_5:      0.9,
-          dynamic_recent_5:    0.9,
-          dynamic_zone_fill_6: 0.9,
-          balanced_zone:       0.5,
-          cold_zone_cover:     0.5,
-          mix_gap:             0.5,
-          mix_zone_3:          0.4,
-          dynamic_gap_zone_5:  0.4,
-          dynamic_cold_6:      0.1,
-        },
-        // ✅ v2 新增盤相：hot_bias（bias盤中熱號穩定）
-        // 特徵：zoneBias>=12 且 latestHot10Hit>=7，熱號集中在特定區段
-        // 策略：以熱區策略為主，配合區段選號
-        hot_bias: {
-          zone_rotation_hot_2: 2.2,  // 熱區偏移型，zone策略最適合
-          hot_zone_cover_1:    2.0,
-          dynamic_hot_5:       1.8,
+          dynamic_recent_6:    2.2,
+          rebound:             2.0,
           dynamic_hot_6:       1.8,
-          rebound:             1.5,
-          dynamic_zone_fill_6: 1.3,
-          board_6:             1.0,
-          mix_gap:             0.5,
+          dynamic_gap_zone_5:  1.8,
+          zone_rotation_hot_2: 1.6,
+          dynamic_hot_5:       1.5,
+          hot_zone_cover_1:    1.2,
+          mix_gap:             1.0,
+          dynamic_zone_fill_6: 1.0,
+          mix_zone_3:          0.8,
           cold_zone_cover:     0.4,
-          mix_zone_3:          0.3,
-          dynamic_cold_5:      0.3,
+          dynamic_recent_5:    0.1,
+          dynamic_cold_4:      0.1,
           dynamic_cold_6:      0.1,
         },
-        // ✅ v2 新增盤相：hot_streak（熱號持續大量命中）
-        // 特徵：latestHot10Hit>=9 且 avgRecent5HotHit>=8，熱號極度集中
-        // 策略：大膽追熱，熱區策略全力出擊
-        hot_streak: {
-          hot_zone_cover_1:    2.2,  // 熱號極度集中，熱區覆蓋最有效
-          dynamic_hot_5:       2.0,
-          dynamic_hot_6:       2.0,
+        hot_bias: {
+          dynamic_recent_6:    2.2,
+          rebound:             2.0,
+          dynamic_hot_6:       2.0,  // 熱區偏移盤加強熱號策略
           zone_rotation_hot_2: 1.8,
-          rebound:             1.5,
-          dynamic_recent_5:    1.3,
-          dynamic_recent_6:    1.3,
-          board_6:             1.0,
-          mix_gap:             0.4,
+          dynamic_gap_zone_5:  1.6,
+          dynamic_hot_5:       1.6,
+          hot_zone_cover_1:    1.4,
+          dynamic_zone_fill_6: 1.2,
+          mix_gap:             0.8,
+          mix_zone_3:          0.6,
           cold_zone_cover:     0.3,
-          mix_zone_3:          0.3,
-          dynamic_cold_5:      0.3,
+          dynamic_recent_5:    0.1,
+          dynamic_cold_4:      0.1,
+          dynamic_cold_6:      0.1,
+        },
+        hot_streak: {
+          // 實測：dynamic_gap_zone_5(3.45%) dynamic_zone_fill_6(3.13%)
+          // cold_zone_cover(3.03%) zone_rotation_hot_2(3.03%)
+          // 反直覺：追熱策略在 hot_streak 盤反而沒效，輪動和冷號有效
+          dynamic_recent_6:    2.0,
+          zone_rotation_hot_2: 2.0,  // 實測 hot_streak 盤 3.03%
+          dynamic_zone_fill_6: 2.0,  // 實測 hot_streak 盤 3.13%
+          cold_zone_cover:     1.8,  // 實測 hot_streak 盤 3.03%（反直覺但有效）
+          dynamic_gap_zone_5:  1.8,  // 實測 hot_streak 盤 3.45%
+          rebound:             1.5,
+          dynamic_hot_6:       1.2,
+          mix_gap:             0.6,
+          mix_zone_3:          0.4,
+          hot_zone_cover_1:    0.5,  // 實測 hot_streak 盤 1.01%，降權
+          dynamic_hot_5:       0.4,  // 實測 hot_streak 盤 0%，降權
+          dynamic_recent_5:    0.1,
+          dynamic_cold_4:      0.1,
           dynamic_cold_6:      0.1,
         }
       };
@@ -1370,7 +1366,7 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
           }
           const longRates = {};
           for (const [k, s] of Object.entries(longStats)) {
-            longRates[k] = s.total >= 10 ? s.hit3 / s.total : 0.005;
+            longRates[k] = s.total >= 5 ? s.hit3 / s.total : 0.005;  // ✅ v3：門檻從10降到5，讓早期資料也有參考價值
           }
           const maxLongRate = Math.max(...Object.values(longRates), 0.01);
 
@@ -1420,11 +1416,12 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
             const midS = midStats[k];
             const longGood = longRate >= maxLongRate * 0.6;
 
-            // 即時狀態判斷
-            const shortZero = shortS && shortS.total >= 6 && shortS.hit3 === 0; // 連6局中0
-            const midZero = midS && midS.total >= 6 && midS.hit3 === 0; // 1小時都沒中
-            const shortHot = shortS && shortS.total >= 2 && shortS.hit3 > 0; // 最近30分鐘有中
-            const midHot = midS && midS.total >= 3 && midS.hit3 > 0; // 最近1小時有中
+            // ✅ v3：即時狀態判斷，加入 hit2 作為輔助訊號
+            // 賓果命中3顆需要運氣，但命中2顆方向對的話 hit2 能反映選號品質
+            const shortZero = shortS && shortS.total >= 6 && shortS.hit3 === 0 && (shortS.hit2||0) === 0; // 連6局hit2和hit3都沒有
+            const midZero = midS && midS.total >= 6 && midS.hit3 === 0 && (midS.hit2||0) === 0; // 1小時hit2和hit3都沒有
+            const shortHot = shortS && shortS.total >= 2 && (shortS.hit3 > 0 || (shortS.hit2||0) >= 2); // 最近30分鐘有中3，或連續2次中2
+            const midHot = midS && midS.total >= 3 && (midS.hit3 > 0 || (midS.hit2||0) >= 3); // 最近1小時有中3，或3次中2
 
             if (shortHot && midHot && longGood) {
               roleWeights[k] = 2.0; // 長期好+最近熱：大膽用
