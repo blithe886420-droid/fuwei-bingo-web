@@ -1310,6 +1310,23 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
           dynamic_recent_5:    0.1,
           dynamic_cold_4:      0.1,
           dynamic_cold_6:      0.1,
+        },
+        // ✅ chaos 盤：完全分散，冷號和散佈策略為主
+        chaos: {
+          dynamic_recent_6:    1.5,
+          rebound:             1.3,
+          dynamic_gap_zone_5:  1.3,
+          mix_zone_3:          1.2,
+          dynamic_zone_fill_6: 1.2,
+          zone_rotation_hot_2: 1.0,
+          mix_gap:             1.0,
+          cold_zone_cover:     1.0,
+          hot_zone_cover_1:    0.8,
+          dynamic_hot_5:       0.8,
+          dynamic_hot_6:       0.8,
+          dynamic_recent_5:    0.1,
+          dynamic_cold_4:      0.1,
+          dynamic_cold_6:      0.1,
         }
       };
 
@@ -1513,7 +1530,7 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
             continuation: { streak: 2, cold: 1, recent: 2, hot: 2, zone_fill: 1 },    // ✅ 連號延續：追熱+連號
             bias: { zone_fill: 2, cold: 2, gap_zone: 1, hot: 1, recent: 1, scatter: 1 },
             hot_bias: { hot: 3, zone_fill: 2, recent: 1, gap_zone: 1, scatter: 1 },    // ✅ 熱區偏移：大量追熱
-            hot_streak: { hot: 3, recent: 2, zone_fill: 2, cold: 1 },                  // ✅ 熱號爆發：全力追熱
+            hot_streak: { zone_fill: 3, cold: 2, recent: 2, hot: 1 },                  // ✅ v3：實測修正，zone_fill和cold有效，不是追熱
             chaos: { scatter: 2, cold: 2, recent: 1, balance: 1, zone_fill: 1, gap_zone: 1 }, // ✅ 混沌：分散選號
             rotation: { cold: 2, recent: 2, hot: 1, zone_fill: 1, scatter: 1, balance: 1 }
           };
