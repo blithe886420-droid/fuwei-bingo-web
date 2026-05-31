@@ -1846,7 +1846,8 @@ export default function App() {
               borderRadius: 16, padding: '14px 16px',
               background: 'linear-gradient(135deg, #e8f5f1, #d4ede7)',
               border: '2px solid #a8d8cc',
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between'
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              overflow: 'hidden'
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <div style={{ fontSize: 28 }}>
@@ -1873,15 +1874,15 @@ export default function App() {
 
             {/* 命中速報 */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-              <div style={{ background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 12, padding: '10px 12px' }}>
-                <div style={{ fontSize: 11, color: '#7b6e5c', marginBottom: 2 }}>中2組數（近10期）</div>
-                <div style={{ fontSize: 22, fontWeight: 900, color: '#0f766e', lineHeight: 1.1 }}>{hitFeedback.hit2} <span style={{ fontSize: 12 }}>組</span></div>
-                <div style={{ fontSize: 10, color: '#7b6e5c', marginTop: 2 }}>中2+ {hitFeedback.groupCount ? Math.round(((hitFeedback.hit2 + hitFeedback.hit3) / hitFeedback.groupCount) * 100) : 0}%</div>
+              <div style={{ background: '#fff', border: '1.5px solid #e0d4c0', borderRadius: 12, padding: '12px 14px' }}>
+                <div style={{ fontSize: 11, color: '#9a8c7d', marginBottom: 4 }}>中2組數（近10期）</div>
+                <div style={{ fontSize: 26, fontWeight: 900, color: '#0f766e', lineHeight: 1 }}>{hitFeedback.hit2} <span style={{ fontSize: 13, fontWeight: 700 }}>組</span></div>
+                <div style={{ fontSize: 11, color: '#7b6e5c', marginTop: 4 }}>命中率 {hitFeedback.groupCount ? Math.round(((hitFeedback.hit2 + hitFeedback.hit3) / hitFeedback.groupCount) * 100) : 0}%</div>
               </div>
-              <div style={{ background: '#f8f1e6', border: '2px solid #fecaca', borderRadius: 12, padding: '10px 12px' }}>
-                <div style={{ fontSize: 11, color: '#7b6e5c', marginBottom: 2 }}>中3組數（近10期）</div>
-                <div style={{ fontSize: 22, fontWeight: 900, color: '#dc2626', lineHeight: 1.1 }}>{hitFeedback.hit3} <span style={{ fontSize: 12 }}>組</span></div>
-                <div style={{ fontSize: 10, color: '#7b6e5c', marginTop: 2 }}>中3率 {hitFeedback.sampleCount ? Math.round((hitFeedback.hit3 / hitFeedback.sampleCount) * 100) : 0}%</div>
+              <div style={{ background: '#fff', border: '1.5px solid #fecaca', borderRadius: 12, padding: '12px 14px' }}>
+                <div style={{ fontSize: 11, color: '#9a8c7d', marginBottom: 4 }}>中3組數（近10期）</div>
+                <div style={{ fontSize: 26, fontWeight: 900, color: '#dc2626', lineHeight: 1 }}>{hitFeedback.hit3} <span style={{ fontSize: 13, fontWeight: 700 }}>組</span></div>
+                <div style={{ fontSize: 11, color: '#7b6e5c', marginTop: 4 }}>中3率 {hitFeedback.groupCount ? Math.round((hitFeedback.hit3 / hitFeedback.groupCount) * 100) : 0}%</div>
               </div>
             </div>
 
@@ -1928,10 +1929,10 @@ export default function App() {
                             <span style={{ fontSize: 10, fontWeight: 700, color: '#7b6e5c' }}>第{idx + 1}組</span>
                             {tier ? <span style={{ fontSize: 9, fontWeight: 700, color: tierColor, background: '#fff', borderRadius: 8, padding: '1px 5px', border: '1px solid #d9c7a8' }}>{tier}</span> : null}
                           </div>
-                          <div style={{ fontSize: 10, color: '#7b6e5c', marginBottom: 6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</div>
+                          <div style={{ fontSize: 9, color: '#9a8c7d', marginBottom: 6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</div>
                           <div style={{ display: 'flex', gap: 5 }}>
                             {nums.map((n) => (
-                              <div key={n} style={{ width: 30, height: 30, borderRadius: '50%', background: tierColor, color: 'white', fontSize: 12, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                              <div key={n} style={{ width: 34, height: 34, borderRadius: '50%', background: tierColor, color: 'white', fontSize: 12, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                                 {formatBallNumber(n)}
                               </div>
                             ))}
@@ -2034,7 +2035,7 @@ export default function App() {
                             <span style={{ fontSize: 10, fontWeight: 700, color: '#7b6e5c' }}>第{idx + 1}組</span>
                             {tier ? <span style={{ fontSize: 9, fontWeight: 700, color: tierColor, background: '#fff', borderRadius: 8, padding: '1px 5px', border: '1px solid #d9c7a8' }}>{tier}</span> : null}
                           </div>
-                          <div style={{ fontSize: 10, color: '#7b6e5c', marginBottom: 6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</div>
+                          <div style={{ fontSize: 9, color: '#9a8c7d', marginBottom: 6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</div>
                           <div style={{ display: 'flex', gap: 5 }}>
                             {nums.map((n) => (
                               <div key={n} style={{ width: 32, height: 32, borderRadius: '50%', background: tierColor, color: 'white', fontSize: 12, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -2415,8 +2416,8 @@ export default function App() {
 const styles = {
   page: {
     minHeight: '100vh',
-    background: '#f3ece0',
-    padding: '12px 12px 32px',
+    background: '#f0ebe1',
+    padding: '10px 12px 32px',
     color: '#23413a',
     boxSizing: 'border-box'
   },
@@ -2431,7 +2432,7 @@ const styles = {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
-    gap: 10,
+    gap: 8,
     padding: '4px 2px 0'
   },
   brand: {
@@ -2442,14 +2443,15 @@ const styles = {
     whiteSpace: 'nowrap'
   },
   headerSub: {
-    marginTop: 4,
-    color: '#7b6e5c',
-    fontSize: 12
+    marginTop: 2,
+    color: '#9a8c7d',
+    fontSize: 11
   },
   headerActions: {
     display: 'flex',
     alignItems: 'center',
-    gap: 8
+    gap: 8,
+    flexShrink: 0
   },
   tabBar: {
     display: 'grid',
@@ -2457,40 +2459,41 @@ const styles = {
     gap: 8
   },
   tabButton: {
-    border: '2px solid #2e4b44',
-    background: '#f7f1e7',
-    color: '#23413a',
-    borderRadius: 14,
-    padding: '9px 4px',
-    fontSize: 12,
-    fontWeight: 800,
+    border: '1.5px solid #c8bfb0',
+    background: '#faf7f2',
+    color: '#5a5248',
+    borderRadius: 12,
+    padding: '8px 4px',
+    fontSize: 11,
+    fontWeight: 700,
     cursor: 'pointer',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 4,
+    gap: 3,
     transition: 'all .15s ease',
-    minHeight: 44
+    minHeight: 42
   },
   tabButtonActive: {
     background: '#0f766e',
     color: '#fff',
-    borderColor: '#0f766e'
+    borderColor: '#0f766e',
+    boxShadow: '0 2px 6px rgba(15,118,110,0.3)'
   },
   tabIcon: {
-    fontSize: 18
+    fontSize: 16
   },
   sectionStack: {
     display: 'flex',
     flexDirection: 'column',
-    gap: 14
+    gap: 12
   },
   card: {
-    background: '#efe8db',
-    border: '2px solid #d8c7ad',
-    borderRadius: 18,
+    background: '#fff',
+    border: '1.5px solid #e0d4c0',
+    borderRadius: 16,
     padding: 14,
-    boxShadow: '0 2px 0 rgba(124, 90, 34, 0.04)'
+    boxShadow: '0 2px 8px rgba(0,0,0,0.06)'
   },
   cardHeader: {
     display: 'flex',
@@ -2521,11 +2524,11 @@ const styles = {
     gap: 10
   },
   statBox: {
-    background: '#f8f1e6',
-    border: '2px solid #d9c7a8',
-    borderRadius: 14,
-    padding: 12,
-    minHeight: 90,
+    background: '#fff',
+    border: '1.5px solid #e8ddd0',
+    borderRadius: 12,
+    padding: '12px 14px',
+    minHeight: 80,
     boxSizing: 'border-box'
   },
   statLabel: {
@@ -2617,28 +2620,30 @@ const styles = {
     marginTop: 14
   },
   primaryButton: {
-    marginTop: 12,
+    marginTop: 0,
     background: '#0f766e',
     color: '#fff',
     border: 'none',
-    borderRadius: 14,
-    padding: '14px 18px',
-    fontSize: 16,
-    fontWeight: 800,
+    borderRadius: 12,
+    padding: '10px 18px',
+    fontSize: 14,
+    fontWeight: 700,
     cursor: 'pointer',
     width: '100%',
-    minHeight: 50
+    minHeight: 40,
+    whiteSpace: 'nowrap'
   },
   secondaryButton: {
-    background: '#f8f1e6',
-    color: '#23413a',
-    border: '2px solid #d9c7a8',
-    borderRadius: 14,
-    padding: '14px 18px',
-    fontSize: 16,
-    fontWeight: 800,
+    background: '#fff',
+    color: '#0f766e',
+    border: '2px solid #0f766e',
+    borderRadius: 12,
+    padding: '10px 14px',
+    fontSize: 14,
+    fontWeight: 700,
     cursor: 'pointer',
-    minHeight: 50
+    minHeight: 40,
+    whiteSpace: 'nowrap'
   },
   stopButton: {
     background: '#a1433d'
@@ -2932,16 +2937,16 @@ const styles = {
   marketBallsWrap: {
     display: 'flex',
     flexWrap: 'wrap',
-    gap: 10
+    gap: 7
   },
   marketBall: {
-    width: 46,
-    height: 46,
+    width: 38,
+    height: 38,
     borderRadius: '50%',
     background: '#efe3cb',
-    border: '2px solid #d3b88e',
+    border: '1.5px solid #d3b88e',
     color: '#4a4031',
-    fontSize: 15,
+    fontSize: 13,
     fontWeight: 900,
     display: 'flex',
     alignItems: 'center',
