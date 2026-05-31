@@ -504,7 +504,7 @@ function normalizeLeaderboardRow(row, poolRow = null) {
 async function getLatestRowByMode(mode) {
   const { data, error } = await supabase
     .from(PREDICTIONS_TABLE)
-    .select('id, mode, status, source_draw_no, target_periods, created_at, compared_at, compare_status, verdict, hit_count, groups_json, compare_result_json, compare_result, compare_history_json, best_single_hit, confidence_score, market_phase, last_hit_level')
+    .select('id, mode, status, source_draw_no, target_periods, created_at, compared_at, compare_status, verdict, hit_count, groups_json, compare_result_json, compare_result, compare_history_json, best_single_hit, confidence_score, market_phase, last_hit_level, recommend')  // ✅ 加入 recommend
     .eq('mode', mode)
     .order('created_at', { ascending: false })
     .limit(1)
@@ -525,7 +525,7 @@ async function getFormalRowsBySourceDrawNo(sourceDrawNo) {
 
   const { data, error } = await supabase
     .from(PREDICTIONS_TABLE)
-    .select('id, mode, status, source_draw_no, target_periods, created_at, compared_at, compare_status, verdict, hit_count, groups_json, compare_result_json, compare_result, compare_history_json, best_single_hit, confidence_score, market_phase, last_hit_level')
+    .select('id, mode, status, source_draw_no, target_periods, created_at, compared_at, compare_status, verdict, hit_count, groups_json, compare_result_json, compare_result, compare_history_json, best_single_hit, confidence_score, market_phase, last_hit_level, recommend')  // ✅ 加入 recommend
     .eq('mode', 'formal_3star') // 4star disabled
     .eq('source_draw_no', sourceDrawNo)
     .order('created_at', { ascending: true })
@@ -549,7 +549,7 @@ async function getRecentComparedRows(limit = 10) {
 
   const { data, error } = await supabase
     .from(PREDICTIONS_TABLE)
-    .select('id, mode, status, source_draw_no, target_periods, created_at, compared_at, compare_status, verdict, hit_count, groups_json, compare_result_json, compare_result, compare_history_json, best_single_hit, confidence_score, market_phase, last_hit_level')
+    .select('id, mode, status, source_draw_no, target_periods, created_at, compared_at, compare_status, verdict, hit_count, groups_json, compare_result_json, compare_result, compare_history_json, best_single_hit, confidence_score, market_phase, last_hit_level, recommend')  // ✅ 加入 recommend
     .eq('mode', 'formal_3star')
     .eq('status', 'compared')
 
@@ -569,7 +569,7 @@ async function getRecentFormalComparedRows(limit = 5) {
 
   const { data, error } = await supabase
     .from(PREDICTIONS_TABLE)
-    .select('id, mode, status, source_draw_no, target_periods, created_at, compared_at, compare_status, verdict, hit_count, groups_json, compare_result_json, compare_result, compare_history_json, best_single_hit, confidence_score, market_phase, last_hit_level')
+    .select('id, mode, status, source_draw_no, target_periods, created_at, compared_at, compare_status, verdict, hit_count, groups_json, compare_result_json, compare_result, compare_history_json, best_single_hit, confidence_score, market_phase, last_hit_level, recommend')  // ✅ 加入 recommend
     .eq('mode', 'formal_3star') // 4star disabled
     .eq('status', 'compared')
     .order('created_at', { ascending: false })
@@ -588,7 +588,7 @@ async function getRecent3StarComparedRows(limit = 40) {
 
   const { data, error } = await supabase
     .from(PREDICTIONS_TABLE)
-    .select('id, mode, status, source_draw_no, target_periods, created_at, compared_at, compare_status, verdict, hit_count, groups_json, compare_result_json, compare_result, compare_history_json, best_single_hit, confidence_score, market_phase, last_hit_level')
+    .select('id, mode, status, source_draw_no, target_periods, created_at, compared_at, compare_status, verdict, hit_count, groups_json, compare_result_json, compare_result, compare_history_json, best_single_hit, confidence_score, market_phase, last_hit_level, recommend')  // ✅ 加入 recommend
     .eq('mode', 'formal_3star')
     .eq('status', 'compared')
     .order('created_at', { ascending: false })
