@@ -1890,6 +1890,18 @@ export default function App() {
               const row3 = predictionSummary.latest3StarRow;
               const groups3 = toArray(row3?.groups_json);
               if (!row3) return <div style={styles.emptyBox}>尚無預測資料，等待自動產生中...</div>;
+              // ✅ recommend 機制：上一期≥2組中二才顯示號碼，否則顯示觀察空白
+              const isRecommend = row3?.recommend === true;
+              if (!isRecommend && row3?.compare_status === 'pending') {
+                return (
+                  <div style={{ background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 14, padding: '20px 16px', textAlign: 'center' }}>
+                    <div style={{ fontSize: 28, marginBottom: 8 }}>⏸️</div>
+                    <div style={{ fontSize: 15, fontWeight: 900, color: '#7b6e5c', marginBottom: 4 }}>本期觀察，不建議下注</div>
+                    <div style={{ fontSize: 11, color: '#a09080' }}>上一期中二組數不足，等待更好時機</div>
+                    <div style={{ fontSize: 11, color: '#a09080', marginTop: 4 }}>期號 {fmtText(row3?.source_draw_no, '--')}</div>
+                  </div>
+                );
+              }
               return (
                 <div>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
