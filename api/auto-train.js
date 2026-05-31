@@ -1293,20 +1293,21 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
           dynamic_cold_6:      0.1,
         },
         hot_streak: {
-          // 實測：dynamic_gap_zone_5(3.45%) dynamic_zone_fill_6(3.13%)
-          // cold_zone_cover(3.03%) zone_rotation_hot_2(3.03%)
-          // 反直覺：追熱策略在 hot_streak 盤反而沒效，輪動和冷號有效
-          dynamic_recent_6:    2.0,
-          zone_rotation_hot_2: 2.0,  // 實測 hot_streak 盤 3.03%
-          dynamic_zone_fill_6: 2.0,  // 實測 hot_streak 盤 3.13%
-          cold_zone_cover:     1.8,  // 實測 hot_streak 盤 3.03%（反直覺但有效）
-          dynamic_gap_zone_5:  1.8,  // 實測 hot_streak 盤 3.45%
-          rebound:             1.5,
-          dynamic_hot_6:       1.2,
-          mix_gap:             0.6,
-          mix_zone_3:          0.4,
-          hot_zone_cover_1:    0.5,  // 實測 hot_streak 盤 1.01%，降權
-          dynamic_hot_5:       0.4,  // 實測 hot_streak 盤 0%，降權
+          // ✅ v4：根據 5/31 實測數據再次校準
+          // 有效：hot_zone_cover_1(3.64%) rebound(3.64%) zone_rotation_hot_2(3.64%) cold_zone_cover(1.82%)
+          // 無效：dynamic_recent_6(0%) mix_gap(0%) dynamic_cold_5(0%) mix_zone_3(0%)
+          hot_zone_cover_1:    2.2,  // 實測 3.64%，大幅加權（原0.5）
+          rebound:             2.2,  // 實測 3.64%，大幅加權（原1.5）
+          zone_rotation_hot_2: 2.0,  // 實測 3.64%，維持高權重
+          cold_zone_cover:     1.5,  // 實測 1.82%，維持
+          dynamic_zone_fill_6: 1.2,  // 歷史實測有效，維持
+          dynamic_gap_zone_5:  1.2,  // 歷史實測有效，維持
+          dynamic_hot_6:       1.0,  // 今天 8.33%（樣本少），給中等
+          dynamic_recent_6:    0.5,  // 實測 0%，降權（原2.0）
+          mix_gap:             0.4,  // 實測 0%，降權
+          dynamic_cold_5:      0.4,  // 實測 0%，降權
+          mix_zone_3:          0.4,  // 實測 0%，降權
+          dynamic_hot_5:       0.4,
           dynamic_recent_5:    0.1,
           dynamic_cold_4:      0.1,
           dynamic_cold_6:      0.1,
@@ -1530,7 +1531,7 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
             continuation: { streak: 2, cold: 1, recent: 2, hot: 2, zone_fill: 1 },    // ✅ 連號延續：追熱+連號
             bias: { zone_fill: 2, cold: 2, gap_zone: 1, hot: 1, recent: 1, scatter: 1 },
             hot_bias: { hot: 3, zone_fill: 2, recent: 1, gap_zone: 1, scatter: 1 },    // ✅ 熱區偏移：大量追熱
-            hot_streak: { zone_fill: 3, cold: 2, recent: 2, hot: 1 },                  // ✅ v3：實測修正，zone_fill和cold有效，不是追熱
+            hot_streak: { hot: 2, zone_fill: 2, cold: 2, recent: 2 },                  // ✅ v4：hot_zone_cover_1實測3.64%，hot給2個名額
             chaos: { scatter: 2, cold: 2, recent: 1, balance: 1, zone_fill: 1, gap_zone: 1 }, // ✅ 混沌：分散選號
             rotation: { cold: 2, recent: 2, hot: 1, zone_fill: 1, scatter: 1, balance: 1 }
           };
