@@ -1621,6 +1621,33 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
       })).filter(g => g.nums.length === 3);
 
       if (threeStarGroups.length > 0) {
+        // ✅ 建立新預測前，查上一期比對結果的 hit2 組數，決定本期是否建議下注
+        let recommendThisPeriod = false;
+        try {
+          const { data: lastCompared } = await db
+            .from(PREDICTIONS_TABLE)
+            .select('compare_result_json')
+            .eq('mode', 'formal_3star')
+            .eq('compare_status', 'done')
+            .order('compared_at', { ascending: false })
+            .limit(1)
+            .single();
+
+          if (lastCompared?.compare_result_json) {
+            const raw = lastCompared.compare_result_json;
+            const result = raw && typeof raw === 'string'
+              ? (() => { try { return JSON.parse(raw); } catch { return null; } })()
+              : raw;
+            // 計算上一期有幾組中二（hit >= 2）
+            const detail = Array.isArray(result?.detail) ? result.detail : [];
+            const hit2GroupCount = detail.filter(d => toNum(d?.hit, 0) >= 2).length;
+            recommendThisPeriod = hit2GroupCount >= 2;
+            console.log(`[3star] 上一期中二組數: ${hit2GroupCount}，本期recommend: ${recommendThisPeriod}`);
+          }
+        } catch (recErr) {
+          console.warn('[3star] 查上一期比對結果失敗:', recErr.message);
+        }
+
         const payload3star = {
           mode: 'formal_3star',
           status: 'created',
@@ -1642,7 +1669,8 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
           compared_history_json: [],
           compared_draw_count: 0,
           compared_at: null,
-          created_at: nowIso
+          created_at: nowIso,
+          recommend: recommendThisPeriod  // ✅ 上一期≥2組中二才建議下注
         };
         const { error: insertErr3star } = await db.from(PREDICTIONS_TABLE).insert(payload3star);
         if (insertErr3star) {
