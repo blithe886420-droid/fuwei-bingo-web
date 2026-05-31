@@ -1298,12 +1298,12 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
           // 無效：dynamic_recent_6(0%) mix_gap(0%) dynamic_cold_5(0%) mix_zone_3(0%)
           hot_zone_cover_1:    2.2,  // 實測 3.64%，大幅加權（原0.5）
           rebound:             2.2,  // 實測 3.64%，大幅加權（原1.5）
-          zone_rotation_hot_2: 2.0,  // 實測 3.64%，維持高權重
+          zone_rotation_hot_2: 2.2,  // 實測持續有效，加權
           cold_zone_cover:     1.5,  // 實測 1.82%，維持
           dynamic_zone_fill_6: 1.2,  // 歷史實測有效，維持
           dynamic_gap_zone_5:  1.2,  // 歷史實測有效，維持
           dynamic_hot_6:       1.0,  // 今天 8.33%（樣本少），給中等
-          dynamic_recent_6:    0.5,  // 實測 0%，降權（原2.0）
+          dynamic_recent_6:    0.3,  // 實測連續兩天 0%，封殺
           mix_gap:             0.4,  // 實測 0%，降權
           dynamic_cold_5:      0.4,  // 實測 0%，降權
           mix_zone_3:          0.4,  // 實測 0%，降權
@@ -1415,16 +1415,21 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
             ...Object.keys(shortStats)
           ]);
 
+          // ✅ v4：調整加權比例
+          // 長期 × 4（穩定基礎，不容易被短期波動左右）
+          // 中期 × 2（今天表現）
+          // 短期 × 1（即時微調，不主導）
+          // 原本短期 × 4 讓幾筆資料就能主導權重，造成震盪
           const finalScores = {};
           for (const k of allKeys) {
             const longRate = longRates[k] || 0.005;
             const midRate = midStats[k]?.total >= 3 ? midStats[k].hit3 / midStats[k].total : null;
             const shortRate = shortStats[k]?.total >= 2 ? shortStats[k].hit3 / shortStats[k].total : null;
 
-            let score = longRate * 1;
+            let score = longRate * 4;  // 長期權重提高，穩定基礎
             if (midRate !== null) score += midRate * 2;
-            if (shortRate !== null) score += shortRate * 4;
-            const denom = 1 + (midRate !== null ? 2 : 0) + (shortRate !== null ? 4 : 0);
+            if (shortRate !== null) score += shortRate * 1;  // 短期降低，避免震盪
+            const denom = 4 + (midRate !== null ? 2 : 0) + (shortRate !== null ? 1 : 0);
             finalScores[k] = score / denom;
           }
 
@@ -1438,10 +1443,11 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
 
             // ✅ v3：即時狀態判斷，加入 hit2 作為輔助訊號
             // 賓果命中3顆需要運氣，但命中2顆方向對的話 hit2 能反映選號品質
-            const shortZero = shortS && shortS.total >= 6 && shortS.hit3 === 0 && (shortS.hit2||0) === 0; // 連6局hit2和hit3都沒有
-            const midZero = midS && midS.total >= 6 && midS.hit3 === 0 && (midS.hit2||0) === 0; // 1小時hit2和hit3都沒有
-            const shortHot = shortS && shortS.total >= 2 && (shortS.hit3 > 0 || (shortS.hit2||0) >= 2); // 最近30分鐘有中3，或連續2次中2
-            const midHot = midS && midS.total >= 3 && (midS.hit3 > 0 || (midS.hit2||0) >= 3); // 最近1小時有中3，或3次中2
+            // ✅ v4：調整門檻，要求更多樣本才能判定熱/冷
+            const shortZero = shortS && shortS.total >= 4 && shortS.hit3 === 0 && (shortS.hit2||0) === 0;
+            const midZero = midS && midS.total >= 8 && midS.hit3 === 0 && (midS.hit2||0) === 0;
+            const shortHot = shortS && shortS.total >= 3 && (shortS.hit3 > 0 || (shortS.hit2||0) >= 2);
+            const midHot = midS && midS.total >= 5 && (midS.hit3 > 0 || (midS.hit2||0) >= 3);
 
             if (shortHot && midHot && longGood) {
               roleWeights[k] = 2.0; // 長期好+最近熱：大膽用
