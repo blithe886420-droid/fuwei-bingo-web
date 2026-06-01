@@ -1193,16 +1193,8 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
         const sk = d.strategy_key || d.key;
         if (seenStarKeys.has(sk)) continue;
 
-        // ✅ 檢查 roleWeights：被步驟七封殺的策略不出場
-        // roleWeights 在後面才計算，這裡先用上一期的 liveMarketSnapshot.role_weights
-        // 如果沒有 roleWeights 資料，預設允許出場
-        const prevRoleWeights = liveMarketSnapshot?.role_weights || {};
-        const stratWeight = prevRoleWeights[sk];
-        if (stratWeight !== undefined && stratWeight <= 0.2) {
-          console.log(`[v5] ${sk} roleWeight=${stratWeight} 被步驟七封殺，跳過`);
-          continue;
-        }
-
+        // ✅ roleWeights 過濾放到步驟七計算完後再處理
+        // 這裡先正常加入，步驟七計算完 roleWeights 後再動態排除低分策略
         seenStarKeys.add(sk);
         sorted3starKeys.push(sk);
       }
