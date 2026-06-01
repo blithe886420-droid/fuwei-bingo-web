@@ -1556,20 +1556,31 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
           };
           const roleCountMap = { ...roleHitMap };
 
-          // 把 strategy_key 的表現對應到角色
+          // ✅ v5：明確的策略 key → 角色對應表
+          // 不再用 token 猜測，每個策略 key 明確對應到一個或多個角色
+          // 步驟七學到哪個策略有效 → 對應角色權重提升 → 真正影響選號
+          const STRATEGY_ROLE_MAP = {
+            'dynamic_hot_5':       ['hot'],
+            'dynamic_hot_6':       ['hot'],
+            'hot_zone_cover_1':    ['hot', 'zone_fill'],
+            'cold_zone_cover':     ['cold', 'zone_fill'],
+            'dynamic_cold_5':      ['cold'],
+            'dynamic_cold_6':      ['cold'],
+            'rebound':             ['cold'],
+            'dynamic_zone_fill_6': ['zone_fill'],
+            'zone_rotation_hot_2': ['zone_fill', 'hot'],
+            'dynamic_gap_zone_5':  ['gap_zone'],
+            'dynamic_recent_6':    ['recent'],
+            'mix_gap':             ['scatter', 'gap_zone'],
+            'mix_zone_3':          ['zone_fill', 'scatter'],
+          };
+
           for (const [k, w] of Object.entries(roleWeights)) {
-            const key = k.toLowerCase();
-            const addToRole = (role) => {
+            const roles = STRATEGY_ROLE_MAP[k] || [];
+            for (const role of roles) {
               roleHitMap[role] = (roleHitMap[role] || 0) + w;
               roleCountMap[role] = (roleCountMap[role] || 0) + 1;
-            };
-            if (key.includes('hot') && !key.includes('cold')) addToRole('hot');
-            if (key.includes('cold') || key.includes('rebound')) addToRole('cold');
-            if (key.includes('recent')) addToRole('recent');
-            if (key.includes('streak') || key.includes('chain')) addToRole('streak');
-            if (key.includes('zone') && !key.includes('hot') && !key.includes('cold')) addToRole('zone_fill');
-            if (key.includes('scatter')) addToRole('scatter');
-            if (key.includes('balanced') || key.includes('balance')) addToRole('balance');
+            }
           }
 
           // 計算每個角色的平均權重
@@ -1593,22 +1604,30 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
 
           const base = baseRoles[livePhase] || baseRoles.rotation;
 
-          // 根據步驟七的權重調整分配：權重高的角色可以多1組，權重低的減1組
+          // ✅ v5：根據步驟七的角色權重，更大幅度調整角色分配
+          // 原本只調整 ±1 組，影響太小（8組裡調1組=12.5%）
+          // 現在：高權重角色可以加 2 組，低權重角色可以減 2 組
           const adjusted = { ...base };
-          let totalGroups8 = Object.values(adjusted).reduce((a, b) => a + b, 0);
 
-          // 找最高權重角色加1組，最低權重角色減1組
           const sortedByWeight = Object.keys(roleAvgWeight)
-            .filter(r => adjusted[r] !== undefined)
+            .filter(r => adjusted[r] !== undefined && roleAvgWeight[r] > 0)
             .sort((a, b) => roleAvgWeight[b] - roleAvgWeight[a]);
 
           if (sortedByWeight.length >= 2) {
-            const hotRole = sortedByWeight[0];
-            const coldRole = sortedByWeight[sortedByWeight.length - 1];
-            if (roleAvgWeight[hotRole] >= 1.5 && adjusted[coldRole] > 1) {
-              adjusted[hotRole] = (adjusted[hotRole] || 0) + 1;
-              adjusted[coldRole] = adjusted[coldRole] - 1;
-              console.log(`[step7] 加碼 ${hotRole}(w=${roleAvgWeight[hotRole].toFixed(2)}) 減量 ${coldRole}(w=${roleAvgWeight[coldRole].toFixed(2)})`);
+            const topRole = sortedByWeight[0];
+            const bottomRole = sortedByWeight[sortedByWeight.length - 1];
+            const topW = roleAvgWeight[topRole];
+            const bottomW = roleAvgWeight[bottomRole];
+            const diff = topW - bottomW;
+
+            // 差距大於 1.0 才調整，避免過度敏感
+            if (diff >= 1.0 && adjusted[bottomRole] > 1) {
+              // 差距大於 1.5 調 2 組，否則調 1 組
+              const adjustCount = diff >= 1.5 ? 2 : 1;
+              const actualAdjust = Math.min(adjustCount, adjusted[bottomRole] - 1);
+              adjusted[topRole] = (adjusted[topRole] || 0) + actualAdjust;
+              adjusted[bottomRole] = adjusted[bottomRole] - actualAdjust;
+              console.log(`[step7 v5] 加碼 ${topRole}(w=${topW.toFixed(2)}) +${actualAdjust}組，減量 ${bottomRole}(w=${bottomW.toFixed(2)}) -${actualAdjust}組`);
             }
           }
 
