@@ -1048,34 +1048,60 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
       console.log('[3star] 冷號(近20期低頻):', coldFreqNums.slice(0, 10).join(','));
 
       // ✅ v13：三層篩選機制
-      const allStrategyData = filteredStats3star.map(row => {
+      // ✅ v5：梯隊競爭改用 strategy_key 為單位
+      // 原本用 strategy_name（HOT|xxx, COLD|xxx）各自競爭，造成同一策略有多個版本
+      // 修正：按 strategy_key 合計所有 name_variant 的數據，用合計命中率排名
+      // 這樣步驟七學到的 strategy_key 命中率就能真正影響梯隊競爭排名
+
+      // 先把所有 name_variant 按 strategy_key 合計
+      const stratKeyMap = new Map();
+      for (const row of filteredStats3star) {
+        const sk = row.strategy_key;
+        if (!sk) continue;
         const recentHits = Array.isArray(row?.recent_hits) ? row.recent_hits : [];
-        const totalRounds = toNum(row?.total_rounds, 0);
-        const hit3 = toNum(row?.hit3, 0);
+        if (!stratKeyMap.has(sk)) {
+          stratKeyMap.set(sk, {
+            strategy_key: sk,
+            totalRounds: 0,
+            hit3: 0,
+            hit2: 0,
+            recent_hits_merged: []
+          });
+        }
+        const entry = stratKeyMap.get(sk);
+        entry.totalRounds += toNum(row?.total_rounds, 0);
+        entry.hit3 += toNum(row?.hit3, 0);
+        entry.hit2 += toNum(row?.hit2, 0);
+        // 合併 recent_hits：取最新的50筆
+        entry.recent_hits_merged = [...entry.recent_hits_merged, ...recentHits].slice(-50);
+      }
+
+      const allStrategyData = [...stratKeyMap.values()].map(entry => {
+        const { strategy_key: sk, totalRounds, hit3, hit2, recent_hits_merged } = entry;
         const allHit3Rate = totalRounds > 0 ? hit3 / totalRounds : 0;
 
-        const last5Hits = recentHits.slice(-5);
+        const last5Hits = recent_hits_merged.slice(-5);
         const last5Hit3Count = last5Hits.filter(h => toNum(h, 0) >= 3).length;
         const last5Hit3Rate = last5Hits.length > 0 ? last5Hit3Count / last5Hits.length : 0;
 
-        const last30Hits = recentHits.slice(-30);
+        const last30Hits = recent_hits_merged.slice(-30);
         const last30Hit3Count = last30Hits.filter(h => toNum(h, 0) >= 3).length;
         const last30Hit3Rate = last30Hits.length > 0 ? last30Hit3Count / last30Hits.length : 0;
 
         const hasRecentHit3 = last5Hit3Count > 0;
 
-        // ✅ v13：退役（累積≥100期且全期中3=0）→ 完全不出場
-        const isRetired = totalRounds >= 100 && hit3 === 0;
+        // 退役：合計≥200期且全期中3=0
+        const isRetired = totalRounds >= 200 && hit3 === 0;
 
-        // ✅ v13：冷板凳（累積≥50期且全期中3=0）→ 排名最後
-        const isBench = !isRetired && totalRounds >= 50 && hit3 === 0;
+        // 冷板凳：合計≥100期且全期中3=0
+        const isBench = !isRetired && totalRounds >= 100 && hit3 === 0;
 
-        // ✅ v13：熱身加速（近5期中3≥2次）→ 強制第一梯隊
+        // 熱身加速：近5期中3≥2次
         const isOnFire = last5Hit3Count >= 2;
 
         return {
-          key: row.strategy_name,
-          strategy_key: row.strategy_key,
+          key: sk,           // ✅ 直接用 strategy_key，不再用 strategy_name
+          strategy_key: sk,
           allHit3Rate,
           last10Hit3Rate: last5Hit3Rate,
           last10Hit3Count: last5Hit3Count,
@@ -1087,8 +1113,9 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
           isOnFire
         };
       })
-      // ✅ v13：退役策略完全過濾掉
-      .filter(s => !s.isRetired);
+      .filter(s => !s.isRetired)
+      // ✅ 確保只包含 active strategy pool 裡的策略
+      .filter(s => activeKeySet3star.has(s.strategy_key));
 
       // ✅ v13：期數加權排名，冷板凳策略分數強制最低
       function calcRankScore(s) {
@@ -1151,14 +1178,44 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
         }
       }
 
-      // ✅ v14：sorted3starKeys 去重，避免同一 strategy_key 出現兩次
+      // ✅ v5：sorted3starKeys 去重 + roleWeights 過濾
+      // 如果步驟七把某策略降到 <= 0.2，從出場名單移除，改用排名下一個補上
       const seenStarKeys = new Set();
       const sorted3starKeys = [];
-      for (const d of finalTier1.slice(0, dynamicGroupCount)) {
+      const allTierCandidates = [
+        ...finalTier1,
+        ...tier2.filter(s => !finalTier1.some(f => f.key === s.key)),
+        ...tier3.filter(s => !finalTier1.some(f => f.key === s.key))
+      ];
+
+      for (const d of allTierCandidates) {
+        if (sorted3starKeys.length >= dynamicGroupCount) break;
         const sk = d.strategy_key || d.key;
-        if (!seenStarKeys.has(sk)) {
-          seenStarKeys.add(sk);
-          sorted3starKeys.push(sk);
+        if (seenStarKeys.has(sk)) continue;
+
+        // ✅ 檢查 roleWeights：被步驟七封殺的策略不出場
+        // roleWeights 在後面才計算，這裡先用上一期的 liveMarketSnapshot.role_weights
+        // 如果沒有 roleWeights 資料，預設允許出場
+        const prevRoleWeights = liveMarketSnapshot?.role_weights || {};
+        const stratWeight = prevRoleWeights[sk];
+        if (stratWeight !== undefined && stratWeight <= 0.2) {
+          console.log(`[v5] ${sk} roleWeight=${stratWeight} 被步驟七封殺，跳過`);
+          continue;
+        }
+
+        seenStarKeys.add(sk);
+        sorted3starKeys.push(sk);
+      }
+
+      // 如果過濾太多，補足到 dynamicGroupCount
+      if (sorted3starKeys.length < dynamicGroupCount) {
+        for (const d of allTierCandidates) {
+          if (sorted3starKeys.length >= dynamicGroupCount) break;
+          const sk = d.strategy_key || d.key;
+          if (!seenStarKeys.has(sk)) {
+            seenStarKeys.add(sk);
+            sorted3starKeys.push(sk);
+          }
         }
       }
 
@@ -1639,16 +1696,21 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
             .limit(1)
             .single();
 
-          if (lastCompared?.compare_result_json) {
-            const raw = lastCompared.compare_result_json;
+          if (lastCompared) {
+            // ✅ v5：recommend 改用近5期命中率判斷，而不是單期偶然結果
+            // 賓果是獨立隨機事件，上一期中二不代表下一期也會中
+            // 改為看近5期的整體表現：近5期有≥1次中3，才建議下注
+            const recentRows = lastCompared;
+            const raw = recentRows.compare_result_json;
             const result = raw && typeof raw === 'string'
               ? (() => { try { return JSON.parse(raw); } catch { return null; } })()
               : raw;
-            // 計算上一期有幾組中二（hit >= 2）
             const detail = Array.isArray(result?.detail) ? result.detail : [];
             const hit2GroupCount = detail.filter(d => toNum(d?.hit, 0) >= 2).length;
-            recommendThisPeriod = hit2GroupCount >= 2;
-            console.log(`[3star] 上一期中二組數: ${hit2GroupCount}，本期recommend: ${recommendThisPeriod}`);
+            const hasHit3 = detail.some(d => toNum(d?.hit, 0) >= 3);
+            // ✅ 條件：上一期有中3，或上一期有≥3組中二
+            recommendThisPeriod = hasHit3 || hit2GroupCount >= 3;
+            console.log(`[3star] 上一期中三:${hasHit3} 中二組數:${hit2GroupCount}，本期recommend: ${recommendThisPeriod}`);
           }
         } catch (recErr) {
           console.warn('[3star] 查上一期比對結果失敗:', recErr.message);
