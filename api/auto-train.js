@@ -1270,98 +1270,88 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
       // ✅ v3：基於 5/17~5/25 歷史資料(13072筆)的初始權重
       // 各策略在各盤相的實測 hit3_rate，直接作為起點，不再從 1.0 盲目開始
       // bias(30.7%) / continuation(41.5%) / rotation(27.8%)
-      // ✅ v3：根據 5/28~5/30 實測數據全面重新校準初始權重
-      // 實測各策略整體命中率（全盤相合計）：
-      // dynamic_recent_6(2.82%) > rebound(2.12%) > dynamic_hot_6(1.73%) = dynamic_gap_zone_5(1.73%)
-      // zone_rotation_hot_2(1.57%) > dynamic_hot_5(1.52%) > hot_zone_cover_1(1.22%) > mix_gap(1.19%)
-      // dynamic_zone_fill_6(1.11%) > mix_zone_3(1.05%) > cold_zone_cover(0.70%)
-      // dynamic_cold_4(0%) = dynamic_recent_5(0%) ← 直接封殺
+      // ✅ v6：根據 SQL 完整統計數據（5/28~6/2）重新設定初始權重
+      // bias盤：hot_zone_cover_1(2.84%) rebound(2.10%) dynamic_hot_6(1.35%)
+      // hot_bias盤：rebound(6.25%) dynamic_recent_6(4.88%) mix_zone_3(3.13%)
+      // hot_streak盤：zone_rotation_hot_2(1.88%) dynamic_zone_fill_6(1.83%) rebound(1.68%)
+      // rotation盤：zone_rotation_hot_2(2.37%) dynamic_hot_5(1.51%) rebound(1.45%)
+      // continuation盤：mix_zone_3(3.57%) mix_gap(3.45%) rebound(1.79%)
       const historicalBaseWeights = {
         bias: {
-          dynamic_recent_6:    2.2,  // 實測最強(2.82%)，大幅加權
-          rebound:             2.0,  // 實測強(2.12%)
-          dynamic_hot_6:       1.8,  // 實測強(1.73%)
-          dynamic_gap_zone_5:  1.8,  // 實測強(1.73%)
-          zone_rotation_hot_2: 1.6,  // 實測中上(1.57%)
-          dynamic_hot_5:       1.5,  // 實測中上(1.52%)
-          hot_zone_cover_1:    1.2,  // 實測中等(1.22%)
-          mix_gap:             1.0,  // 實測中等(1.19%)
-          dynamic_zone_fill_6: 1.0,  // 實測中等(1.11%)
-          mix_zone_3:          0.8,  // 實測偏弱(1.05%)
-          cold_zone_cover:     0.4,  // 實測最差(0.70%)
-          dynamic_recent_5:    0.1,  // 實測0%，封殺
-          dynamic_cold_4:      0.1,  // 實測0%，封殺
-          dynamic_cold_6:      0.1,  // 廢物，封殺
+          hot_zone_cover_1:    2.2,  // 實測 2.84%，最強
+          rebound:             2.0,  // 實測 2.10%
+          dynamic_hot_6:       1.6,  // 實測 1.35%
+          mix_gap:             1.3,  // 實測 1.12%
+          dynamic_gap_zone_5:  1.3,  // 實測 1.08%
+          mix_zone_3:          1.2,  // 實測 1.03%
+          zone_rotation_hot_2: 1.2,  // 實測 1.03%
+          dynamic_recent_6:    1.0,  // 無足夠樣本，給中等
+          dynamic_zone_fill_6: 1.0,
+          dynamic_hot_5:       1.0,
+          cold_zone_cover:     0.8,  // 實測 0.78%，最弱
+          dynamic_cold_5:      0.8,
+          dynamic_cold_6:      0.8,
         },
         continuation: {
-          dynamic_recent_6:    2.2,
-          rebound:             2.0,
-          dynamic_hot_6:       1.8,
-          dynamic_gap_zone_5:  1.8,
-          zone_rotation_hot_2: 1.6,
-          dynamic_hot_5:       1.5,
-          hot_zone_cover_1:    1.2,
-          mix_gap:             1.0,
+          mix_zone_3:          2.2,  // 實測 3.57%，最強
+          mix_gap:             2.2,  // 實測 3.45%
+          rebound:             1.8,  // 實測 1.79%
+          dynamic_recent_6:    1.8,  // 實測 1.79%
+          hot_zone_cover_1:    1.0,  // 實測 0%，給中等等待資料
+          zone_rotation_hot_2: 0.8,  // 實測 0%
+          cold_zone_cover:     0.8,  // 實測 0%
+          dynamic_hot_5:       1.0,
+          dynamic_hot_6:       1.0,
           dynamic_zone_fill_6: 1.0,
-          mix_zone_3:          0.8,
-          cold_zone_cover:     0.4,
-          dynamic_recent_5:    0.1,
-          dynamic_cold_4:      0.1,
-          dynamic_cold_6:      0.1,
+          dynamic_gap_zone_5:  1.0,
+          dynamic_cold_5:      0.8,
+          dynamic_cold_6:      0.8,
         },
         rotation: {
-          dynamic_recent_6:    2.2,
-          rebound:             2.0,
-          dynamic_hot_6:       1.8,
-          dynamic_gap_zone_5:  1.8,
-          zone_rotation_hot_2: 1.6,
-          dynamic_hot_5:       1.5,
-          hot_zone_cover_1:    1.2,
-          mix_gap:             1.0,
-          dynamic_zone_fill_6: 1.0,
-          mix_zone_3:          0.8,
-          cold_zone_cover:     0.4,
-          dynamic_recent_5:    0.1,
-          dynamic_cold_4:      0.1,
-          dynamic_cold_6:      0.1,
+          zone_rotation_hot_2: 2.2,  // 實測 2.37%，最強
+          dynamic_hot_5:       1.8,  // 實測 1.51%
+          rebound:             1.7,  // 實測 1.45%
+          dynamic_zone_fill_6: 1.3,  // 實測 1.01%
+          mix_gap:             1.2,  // 實測 0.99%
+          hot_zone_cover_1:    0.8,  // 實測 0.47%
+          mix_zone_3:          0.8,  // 實測 0.47%
+          cold_zone_cover:     0.6,  // 實測 0.47%
+          dynamic_recent_6:    1.0,
+          dynamic_hot_6:       1.2,
+          dynamic_gap_zone_5:  1.2,
+          dynamic_cold_5:      0.8,
+          dynamic_cold_6:      0.8,
         },
         hot_bias: {
-          dynamic_recent_6:    2.2,
-          rebound:             2.0,
-          dynamic_hot_6:       2.0,  // 熱區偏移盤加強熱號策略
-          zone_rotation_hot_2: 1.8,
-          dynamic_gap_zone_5:  1.6,
-          dynamic_hot_5:       1.6,
-          hot_zone_cover_1:    1.4,
+          rebound:             2.2,  // 實測 6.25%，最強
+          dynamic_recent_6:    2.2,  // 實測 4.88%
+          mix_zone_3:          2.0,  // 實測 3.13%
+          hot_zone_cover_1:    1.5,  // 實測 1.56%
+          mix_gap:             1.5,  // 實測 1.56%
+          dynamic_hot_6:       1.2,
           dynamic_zone_fill_6: 1.2,
-          mix_gap:             0.8,
-          mix_zone_3:          0.6,
-          cold_zone_cover:     0.3,
-          dynamic_recent_5:    0.1,
-          dynamic_cold_4:      0.1,
-          dynamic_cold_6:      0.1,
+          zone_rotation_hot_2: 0.8,  // 實測 0%
+          cold_zone_cover:     0.8,  // 實測 0%
+          dynamic_hot_5:       1.0,
+          dynamic_gap_zone_5:  1.0,
+          dynamic_cold_5:      0.8,
+          dynamic_cold_6:      0.8,
         },
         hot_streak: {
-          // ✅ v4：根據 5/31 實測數據再次校準
-          // 有效：hot_zone_cover_1(3.64%) rebound(3.64%) zone_rotation_hot_2(3.64%) cold_zone_cover(1.82%)
-          // 無效：dynamic_recent_6(0%) mix_gap(0%) dynamic_cold_5(0%) mix_zone_3(0%)
-          hot_zone_cover_1:    2.2,  // 實測 3.64%，大幅加權（原0.5）
-          rebound:             2.2,  // 實測 3.64%，大幅加權（原1.5）
-          zone_rotation_hot_2: 2.2,  // 實測持續有效，加權
-          cold_zone_cover:     1.5,  // 實測 1.82%，維持
-          dynamic_zone_fill_6: 1.2,  // 歷史實測有效，維持
-          dynamic_gap_zone_5:  1.2,  // 歷史實測有效，維持
-          dynamic_hot_6:       1.0,  // 今天 8.33%（樣本少），給中等
-          dynamic_recent_6:    0.3,  // 實測連續兩天 0%，封殺
-          mix_gap:             0.4,  // 實測 0%，降權
-          dynamic_cold_5:      0.4,  // 實測 0%，降權
-          mix_zone_3:          0.4,  // 實測 0%，降權
-          dynamic_hot_5:       0.4,
-          dynamic_recent_5:    0.1,
-          dynamic_cold_4:      0.1,
-          dynamic_cold_6:      0.1,
+          zone_rotation_hot_2: 2.2,  // 實測 1.88%，最強
+          dynamic_zone_fill_6: 2.0,  // 實測 1.83%
+          rebound:             2.0,  // 實測 1.68%
+          mix_zone_3:          1.8,  // 實測 1.61%
+          hot_zone_cover_1:    1.5,  // 實測 1.34%
+          cold_zone_cover:     1.3,  // 實測 1.08%
+          dynamic_cold_5:      1.2,  // 實測 1.05%
+          mix_gap:             1.0,  // 實測 0.81%
+          dynamic_cold_6:      0.9,  // 實測 0.73%
+          dynamic_recent_6:    0.8,  // 實測 1.79%（樣本少）
+          dynamic_hot_5:       0.5,  // 實測 0%
+          dynamic_hot_6:       1.0,
+          dynamic_gap_zone_5:  1.0,
         },
-        // ✅ chaos 盤：完全分散，冷號和散佈策略為主
         chaos: {
           dynamic_recent_6:    1.5,
           rebound:             1.3,
@@ -1374,9 +1364,8 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
           hot_zone_cover_1:    0.8,
           dynamic_hot_5:       0.8,
           dynamic_hot_6:       0.8,
-          dynamic_recent_5:    0.1,
-          dynamic_cold_4:      0.1,
-          dynamic_cold_6:      0.1,
+          dynamic_cold_5:      0.8,
+          dynamic_cold_6:      0.8,
         }
       };
 
@@ -1712,20 +1701,51 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
             .single();
 
           if (lastCompared) {
-            // ✅ v5：recommend 改用近5期命中率判斷，而不是單期偶然結果
-            // 賓果是獨立隨機事件，上一期中二不代表下一期也會中
-            // 改為看近5期的整體表現：近5期有≥1次中3，才建議下注
-            const recentRows = lastCompared;
-            const raw = recentRows.compare_result_json;
+            // ✅ v6：根據 SQL 統計數據重新設定 recommend 條件
+            // 統計結果：
+            // 上一期中3 → 下一期命中率 15.46% ✅ 建議下注
+            // 上一期未中2 → 下一期命中率 11.93% ✅ 可以下注
+            // 上一期中2 → 下一期命中率 9.22% ❌ 不特別建議
+            // 連續兩期中3 → 下一期命中率 6.25% ❌ 均值回歸，不建議
+
+            // 需要查最近兩期的結果
+            const raw = lastCompared.compare_result_json;
             const result = raw && typeof raw === 'string'
               ? (() => { try { return JSON.parse(raw); } catch { return null; } })()
               : raw;
             const detail = Array.isArray(result?.detail) ? result.detail : [];
-            const hit2GroupCount = detail.filter(d => toNum(d?.hit, 0) >= 2).length;
-            const hasHit3 = detail.some(d => toNum(d?.hit, 0) >= 3);
-            // ✅ 條件：上一期有中3，或上一期有≥3組中二
-            recommendThisPeriod = hasHit3 || hit2GroupCount >= 3;
-            console.log(`[3star] 上一期中三:${hasHit3} 中二組數:${hit2GroupCount}，本期recommend: ${recommendThisPeriod}`);
+            const lastHasHit3 = detail.some(d => toNum(d?.hit, 0) >= 3);
+
+            // 再查上上期，判斷是否連續兩期中3
+            let prevPrevHasHit3 = false;
+            try {
+              const { data: prevPrevRow } = await db
+                .from(PREDICTIONS_TABLE)
+                .select('compare_result_json')
+                .eq('mode', 'formal_3star')
+                .eq('compare_status', 'done')
+                .order('compared_at', { ascending: false })
+                .limit(2);
+              if (prevPrevRow && prevPrevRow[1]) {
+                const raw2 = prevPrevRow[1].compare_result_json;
+                const result2 = raw2 && typeof raw2 === 'string'
+                  ? (() => { try { return JSON.parse(raw2); } catch { return null; } })()
+                  : raw2;
+                const detail2 = Array.isArray(result2?.detail) ? result2.detail : [];
+                prevPrevHasHit3 = detail2.some(d => toNum(d?.hit, 0) >= 3);
+              }
+            } catch (e) {}
+
+            // 規則：上一期中3 且 非連續兩期中3 → 建議下注
+            // 連續兩期中3 → 均值回歸，不建議
+            if (lastHasHit3 && prevPrevHasHit3) {
+              recommendThisPeriod = false; // 連續兩期中3，不建議
+            } else if (lastHasHit3) {
+              recommendThisPeriod = true;  // 上一期中3，建議下注
+            } else {
+              recommendThisPeriod = false; // 其他情況不建議
+            }
+            console.log(`[3star] 上一期中三:${lastHasHit3} 上上期中三:${prevPrevHasHit3}，本期recommend: ${recommendThisPeriod}`);
           }
         } catch (recErr) {
           console.warn('[3star] 查上一期比對結果失敗:', recErr.message);
