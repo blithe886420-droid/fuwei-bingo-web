@@ -1418,9 +1418,13 @@ async function create3StarPrediction(db, sourceDrawNo, marketSnapshot) {
             .limit(60)
         ]);
 
-        const longTermRows = (!longTermRes.error && longTermRes.data) ? longTermRes.data : [];
-        const midRows = (!midRes.error && midRes.data) ? midRes.data : [];
-        const shortRows = (!shortRes.error && shortRes.data) ? shortRes.data : [];
+        // ✅ 過濾掉不在 activeKeySet3star 裡的策略，避免舊策略資料影響步驟七
+        const longTermRows = (!longTermRes.error && longTermRes.data) 
+          ? longTermRes.data.filter(r => activeKeySet3star.has(r.strategy_key)) : [];
+        const midRows = (!midRes.error && midRes.data) 
+          ? midRes.data.filter(r => activeKeySet3star.has(r.strategy_key)) : [];
+        const shortRows = (!shortRes.error && shortRes.data) 
+          ? shortRes.data.filter(r => activeKeySet3star.has(r.strategy_key)) : [];
 
         if (longTermRows.length > 0) {
           // 層一：長期戰績（背景調查）× 1
