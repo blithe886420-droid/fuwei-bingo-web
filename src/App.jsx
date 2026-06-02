@@ -1895,10 +1895,11 @@ export default function App() {
               const isRecommend = row3?.recommend === true;
               if (!isRecommend && row3?.compare_status === 'pending') {
                 return (
-                  <div style={{ background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 14, padding: '20px 16px', textAlign: 'center' }}>
+                  <div style={{ background: '#f8f1e6', border: '1.5px solid #d9c7a8', borderRadius: 14, padding: '20px 16px', textAlign: 'center' }}>
                     <div style={{ fontSize: 28, marginBottom: 8 }}>⏸️</div>
                     <div style={{ fontSize: 15, fontWeight: 900, color: '#7b6e5c', marginBottom: 4 }}>本期觀察，不建議下注</div>
-                    <div style={{ fontSize: 11, color: '#a09080' }}>上一期中二組數不足，等待更好時機</div>
+                    <div style={{ fontSize: 11, color: '#a09080' }}>根據統計：上一期中3才建議下注</div>
+                    <div style={{ fontSize: 11, color: '#a09080' }}>連續兩期中3反而是低潮前兆</div>
                     <div style={{ fontSize: 11, color: '#a09080', marginTop: 4 }}>期號 {fmtText(row3?.source_draw_no, '--')}</div>
                   </div>
                 );
