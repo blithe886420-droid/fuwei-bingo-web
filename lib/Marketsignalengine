@@ -1,5 +1,0 @@
-// stub - 此檔案保留供相容性使用
-export function buildRecentMarketSignalSnapshot() { return {}; }
-export function enrichMarketSnapshotWithPhase(s) { return s; }
-export function buildMarketState() { return {}; }
-export function buildStrategyDecisionFromSnapshot() { return {}; }
