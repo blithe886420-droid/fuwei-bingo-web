@@ -1,6 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { buildBingoV1Strategies } from '../lib/buildBingoV1Strategies.js';
-import { buildRecentMarketSignalSnapshot } from '../lib/marketSignalEngine.js';
+import { buildBingoGroups } from '../lib/buildBingoV1Strategies.js';
 
 const API_VERSION = 'prediction-save-v15-3star-sync';
 
@@ -3080,24 +3079,19 @@ async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestD
     const coldFreqNums3s = [...numFreqMap3s.entries()]
       .filter(([, f]) => f <= 2).sort((a, b) => a[1] - b[1]).map(([n]) => n);
 
-    const liveSnapshot3s = buildRecentMarketSignalSnapshot(marketRows.data || [], 'numbers');
-    // 注入頻率數據
-    liveSnapshot3s.freq20_hot_nums = hotFreqNums3s.slice(0, 24);
-    liveSnapshot3s.freq20_cold_nums = coldFreqNums3s.slice(0, 16);
-    liveSnapshot3s.num_freq_map = Object.fromEntries(
-      [...numFreqMap3s.entries()].map(([n, f]) => [String(n), f])
-    );
-    const result3star = buildBingoV1Strategies(marketRows.data || [], {}, 3, liveSnapshot3s, recent10Stats3s, sorted3sKeys, dynamicGroupCount3s);
+    // ✅ v20：改用覆蓋效率選號（buildBingoGroups）
+    const latestDrawNo3s = Number((marketRows.data || [])[0]?.draw_no || 0);
+    const rawGroups3s = buildBingoGroups(marketRows.data || [], latestDrawNo3s);
 
-    const threeStarGroups = (result3star.strategies || []).map((s, idx) => ({
+    const threeStarGroups = rawGroups3s.map((s, idx) => ({
       key: s.key,
       label: s.label,
-      nums: (Array.isArray(s.nums) ? s.nums : []).slice(0, 3),
-      reason: '真三星直接選號',
+      nums: s.nums,
+      reason: '覆蓋效率選號',
       meta: {
         ...(s.meta || {}),
         star_mode: 3,
-        derived_from: 'buildBingoV1Strategies_3star',
+        derived_from: 'buildBingoGroups_v20',
         slot_no: idx + 1
       }
     })).filter(g => g.nums.length === 3);
