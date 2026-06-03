@@ -2,6 +2,15 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 // ── 常數 ─────────────────────────────────────────
 const RAILWAY_URL = 'https://fuwei-bingo-backend-production.up.railway.app';
+const SUPABASE_URL = 'https://ydpzuypmscvmgsxyptvw.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlkcHp1eXBtc2N2bWdzeHlwdHZ3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDMwNTM0MDksImV4cCI6MjA1ODYyOTQwOX0.OZUBL1MNfTJhXqPXFqCTRCGJ7P8qKK5h0BuyEGmM5lk';
+
+async function supabaseFetch(table, params = '') {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${params}`, {
+    headers: { apikey: SUPABASE_KEY, Authorization: \`Bearer \${SUPABASE_KEY}\` }
+  });
+  return res.json();
+}
 const REFRESH_INTERVAL_MS = 30000;
 const NIGHT_STOP_START = 0;
 const NIGHT_STOP_END = 7 * 60;
@@ -511,13 +520,12 @@ export default function App() {
     }
   }, []);
 
-  // 載入策略統計
+  // 載入策略統計 - 直接讀 strategy_stats
   useEffect(() => {
     const loadStats = async () => {
       try {
-        const res = await apiFetch('/api/ai-player');
-        const top = toArray(res?.currentTopStrategies);
-        if (top.length) setStrategyStats(top);
+        const data = await supabaseFetch('strategy_stats', 'select=strategy_key,total_rounds,hit3,hit3_rate,roi,total_cost,total_reward&order=strategy_key.asc');
+        if (Array.isArray(data) && data.length) setStrategyStats(data);
       } catch {}
     };
     loadStats();
