@@ -1,5 +1,4 @@
 import { createClient } from '@supabase/supabase-js';
-import { rebuildStrategyStats } from '../lib/rebuildStrategyStats.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY =
@@ -36,30 +35,11 @@ export default async function handler(req, res) {
     const token = req.query?.token || req.body?.token || '';
 
     if (action === 'rebuild_strategy_stats') {
-      if (token !== ADMIN_REBUILD_TOKEN) {
-        return res.status(403).json({
-          ok: false,
-          error: 'forbidden'
-        });
-      }
-
-      try {
-        const result = await rebuildStrategyStats();
-
-        return res.status(200).json({
-          ok: true,
-          action: 'rebuild_strategy_stats',
-          result
-        });
-      } catch (error) {
-        console.error('rebuild_strategy_stats error:', error);
-
-        return res.status(500).json({
-          ok: false,
-          action: 'rebuild_strategy_stats',
-          error: error.message || 'rebuild failed'
-        });
-      }
+      return res.status(200).json({
+        ok: false,
+        action: 'rebuild_strategy_stats',
+        error: 'rebuild_strategy_stats 已停用（v20）'
+      });
     }
 
     if (req.method === 'GET') {
