@@ -118,8 +118,8 @@ const S = {
     position: 'sticky', top: 0, zIndex: 100, boxShadow: '0 2px 8px rgba(200,134,10,0.08)',
   },
   tab: (active) => ({
-    flex: 1, padding: '12px 4px 10px', border: 'none', background: 'transparent',
-    cursor: 'pointer', fontSize: 13, fontWeight: active ? 700 : 400,
+    flex: 1, padding: '10px 2px 8px', border: 'none', background: 'transparent',
+    cursor: 'pointer', fontSize: 11, fontWeight: active ? 700 : 400,
     color: active ? C.gold : C.gray,
     borderBottom: active ? `3px solid ${C.gold}` : '3px solid transparent',
     transition: 'all 0.2s',
@@ -474,6 +474,65 @@ function MarketPage({ recent20 }) {
   );
 }
 
+
+// ── 頁面：熱號分析 ────────────────────────────────
+function HotPage({ recent20 }) {
+  const rows = toArray(recent20);
+
+  function calcHot(periodRows) {
+    const countMap = new Map();
+    for (const row of periodRows) {
+      const nums = parseNums(row?.numbers);
+      for (const n of nums) {
+        countMap.set(n, (countMap.get(n) || 0) + 1);
+      }
+    }
+    return [...countMap.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0] - b[0])
+      .slice(0, 10)
+      .map(([num, count]) => ({ num, count }));
+  }
+
+  const periods = [
+    { label: '5期（短期爆發）', data: calcHot(rows.slice(0, 5)) },
+    { label: '10期（趨勢延續）', data: calcHot(rows.slice(0, 10)) },
+    { label: '15期（中期觀察）', data: calcHot(rows.slice(0, 15)) },
+    { label: '20期（穩定底盤）', data: calcHot(rows.slice(0, 20)) },
+  ];
+
+  return (
+    <div style={S.page}>
+      <Card title="熱門號分析" icon="🔥">
+        {!rows.length ? (
+          <div style={S.empty}>載入中...</div>
+        ) : periods.map(p => (
+          <div key={p.label} style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 12, color: C.textSub, fontWeight: 600, marginBottom: 8 }}>
+              {p.label}
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {p.data.map(({ num, count }) => (
+                <div key={num} style={{ textAlign: 'center' }}>
+                  <div style={{
+                    width: 40, height: 40, borderRadius: '50%',
+                    background: C.goldBg, border: `2px solid ${C.goldLight}`,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 14, fontWeight: 800, color: C.gold,
+                  }}>
+                    {padNum(num)}
+                  </div>
+                  <div style={{ fontSize: 11, color: C.textSub, marginTop: 2 }}>{count}</div>
+                </div>
+              ))}
+            </div>
+            <div style={S.divider} />
+          </div>
+        ))}
+      </Card>
+    </div>
+  );
+}
+
 // ── 主 APP ────────────────────────────────────────
 export default function App() {
   const [tab, setTab] = useState('quick');
@@ -536,6 +595,7 @@ export default function App() {
     { key: 'history', label: '近期', icon: '📋' },
     { key: 'stats', label: '統計', icon: '📊' },
     { key: 'market', label: '開獎', icon: '🎱' },
+    { key: 'hot', label: '熱號', icon: '🔥' },
   ];
 
   return (
@@ -585,6 +645,7 @@ export default function App() {
       {tab === 'history' && <HistoryPage historyRows={historyRows} />}
       {tab === 'stats' && <StatsPage strategyStats={strategyStats} prediction={prediction} />}
       {tab === 'market' && <MarketPage recent20={recent20} />}
+      {tab === 'hot' && <HotPage recent20={recent20} />}
     </div>
   );
 }
