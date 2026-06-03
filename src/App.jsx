@@ -1,249 +1,44 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 
-const TABS = {
-  QUICK: 'quick',
-  DASHBOARD: 'dashboard',
-  PREDICT: 'predict',
-  MARKET: 'market'
-};
+// ── 常數 ─────────────────────────────────────────
+const RAILWAY_URL = 'https://fuwei-bingo-backend-production.up.railway.app';
+const REFRESH_INTERVAL_MS = 30000;
+const NIGHT_STOP_START = 0;
+const NIGHT_STOP_END = 7 * 60;
 
-const TAB_ITEMS = [
-  { key: TABS.QUICK, label: '快速', icon: '⚡' },
-  { key: TABS.DASHBOARD, label: 'AI狀態', icon: '🏠' },
-  { key: TABS.MARKET, label: '開獎回顧', icon: '🎯' },
-  { key: TABS.PREDICT, label: '預測下注', icon: '📊' }
-];
-
-const LOOP_INTERVAL_MS = 60000; // ✅ v18：改為60秒刷新一次，讓UI更即時
-const NIGHT_STOP_START_MINUTES = 0;
-const NIGHT_STOP_END_MINUTES = 7 * 60;
-
-const FORMAL_BATCH_LIMIT = 3;
-const FORMAL_GROUP_COUNT = 4;
-const COST_PER_GROUP = 25;
-
-const ANALYSIS_PERIOD_OPTIONS = [5, 10, 20, 50];
-
-const STRATEGY_MODE_OPTIONS = [
-  { key: 'hot', label: '追熱策略', desc: '偏向近期熱門號與連續熱勢' },
-  { key: 'cold', label: '補冷策略', desc: '偏向補位冷號與久未出現號' },
-  { key: 'mix', label: '均衡策略', desc: '熱冷混合，分散風險與提高覆蓋' },
-  { key: 'burst', label: '爆發策略', desc: '接受波動，追求較高命中上限' }
-];
-
-const RISK_MODE_OPTIONS = [
-  { key: 'safe', label: '保守', desc: '以穩定中 2 為主' },
-  { key: 'balanced', label: '平衡', desc: '兼顧中 2 與中 3' },
-  { key: 'aggressive', label: '進攻', desc: '偏向中 3 的主力組' },
-  { key: 'sniper', label: '衝高', desc: '接受波動，拚中 4 爆發' }
-];
-
-function toArray(v) {
-  return Array.isArray(v) ? v : [];
-}
-
+// ── 工具函數 ──────────────────────────────────────
 function toNum(v, fallback = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
 }
 
-function fmtText(v, fallback = '--') {
+function toArray(v) {
+  return Array.isArray(v) ? v : [];
+}
+
+function fmt(v, fallback = '--') {
   if (v === null || v === undefined || v === '') return fallback;
   return String(v);
 }
 
-function fmtDateTime(v) {
-  if (!v) return '--';
-  const d = new Date(v);
-  if (Number.isNaN(d.getTime())) return String(v);
-  return d.toLocaleString('zh-TW', { hour12: false });
-}
-
-function fmtPercent(v, digits = 1) {
+function fmtPercent(v) {
   const n = Number(v);
   if (!Number.isFinite(n)) return '--';
-  return `${n.toFixed(digits)}%`;
-}
-
-function fmtMoney(v) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return '--';
-  return `${n} 元`;
-}
-
-function formatBallNumber(n) {
-  const num = Number(n);
-  if (!Number.isFinite(num)) return '--';
-  return String(num).padStart(2, '0');
+  return `${(n * 100).toFixed(1)}%`;
 }
 
 function parseNums(input) {
-  if (Array.isArray(input)) {
-    return input.map(Number).filter(Number.isFinite);
-  }
-
+  if (Array.isArray(input)) return input.map(Number).filter(Number.isFinite);
   if (typeof input === 'string') {
-    return input
-      .replace(/[{}[\]]/g, ' ')
-      .split(/[,\s|/]+/)
-      .map((x) => Number(x.trim()))
-      .filter(Number.isFinite);
+    return input.replace(/[{}[\]]/g, ' ').split(/[,\s|/]+/).map(n => Number(n.trim())).filter(Number.isFinite);
   }
-
   return [];
 }
 
-function safeJsonParse(value, fallback = null) {
-  if (value == null) return fallback;
-  if (typeof value === 'object') return value;
-  if (typeof value !== 'string') return fallback;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return fallback;
-  }
-}
-
-function normalizePredictionRow(row) {
-  if (!row || typeof row !== 'object') return null;
-
-  const compareResult =
-    safeJsonParse(row?.compare_result_json, null) ||
-    safeJsonParse(row?.compare_result, null) ||
-    null;
-
-  const compareHistoryRaw = safeJsonParse(row?.compare_history_json, []);
-  const compareHistory = Array.isArray(compareHistoryRaw) ? compareHistoryRaw : [];
-
-  return {
-    ...row,
-    source_draw_no: toNum(row?.source_draw_no, 0),
-    target_periods: toNum(row?.target_periods, 1),
-    hit_count: toNum(
-      row?.hit_count,
-      toNum(compareResult?.hit_count, 0)
-    ),
-    compare_result_json: compareResult,
-    compare_history_json: compareHistory,
-    groups_json: normalizeGroups(
-      row?.groups_json ||
-      row?.groups ||
-      row?.prediction_groups ||
-      row?.strategies ||
-      []
-    )
-  };
-}
-function normalizeGroups(rawGroups) {
-  const groups = Array.isArray(rawGroups) ? rawGroups : [];
-
-  return groups
-    .map((group, idx) => {
-      if (!group || typeof group !== 'object') return null;
-
-      const nums = parseNums(group?.nums || group?.numbers || []);
-      if (nums.length < 3) return null;  // ✅ 支援三星(3個)和四星(4個)
-
-      const meta = group?.meta && typeof group.meta === 'object' ? group.meta : {};
-
-      return {
-        key: String(group?.key || meta?.strategy_key || `group_${idx + 1}`),
-        label: String(group?.label || meta?.strategy_name || `第${idx + 1}組`),
-        nums,
-        reason: String(group?.reason || meta?.strategy_name || '--'),
-        meta
-      };
-    })
-    .filter(Boolean);
-}
-
-function getPredictionGroups(row) {
-  return normalizeGroups(
-    row?.groups_json ||
-      row?.groups ||
-      row?.prediction_groups ||
-      row?.strategies ||
-      []
-  );
-}
-
-function getRecentRows(data) {
-  if (Array.isArray(data)) return data;
-  if (Array.isArray(data?.rows)) return data.rows;
-  if (Array.isArray(data?.recent20)) return data.recent20;
-  if (Array.isArray(data?.data)) return data.data;
-  return [];
-}
-
-// ✅ v18：所有 API 呼叫改走 Railway，Vercel 只負責前端靜態頁面
-const RAILWAY_URL = 'https://fuwei-bingo-backend-production.up.railway.app';
-
-function resolveApiUrl(path) {
-  if (path.startsWith('/api/')) {
-    return `${RAILWAY_URL}${path}`;
-  }
-  return path;
-}
-
-function safeFetchJson(url, options = {}) {
-  const resolvedUrl = resolveApiUrl(url);
-  return fetch(resolvedUrl, {
-    cache: 'no-store',
-    ...options,
-    headers: {
-      ...(options?.headers || {})
-    }
-  }).then(async (res) => {
-    const text = await res.text();
-
-    let json = {};
-    try {
-      json = text ? JSON.parse(text) : {};
-    } catch {
-      json = { raw: text };
-    }
-
-    if (!res.ok) {
-      throw new Error(json?.error || json?.message || `${resolvedUrl} ${res.status}`);
-    }
-
-    return json;
-  });
-}
-
-async function safeFetchJsonAllowHttpError(url, options = {}) {
-  const resolvedUrl = resolveApiUrl(url);
-  const res = await fetch(resolvedUrl, {
-    cache: 'no-store',
-    ...options,
-    headers: {
-      ...(options?.headers || {})
-    }
-  });
-  const text = await res.text();
-
-  let json = {};
-  try {
-    json = text ? JSON.parse(text) : {};
-  } catch {
-    json = { raw: text };
-  }
-
-  return {
-    httpOk: res.ok,
-    status: res.status,
-    json
-  };
-}
-
-function isDuplicateOrAlreadyExistsMessage(msg) {
-  const text = String(msg || '').toLowerCase();
-
-  return (
-    text.includes('duplicate key') ||
-    text.includes('already exists') ||
-    text.includes('prediction already exists')
-  );
+function safeJson(v, fallback = null) {
+  if (v == null) return fallback;
+  if (typeof v === 'object') return v;
+  try { return JSON.parse(v); } catch { return fallback; }
 }
 
 function getNowMinutes() {
@@ -251,2936 +46,543 @@ function getNowMinutes() {
   return now.getHours() * 60 + now.getMinutes();
 }
 
-function isNightStopWindow() {
-  const minutes = getNowMinutes();
-  return minutes >= NIGHT_STOP_START_MINUTES && minutes < NIGHT_STOP_END_MINUTES;
+function isNight() {
+  const m = getNowMinutes();
+  return m >= NIGHT_STOP_START && m < NIGHT_STOP_END;
 }
 
-function msUntilNightWindowEnd() {
-  const now = new Date();
-  const target = new Date(now);
-  target.setHours(7, 30, 0, 0);
-
-  if (target.getTime() <= now.getTime()) {
-    target.setDate(target.getDate() + 1);
-  }
-
-  return Math.max(1000, target.getTime() - now.getTime());
+function padNum(n) {
+  return String(Number(n)).padStart(2, '0');
 }
 
-function getPredictionLatestRow(data, preferMode) {
-  const rows = [
-    data?.row,
-    ...(Array.isArray(data?.rows) ? data.rows : []),
-    ...(Array.isArray(data?.predictions) ? data.predictions : []),
-    ...(Array.isArray(data?.data) ? data.data : [])
-  ].filter(Boolean);
-
-  if (!rows.length) return null;
-
-  if (preferMode) {
-    const found = rows.find((r) => String(r?.mode || '').includes(preferMode));
-    if (found) return found;
-  }
-
-  return rows[0];
+function zoneLabel(key) {
+  const map = { zone_1:'1-10', zone_2:'11-20', zone_3:'21-30', zone_4:'31-40', zone_5:'41-50', zone_6:'51-60', zone_7:'61-70', zone_8:'71-80' };
+  return map[key] || key;
 }
 
-function calcHotNumbers(recentRows, lookback = 10) {
-  const rows = toArray(recentRows).slice(0, lookback);
-  const countMap = new Map();
-
-  rows.forEach((row) => {
-    const nums = parseNums(row?.numbers || row?.nums);
-    nums.forEach((n) => {
-      countMap.set(n, toNum(countMap.get(n), 0) + 1);
-    });
-  });
-
-  return [...countMap.entries()]
-    .sort((a, b) => b[1] - a[1] || a[0] - b[0])
-    .slice(0, 10)
-    .map(([num, count]) => ({ num, count }));
+// ── API ───────────────────────────────────────────
+async function apiFetch(path, options = {}) {
+  const res = await fetch(`${RAILWAY_URL}${path}`, { cache: 'no-store', ...options });
+  const text = await res.text();
+  try { return JSON.parse(text); } catch { return { raw: text }; }
 }
 
-function calcCurrentStreakNumbers(recentRows, maxLookback = 5) {
-  const rows = toArray(recentRows).slice(0, maxLookback);
-  if (!rows.length) return [];
-
-  const latestNums = parseNums(rows[0]?.numbers || rows[0]?.nums);
-  const result = [];
-
-  latestNums.forEach((num) => {
-    let streak = 1;
-
-    for (let i = 1; i < rows.length; i += 1) {
-      const nums = parseNums(rows[i]?.numbers || rows[i]?.nums);
-      if (nums.includes(num)) streak += 1;
-      else break;
-    }
-
-    if (streak >= 2) {
-      result.push({ num, streak });
-    }
-  });
-
-  return result.sort((a, b) => b.streak - a.streak || a.num - b.num);
-}
-
-function calcZoneCounts(nums = []) {
-  const source = parseNums(nums);
-  const zones = [
-    { label: '1-20', count: 0 },
-    { label: '21-40', count: 0 },
-    { label: '41-60', count: 0 },
-    { label: '61-80', count: 0 }
-  ];
-
-  source.forEach((n) => {
-    if (n >= 1 && n <= 20) zones[0].count += 1;
-    else if (n >= 21 && n <= 40) zones[1].count += 1;
-    else if (n >= 41 && n <= 60) zones[2].count += 1;
-    else if (n >= 61 && n <= 80) zones[3].count += 1;
-  });
-
-  return zones;
-}
-
-function normalizeAiPlayer(data) {
-  return {
-    assistantMode: data?.assistantMode || 'decision_support',
-    readyForFormal: Boolean(data?.readyForFormal),
-    adviceLevel: data?.adviceLevel || 'watch',
-    decisionPhase: data?.decisionPhase || 'neutral',
-    statusArrow: data?.statusArrow || '→',
-    statusLabel: data?.statusLabel || '觀察中',
-    statusText: data?.statusText || '目前資料可參考，但尚未達到較佳進場條件。',
-    statusColor: data?.statusColor || '#2563eb',
-    trainingStrength: Math.max(0, Math.min(100, toNum(data?.trainingStrength, 0))),
-    comparedLastHour: toNum(data?.comparedLastHour, 0),
-    createdLastHour: toNum(data?.createdLastHour, 0),
-    disabledLastHour: toNum(data?.disabledLastHour ?? data?.retiredLastHour, 0),
-    activeCount: toNum(data?.activeCount, 0),
-    totalPoolCount: toNum(data?.totalPoolCount, 0),
-    topStrategyKey: data?.topStrategyKey || '--',
-    topStrategyAvgHit: toNum(data?.topStrategyAvgHit, 0),
-    topStrategyRecent50Roi: toNum(data?.topStrategyRecent50Roi, 0),
-    latestDrawNo: data?.latestDrawNo || '--',
-    latestDrawTime: data?.latestDrawTime || '--',
-    currentTopStrategies: toArray(data?.currentTopStrategies)
-  };
-}
-
-
-function normalizeRecentDrawSummary(rows) {
-  return toArray(rows)
-    .map((row) => ({
-      draw_no: toNum(row?.draw_no, 0),
-      hit0_count: toNum(row?.hit0_count, 0),
-      hit1_count: toNum(row?.hit1_count, 0),
-      hit2_count: toNum(row?.hit2_count, 0),
-      hit3_count: toNum(row?.hit3_count, 0),
-      hit4_count: toNum(row?.hit4_count, 0),
-      row_count: toNum(row?.row_count, 0),
-      latest_created_at: row?.latest_created_at || null
-    }))
-    .filter((row) => row.draw_no > 0)
-    .sort((a, b) => b.draw_no - a.draw_no);
-}
-
-function getCompareDrawNoFromRow(row) {
-  const compareResult =
-    safeJsonParse(row?.compare_result_json, null) ||
-    safeJsonParse(row?.compare_result, null) ||
-    null;
-
-  const detail = Array.isArray(compareResult?.detail) ? compareResult.detail : [];
-  const firstDetail = detail.length && detail[0] && typeof detail[0] === 'object' ? detail[0] : null;
-
-  return toNum(
-    row?.draw_no ||
-      row?.target_draw_no ||
-      compareResult?.draw_no ||
-      compareResult?.target_draw_no ||
-      firstDetail?.draw_no ||
-      firstDetail?.target_draw_no,
-    0
-  );
-}
-
-function buildRecentDrawSummaryFromComparedRows(rows, limit = 10) {
-  const summaryMap = new Map();
-
-  toArray(rows).forEach((rawRow) => {
-    const row = normalizePredictionRow(rawRow);
-    if (!row) return;
-
-    const drawNo = getCompareDrawNoFromRow(row);
-    if (!drawNo) return;
-
-    const current = summaryMap.get(drawNo) || {
-      draw_no: drawNo,
-      hit0_count: 0,
-      hit1_count: 0,
-      hit2_count: 0,
-      hit3_count: 0,
-      hit4_count: 0,
-      row_count: 0,
-      latest_created_at: row?.created_at || null
-    };
-
-    const hit = toNum(row?.hit_count, 0);
-    current.row_count += 1;
-
-    if (!current.latest_created_at || new Date(row?.created_at || 0).getTime() > new Date(current.latest_created_at || 0).getTime()) {
-      current.latest_created_at = row?.created_at || current.latest_created_at;
-    }
-
-    if (hit <= 0) current.hit0_count += 1;
-    else if (hit === 1) current.hit1_count += 1;
-    else if (hit === 2) current.hit2_count += 1;
-    else if (hit === 3) current.hit3_count += 1;
-    else current.hit4_count += 1;
-
-    summaryMap.set(drawNo, current);
-  });
-
-  return [...summaryMap.values()]
-    .sort((a, b) => b.draw_no - a.draw_no)
-    .slice(0, Math.max(1, toNum(limit, 10)));
-}
-
-
-function intersectNums(a = [], b = []) {
-  const setB = new Set(parseNums(b));
-  return parseNums(a).filter((n) => setB.has(n));
-}
-
-function getCompareDrawNumbersFromRow(row) {
-  const compareResult =
-    safeJsonParse(row?.compare_result_json, null) ||
-    safeJsonParse(row?.compare_result, null) ||
-    null;
-
-  return parseNums(
-    compareResult?.draw_numbers ||
-      compareResult?.numbers ||
-      compareResult?.open_numbers ||
-      compareResult?.target_numbers ||
-      compareResult?.result_numbers ||
-      []
-  );
-}
-
-function normalizeComparedGroupItem(detail = {}, fallbackGroup = null, idx = 0, compareDrawNumbers = []) {
-  const baseGroup = fallbackGroup && typeof fallbackGroup === 'object' ? fallbackGroup : {};
-  const nums = parseNums(
-    detail?.nums ||
-      detail?.numbers ||
-      detail?.group_numbers ||
-      detail?.groupNums ||
-      detail?.picked_numbers ||
-      detail?.pickedNumbers ||
-      baseGroup?.nums ||
-      []
-  );
-
-  const matchedNumbers = parseNums(
-    detail?.matched_numbers ||
-      detail?.matchedNumbers ||
-      detail?.hit_numbers ||
-      detail?.hitNumbers ||
-      detail?.matched ||
-      []
-  );
-
-  const finalMatched = matchedNumbers.length
-    ? matchedNumbers
-    : (nums.length && compareDrawNumbers.length ? intersectNums(nums, compareDrawNumbers) : []);
-
-  const hitCountRaw =
-    detail?.hit_count ??
-    detail?.hitCount ??
-    detail?.match_count ??
-    detail?.matchCount ??
-    detail?.matched_count ??
-    detail?.matchedCount ??
-    detail?.hit ??
-    detail?.matched ??
-    null;
-
-  const hitCount = Number.isFinite(Number(hitCountRaw))
-    ? toNum(hitCountRaw, 0)
-    : finalMatched.length;
-
-  return {
-    group_index: toNum(
-      detail?.group_index ??
-        detail?.groupIndex ??
-        detail?.slot_no ??
-        detail?.slotNo ??
-        detail?.group_no ??
-        detail?.groupNo,
-      idx + 1
-    ),
-    key: String(detail?.key || baseGroup?.key || `group_${idx + 1}`),
-    label: String(detail?.label || baseGroup?.label || `第${idx + 1}組`),
-    nums,
-    matched_numbers: finalMatched,
-    hit_count: hitCount,
-    meta: baseGroup?.meta && typeof baseGroup.meta === 'object' ? baseGroup.meta : {}
-  };
-}
-
-function extractComparedGroupsFromRow(row) {
-  const groups = getPredictionGroups(row);
-  const compareResult =
-    safeJsonParse(row?.compare_result_json, null) ||
-    safeJsonParse(row?.compare_result, null) ||
-    null;
-
-  const compareHistory = Array.isArray(row?.compare_history_json)
-    ? row.compare_history_json
-    : [];
-
-  const detailCandidates = [];
-  if (Array.isArray(compareResult?.detail)) {
-    detailCandidates.push(...compareResult.detail);
-  }
-  compareHistory.forEach((historyItem) => {
-    if (Array.isArray(historyItem?.detail)) {
-      detailCandidates.push(...historyItem.detail);
-    }
-  });
-
-  const compareDrawNumbers = getCompareDrawNumbersFromRow(row);
-
-  if (detailCandidates.length) {
-    return detailCandidates
-      .map((detail, idx) => normalizeComparedGroupItem(detail, groups[idx] || null, idx, compareDrawNumbers))
-      .filter((item) => item.nums.length >= 3 || item.hit_count > 0)  // ✅ 支援三星
-      .sort((a, b) => a.group_index - b.group_index);
-  }
-
-  return groups.map((group, idx) => normalizeComparedGroupItem({}, group, idx, compareDrawNumbers));
-}
-
-function normalizeRecentFormalComparePeriods(rows) {
-  return toArray(rows)
-    .map((period) => ({
-      compare_draw_no: toNum(period?.compare_draw_no, 0),
-      compare_draw_time: period?.compare_draw_time || null,
-      compare_draw_numbers: parseNums(period?.compare_draw_numbers || []),
-      source_draw_no: toNum(period?.source_draw_no, 0),
-      batch_count: toNum(period?.batch_count, 0),
-      group_count: toNum(period?.group_count, 0),
-      hit0_count: toNum(period?.hit0_count, 0),
-      hit1_count: toNum(period?.hit1_count, 0),
-      hit2_count: toNum(period?.hit2_count, 0),
-      hit3_count: toNum(period?.hit3_count, 0),
-      hit4_count: toNum(period?.hit4_count, 0),
-      batches: toArray(period?.batches).map((batch, batchIdx) => ({
-        ...batch,
-        formal_batch_no: toNum(batch?.formal_batch_no, batchIdx + 1),
-        compare_draw_numbers: parseNums(batch?.compare_draw_numbers || period?.compare_draw_numbers || []),
-        groups: toArray(batch?.groups).map((group, groupIdx) => ({
-          ...group,
-          group_index: toNum(group?.group_index, groupIdx + 1),
-          nums: parseNums(group?.nums || []),
-          matched_numbers: parseNums(group?.matched_numbers || [])
-        }))
-      }))
-    }))
-    .filter((period) => period.compare_draw_no > 0)
-    .sort((a, b) => b.compare_draw_no - a.compare_draw_no);
-}
-
-function buildRecentFormalComparePeriodsFromRows(rows, limit = 5) {
-  const periodMap = new Map();
-
-  toArray(rows)
-    .map(normalizePredictionRow)
-    .filter(Boolean)
-    .filter((row) => ['formal', 'formal_3star'].includes(String(row?.mode || '').trim().toLowerCase()))
-    .forEach((row) => {
-      const compareDrawNo = getCompareDrawNoFromRow(row);
-      if (!compareDrawNo) return;
-
-      const compareDrawNumbers = getCompareDrawNumbersFromRow(row);
-      const period = periodMap.get(compareDrawNo) || {
-        compare_draw_no: compareDrawNo,
-        compare_draw_time: null,
-        compare_draw_numbers: compareDrawNumbers,
-        source_draw_no: toNum(row?.source_draw_no, 0),
-        batch_count: 0,
-        group_count: 0,
-        hit0_count: 0,
-        hit1_count: 0,
-        hit2_count: 0,
-        hit3_count: 0,
-        hit4_count: 0,
-        batches: []
-      };
-
-      const batchNo = period.batches.length + 1;
-      const comparedGroups = extractComparedGroupsFromRow(row);
-      comparedGroups.forEach((group) => {
-        const hit = toNum(group?.hit_count, 0);
-        period.group_count += 1;
-        if (hit <= 0) period.hit0_count += 1;
-        else if (hit === 1) period.hit1_count += 1;
-        else if (hit === 2) period.hit2_count += 1;
-        else if (hit === 3) period.hit3_count += 1;
-        else period.hit4_count += 1;
-      });
-
-      period.batch_count += 1;
-      period.batches.push({
-        id: row?.id || `${compareDrawNo}_${batchNo}`,
-        formal_batch_no: batchNo,
-        source_draw_no: toNum(row?.source_draw_no, 0),
-        compare_draw_no: compareDrawNo,
-        compare_draw_numbers: compareDrawNumbers,
-        created_at: row?.created_at || null,
-        status: row?.status || null,
-        groups: comparedGroups
-      });
-
-      periodMap.set(compareDrawNo, period);
-    });
-
-  return [...periodMap.values()]
-    .sort((a, b) => b.compare_draw_no - a.compare_draw_no)
-    .slice(0, Math.max(1, toNum(limit, 5)));
-}
-
-function normalizePredictionLatest(data) {
-  const latest = data && typeof data === 'object' ? data : {};
-
-  const trainingRow = normalizePredictionRow(
-    latest?.training?.row ||
-    latest?.trainingRow ||
-    latest?.latestTraining ||
-    null
-  );
-
-  const formalRow = normalizePredictionRow(
-    latest?.display_formal_row ||
-    latest?.formal?.row ||
-    latest?.formalRow ||
-    latest?.latestFormal ||
-    null
-  );
-
-  const formalBatches = Array.isArray(latest?.formal_batches)
-    ? latest.formal_batches.map(normalizePredictionRow).filter(Boolean)
-    : Array.isArray(latest?.formalBatches)
-      ? latest.formalBatches.map(normalizePredictionRow).filter(Boolean)
-      : formalRow
-        ? [formalRow]
-        : [];
-
-  const leaderboard = Array.isArray(latest?.leaderboard) ? latest.leaderboard : [];
-  const currentTopStrategies = Array.isArray(latest?.current_top_strategies)
-    ? latest.current_top_strategies
-    : Array.isArray(latest?.currentTopStrategies)
-      ? latest.currentTopStrategies
-      : [];
-
-  const marketStreakBuckets =
-    latest?.market_streak_buckets && typeof latest.market_streak_buckets === 'object'
-      ? latest.market_streak_buckets
-      : latest?.marketStreakBuckets && typeof latest.marketStreakBuckets === 'object'
-        ? latest.marketStreakBuckets
-        : {
-            streak2: [],
-            streak3: [],
-            streak4: []
-          };
-
-  const formalBatchLimit = toNum(
-    latest?.formal_batch_limit ?? latest?.formalBatchLimit,
-    3
-  );
-
-  const formalBatchCount = toNum(
-    latest?.formal_batch_count ?? latest?.formalBatchCount ?? formalBatches.length,
-    formalBatches.length
-  );
-
-  const formalRemainingBatchCount = toNum(
-    latest?.formal_remaining_batch_count ?? latest?.formalRemainingBatchCount,
-    Math.max(0, formalBatchLimit - formalBatchCount)
-  );
-
-  const formalSourceDrawNo = toNum(
-    latest?.formal_source_draw_no ?? latest?.formalSourceDrawNo ?? formalRow?.source_draw_no,
-    formalRow?.source_draw_no || 0
-  );
-
-  const summaryLabel =
-    latest?.summary_label ??
-    latest?.summaryLabel ??
-    '暫無資料';
-
-  const summaryText =
-    latest?.summary_text ??
-    latest?.summaryText ??
-    '';
-
-  const readyForFormal = Boolean(
-    latest?.ready_for_formal ??
-    latest?.readyForFormal ??
-    false
-  );
-
-  const adviceLevel =
-    latest?.advice_level ??
-    latest?.adviceLevel ??
-    'watch';
-
-  const assistantMode =
-    latest?.assistant_mode ??
-    latest?.assistantMode ??
-    'decision_support';
-
-  const recentComparedRows = [
-    ...(Array.isArray(latest?.recent_compared_rows) ? latest.recent_compared_rows : []),
-    ...(Array.isArray(latest?.recent_prediction_rows) ? latest.recent_prediction_rows : []),
-    ...(Array.isArray(latest?.compare_history_rows) ? latest.compare_history_rows : []),
-    ...(Array.isArray(latest?.predictions) ? latest.predictions : [])
-  ]
-    .map(normalizePredictionRow)
-    .filter(Boolean);
-
-  const recentDrawSummary = normalizeRecentDrawSummary(
-    latest?.recent_draw_summary || latest?.recentDrawSummary || []
-  );
-
-  const recentFormalComparePeriods = normalizeRecentFormalComparePeriods(
-    latest?.recent_formal_compare_periods || latest?.recentFormalComparePeriods || []
-  );
-
-  return {
-    raw: latest,
-    apiVersion: latest?.api_version || latest?.apiVersion || '--',
-
-    trainingRow,
-    formalRow,
-    formalBatches,
-
-    leaderboard,
-    currentTopStrategies,
-    marketStreakBuckets,
-    recentComparedRows,
-    recentDrawSummary,
-    recentFormalComparePeriods,
-
-    summaryLabel,
-    summaryText,
-    readyForFormal,
-    adviceLevel,
-    assistantMode,
-
-    formalBatchLimit,
-    formalBatchCount,
-    formalRemainingBatchCount,
-    formalSourceDrawNo,
-
-    latest3StarRow: latest?.latest_3star_row || null,
-    recent3StarComparedRows: toArray(latest?.recent_3star_compared_rows).map(normalizePredictionRow).filter(Boolean),
-    threeStarLeaderboard: toArray(latest?.three_star_leaderboard),
-    tierLeaderboard: toArray(latest?.tier_leaderboard)
-  };
-}
-
-function getPipelineItem(result, key) {
-  if (!result || typeof result !== 'object') return null;
-  const item = result?.pipeline?.[key] || result?.[key] || null;
-  return item && typeof item === 'object' ? item : null;
-}
-
-function pipelineStatusText(result, key) {
-  const item = getPipelineItem(result, key);
-  if (!item) return '未執行';
-  if (item.ok === true) return '成功';
-  if (item.ok === false) return '失敗';
-  return '未執行';
-}
-
-function normalizeAutoTrainResult(payload, status) {
-  const result = payload && typeof payload === 'object' ? payload : {};
-  const topError = result?.error || result?.message || '';
-
-  if (result?.skipped) {
-    return {
-      ok: true,
-      skipped: true,
-      reason: result?.reason || 'already_exists',
-      raw: result
-    };
-  }
-
-  if (isDuplicateOrAlreadyExistsMessage(topError)) {
-    return {
-      ok: true,
-      skipped: true,
-      reason: 'Prediction already exists for current draw and mode',
-      raw: result
-    };
-  }
-
-  if (result?.ok === false && !isDuplicateOrAlreadyExistsMessage(topError)) {
-    return {
-      ok: false,
-      error: topError || `auto-train ${status}`
-    };
-  }
-
-  return {
-    ...result,
-    ok: result?.ok !== false
-  };
-}
-
-function buildLoopStatusText(result) {
-  if (!result) {
-    if (isNightStopWindow()) return '夜間停訓中（00:00～07:30 不訓練）';
-    return '待命中';
-  }
-
-  if (result?.skipped) {
-    return '本期已存在（正常略過）';
-  }
-
-  const compared = toNum(
-    result?.compared_count ??
-      result?.compare?.data?.processed ??
-      result?.compare?.processed,
-    0
-  );
-
-  const created = toNum(
-    result?.created_count ??
-      (result?.train?.inserted ? 1 : 0),
-    0
-  );
-
-  if (compared > 0 || created > 0) {
-    return `本輪完成：比對 ${compared} 筆 / 新建 ${created} 筆`;
-  }
-
-  return '本輪無異動';
-}
-
-function getStrategyModeLabel(mode) {
-  const found = STRATEGY_MODE_OPTIONS.find((item) => item.key === mode);
-  return found ? found.label : mode;
-}
-
-function getRiskModeLabel(mode) {
-  const found = RISK_MODE_OPTIONS.find((item) => item.key === mode);
-  return found ? found.label : mode;
-}
-
-function extractRowDecisionSettings(row) {
-  const groups = getPredictionGroups(row);
-  const firstMeta = groups[0]?.meta && typeof groups[0].meta === 'object' ? groups[0].meta : {};
-
-  return {
-    analysisPeriod:
-      toNum(
-        firstMeta.analysis_period ??
-          row?.analysis_period ??
-          row?.analysisPeriod,
-        0
-      ) || null,
-    strategyMode:
-      firstMeta.strategy_mode ||
-      row?.strategy_mode ||
-      row?.strategyMode ||
-      null,
-    riskMode:
-      firstMeta.risk_mode ||
-      row?.risk_mode ||
-      row?.riskMode ||
-      null,
-    marketPhase:
-      firstMeta.market_phase ||
-      row?.market_phase ||
-      row?.marketPhase ||
-      null,
-    confidenceScore:
-      toNum(
-        firstMeta.confidence_score ??
-          row?.confidence_score ??
-          row?.confidenceScore,
-        0
-      )
-  };
-}
-
-function resolveDisplayedSelection(predictionSummary, trainingLatest, formalLatest, fallbackAnalysisPeriod, fallbackStrategyMode, fallbackRiskMode) {
-  const formalDecision = extractRowDecisionSettings(formalLatest);
-  const trainingDecision = extractRowDecisionSettings(trainingLatest);
-
-  const analysisPeriod =
-    formalDecision.analysisPeriod ||
-    trainingDecision.analysisPeriod ||
-    fallbackAnalysisPeriod;
-
-  const strategyMode =
-    formalDecision.strategyMode ||
-    trainingDecision.strategyMode ||
-    fallbackStrategyMode;
-
-  const riskMode =
-    formalDecision.riskMode ||
-    trainingDecision.riskMode ||
-    fallbackRiskMode;
-
-  const marketPhase =
-    formalDecision.marketPhase ||
-    trainingDecision.marketPhase ||
-    null;
-
-  const confidenceScore = Math.max(
-    formalDecision.confidenceScore,
-    trainingDecision.confidenceScore,
-    0
-  );
-
-  return {
-    analysisPeriod,
-    strategyMode,
-    riskMode,
-    marketPhase,
-    confidenceScore,
-    summaryLabel: predictionSummary?.summaryLabel || '--',
-    summaryText: predictionSummary?.summaryText || ''
-  };
-}
-
-function Card({ title, subtitle, right, children }) {
+// ── 色彩系統 ──────────────────────────────────────
+const C = {
+  bg: '#FFF8F0',
+  card: '#FFFFFF',
+  gold: '#C8860A',
+  goldLight: '#F5D78B',
+  goldBg: '#FFF9EC',
+  orange: '#E8722A',
+  orangeLight: '#FDE8D8',
+  red: '#DC2626',
+  redBg: '#FEF2F2',
+  green: '#16A34A',
+  greenBg: '#F0FDF4',
+  teal: '#0F766E',
+  blue: '#1D4ED8',
+  gray: '#6B7280',
+  grayLight: '#F3F4F6',
+  border: '#E5DDD0',
+  text: '#2C1810',
+  textSub: '#7B6E5C',
+  shadow: '0 2px 12px rgba(200,134,10,0.10)',
+  shadowHover: '0 4px 20px rgba(200,134,10,0.18)',
+};
+
+// ── 樣式 ──────────────────────────────────────────
+const S = {
+  app: {
+    minHeight: '100vh',
+    background: C.bg,
+    fontFamily: '"Segoe UI", "PingFang TC", "Noto Sans TC", sans-serif',
+    color: C.text,
+    paddingBottom: 80,
+  },
+  header: {
+    background: `linear-gradient(135deg, ${C.gold} 0%, ${C.orange} 100%)`,
+    padding: '18px 20px 14px',
+    boxShadow: '0 2px 16px rgba(200,134,10,0.25)',
+  },
+  headerTitle: {
+    fontSize: 22, fontWeight: 900, color: '#FFF', letterSpacing: 2, margin: 0,
+    textShadow: '0 1px 4px rgba(0,0,0,0.2)',
+  },
+  headerSub: {
+    fontSize: 12, color: 'rgba(255,255,255,0.85)', marginTop: 3,
+  },
+  tabs: {
+    display: 'flex', background: C.card, borderBottom: `2px solid ${C.border}`,
+    position: 'sticky', top: 0, zIndex: 100, boxShadow: '0 2px 8px rgba(200,134,10,0.08)',
+  },
+  tab: (active) => ({
+    flex: 1, padding: '12px 4px 10px', border: 'none', background: 'transparent',
+    cursor: 'pointer', fontSize: 13, fontWeight: active ? 700 : 400,
+    color: active ? C.gold : C.gray,
+    borderBottom: active ? `3px solid ${C.gold}` : '3px solid transparent',
+    transition: 'all 0.2s',
+  }),
+  page: { padding: '16px 14px', maxWidth: 600, margin: '0 auto' },
+  card: {
+    background: C.card, borderRadius: 16, padding: '16px 16px 14px',
+    marginBottom: 14, boxShadow: C.shadow, border: `1px solid ${C.border}`,
+  },
+  cardTitle: {
+    fontSize: 14, fontWeight: 700, color: C.gold, marginBottom: 10, display: 'flex',
+    alignItems: 'center', gap: 6,
+  },
+  badge: (color, bg) => ({
+    display: 'inline-block', fontSize: 11, padding: '2px 8px', borderRadius: 99,
+    fontWeight: 600, color: color, background: bg,
+  }),
+  ball: (hit) => ({
+    width: 44, height: 44, borderRadius: '50%', display: 'flex', alignItems: 'center',
+    justifyContent: 'center', fontSize: 15, fontWeight: 800,
+    background: hit === true ? C.gold : hit === false ? C.grayLight : C.goldBg,
+    color: hit === true ? '#FFF' : hit === false ? C.gray : C.gold,
+    border: `2px solid ${hit === true ? C.gold : hit === false ? C.border : C.goldLight}`,
+    boxShadow: hit === true ? `0 2px 8px ${C.goldLight}` : 'none',
+    transition: 'all 0.2s',
+  }),
+  groupCard: (hit3) => ({
+    background: hit3 ? C.goldBg : C.grayLight,
+    border: `2px solid ${hit3 ? C.goldLight : C.border}`,
+    borderRadius: 12, padding: '12px 14px', marginBottom: 10,
+  }),
+  statusBar: (color) => ({
+    background: color + '22', border: `1.5px solid ${color}44`,
+    borderRadius: 10, padding: '10px 14px', marginBottom: 10,
+    display: 'flex', alignItems: 'center', gap: 10,
+  }),
+  dot: (color) => ({
+    width: 10, height: 10, borderRadius: '50%', background: color,
+    boxShadow: `0 0 6px ${color}`, flexShrink: 0,
+  }),
+  statRow: {
+    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+    padding: '8px 0', borderBottom: `1px solid ${C.border}`,
+  },
+  statLabel: { fontSize: 13, color: C.textSub },
+  statValue: { fontSize: 14, fontWeight: 700, color: C.text },
+  bigNum: { fontSize: 32, fontWeight: 900, color: C.gold },
+  btn: (disabled) => ({
+    background: disabled ? C.grayLight : `linear-gradient(135deg, ${C.gold}, ${C.orange})`,
+    color: disabled ? C.gray : '#FFF',
+    border: 'none', borderRadius: 10, padding: '11px 20px',
+    fontSize: 14, fontWeight: 700, cursor: disabled ? 'not-allowed' : 'pointer',
+    boxShadow: disabled ? 'none' : C.shadow, transition: 'all 0.2s',
+    width: '100%', marginTop: 8,
+  }),
+  divider: { height: 1, background: C.border, margin: '10px 0' },
+  empty: { color: C.textSub, fontSize: 13, padding: '12px 0', textAlign: 'center' },
+  recentBall: (isHot) => ({
+    width: 32, height: 32, borderRadius: '50%', display: 'flex', alignItems: 'center',
+    justifyContent: 'center', fontSize: 12, fontWeight: 700,
+    background: isHot ? C.orange : C.grayLight,
+    color: isHot ? '#FFF' : C.textSub,
+  }),
+};
+
+// ── 元件 ──────────────────────────────────────────
+function Card({ title, icon, children, right }) {
   return (
-    <div style={styles.card}>
-      <div style={styles.cardHeader}>
-        <div>
-          <div style={styles.cardTitle}>{title}</div>
-          {subtitle ? <div style={styles.cardSubtitle}>{subtitle}</div> : null}
+    <div style={S.card}>
+      {title && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+          <div style={S.cardTitle}>{icon && <span>{icon}</span>}{title}</div>
+          {right && <div>{right}</div>}
         </div>
-        {right ? <div>{right}</div> : null}
-      </div>
-      <div>{children}</div>
-    </div>
-  );
-}
-
-function StatBox({ label, value, hint, valueStyle }) {
-  return (
-    <div style={styles.statBox}>
-      <div style={styles.statLabel}>{label}</div>
-      <div style={{ ...styles.statValue, ...valueStyle, fontSize: 26, lineHeight: 1.1 }}>{value}</div>
-      {hint ? <div style={{ ...styles.statHint, fontSize: 12, marginTop: 6 }}>{hint}</div> : null}
-    </div>
-  );
-}
-
-function MetaChip({ label, value }) {
-  return (
-    <span style={styles.metaChip}>
-      <span style={styles.metaChipLabel}>{label}</span>
-      <span>{value}</span>
-    </span>
-  );
-}
-
-function MarketBall({ n, highlight = false }) {
-  return (
-    <div
-      style={{
-        ...styles.marketBall,
-        ...(highlight ? styles.marketBallHighlight : {})
-      }}
-    >
-      {formatBallNumber(n)}
-    </div>
-  );
-}
-
-function StreakBall({ n, streak }) {
-  return (
-    <div style={styles.streakBallWrap}>
-      <div style={styles.streakBall}>{formatBallNumber(n)}</div>
-      <div style={styles.streakBadge}>{streak}</div>
-    </div>
-  );
-}
-
-function GroupCard({ group, idx, showRank = false }) {
-  const meta = group?.meta || {};
-  const label = fmtText(group?.label || group?.key, `第${idx + 1}組`);
-  const shortLabel = label.split('/')[0].trim();
-  const roi = Number(meta?.recent_50_roi ?? meta?.roi);
-  const roiColor = Number.isFinite(roi) ? (roi >= 0 ? '#0f766e' : '#dc2626') : '#7b6e5c';
-  return (
-    <div style={{ ...styles.groupCard, marginBottom: 10 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-        <div style={{ fontSize: 16, fontWeight: 900, color: '#0f766e' }}>
-          第 {idx + 1} 組
-        </div>
-        <div style={{ fontSize: 13, color: '#7b6e5c', fontWeight: 700 }}>{shortLabel}</div>
-      </div>
-
-      <div style={{ display: 'flex', gap: 10, marginBottom: 12 }}>
-        {toArray(group?.nums).map((n) => (
-          <div key={`${group?.key}_${n}`} style={{ ...styles.pickBall, width: 52, height: 52, fontSize: 18 }}>
-            {formatBallNumber(n)}
-          </div>
-        ))}
-      </div>
-
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        <span style={{ ...styles.metaChip, color: roiColor }}>
-          <span style={styles.metaChipLabel}>ROI </span>
-          {Number.isFinite(roi) ? fmtPercent(roi) : '--'}
-        </span>
-        <span style={styles.metaChip}>
-          <span style={styles.metaChipLabel}>均中 </span>
-          {Number.isFinite(Number(meta?.avg_hit)) ? Number(meta.avg_hit).toFixed(2) : '--'}
-        </span>
-        {meta?.hit3_rate > 0 && (
-          <span style={{ ...styles.metaChip, background: '#e0f0ea', borderColor: '#0f766e', color: '#0f766e' }}>
-            <span style={{ color: '#0f766e' }}>中3率 </span>
-            {fmtPercent(meta.hit3_rate)}
-          </span>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function CompactBetCard({ group, idx }) {
-  if (!group) return null;
-  return (
-    <div style={styles.compactBetCard}>
-      <div style={styles.compactBetHead}>
-        <div style={styles.compactBetTitle}>第 {idx + 1} 組</div>
-        <div style={styles.compactBetSub}>正式下注</div>
-      </div>
-
-      <div style={styles.groupBalls}>
-        {toArray(group?.nums).map((n) => (
-          <div key={`${group?.key || idx}_${n}`} style={styles.pickBall}>
-            {formatBallNumber(n)}
-          </div>
-        ))}
-      </div>
-
-      <div style={styles.metaChipRow}>
-        <MetaChip label="每組" value={fmtMoney(COST_PER_GROUP)} />
-        <MetaChip label="來源期數" value={fmtText(group?.meta?.source_draw_no || '--')} />
-      </div>
-    </div>
-  );
-}
-
-function FormalBatchCard({ batch, idx }) {
-  const groups = getPredictionGroups(batch);
-  const statusColor = batch?.status === 'compared' ? '#0f766e' : '#b45309';
-
-  return (
-    <div style={{ ...styles.batchCard, marginBottom: 12 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-        <div>
-          <div style={{ fontSize: 18, fontWeight: 900, color: '#0f766e' }}>
-            第 {fmtText(batch?.formal_batch_no, idx + 1)} 批
-          </div>
-          <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 3 }}>
-            {fmtDateTime(batch?.created_at)}
-          </div>
-        </div>
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-          <span style={{ ...styles.metaChip, color: statusColor }}>
-            {batch?.status === 'compared' ? '已對獎' : batch?.status === 'created' ? '待對獎' : fmtText(batch?.status)}
-          </span>
-          <span style={styles.metaChip}>期號 {fmtText(batch?.source_draw_no)}</span>
-          <span style={styles.metaChip}>{groups.length} 組</span>
-        </div>
-      </div>
-
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-        {groups.length ? (
-          groups.map((group, groupIdx) => (
-            <GroupCard key={`${batch?.id || idx}_${group?.key || groupIdx}`} group={group} idx={groupIdx} />
-          ))
-        ) : (
-          <div style={styles.emptyBox}>這一批目前沒有可顯示的組合。</div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function SelectorButton({ active, onClick, children }) {
-  return (
-    <button
-      onClick={onClick}
-      style={{
-        ...styles.selectorButton,
-        ...(active ? styles.selectorButtonActive : {})
-      }}
-    >
+      )}
       {children}
-    </button>
+    </div>
   );
 }
 
-function SelectorCard({ active, onClick, title, desc }) {
+function Ball({ n, hit }) {
+  return <div style={S.ball(hit)}>{padNum(n)}</div>;
+}
+
+function StatRow({ label, value, valueColor }) {
   return (
-    <button
-      onClick={onClick}
-      style={{
-        ...styles.modeCard,
-        ...(active ? styles.modeCardActive : {})
-      }}
-    >
-      <div style={styles.modeCardTitle}>{title}</div>
-      <div style={styles.modeCardDesc}>{desc}</div>
-    </button>
+    <div style={S.statRow}>
+      <span style={S.statLabel}>{label}</span>
+      <span style={{ ...S.statValue, color: valueColor || C.text }}>{value}</span>
+    </div>
   );
 }
 
-export default function App() {
-  const [activeTab, setActiveTab] = useState(TABS.DASHBOARD);
-  const [loading, setLoading] = useState(true);
-  const [busyKey, setBusyKey] = useState('');
-  const [error, setError] = useState('');
-  const [loopStatusText, setLoopStatusText] = useState('待命中');
-
-  const [analysisPeriod] = useState(20);
-  const [strategyMode] = useState('mix');
-  const [riskMode] = useState('balanced');
-
-  const [recent20, setRecent20] = useState([]);
-  const [trainingLatest, setTrainingLatest] = useState(null);
-  const [formalLatest, setFormalLatest] = useState(null);
-  const [leaderboard, setLeaderboard] = useState([]);
-  const [predictionSummary, setPredictionSummary] = useState({
-    apiVersion: '--',
-    summaryLabel: '--',
-    summaryText: '--',
-    currentTopStrategies: [],
-    readyForFormal: false,
-    formalBatchLimit: FORMAL_BATCH_LIMIT,
-    formalBatchCount: 0,
-    formalRemainingBatchCount: FORMAL_BATCH_LIMIT,
-    formalSourceDrawNo: null,
-    formalBatches: [],
-    marketStreakBuckets: {
-      streak2: [],
-      streak3: [],
-      streak4: [],
-      lookback: 0,
-      latestDrawNo: null
-    },
-    recentComparedRows: [],
-    recentFormalComparePeriods: [],
-    latest3StarRow: null,
-    recent3StarComparedRows: [],
-    threeStarLeaderboard: [],
-    tierLeaderboard: []
-  });
-  const [aiPlayer, setAiPlayer] = useState(normalizeAiPlayer({}));
-  const [lastAutoTrainResult, setLastAutoTrainResult] = useState(null);
-  const [autoTrainEnabled, setAutoTrainEnabled] = useState(false);
-  const [marketNowText, setMarketNowText] = useState(fmtDateTime(new Date()));
-
-  const mountedRef = useRef(false);
-  const schedulerRef = useRef(null);
-  const cycleRunningRef = useRef(false);
-  const sessionStartedRef = useRef(false);
-  const nightPauseTimerRef = useRef(null);
-
-  const clearAllTimers = useCallback(() => {
-    if (schedulerRef.current) {
-      clearTimeout(schedulerRef.current);
-      schedulerRef.current = null;
-    }
-    if (nightPauseTimerRef.current) {
-      clearTimeout(nightPauseTimerRef.current);
-      nightPauseTimerRef.current = null;
-    }
-  }, []);
-
-  const loadAll = useCallback(async () => {
-    setLoading(true);
-    setError('');
-
-    try {
-      const [recentRes, predictionRes, aiPlayerRes] = await Promise.all([
-        safeFetchJson('/api/recent20').catch(() => ({})),
-        safeFetchJson('/api/prediction-latest').catch(() => ({})),
-        safeFetchJson('/api/ai-player').catch(() => ({}))
-      ]);
-
-      const recentRows = getRecentRows(recentRes);
-      setRecent20(recentRows);
-
-     const normalizedPrediction = normalizePredictionLatest(predictionRes);
-      setTrainingLatest(normalizedPrediction.trainingRow || null);
-      setFormalLatest(normalizedPrediction.formalRow || null);
-      setLeaderboard(normalizedPrediction.leaderboard || []);
-      setPredictionSummary({
-        apiVersion: normalizedPrediction.apiVersion,
-        summaryLabel: normalizedPrediction.summaryLabel,
-        summaryText: normalizedPrediction.summaryText,
-        currentTopStrategies: normalizedPrediction.currentTopStrategies,
-        readyForFormal: normalizedPrediction.readyForFormal,
-        formalBatchLimit: normalizedPrediction.formalBatchLimit,
-        formalBatchCount: normalizedPrediction.formalBatchCount,
-        formalRemainingBatchCount: normalizedPrediction.formalRemainingBatchCount,
-        formalSourceDrawNo: normalizedPrediction.formalSourceDrawNo,
-        formalBatches: normalizedPrediction.formalBatches,
-        marketStreakBuckets: normalizedPrediction.marketStreakBuckets,
-        recentComparedRows: normalizedPrediction.recentComparedRows,
-        recentFormalComparePeriods: normalizedPrediction.recentFormalComparePeriods,
-        latest3StarRow: normalizedPrediction.latest3StarRow || null,
-        recent3StarComparedRows: normalizedPrediction.recent3StarComparedRows || [],
-        threeStarLeaderboard: normalizedPrediction.threeStarLeaderboard || [],
-        tierLeaderboard: normalizedPrediction.tierLeaderboard || []
-      });
-
-      setAiPlayer(normalizeAiPlayer(aiPlayerRes));
-      setLastAutoTrainResult(predictionRes?.auto_train_result || null);
-    } catch (err) {
-      setError(err.message || '讀取資料失敗');
-    } finally {
-      if (mountedRef.current) {
-        setLoading(false);
-      }
-    }
-  }, []);
-
-  const runAction = useCallback(
-    async (key, fn) => {
-      setBusyKey(key);
-      setError('');
-      try {
-        await fn();
-        await loadAll();
-      } catch (err) {
-        setError(err.message || '執行失敗');
-      } finally {
-        if (mountedRef.current) {
-          setBusyKey('');
-        }
-      }
-    },
-    [loadAll]
+function Spinner() {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'center', padding: 30 }}>
+      <div style={{
+        width: 32, height: 32, borderRadius: '50%',
+        border: `3px solid ${C.goldLight}`, borderTopColor: C.gold,
+        animation: 'spin 0.8s linear infinite',
+      }} />
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+    </div>
   );
-
-  const handleSync = useCallback(async () => {
-    await runAction('sync', async () => {
-      await safeFetchJson('/api/sync', { method: 'POST' }).catch(async () => {
-        await safeFetchJson('/api/sync');
-      });
-    });
-  }, [runAction]);
-
-  const handleCatchup = useCallback(async () => {
-    await runAction('catchup', async () => {
-      await safeFetchJson('/api/catchup', { method: 'POST' }).catch(async () => {
-        await safeFetchJson('/api/catchup');
-      });
-    });
-  }, [runAction]);
-
-  const handleRefresh = useCallback(async () => {
-    await runAction('refresh', async () => {
-      await safeFetchJson('/api/sync', { method: 'POST' }).catch(async () => {
-        await safeFetchJson('/api/sync');
-      });
-
-      await safeFetchJson('/api/recent20').catch(() => ({}));
-      await safeFetchJson('/api/prediction-latest').catch(() => ({}));
-      await safeFetchJson('/api/ai-player').catch(() => ({}));
-    });
-  }, [runAction]);
-
-  const handleFormalBet = useCallback(async () => {
-    await runAction('formalBet', async () => {
-      await safeFetchJson('/api/prediction-save', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-manual-formal-save': 'true',
-          'x-trigger-source': 'app_button'
-        },
-        body: JSON.stringify({
-          mode: 'formal_3star',
-          manual: true,
-          trigger_source: 'app_button'
-        })
-      });
-    });
-  }, [runAction]);
-
-  const runAiCycle = useCallback(async () => {
-    if (cycleRunningRef.current) return;
-    cycleRunningRef.current = true;
-
-    try {
-      if (isNightStopWindow()) {
-        setLoopStatusText('夜間停訓中（00:00～07:30 不訓練）');
-        return;
-      }
-
-      // ✅ v18：auto-train 完全交給 Railway cron 負責（每個 :04/:09 分自動跑）
-      // 前端只負責讀取最新資料，不再呼叫 auto-train，避免重複寫入
-      setLoopStatusText('同步期數中...');
-      await safeFetchJson('/api/sync', { method: 'POST' }).catch(async () => {
-        await safeFetchJson('/api/sync');
-      });
-
-      setLoopStatusText('更新資料中...');
-      await safeFetchJson('/api/recent20').catch(() => ({}));
-
-      setLoopStatusText('讀取最新預測...');
-      await loadAll();
-
-      setLoopStatusText('AI 運作中（Railway 自動訓練）');
-      setError('');
-
-    } catch (err) {
-      setLoopStatusText(`更新失敗：${err.message || '未知錯誤'}`);
-      setError(err.message || '更新失敗');
-    } finally {
-      cycleRunningRef.current = false;
-    }
-  }, [loadAll]);
-
-  const scheduleNightResume = useCallback(() => {
-    if (nightPauseTimerRef.current) {
-      clearTimeout(nightPauseTimerRef.current);
-    }
-
-    nightPauseTimerRef.current = setTimeout(() => {
-      if (!sessionStartedRef.current) return;
-      setLoopStatusText('夜間停訓結束，準備恢復訓練...');
-      runAiCycle().finally(() => {
-        if (!sessionStartedRef.current) return;
-        schedulerRef.current = setTimeout(async function loopRunner() {
-          if (!sessionStartedRef.current) return;
-
-          if (isNightStopWindow()) {
-            setLoopStatusText('夜間停訓中（00:00～07:30 不訓練）');
-            scheduleNightResume();
-            return;
-          }
-
-          await runAiCycle();
-          if (!sessionStartedRef.current) return;
-          schedulerRef.current = setTimeout(loopRunner, LOOP_INTERVAL_MS);
-        }, LOOP_INTERVAL_MS);
-      });
-    }, msUntilNightWindowEnd());
-  }, [runAiCycle]);
-
-  const startLoopScheduler = useCallback(
-    (delay = 0) => {
-      clearAllTimers();
-
-      if (!sessionStartedRef.current) return;
-
-      if (isNightStopWindow()) {
-        setLoopStatusText('夜間停訓中（00:00～07:30 不訓練）');
-        scheduleNightResume();
-        return;
-      }
-
-      schedulerRef.current = setTimeout(async function loopRunner() {
-        if (!sessionStartedRef.current) return;
-
-        if (isNightStopWindow()) {
-          setLoopStatusText('夜間停訓中（00:00～07:30 不訓練）');
-          scheduleNightResume();
-          return;
-        }
-
-        await runAiCycle();
-
-        if (!sessionStartedRef.current) return;
-        schedulerRef.current = setTimeout(loopRunner, LOOP_INTERVAL_MS);
-      }, delay);
-    },
-    [clearAllTimers, runAiCycle, scheduleNightResume]
-  );
-
-  useEffect(() => {
-    mountedRef.current = true;
-    sessionStartedRef.current = false;
-    setAutoTrainEnabled(false);
-    setLoopStatusText(isNightStopWindow() ? '夜間停訓中（00:00～07:30 不訓練）' : '待命中');
-    loadAll();
-
-    return () => {
-      mountedRef.current = false;
-      sessionStartedRef.current = false;
-      clearAllTimers();
-    };
-  }, [loadAll, clearAllTimers]);
-
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setMarketNowText(fmtDateTime(new Date()));
-    }, 1000);
-
-    return () => clearInterval(timer);
-  }, []);
-
-  const handleToggleAutoTrain = useCallback(async () => {
-    await runAction('toggleAutoTrain', async () => {
-      const nextEnabled = !autoTrainEnabled;
-
-      if (nextEnabled) {
-        setAutoTrainEnabled(true);
-        sessionStartedRef.current = true;
-
-        if (isNightStopWindow()) {
-          setLoopStatusText('夜間停訓中（00:00～07:30 不訓練）');
-          scheduleNightResume();
-        } else {
-          setLoopStatusText('策略模擬啟動');
-          startLoopScheduler(0);
-        }
-      } else {
-        setAutoTrainEnabled(false);
-        sessionStartedRef.current = false;
-        clearAllTimers();
-        setLoopStatusText('已停止');
-      }
-    });
-  }, [autoTrainEnabled, runAction, scheduleNightResume, startLoopScheduler, clearAllTimers]);
-
-  const latestDraw = recent20[0] || null;
-  const latestDrawNo = latestDraw?.draw_no || latestDraw?.drawNo || aiPlayer?.latestDrawNo || '--';
-  const latestDrawTime = latestDraw?.draw_time || latestDraw?.drawTime || aiPlayer?.latestDrawTime || '--';
-  const latestNumbers = parseNums(latestDraw?.numbers || latestDraw?.nums);
-  const backendAnalysisPeriod =
-    extractRowDecisionSettings(formalLatest).analysisPeriod ||
-    extractRowDecisionSettings(trainingLatest).analysisPeriod ||
-    analysisPeriod;
-
-  const recentRowsByPeriod = useMemo(() => {
-    return toArray(recent20).slice(0, backendAnalysisPeriod);
-  }, [recent20, backendAnalysisPeriod]);
-
-  const trainingGroups = useMemo(() => getPredictionGroups(trainingLatest), [trainingLatest]);
-  const formalGroups = useMemo(() => getPredictionGroups(formalLatest), [formalLatest]);
-
-  const hotNumbers = useMemo(() => calcHotNumbers(recentRowsByPeriod, Math.min(backendAnalysisPeriod, 10)), [recentRowsByPeriod, backendAnalysisPeriod]);
-  const streakNumbers = useMemo(() => calcCurrentStreakNumbers(recentRowsByPeriod, Math.min(backendAnalysisPeriod, 5)), [recentRowsByPeriod, backendAnalysisPeriod]);
-  const zoneCounts = useMemo(() => calcZoneCounts(latestNumbers), [latestNumbers]);
-  const streak2Buckets = useMemo(
-    () => toArray(predictionSummary?.marketStreakBuckets?.streak2),
-    [predictionSummary]
-  );
-  const streak3Buckets = useMemo(
-    () => toArray(predictionSummary?.marketStreakBuckets?.streak3),
-    [predictionSummary]
-  );
-  const streak4Buckets = useMemo(
-    () => toArray(predictionSummary?.marketStreakBuckets?.streak4),
-    [predictionSummary]
-  );
-
-  const lastCycleSummary = useMemo(() => buildLoopStatusText(lastAutoTrainResult), [lastAutoTrainResult]);
-
-  const currentTopStrategies = predictionSummary.currentTopStrategies.length
-    ? predictionSummary.currentTopStrategies
-    : aiPlayer.currentTopStrategies;
-
-  const comparedRows = useMemo(() => {
-    const rows = toArray(predictionSummary?.recentComparedRows)
-      .map(normalizePredictionRow)
-      .filter(Boolean);
-
-    const seen = new Set();
-    return rows.filter((row) => {
-      const key = `${row?.id || ''}_${row?.created_at || ''}_${row?.source_draw_no || ''}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    }).slice(0, 10);
-  }, [predictionSummary]);
-
-  const recentFormalComparePeriods = useMemo(() => {
-    const fromApi = normalizeRecentFormalComparePeriods(predictionSummary?.recentFormalComparePeriods || []);
-    if (fromApi.length) return fromApi.slice(0, 5);
-    return buildRecentFormalComparePeriodsFromRows(comparedRows, 5);
-  }, [predictionSummary?.recentFormalComparePeriods, comparedRows]);
-
-  // 3星比對歷史數據
-  const recent3StarRows = toArray(predictionSummary?.recent3StarComparedRows);
-  const recent3StarSummary = useMemo(() => {
-    // ✅ 修復：compare_result_json 是正確的欄位名稱（normalizePredictionRow 輸出）
-    const rows = recent3StarRows.filter(r => r?.compare_result_json?.detail || r?.compare_result?.detail);
-    let hit0 = 0, hit1 = 0, hit2 = 0, hit3 = 0, groupCount = 0;
-    rows.forEach(row => {
-      const detail = row?.compare_result_json?.detail || row?.compare_result?.detail;
-      toArray(detail).forEach(d => {
-        const h = toNum(d?.hit, 0);
-        groupCount++;
-        if (h === 0) hit0++;
-        else if (h === 1) hit1++;
-        else if (h === 2) hit2++;
-        else if (h >= 3) hit3++;
-      });
-    });
-    return { periodCount: rows.length, groupCount, hit0, hit1, hit2, hit3 };
-  }, [recent3StarRows]);
-
-  const recentFormalCompareSummary = useMemo(() => {
-    const summary = {
-      periodCount: recentFormalComparePeriods.length,
-      batchCount: 0,
-      groupCount: 0,
-      hit0: 0,
-      hit1: 0,
-      hit2: 0,
-      hit3: 0,
-      hit4: 0
-    };
-
-    recentFormalComparePeriods.forEach((period) => {
-      summary.batchCount += toNum(period?.batch_count, 0);
-      summary.groupCount += toNum(period?.group_count, 0);
-      summary.hit0 += toNum(period?.hit0_count, 0);
-      summary.hit1 += toNum(period?.hit1_count, 0);
-      summary.hit2 += toNum(period?.hit2_count, 0);
-      summary.hit3 += toNum(period?.hit3_count, 0);
-      summary.hit4 += toNum(period?.hit4_count, 0);
-    });
-
-    return summary;
-  }, [recentFormalComparePeriods]);
-
-  const hitFeedback = useMemo(() => {
-    const summary = {
-      sampleCount: 0,
-      hit0: 0,
-      hit1: 0,
-      hit2: 0,
-      hit3: 0,
-      hit4Plus: 0,
-      latestSourceDrawNo: '--',
-      addBetAdvice: '先觀察',
-      note: '最近樣本不足，先觀察。'
-    };
-
-    const drawSummaryRows = (
-      toArray(predictionSummary?.recentDrawSummary).length
-        ? normalizeRecentDrawSummary(predictionSummary?.recentDrawSummary)
-        : buildRecentDrawSummaryFromComparedRows(comparedRows, 10)
-    ).slice(0, 10);
-
-    if (drawSummaryRows.length) {
-      drawSummaryRows.forEach((row) => {
-        summary.sampleCount += 1;
-        if ((row.hit1_count + row.hit2_count + row.hit3_count + row.hit4_count) <= 0) summary.hit0 += 1;
-        summary.hit1 += toNum(row.hit1_count, 0);
-        summary.hit2 += toNum(row.hit2_count, 0);  // ✅ 累計組數，不是期數
-        summary.hit3 += toNum(row.hit3_count, 0);  // ✅ 累計組數，不是期數
-        if (row.hit4_count > 0) summary.hit4Plus += 1;
-      });
-
-      summary.latestSourceDrawNo = fmtText(drawSummaryRows[0]?.draw_no || '--');
-    } else {
-      const rows = comparedRows;
-      if (!rows.length) return summary;
-
-      rows.forEach((row) => {
-        const compareResult = row?.compare_result_json && typeof row.compare_result_json === 'object'
-          ? row.compare_result_json
-          : null;
-
-        const compareHistory = Array.isArray(row?.compare_history_json)
-          ? row.compare_history_json
-          : [];
-
-        let hit = toNum(row?.hit_count, NaN);
-        if (!Number.isFinite(hit) && Number.isFinite(Number(compareResult?.hit_count))) {
-          hit = Number(compareResult.hit_count);
-        }
-        if (!Number.isFinite(hit) && compareHistory.length) {
-          const maxHit = Math.max(
-            ...compareHistory.map((item) => toNum(item?.hit_count ?? item?.hit ?? item?.matched, 0))
-          );
-          hit = maxHit;
-        }
-        if (!Number.isFinite(hit)) hit = 0;
-
-        summary.sampleCount += 1;
-        if (hit <= 0) summary.hit0 += 1;
-        else if (hit === 1) summary.hit1 += 1;
-        else if (hit === 2) summary.hit2 += 1;
-        else if (hit === 3) summary.hit3 += 1;
-        else summary.hit4Plus += 1;
-      });
-
-      summary.latestSourceDrawNo = fmtText(rows[0]?.source_draw_no || '--');
-    }
-
-    const hit2PlusRate = summary.sampleCount ? ((summary.hit2 + summary.hit3 + summary.hit4Plus) / summary.sampleCount) * 100 : 0;
-    const hit3PlusRate = summary.sampleCount ? ((summary.hit3 + summary.hit4Plus) / summary.sampleCount) * 100 : 0;
-
-    if (hit3PlusRate >= 20 || (summary.hit3 >= 2 && summary.sampleCount >= 5)) {
-      summary.addBetAdvice = '可加碼';
-      summary.note = '近期中3以上有感，可考慮放大攻擊組。';
-    } else if (hit2PlusRate >= 40) {
-      summary.addBetAdvice = '小試';
-      summary.note = '近期中2以上有延續，可維持平衡下注。';
-    } else {
-      summary.addBetAdvice = '先保守';
-      summary.note = '最近中1偏多，先保守觀察。';
-    }
-
-    return summary;
-  }, [comparedRows, predictionSummary?.recentDrawSummary]);
-
-  const canFormalBet = predictionSummary.readyForFormal || aiPlayer.readyForFormal;
-  const formalBatchCount = predictionSummary.formalBatchCount;
-  const formalRemainingBatchCount = predictionSummary.formalRemainingBatchCount;
-  const formalBatchLimit = predictionSummary.formalBatchLimit || FORMAL_BATCH_LIMIT;
-  const formalBatches = predictionSummary.formalBatches || [];
-  const formalBatchProgressText = `${formalBatchCount} / ${formalBatchLimit}`;
-
-  const latestFormalBatch = formalBatches.length ? formalBatches[formalBatches.length - 1] : null;
-  const formalDisplayGroups = formalGroups.length
-    ? formalGroups
-    : getPredictionGroups(latestFormalBatch);
-
-  const formalButtonDisabled =
-    busyKey !== '' ||
-    !canFormalBet;
-
-  const formalButtonLabel = !canFormalBet
-    ? '暫不建議下注'
-    : '手動產生三星預測';
-
-  const actualFormalGroupCount = formalDisplayGroups.length;
-  const formalGroupCoverageRatio = FORMAL_GROUP_COUNT > 0
-    ? actualFormalGroupCount / FORMAL_GROUP_COUNT
-    : 0;
-  const formalGroupCoverageText = `${actualFormalGroupCount} / ${FORMAL_GROUP_COUNT}`;
-  const formalGroupRealityText = actualFormalGroupCount >= FORMAL_GROUP_COUNT
-    ? '本批已達完整四組'
-    : actualFormalGroupCount > 0
-      ? `本批僅保留 ${actualFormalGroupCount} 組有效正式下注，採寧缺勿濫。`
-      : '本批目前沒有通過條件的正式下注組合。';
-
-  const formalDecisionSettings = extractRowDecisionSettings(formalLatest);
-  const trainingDecisionSettings = extractRowDecisionSettings(trainingLatest);
-
-  const scoreCandidates = [
-    ...trainingGroups,
-    ...formalGroups,
-    ...formalDisplayGroups,
-    ...toArray(currentTopStrategies)
-  ]
-    .map((item) => {
-      if (!item || typeof item !== 'object') return null;
-      const meta = item?.meta && typeof item.meta === 'object' ? item.meta : {};
-      const score = toNum(meta?.score ?? item?.score, NaN);
-      return Number.isFinite(score) ? score : null;
-    })
-    .filter((v) => Number.isFinite(v));
-
-  const sortedScores = scoreCandidates.slice().sort((a, b) => b - a);
-  const topThreeScores = sortedScores.slice(0, 3);
-  const avgTopScore = topThreeScores.length
-    ? topThreeScores.reduce((sum, v) => sum + v, 0) / topThreeScores.length
-    : 0;
-  const negativeScoreCount = sortedScores.filter((v) => v < 0).length;
-
-  const scoreBandBase =
-    avgTopScore >= 1800 ? 94 :
-    avgTopScore >= 1400 ? 88 :
-    avgTopScore >= 1000 ? 80 :
-    avgTopScore >= 700 ? 72 :
-    avgTopScore >= 450 ? 64 :
-    avgTopScore >= 250 ? 56 :
-    avgTopScore >= 80 ? 48 : 40;
-
-  const strategyStabilityScore = Math.max(
-    0,
-    Math.min(
-      100,
-      Math.round(
-        scoreBandBase +
-          Math.min(6, formalBatchCount * 2) +
-          (lastAutoTrainResult?.ok ? 4 : 0) -
-          Math.min(10, negativeScoreCount * 2) -
-          Math.max(0, Math.round((1 - formalGroupCoverageRatio) * 18))
-      )
-    )
-  );
-
-  const derivedMarketPhase = String(
-    formalDecisionSettings.marketPhase ||
-      trainingDecisionSettings.marketPhase ||
-      aiPlayer.decisionPhase ||
-      'neutral'
-  ).toLowerCase();
-
-  const derivedConfidenceScore = Math.max(
-    toNum(formalDecisionSettings.confidenceScore, 0),
-    toNum(trainingDecisionSettings.confidenceScore, 0),
-    0
-  );
-
-  const marketPhaseBase =
-    derivedMarketPhase === 'rotation' ? 66 :
-    derivedMarketPhase === 'continuation' ? 74 :
-    derivedMarketPhase === 'hot_bias' ? 76 :    // ✅ 熱區偏移：高分
-    derivedMarketPhase === 'hot_streak' ? 78 :  // ✅ 熱號爆發：最高分
-    derivedMarketPhase === 'bias' ? 70 :
-    derivedMarketPhase === 'chaos' ? 48 :
-    derivedMarketPhase === 'strong_trend' ? 78 :
-    derivedMarketPhase === 'weak_trend' ? 68 :
-    derivedMarketPhase === 'random' ? 56 : 52;
-
-  const marketFitScore = Math.max(
-    0,
-    Math.min(
-      100,
-      Math.round(
-        marketPhaseBase +
-          Math.min(18, derivedConfidenceScore * 0.18) +
-          (predictionSummary.readyForFormal ? 6 : 0) +
-          (lastAutoTrainResult?.ok ? 4 : 0) -
-          Math.max(0, Math.round((1 - formalGroupCoverageRatio) * 16))
-      )
-    )
-  );
-
-  const displayedSelection = useMemo(
-    () =>
-      resolveDisplayedSelection(
-        predictionSummary,
-        trainingLatest,
-        formalLatest,
-        analysisPeriod,
-        strategyMode,
-        riskMode
-      ),
-    [predictionSummary, trainingLatest, formalLatest, analysisPeriod, strategyMode, riskMode]
-  );
-
-  const displayedAnalysisPeriod = toNum(displayedSelection.analysisPeriod, analysisPeriod) || analysisPeriod;
-  const displayedStrategyMode = displayedSelection.strategyMode || strategyMode;
-  const displayedRiskMode = displayedSelection.riskMode || riskMode;
-
-  const decisionTitle = canFormalBet ? '可小試' : '暫不建議正式下注';
-  const decisionColor = canFormalBet ? '#0f766e' : '#b45309';
-  const decisionSubtitle = displayedSelection.summaryText || predictionSummary.summaryText || aiPlayer.statusText || '先觀察再行動。';
+}
+
+// ── 頁面：快速 ────────────────────────────────────
+function QuickPage({ prediction, aiPlayer, recent20, onRefresh, loading }) {
+  const row = prediction?.latest_3star_row;
+  const compareResult = safeJson(row?.compare_result_json) || safeJson(row?.compare_result);
+  const detail = toArray(compareResult?.detail);
+  const groups = toArray(row?.groups_json);
+  const isDone = row?.compare_status === 'done';
+  const bestHit = toNum(row?.hit_count, 0);
+  const latestDraw = toArray(recent20)[0];
+  const drawNums = new Set(parseNums(latestDraw?.numbers));
+
+  const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.green : C.textSub;
 
   return (
-    <div style={{ ...styles.page, WebkitTextSizeAdjust: '100%' }}>
-      <div style={styles.app}>
-        <header style={styles.header}>
-          <div>
-            <div style={styles.brand}>FUWEI BINGO AI</div>
-            <div style={styles.headerSub}>策略輪動、單期決策、分批下注。</div>
-          </div>
+    <div style={S.page}>
+      {/* 最新一期 */}
+      <Card title="最新開獎" icon="🎱">
+        {latestDraw ? (
+          <>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+              <span style={S.statLabel}>期號 {fmt(latestDraw?.draw_no)}</span>
+              <span style={S.statLabel}>{fmt(latestDraw?.draw_time)}</span>
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+              {parseNums(latestDraw?.numbers).sort((a,b)=>a-b).map(n => (
+                <div key={n} style={S.recentBall(false)}>{padNum(n)}</div>
+              ))}
+            </div>
+          </>
+        ) : <div style={S.empty}>載入中...</div>}
+      </Card>
 
-          <div style={styles.headerActions}>
-            <button
-              style={styles.secondaryButton}
-              onClick={handleRefresh}
-              disabled={busyKey !== '' && busyKey !== 'refresh'}
-            >
-              {busyKey === 'refresh' ? '更新中...' : '重新整理'}
-            </button>
-            <button
-              style={{
-                ...styles.primaryButton,
-                marginTop: 0,
-                ...(autoTrainEnabled ? styles.stopButton : {})
-              }}
-              onClick={handleToggleAutoTrain}
-              disabled={busyKey !== '' && busyKey !== 'toggleAutoTrain'}
-            >
-              {autoTrainEnabled ? '停止訓練' : '啟動訓練'}
-            </button>
-          </div>
-        </header>
-
-        <nav style={styles.tabBar}>
-          {TAB_ITEMS.map((tab) => {
-            const active = activeTab === tab.key;
-            return (
-              <button
-                key={tab.key}
-                onClick={() => setActiveTab(tab.key)}
-                style={{
-                  ...styles.tabButton,
-                  ...(active ? styles.tabButtonActive : {})
-                }}
-              >
-                <span style={styles.tabIcon}>{tab.icon}</span>
-                {tab.label}
-              </button>
-            );
-          })}
-        </nav>
-
-        {error ? <div style={styles.errorBanner}>{error}</div> : null}
-        {loading ? <div style={styles.loading}>讀取中...</div> : null}
-
-        {!loading && activeTab === TABS.QUICK && (
-          <div style={styles.sectionStack}>
-            {/* 快速決策橫幅 */}
-            <div style={{
-              borderRadius: 16, padding: '14px 16px',
-              background: 'linear-gradient(135deg, #e8f5f1, #d4ede7)',
-              border: '2px solid #a8d8cc',
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              overflow: 'hidden'
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <div style={{ fontSize: 28 }}>
-                  {decisionColor === '#0f766e' ? '✅' : decisionColor === '#dc2626' ? '🚫' : '⏳'}
-                </div>
-                <div>
-                  <div style={{ fontSize: 11, color: '#7b6e5c' }}>本期建議</div>
-                  <div style={{ fontSize: 20, fontWeight: 900, color: decisionColor }}>{decisionTitle}</div>
-                </div>
-              </div>
-              <div style={{ textAlign: 'right' }}>
-                <div style={{ display: 'flex', gap: 10 }}>
-                  <div style={{ textAlign: 'center' }}>
-                    <div style={{ fontSize: 22, fontWeight: 900, color: '#0f766e', lineHeight: 1 }}>{strategyStabilityScore}</div>
-                    <div style={{ fontSize: 10, color: '#7b6e5c' }}>策略穩定</div>
-                  </div>
-                  <div style={{ textAlign: 'center' }}>
-                    <div style={{ fontSize: 22, fontWeight: 900, color: decisionColor, lineHeight: 1 }}>{marketFitScore}</div>
-                    <div style={{ fontSize: 10, color: '#7b6e5c' }}>市場適應</div>
-                  </div>
-                </div>
-              </div>
+      {/* 本期預測 */}
+      <Card
+        title="本期預測"
+        icon="⭐"
+        right={
+          isDone ? (
+            <span style={S.badge(hitColor, hitColor + '18')}>
+              {bestHit >= 3 ? `🏆 中${bestHit}！` : bestHit >= 2 ? `✅ 中${bestHit}` : `❌ 中${bestHit}`}
+            </span>
+          ) : row ? (
+            <span style={S.badge(C.orange, C.orangeLight)}>等待開獎</span>
+          ) : null
+        }
+      >
+        {!row ? (
+          <div style={S.empty}>尚無預測資料，等待自動產生中...</div>
+        ) : (
+          <>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+              <span style={S.badge(C.textSub, C.grayLight)}>期號 {fmt(row?.source_draw_no)}</span>
+              <span style={S.badge(C.teal, C.greenBg)}>{groups.length} 組</span>
+              {isDone && (
+                <span style={S.badge(bestHit >= 2 ? C.green : C.gray, bestHit >= 2 ? C.greenBg : C.grayLight)}>
+                  已比對
+                </span>
+              )}
             </div>
 
-            {/* 命中速報 */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-              <div style={{ background: '#fff', border: '1.5px solid #e0d4c0', borderRadius: 12, padding: '12px 14px' }}>
-                <div style={{ fontSize: 11, color: '#9a8c7d', marginBottom: 4 }}>中2組數（近10期）</div>
-                <div style={{ fontSize: 26, fontWeight: 900, color: '#0f766e', lineHeight: 1 }}>{hitFeedback.hit2} <span style={{ fontSize: 13, fontWeight: 700 }}>組</span></div>
-                <div style={{ fontSize: 11, color: '#7b6e5c', marginTop: 4 }}>命中率 {hitFeedback.groupCount ? Math.round(((hitFeedback.hit2 + hitFeedback.hit3) / hitFeedback.groupCount) * 100) : 0}%</div>
-              </div>
-              <div style={{ background: '#fff', border: '1.5px solid #fecaca', borderRadius: 12, padding: '12px 14px' }}>
-                <div style={{ fontSize: 11, color: '#9a8c7d', marginBottom: 4 }}>中3組數（近10期）</div>
-                <div style={{ fontSize: 26, fontWeight: 900, color: '#dc2626', lineHeight: 1 }}>{hitFeedback.hit3} <span style={{ fontSize: 13, fontWeight: 700 }}>組</span></div>
-                <div style={{ fontSize: 11, color: '#7b6e5c', marginTop: 4 }}>中3率 {hitFeedback.groupCount ? Math.round((hitFeedback.hit3 / hitFeedback.groupCount) * 100) : 0}%</div>
-              </div>
-            </div>
+            {groups.map((g, idx) => {
+              const nums = parseNums(g?.nums);
+              const key = String(g?.key || g?.meta?.strategy_key || idx);
+              const matchDetail = detail.find(d => String(d?.strategy_key) === key);
+              const hit = matchDetail ? toNum(matchDetail.hit, -1) : -1;
+              const is3 = hit >= 3;
+              const is2 = hit === 2;
 
-            {/* 本期八組號碼（緊湊2欄） */}
-            {(() => {
-              const row3 = predictionSummary.latest3StarRow;
-              const groups3 = toArray(row3?.groups_json);
-              if (!row3) return <div style={styles.emptyBox}>尚無預測資料，等待自動產生中...</div>;
-              // ✅ recommend 機制：上一期≥2組中二才顯示號碼，否則顯示觀察空白
-              const isRecommend = row3?.recommend === true;
-              if (!isRecommend && row3?.compare_status === 'pending') {
-                return (
-                  <div style={{ background: '#f8f1e6', border: '1.5px solid #d9c7a8', borderRadius: 14, padding: '20px 16px', textAlign: 'center' }}>
-                    <div style={{ fontSize: 28, marginBottom: 8 }}>⏸️</div>
-                    <div style={{ fontSize: 15, fontWeight: 900, color: '#7b6e5c', marginBottom: 4 }}>本期觀察，不建議下注</div>
-                    <div style={{ fontSize: 11, color: '#a09080' }}>根據統計：上一期中3才建議下注</div>
-                    <div style={{ fontSize: 11, color: '#a09080' }}>連續兩期中3反而是低潮前兆</div>
-                    <div style={{ fontSize: 11, color: '#a09080', marginTop: 4 }}>期號 {fmtText(row3?.source_draw_no, '--')}</div>
-                  </div>
-                );
-              }
               return (
-                <div>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                    <div style={{ fontSize: 14, fontWeight: 900, color: '#0f766e' }}>🌟 本期八組號碼</div>
-                    <div style={{ display: 'flex', gap: 6 }}>
-                      <span style={{ fontSize: 11, background: '#e8f5f1', color: '#0f766e', border: '1px solid #a8d8cc', borderRadius: 20, padding: '2px 8px', fontWeight: 700 }}>
-                        期號 {fmtText(row3?.source_draw_no, '--')}
-                      </span>
-                      <span style={{ fontSize: 11, background: '#f0f0f0', color: '#555', border: '1px solid #ddd', borderRadius: 20, padding: '2px 8px', fontWeight: 700 }}>
-                        {row3?.compare_status === 'done' ? '已開獎' : '待開獎'}
-                      </span>
+                <div key={key} style={S.groupCard(is3)}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: C.textSub }}>
+                      第{idx+1}組｜區段 {zoneLabel(key)}
                     </div>
+                    {isDone && hit >= 0 && (
+                      <span style={{ fontSize: 16, fontWeight: 900, color: is3 ? C.gold : is2 ? C.green : C.gray }}>
+                        {is3 ? `🏆 中${hit}` : `中${hit}`}
+                      </span>
+                    )}
                   </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 7 }}>
-                    {groups3.map((g, idx) => {
-                      const nums = toArray(g?.nums);
-                      const label = fmtText(g?.label || g?.key, '');
-                      const tier = String(g?.meta?.tier || g?.tier || '').toUpperCase();
-                      const tierColor = tier === 'HOT' ? '#0f766e' : tier === 'STREAK' ? '#d97706' : tier === 'COLD' ? '#6b7280' : tier === 'RECENT' ? '#3b82f6' : '#0f766e';
-                      const tierBg = tier === 'HOT' ? '#e8f5f1' : tier === 'STREAK' ? '#fffbeb' : tier === 'COLD' ? '#f3f4f6' : tier === 'RECENT' ? '#eff6ff' : '#f8f1e6';
-                      return (
-                        <div key={g?.key || idx} style={{ background: tierBg, border: '1.5px solid #d9c7a8', borderRadius: 12, padding: '9px 10px' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-                            <span style={{ fontSize: 10, fontWeight: 700, color: '#7b6e5c' }}>第{idx + 1}組</span>
-                            {tier ? <span style={{ fontSize: 9, fontWeight: 700, color: tierColor, background: '#fff', borderRadius: 8, padding: '1px 5px', border: '1px solid #d9c7a8' }}>{tier}</span> : null}
-                          </div>
-                          <div style={{ fontSize: 9, color: '#9a8c7d', marginBottom: 6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</div>
-                          <div style={{ display: 'flex', gap: 5 }}>
-                            {nums.map((n) => (
-                              <div key={n} style={{ width: 34, height: 34, borderRadius: '50%', background: tierColor, color: 'white', fontSize: 12, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                                {formatBallNumber(n)}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      );
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    {nums.map(n => {
+                      const isHit = isDone && matchDetail && drawNums.has(n);
+                      return <Ball key={n} n={n} hit={isDone ? (isHit ? true : false) : undefined} />;
                     })}
                   </div>
                 </div>
               );
-            })()}
-          </div>
+            })}
+
+            {isDone && (
+              <div style={{ background: bestHit >= 2 ? C.goldBg : C.grayLight, borderRadius: 10, padding: '12px 14px', textAlign: 'center', marginTop: 4 }}>
+                <div style={{ ...S.bigNum, color: hitColor }}>
+                  {bestHit >= 3 ? '🏆 恭喜中3！' : bestHit >= 2 ? '✅ 中2' : '❌ 未中'}
+                </div>
+                <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>
+                  獎金：{bestHit >= 3 ? '+500元' : bestHit >= 2 ? '+50元' : '0元'} ｜ 成本：{groups.length * 25}元
+                </div>
+              </div>
+            )}
+          </>
         )}
+      </Card>
 
-        {!loading && activeTab === TABS.DASHBOARD && (
-          <div style={styles.sectionStack}>
-            <Card
-              title="首頁決策"
-              subtitle="先看雙分數，再決定要不要直接產生正式下注。"
-              right={
-                <span style={{
-                  background: decisionColor === '#dc2626' ? '#fef2f2' : decisionColor === '#0f766e' ? '#f0fdf4' : '#fefce8',
-                  color: decisionColor,
-                  border: `2px solid ${decisionColor}`,
-                  borderRadius: 20,
-                  padding: '4px 14px',
-                  fontSize: 14,
-                  fontWeight: 900,
-                  letterSpacing: 1
-                }}>{decisionTitle}</span>
-              }
-            >
-              <div style={{ display: 'flex', gap: 10, marginBottom: 4 }}>
-                <div style={{ flex: 1, background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 14, padding: 14 }}>
-                  <div style={{ fontSize: 13, color: '#7b6e5c', marginBottom: 6 }}>策略穩定度</div>
-                  <div style={{ fontSize: 32, fontWeight: 900, color: '#0f766e', lineHeight: 1 }}>{strategyStabilityScore}<span style={{ fontSize: 16, color: '#7b6e5c' }}> / 100</span></div>
-                  <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 6 }}>活躍策略 {aiPlayer.activeCount} / 策略池 {aiPlayer.totalPoolCount}</div>
-                </div>
-                <div style={{ flex: 1, background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 14, padding: 14 }}>
-                  <div style={{ fontSize: 13, color: '#7b6e5c', marginBottom: 6 }}>市場適應度</div>
-                  <div style={{ fontSize: 32, fontWeight: 900, color: decisionColor, lineHeight: 1 }}>{marketFitScore}<span style={{ fontSize: 16, color: '#7b6e5c' }}> / 100</span></div>
-                  <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 6 }}>期數 {fmtText(latestDrawNo)}</div>
-                </div>
-              </div>
-
-              <div style={styles.resultPanel}>
-                <div style={styles.resultTitle}>最近 10 期即時命中回饋（組數）</div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
-                  <div style={{ background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 14, padding: 14 }}>
-                    <div style={{ fontSize: 13, color: '#7b6e5c', marginBottom: 4 }}>中2</div>
-                    <div style={{ fontSize: 28, fontWeight: 900, color: '#0f766e', lineHeight: 1.1 }}>{hitFeedback.hit2} <span style={{ fontSize: 14 }}>組</span></div>
-                    <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 4 }}>中2+ {hitFeedback.groupCount ? Math.round(((hitFeedback.hit2 + hitFeedback.hit3) / hitFeedback.groupCount) * 100) : 0}%</div>
-                  </div>
-                  <div style={{ background: '#f8f1e6', border: '2px solid #fecaca', borderRadius: 14, padding: 14 }}>
-                    <div style={{ fontSize: 13, color: '#7b6e5c', marginBottom: 4 }}>中3</div>
-                    <div style={{ fontSize: 28, fontWeight: 900, color: '#dc2626', lineHeight: 1.1 }}>{hitFeedback.hit3} <span style={{ fontSize: 14 }}>組</span></div>
-                    <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 4 }}>中3率 {hitFeedback.sampleCount ? Math.round((hitFeedback.hit3 / hitFeedback.sampleCount) * 100) : 0}%</div>
-                  </div>
-                  <div style={{ background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 14, padding: 14 }}>
-                    <div style={{ fontSize: 13, color: '#7b6e5c', marginBottom: 4 }}>中1</div>
-                    <div style={{ fontSize: 28, fontWeight: 900, color: '#b45309', lineHeight: 1.1 }}>{hitFeedback.hit1} <span style={{ fontSize: 14 }}>期</span></div>
-                    <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 4 }}>單組命中1</div>
-                  </div>
-                  <div style={{ background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 14, padding: 14 }}>
-                    <div style={{ fontSize: 13, color: '#7b6e5c', marginBottom: 4 }}>中0</div>
-                    <div style={{ fontSize: 28, fontWeight: 900, color: '#23413a', lineHeight: 1.1 }}>{hitFeedback.hit0} <span style={{ fontSize: 14 }}>期</span></div>
-                    <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 4 }}>未命中</div>
-                  </div>
-                </div>
-                <div style={{ ...styles.resultText, marginTop: 10 }}>{hitFeedback.note}</div>
-              </div>
-            </Card>
-
-            <Card
-              title="⭐ 最新三星預測號碼"
-              subtitle="本期第一梯隊選出的八組號碼，開獎前即時顯示。"
-              right={
-                <div style={styles.metaChipRow}>
-                  <MetaChip label="期號" value={fmtText(predictionSummary.latest3StarRow?.source_draw_no, '--')} />
-                  <MetaChip label="狀態" value={predictionSummary.latest3StarRow?.compare_status === 'done' ? '已開獎' : '待開獎'} />
-                </div>
-              }
-            >
-              {(() => {
-                const row3 = predictionSummary.latest3StarRow;
-                const groups3 = toArray(row3?.groups_json);
-                if (!row3) return <div style={styles.emptyBox}>尚無預測資料，等待自動產生中...</div>;
-                if (!groups3.length) return <div style={styles.emptyBox}>尚無組別資料。</div>;
-                return (
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 7 }}>
-                    {groups3.map((g, idx) => {
-                      const nums = toArray(g?.nums);
-                      const label = fmtText(g?.label || g?.key, '');
-                      const tier = String(g?.meta?.tier || g?.tier || '').toUpperCase();
-                      const tierColor = tier === 'HOT' ? '#0f766e' : tier === 'STREAK' ? '#d97706' : tier === 'COLD' ? '#6b7280' : tier === 'RECENT' ? '#3b82f6' : '#0f766e';
-                      const tierBg = tier === 'HOT' ? '#e8f5f1' : tier === 'STREAK' ? '#fffbeb' : tier === 'COLD' ? '#f3f4f6' : tier === 'RECENT' ? '#eff6ff' : '#f8f1e6';
-                      return (
-                        <div key={g?.key || idx} style={{ background: tierBg, border: '1.5px solid #d9c7a8', borderRadius: 12, padding: '9px 10px' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 5 }}>
-                            <span style={{ fontSize: 10, fontWeight: 700, color: '#7b6e5c' }}>第{idx + 1}組</span>
-                            {tier ? <span style={{ fontSize: 9, fontWeight: 700, color: tierColor, background: '#fff', borderRadius: 8, padding: '1px 5px', border: '1px solid #d9c7a8' }}>{tier}</span> : null}
-                          </div>
-                          <div style={{ fontSize: 9, color: '#9a8c7d', marginBottom: 6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</div>
-                          <div style={{ display: 'flex', gap: 5 }}>
-                            {nums.map((n) => (
-                              <div key={n} style={{ width: 32, height: 32, borderRadius: '50%', background: tierColor, color: 'white', fontSize: 12, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                                {formatBallNumber(n)}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                );
-              })()}
-            </Card>
-
-            <Card
-              title="近期連續號碼（連2／連3／連4）"
-              subtitle="連續出現的號碼，可作為三星選號參考。"
-            >
-              <div style={styles.marketGrid3}>
-                <div style={styles.zoneBox}>
-                  <div style={styles.zoneLabel}>連4+</div>
-                  <div style={styles.marketBallsWrap}>
-                    {streak4Buckets.length ? (
-                      streak4Buckets.map((item) => (
-                        <StreakBall key={`streak4_${item.num}`} n={item.num} streak={item.streak} />
-                      ))
-                    ) : (
-                      <div style={styles.emptyBox}>目前沒有連4以上號碼。</div>
-                    )}
-                  </div>
-                </div>
-
-                <div style={styles.zoneBox}>
-                  <div style={styles.zoneLabel}>連3</div>
-                  <div style={styles.marketBallsWrap}>
-                    {streak3Buckets.length ? (
-                      streak3Buckets.map((item) => (
-                        <StreakBall key={`streak3_${item.num}`} n={item.num} streak={item.streak} />
-                      ))
-                    ) : (
-                      <div style={styles.emptyBox}>目前沒有連3號碼。</div>
-                    )}
-                  </div>
-                </div>
-
-                <div style={styles.zoneBox}>
-                  <div style={styles.zoneLabel}>連2</div>
-                  <div style={styles.marketBallsWrap}>
-                    {streak2Buckets.length ? (
-                      streak2Buckets.map((item) => (
-                        <StreakBall key={`streak2_${item.num}`} n={item.num} streak={item.streak} />
-                      ))
-                    ) : (
-                      <div style={styles.emptyBox}>目前沒有連2號碼。</div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </Card>
-
-            <Card
-              title="⭐ 3星下注號碼"
-              subtitle="本期3星預測號碼，每期自動產生，每組3個號碼。"
-              right={
-                <div style={styles.metaChipRow}>
-                  <MetaChip label="每組" value="25元" />
-                  <MetaChip label="期號" value={fmtText(predictionSummary.latest3StarRow?.source_draw_no, '--')} />
-                  <MetaChip label="組數" value={`${toArray(predictionSummary.latest3StarRow?.groups_json).length || '--'}組`} />
-                  <MetaChip label="盤相" value={fmtText(predictionSummary.latest3StarRow?.market_phase, '--')} />
-                  <MetaChip label="狀態" value={predictionSummary.latest3StarRow?.compare_status === 'done' ? '已比對' : '待開獎'} />
-                </div>
-              }
-            >
-              {/* 保留原本的手動產生按鈕（仍可使用） */}
-              <div style={styles.formalActionBar}>
-                <button
-                  style={{
-                    ...styles.primaryButton,
-                    marginTop: 0,
-                    opacity: formalButtonDisabled ? 0.6 : 1
-                  }}
-                  onClick={handleFormalBet}
-                  disabled={formalButtonDisabled}
-                >
-                  {formalButtonLabel}
-                </button>
-                <div style={styles.formalActionHint}>
-                  手動產生三星預測
-                </div>
-              </div>
-
-              {/* 3星號碼顯示 */}
-              {(() => {
-                const row3 = predictionSummary.latest3StarRow;
-                const groups3 = toArray(row3?.groups_json);
-                const compareResult = row3?.compare_result;
-                const detail = toArray(compareResult?.detail);
-                const bestHit = toNum(row3?.hit_count, 0);
-                const isDone = row3?.compare_status === 'done';
-                const hitColor = bestHit >= 3 ? '#dc2626' : bestHit >= 2 ? '#0f766e' : '#7b6e5c';
-
-                if (!row3) return (
-                  <div style={{ ...styles.emptyBox, marginTop: 16 }}>尚無3星資料，等待自動產生中...</div>
-                );
-
-                return (
-                  <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
-                    {groups3.map((g, idx) => {
-                      const nums = toArray(g?.nums);
-                      const matchDetail = detail.find(d => String(d?.strategy_key) === String(g?.key || g?.meta?.strategy_key));
-                      const hit = matchDetail ? toNum(matchDetail.hit, -1) : -1;
-                      const hitBg = hit >= 3 ? '#fef2f2' : hit >= 2 ? '#f0fdf4' : '#f8f1e6';
-                      const hitBorder = hit >= 3 ? '#fecaca' : hit >= 2 ? '#86efac' : '#d9c7a8';
-                      return (
-                        <div key={g?.key || idx} style={{ background: hitBg, border: `2px solid ${hitBorder}`, borderRadius: 14, padding: '12px 14px' }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                            <div style={{ fontSize: 13, fontWeight: 700, color: '#0f766e' }}>
-                              第 {idx + 1} 組｜{fmtText(g?.label || g?.key)}
-                            </div>
-                            {isDone && hit >= 0 && (
-                              <div style={{ fontSize: 13, fontWeight: 900, color: hit >= 3 ? '#dc2626' : hit >= 2 ? '#0f766e' : '#7b6e5c' }}>
-                                中{hit}
-                              </div>
-                            )}
-                          </div>
-                          <div style={{ display: 'flex', gap: 8 }}>
-                            {nums.map((n) => (
-                              <div key={n} style={{ ...styles.pickBall, width: 48, height: 48, fontSize: 17 }}>
-                                {formatBallNumber(n)}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      );
-                    })}
-
-                    {/* 損益摘要 */}
-                    <div style={{ background: isDone && bestHit >= 2 ? '#f0fdf4' : '#f8f1e6', border: `2px solid ${isDone && bestHit >= 2 ? '#86efac' : '#d9c7a8'}`, borderRadius: 14, padding: 14 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <div style={{ fontSize: 13, color: '#7b6e5c' }}>{isDone ? '本期最佳命中' : '等待開獎比對'}</div>
-                        <div style={{ fontSize: 24, fontWeight: 900, color: isDone ? hitColor : '#7b6e5c' }}>
-                          {isDone ? `中${bestHit}` : '--'}
-                        </div>
-                      </div>
-                      <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 6 }}>
-                        {isDone
-                          ? `3星獎金：${bestHit >= 3 ? '500元' : bestHit >= 2 ? '50元' : '0元'}｜成本：25元｜損益：${bestHit >= 3 ? '+475元' : bestHit >= 2 ? '+25元' : '-25元'}`
-                          : '開獎後自動比對'}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })()}
-            </Card>
-
-
-
-          </div>
-        )}
-
-        {!loading && activeTab === TABS.PREDICT && (
-
-          <div style={styles.sectionStack}>
-            <Card
-              title="⭐ 3星比對戰績"
-              subtitle="最近3星預測的實際命中統計，中2得50元、中3得500元。"
-            >
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10, marginBottom: 4 }}>
-                <div style={{ background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 14, padding: 14 }}>
-                  <div style={{ fontSize: 13, color: '#7b6e5c', marginBottom: 4 }}>追蹤期數</div>
-                  <div style={{ fontSize: 28, fontWeight: 900, color: '#23413a', lineHeight: 1.1 }}>{recent3StarSummary.periodCount} <span style={{ fontSize: 14 }}>期</span></div>
-                  <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 4 }}>3星已比對期數</div>
-                </div>
-                <div style={{ background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 14, padding: 14 }}>
-                  <div style={{ fontSize: 13, color: '#7b6e5c', marginBottom: 4 }}>總組數</div>
-                  <div style={{ fontSize: 28, fontWeight: 900, color: '#0f766e', lineHeight: 1.1 }}>{recent3StarSummary.groupCount} <span style={{ fontSize: 14 }}>組</span></div>
-                  <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 4 }}>每期動態組數（1~8組）</div>
-                </div>
-                <div style={{ background: '#f8f1e6', border: '2px solid #fecaca', borderRadius: 14, padding: 14 }}>
-                  <div style={{ fontSize: 13, color: '#7b6e5c', marginBottom: 4 }}>中3組數</div>
-                  <div style={{ fontSize: 28, fontWeight: 900, color: '#dc2626', lineHeight: 1.1 }}>{recent3StarSummary.hit3} <span style={{ fontSize: 14 }}>組</span></div>
-                  <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 4 }}>+475元/組</div>
-                </div>
-                <div style={{ background: '#f8f1e6', border: '2px solid #d9c7a8', borderRadius: 14, padding: 14 }}>
-                  <div style={{ fontSize: 13, color: '#7b6e5c', marginBottom: 4 }}>中2組數</div>
-                  <div style={{ fontSize: 28, fontWeight: 900, color: '#0f766e', lineHeight: 1.1 }}>{recent3StarSummary.hit2} <span style={{ fontSize: 14 }}>組</span></div>
-                  <div style={{ fontSize: 12, color: '#7b6e5c', marginTop: 4 }}>+25元/組</div>
-                </div>
-              </div>
-
-              <div style={{ ...styles.metaChipRow, marginTop: 12 }}>
-                <MetaChip label="中0" value={recent3StarSummary.hit0} />
-                <MetaChip label="中1" value={recent3StarSummary.hit1} />
-                <MetaChip label="中2" value={recent3StarSummary.hit2} />
-                <MetaChip label="中3" value={recent3StarSummary.hit3} />
-                <MetaChip label="中2+率" value={recent3StarSummary.groupCount ? `${Math.round((recent3StarSummary.hit2 + recent3StarSummary.hit3) / recent3StarSummary.groupCount * 100)}%` : '--'} />
-              </div>
-            </Card>
-
-            <Card
-              title="🏆 梯隊競爭排行"
-              subtitle="含前綴策略的近5期表現，反映真實梯隊輪番上場狀況。"
-            >
-              {(() => {
-                const tierLb = toArray(predictionSummary?.tierLeaderboard).slice(0, 15);
-                if (!tierLb.length) return <div style={styles.emptyBox}>累積數據中，請稍後再看...</div>;
-                return (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    <div style={{ background: '#faf6f0', border: '1px dashed #d3b88e', borderRadius: 10, padding: '8px 12px', fontSize: 12, color: '#7b6e5c', lineHeight: 1.6 }}>
-                      近5期有命中✅ = 目前狀態熱，可能在第一梯隊出場。近5期全空❌ = 狀態冷，已被降級等待。
-                    </div>
-                    {tierLb.map((row, idx) => {
-                      const hasHit = row.has_recent_hit3;
-                      const rateColor = row.last5_hit3_rate >= 0.2 ? '#dc2626'
-                        : row.last5_hit3_rate > 0 ? '#0f766e'
-                        : '#b45309';
-                      const bgColor = hasHit ? (idx === 0 ? '#f0fdf4' : '#f8fffe') : '#f8f1e6';
-                      const borderColor = hasHit ? '#86efac' : '#d9c7a8';
-                      return (
-                        <div key={row.strategy_name} style={{ background: bgColor, border: `2px solid ${borderColor}`, borderRadius: 12, padding: '10px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
-                              <span style={{ fontSize: 13, fontWeight: 900, color: '#0f766e' }}>#{idx + 1}</span>
-                              <span style={{ fontSize: 13, fontWeight: 800, color: '#23413a' }}>{row.strategy_name}</span>
-                              <span style={{ fontSize: 16 }}>{hasHit ? '✅' : '❌'}</span>
-                            </div>
-                            <div style={{ fontSize: 11, color: '#7b6e5c' }}>
-                              總期數：{row.total_rounds} ｜ 全期中3率：{(row.all_hit3_rate * 100).toFixed(2)}%
-                            </div>
-                            <div style={{ fontSize: 11, color: '#7b6e5c', marginTop: 2 }}>
-                              近5期：{(row.recent_hits || []).map((h, i) => (
-                                <span key={i} style={{ marginRight: 4, fontWeight: h >= 3 ? 900 : 400, color: h >= 3 ? '#dc2626' : h >= 2 ? '#0f766e' : '#b0a090' }}>{h}</span>
-                              ))}
-                            </div>
-                          </div>
-                          <div style={{ textAlign: 'right' }}>
-                            <div style={{ fontSize: 18, fontWeight: 900, color: rateColor }}>
-                              {row.last5_hit3_count}次
-                            </div>
-                            <div style={{ fontSize: 11, color: '#7b6e5c' }}>近5期中3</div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                );
-              })()}
-            </Card>
-
-          </div>
-        )}
-
-        {!loading && activeTab === TABS.MARKET && (
-          <div style={styles.sectionStack}>
-            <Card
-              title="開獎回顧"
-              subtitle="上一期八組號碼的開獎比對結果。"
-              right={<div style={styles.predictTopTag}>現在時間：{marketNowText}</div>}
-            >
-              <div style={styles.marketPanel}>
-                <div style={styles.marketPanelTitle}>最新 20 顆號碼</div>
-                <div style={styles.marketBallsWrap}>
-                  {latestNumbers.length ? (
-                    latestNumbers.map((n) => <MarketBall key={n} n={n} highlight />)
-                  ) : (
-                    <div style={styles.emptyBox}>目前沒有最新開獎號碼。</div>
-                  )}
-                </div>
-              </div>
-
-              <div style={styles.marketPanel}>
-                <div style={styles.marketPanelTitle}>上一期八組比對結果</div>
-                {(() => {
-                  // ✅ 抓已開獎（done）的最新一筆
-                  const doneRow = toArray(predictionSummary?.recent3StarComparedRows)
-                    .find(r => r?.compare_status === 'done');
-                  const row3 = doneRow || null;
-                  const groups3 = toArray(row3?.groups_json);
-                  const compareResult = row3?.compare_result;
-                  const detail = toArray(compareResult?.detail);
-                  // ✅ 從 compareResult 取開獎號碼（不用 latestNumbers）
-                  const drawnNums = toArray(compareResult?.draw_numbers || compareResult?.numbers || compareResult?.result_numbers || []).map(Number);
-
-                  if (!row3) return <div style={styles.emptyBox}>尚無已開獎的比對資料。</div>;
-                  if (!groups3.length) return <div style={styles.emptyBox}>尚無組別資料。</div>;
-
-                  return (
-                    <div>
-                      <div style={{ fontSize: 12, color: '#7b6e5c', marginBottom: 8 }}>
-                        期數：{fmtText(row3?.source_draw_no)} ／ 已開獎比對
-                      </div>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 7 }}>
-                      {groups3.map((g, idx) => {
-                        const nums = toArray(g?.nums);
-                        const matchDetail = detail.find(d =>
-                          String(d?.strategy_name) === String(g?.label || g?.meta?.strategy_name) ||
-                          String(d?.strategy_key) === String(g?.key || g?.meta?.strategy_key)
-                        ) || detail[idx] || {};
-                        const compareDrawNumbers = getCompareDrawNumbersFromRow(row3);
-                        const normalized = normalizeComparedGroupItem(matchDetail, g, idx, compareDrawNumbers);
-                        const hit = normalized.hit_count >= 0 ? normalized.hit_count : toNum(matchDetail?.hit, 0);
-                        const hitNums = normalized.matched_numbers || [];
-                        const hitColor = hit >= 3 ? '#dc2626' : hit >= 2 ? '#0f766e' : '#b45309';
-                        const hitBg = hit >= 3 ? '#fef2f2' : hit >= 2 ? '#f0fdf4' : '#f8f1e6';
-                        const hitBorder = hit >= 3 ? '#fecaca' : hit >= 2 ? '#86efac' : '#d9c7a8';
-                        const label = fmtText(g?.label || g?.key, '');
-                        return (
-                          <div key={g?.key || idx} style={{ background: hitBg, border: `1.5px solid ${hitBorder}`, borderRadius: 12, padding: '9px 10px' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                              <span style={{ fontSize: 10, fontWeight: 700, color: '#7b6e5c' }}>第{idx + 1}組</span>
-                              <span style={{ fontSize: 13, fontWeight: 900, color: hitColor }}>中{hit}</span>
-                            </div>
-                            <div style={{ fontSize: 10, color: '#7b6e5c', marginBottom: 5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</div>
-                            <div style={{ display: 'flex', gap: 4 }}>
-                              {nums.map((n) => {
-                                const isHit = hitNums.includes(n);
-                                return (
-                                  <div key={n} style={{
-                                    width: 28, height: 28, borderRadius: '50%', fontSize: 11, fontWeight: 700,
-                                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                    background: isHit ? '#dc2626' : '#e8dcc8',
-                                    color: isHit ? '#fff' : '#23413a',
-                                  }}>
-                                    {formatBallNumber(n)}
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        );
-                      })}
-                      </div>
-                    </div>
-                  );
-                })()}
-              </div>
-
-              <div style={styles.marketPanel}>
-                <div style={styles.marketPanelTitle}>熱門號分析</div>
-                <div style={styles.historyRows}>
-                  {[
-                    { label: '5期（短期爆發）', lookback: 5 },
-                    { label: '10期（趨勢延續）', lookback: 10 },
-                    { label: '20期（穩定底盤）', lookback: 20 }
-                  ].map((section) => {
-                    const hotItems = calcHotNumbers(recent20, section.lookback);
-                    return (
-                      <div key={section.label} style={styles.historyRow}>
-                        <div style={styles.historyMeta}>
-                          <span>{section.label}</span>
-                        </div>
-                        <div style={styles.marketBallsWrap}>
-                          {hotItems.length ? (
-                            hotItems.map((item) => (
-                              <div key={`${section.lookback}_${item.num}`} style={styles.hotBallWrap}>
-                                <MarketBall n={item.num} />
-                                <div style={styles.hotBallCount}>{item.count}</div>
-                              </div>
-                            ))
-                          ) : (
-                            <div style={styles.emptyBox}>目前沒有熱號資料。</div>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </Card>
-          </div>
-        )}
-      </div>
+      {/* 刷新按鈕 */}
+      <button style={S.btn(loading)} onClick={onRefresh} disabled={loading}>
+        {loading ? '更新中...' : '🔄 刷新資料'}
+      </button>
     </div>
   );
 }
 
-const styles = {
-  page: {
-    minHeight: '100vh',
-    background: '#f0ebe1',
-    padding: '10px 12px 32px',
-    color: '#23413a',
-    boxSizing: 'border-box'
-  },
-  app: {
-    maxWidth: 480,
-    margin: '0 auto',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 14
-  },
-  header: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: 8,
-    padding: '4px 2px 0'
-  },
-  brand: {
-    fontSize: 16,
-    fontWeight: 900,
-    color: '#0f766e',
-    letterSpacing: '0.5px',
-    whiteSpace: 'nowrap'
-  },
-  headerSub: {
-    marginTop: 2,
-    color: '#9a8c7d',
-    fontSize: 11
-  },
-  headerActions: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-    flexShrink: 0
-  },
-  tabBar: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
-    gap: 8
-  },
-  tabButton: {
-    border: '1.5px solid #c8bfb0',
-    background: '#faf7f2',
-    color: '#5a5248',
-    borderRadius: 12,
-    padding: '8px 4px',
-    fontSize: 11,
-    fontWeight: 700,
-    cursor: 'pointer',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 3,
-    transition: 'all .15s ease',
-    minHeight: 42
-  },
-  tabButtonActive: {
-    background: '#0f766e',
-    color: '#fff',
-    borderColor: '#0f766e',
-    boxShadow: '0 2px 6px rgba(15,118,110,0.3)'
-  },
-  tabIcon: {
-    fontSize: 16
-  },
-  sectionStack: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 12
-  },
-  card: {
-    background: '#fff',
-    border: '1.5px solid #e0d4c0',
-    borderRadius: 16,
-    padding: 14,
-    boxShadow: '0 2px 8px rgba(0,0,0,0.06)'
-  },
-  cardHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    gap: 12,
-    marginBottom: 14
-  },
-  cardTitle: {
-    fontSize: 18,
-    fontWeight: 900,
-    color: '#0f766e'
-  },
-  cardSubtitle: {
-    marginTop: 4,
-    color: '#7b6e5c',
-    fontSize: 13,
-    lineHeight: 1.5
-  },
-  statsGrid4: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-    gap: 10
-  },
-  statsGrid2: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-    gap: 10
-  },
-  statBox: {
-    background: '#fff',
-    border: '1.5px solid #e8ddd0',
-    borderRadius: 12,
-    padding: '12px 14px',
-    minHeight: 80,
-    boxSizing: 'border-box'
-  },
-  statLabel: {
-    fontSize: 13,
-    color: '#7b6e5c',
-    marginBottom: 8
-  },
-  statValue: {
-    fontSize: 20,
-    fontWeight: 900,
-    color: '#d2534f',
-    lineHeight: 1.2
-  },
-  statHint: {
-    marginTop: 8,
-    color: '#7b6e5c',
-    fontSize: 13,
-    lineHeight: 1.5
-  },
-  resultPanel: {
-    marginTop: 18,
-    background: '#f8f1e6',
-    border: '2px solid #d9c7a8',
-    borderRadius: 18,
-    padding: 16
-  },
-  resultTitle: {
-    fontSize: 16,
-    fontWeight: 800,
-    color: '#0f766e',
-    marginBottom: 8
-  },
-  resultText: {
-    color: '#23413a',
-    fontSize: 14,
-    lineHeight: 1.65
-  },
-  miniStatsRow: {
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: 10
-  },
-  metaChipRow: {
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: 10
-  },
-  metaChip: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 6,
-    background: '#f0e4c8',
-    border: '1px solid #d1b989',
-    color: '#5f5139',
-    borderRadius: 999,
-    padding: '6px 10px',
-    fontSize: 13,
-    fontWeight: 700
-  },
-  metaChipLabel: {
-    color: '#886f46'
-  },
-  controlGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-    gap: 16
-  },
-  controlBox: {
-    background: '#f8f1e6',
-    border: '2px solid #d9c7a8',
-    borderRadius: 18,
-    padding: 16
-  },
-  controlTitle: {
-    fontSize: 16,
-    fontWeight: 800,
-    color: '#0f766e'
-  },
-  controlDesc: {
-    marginTop: 8,
-    color: '#7b6e5c',
-    fontSize: 14,
-    lineHeight: 1.6
-  },
-  inlineButtonRow: {
-    display: 'flex',
-    gap: 12,
-    flexWrap: 'wrap',
-    marginTop: 14
-  },
-  primaryButton: {
-    marginTop: 0,
-    background: '#0f766e',
-    color: '#fff',
-    border: 'none',
-    borderRadius: 12,
-    padding: '10px 18px',
-    fontSize: 14,
-    fontWeight: 700,
-    cursor: 'pointer',
-    width: '100%',
-    minHeight: 40,
-    whiteSpace: 'nowrap'
-  },
-  secondaryButton: {
-    background: '#fff',
-    color: '#0f766e',
-    border: '2px solid #0f766e',
-    borderRadius: 12,
-    padding: '10px 14px',
-    fontSize: 14,
-    fontWeight: 700,
-    cursor: 'pointer',
-    minHeight: 40,
-    whiteSpace: 'nowrap'
-  },
-  stopButton: {
-    background: '#a1433d'
-  },
-  warningButton: {
-    background: '#c0841c'
-  },
-  pipelineRow: {
-    marginTop: 18,
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: 10
-  },
-  pipelineBadge: {
-    background: '#efe3cb',
-    border: '1px solid #d3b88e',
-    borderRadius: 999,
-    padding: '8px 12px',
-    fontSize: 13,
-    fontWeight: 700,
-    color: '#6a583a'
-  },
-  predictTopTag: {
-    background: '#efe3cb',
-    border: '1px solid #d3b88e',
-    borderRadius: 999,
-    padding: '8px 12px',
-    fontSize: 13,
-    fontWeight: 700,
-    color: '#6a583a',
-    whiteSpace: 'nowrap'
-  },
-  predictControlStack: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 18
-  },
-  selectorBlock: {
-    background: '#f8f1e6',
-    border: '2px solid #d9c7a8',
-    borderRadius: 18,
-    padding: 16
-  },
-  selectorTitle: {
-    fontSize: 16,
-    fontWeight: 800,
-    color: '#0f766e'
-  },
-  selectorDesc: {
-    marginTop: 6,
-    color: '#7b6e5c',
-    fontSize: 14,
-    lineHeight: 1.6
-  },
-  selectorRow: {
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: 12,
-    marginTop: 14
-  },
-  selectorGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-    gap: 12,
-    marginTop: 14
-  },
-  selectorButton: {
-    background: '#f0e4c8',
-    border: '2px solid #d3b88e',
-    color: '#5f5139',
-    borderRadius: 14,
-    padding: '10px 14px',
-    fontSize: 14,
-    fontWeight: 800,
-    cursor: 'pointer'
-  },
-  selectorButtonActive: {
-    background: '#0f766e',
-    borderColor: '#0f766e',
-    color: '#fff'
-  },
-  modeCard: {
-    textAlign: 'left',
-    background: '#f7f0e4',
-    border: '2px solid #dcc9ad',
-    borderRadius: 16,
-    padding: 16,
-    cursor: 'pointer'
-  },
-  modeCardActive: {
-    background: '#e0f0ea',
-    borderColor: '#0f766e'
-  },
-  modeCardTitle: {
-    fontSize: 16,
-    fontWeight: 800,
-    color: '#23413a'
-  },
-  modeCardDesc: {
-    marginTop: 8,
-    fontSize: 13,
-    color: '#7b6e5c',
-    lineHeight: 1.6
-  },
-  selectionSummaryBox: {
-    background: '#f8f1e6',
-    border: '2px dashed #d3b88e',
-    borderRadius: 18,
-    padding: 16
-  },
-  predictOnlyHint: {
-    marginTop: 4,
-    padding: 14,
-    borderRadius: 16,
-    border: '1px dashed #d3b88e',
-    background: '#faf6f0',
-    color: '#7b6e5c',
-    fontSize: 13,
-    lineHeight: 1.7
-  },
-  selectionSummaryTitle: {
-    fontSize: 17,
-    fontWeight: 800,
-    color: '#0f766e',
-    marginBottom: 10
-  },
-  predictActionBox: {
-    marginTop: 18,
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: 16,
-    background: '#f8f1e6',
-    border: '2px solid #d9c7a8',
-    borderRadius: 18,
-    padding: 16
-  },
-  predictActionText: {
-    color: '#6f624d',
-    fontSize: 14,
-    lineHeight: 1.6,
-    flex: 1
-  },
-  groupGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(1, minmax(0, 1fr))',
-    gap: 12
-  },
-  compactBetCard: {
-    background: '#f8f1e6',
-    border: '2px solid #d9c7a8',
-    borderRadius: 18,
-    padding: 16
-  },
-  compactBetHead: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: 12
-  },
-  compactBetTitle: {
-    fontSize: 21,
-    fontWeight: 900,
-    color: '#0f766e'
-  },
-  compactBetSub: {
-    color: '#8a7d66',
-    fontSize: 13,
-    fontWeight: 700
-  },
-  decisionHeadline: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 12
-  },
-  decisionBadge: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    background: '#f0e4c8',
-    border: '1px solid #d1b989',
-    borderRadius: 999,
-    padding: '8px 12px',
-    fontSize: 18,
-    fontWeight: 900
-  },
-  formalActionBar: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 12,
-    marginBottom: 16
-  },
-  formalActionHint: {
-    color: '#7b6e5c',
-    fontSize: 13,
-    lineHeight: 1.6
-  },
-  groupCard: {
-    background: '#f8f1e6',
-    border: '2px solid #d9c7a8',
-    borderRadius: 18,
-    padding: 16
-  },
-  groupHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    gap: 12
-  },
-  groupTitleWrap: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 6
-  },
-  groupTitle: {
-    fontSize: 16,
-    fontWeight: 900,
-    color: '#0f766e'
-  },
-  groupReason: {
-    fontSize: 13,
-    color: '#7b6e5c',
-    lineHeight: 1.5
-  },
-  groupBalls: {
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: 10,
-    marginTop: 14,
-    marginBottom: 14
-  },
-  pickBall: {
-    width: 46,
-    height: 46,
-    borderRadius: '50%',
-    background: '#0f766e',
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: 900,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    boxShadow: 'inset 0 -3px 0 rgba(0,0,0,0.12)'
-  },
-  batchCard: {
-    background: '#f8f1e6',
-    border: '2px solid #d9c7a8',
-    borderRadius: 18,
-    padding: 16
-  },
-  batchCardHead: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    gap: 16,
-    marginBottom: 16
-  },
-  batchCardTitle: {
-    fontSize: 16,
-    fontWeight: 900,
-    color: '#0f766e'
-  },
-  batchCardSub: {
-    marginTop: 6,
-    fontSize: 13,
-    color: '#7b6e5c'
-  },
-  marketPanel: {
-    marginTop: 18,
-    background: '#f8f1e6',
-    border: '2px solid #d9c7a8',
-    borderRadius: 18,
-    padding: 16
-  },
-  marketPanelTitle: {
-    fontSize: 16,
-    fontWeight: 900,
-    color: '#0f766e',
-    marginBottom: 12
-  },
-  marketGrid2: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-    gap: 16
-  },
-  marketGrid3: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-    gap: 10
-  },
-  marketBallsWrap: {
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: 7
-  },
-  marketBall: {
-    width: 38,
-    height: 38,
-    borderRadius: '50%',
-    background: '#efe3cb',
-    border: '1.5px solid #d3b88e',
-    color: '#4a4031',
-    fontSize: 13,
-    fontWeight: 900,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center'
-  },
-  marketBallHighlight: {
-    background: '#0f766e',
-    borderColor: '#0f766e',
-    color: '#fff'
-  },
-  hotBallWrap: {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    gap: 4
-  },
-  hotBallCount: {
-    fontSize: 12,
-    color: '#7b6e5c',
-    fontWeight: 700
-  },
-  streakBallWrap: {
-    position: 'relative',
-    width: 48,
-    height: 56
-  },
-  streakBall: {
-    width: 46,
-    height: 46,
-    borderRadius: '50%',
-    background: '#f0e4c8',
-    border: '2px solid #d3b88e',
-    color: '#4a4031',
-    fontSize: 15,
-    fontWeight: 900,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center'
-  },
-  streakBadge: {
-    position: 'absolute',
-    right: -2,
-    bottom: 0,
-    minWidth: 20,
-    height: 20,
-    borderRadius: 10,
-    background: '#c84a4a',
-    color: '#fff',
-    fontSize: 11,
-    fontWeight: 900,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: '0 5px'
-  },
-  zoneGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
-    gap: 12
-  },
-  zoneBox: {
-    background: '#efe3cb',
-    border: '1px solid #d3b88e',
-    borderRadius: 16,
-    padding: 16,
-    textAlign: 'center'
-  },
-  zoneLabel: {
-    fontSize: 14,
-    color: '#7b6e5c',
-    marginBottom: 8
-  },
-  zoneCount: {
-    fontSize: 26,
-    fontWeight: 900,
-    color: '#0f766e'
-  },
-  historyRows: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 12
-  },
-  historyRow: {
-    background: '#fbf6ee',
-    border: '1px solid #ddcfbb',
-    borderRadius: 14,
-    padding: 14
-  },
-  historyMeta: {
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: 12,
-    marginBottom: 10,
-    color: '#7b6e5c',
-    fontSize: 13
-  },
-  historyBalls: {
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: 8
-  },
-  emptyBox: {
-    width: '100%',
-    minHeight: 72,
-    border: '2px dashed #d3b88e',
-    background: '#faf6f0',
-    borderRadius: 16,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    color: '#8a7d66',
-    fontSize: 14,
-    padding: 16,
-    boxSizing: 'border-box'
-  },
-  errorBanner: {
-    background: '#f8d7d7',
-    color: '#9f2f2f',
-    border: '1px solid #e8b7b7',
-    borderRadius: 16,
-    padding: 14,
-    fontWeight: 700
-  },
-  loading: {
-    background: '#f8f1e6',
-    border: '2px solid #d9c7a8',
-    borderRadius: 16,
-    padding: 18,
-    textAlign: 'center',
-    color: '#7b6e5c',
-    fontWeight: 700
-  },
-  comparePeriodsWrap: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 16
-  },
-  comparePeriodCard: {
-    border: '1px solid #d6c3a3',
-    borderRadius: 18,
-    padding: 14,
-    background: '#fbf6ec',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 12
-  },
-  comparePeriodHead: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    gap: 12,
-    alignItems: 'flex-start',
-    flexWrap: 'wrap'
-  },
-  comparePeriodTitle: {
-    fontSize: 16,
-    fontWeight: 800,
-    color: '#0f766e'
-  },
-  comparePeriodSub: {
-    fontSize: 12,
-    color: '#7c6a4d',
-    marginTop: 4
-  },
-  compareBatchStack: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 12
-  },
-  compareBatchCard: {
-    border: '1px dashed #d6c3a3',
-    borderRadius: 16,
-    padding: 12,
-    background: '#fffaf1'
-  },
-  compareBatchHead: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    gap: 12,
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    marginBottom: 10
-  },
-  compareBatchTitle: {
-    fontSize: 14,
-    fontWeight: 800,
-    color: '#23413a'
-  },
-  compareBatchSub: {
-    fontSize: 12,
-    color: '#7c6a4d'
-  },
-  compareGroupGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-    gap: 12
-  },
-  compareGroupCard: {
-    border: '1px solid #e7d6b8',
-    borderRadius: 14,
-    padding: 12,
-    background: '#ffffff'
-  },
-  compareGroupHead: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 10
-  },
-  compareGroupTitle: {
-    fontSize: 13,
-    fontWeight: 800,
-    color: '#23413a'
-  },
-  compareHitBadge: {
-    minWidth: 48,
-    textAlign: 'center',
-    padding: '4px 8px',
-    borderRadius: 999,
-    fontSize: 12,
-    fontWeight: 800,
-    color: '#7c6a4d',
-    background: '#efe3ca'
-  },
-  compareHitBadgeMid: {
-    color: '#b45309',
-    background: '#fde7c2'
-  },
-  compareHitBadgeStrong: {
-    color: '#0f766e',
-    background: '#ccefe8'
-  },
-};
+// ── 頁面：近期回顧 ────────────────────────────────
+function HistoryPage({ historyRows }) {
+  const rows = toArray(historyRows).slice(0, 20);
 
-// 攻擊型分數
-function calcFrontScore(groups = []) { let total=0; groups.forEach(g=>{const h=Number(g?.meta?.avg_hit||0); const r=Number(g?.meta?.roi||0); total+=h*50+Math.max(r,-1)*30;}); return Math.min(100,total/(groups.length||1)); }
+  return (
+    <div style={S.page}>
+      <Card title="近期命中紀錄" icon="📋">
+        {!rows.length ? (
+          <div style={S.empty}>尚無比對紀錄</div>
+        ) : rows.map((row, idx) => {
+          const compareResult = safeJson(row?.compare_result_json) || safeJson(row?.compare_result);
+          const detail = toArray(compareResult?.detail);
+          const groups = toArray(row?.groups_json);
+          const bestHit = toNum(row?.hit_count, 0);
+          const isDone = row?.compare_status === 'done';
+          const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.green : C.gray;
+
+          return (
+            <div key={row?.id || idx} style={{ ...S.card, marginBottom: 10, padding: '12px 14px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: C.textSub }}>
+                  期號 {fmt(row?.source_draw_no)}
+                </span>
+                {isDone && (
+                  <span style={{ fontSize: 15, fontWeight: 900, color: hitColor }}>
+                    {bestHit >= 3 ? `🏆 中${bestHit}` : bestHit >= 2 ? `✅ 中${bestHit}` : `❌ 未中`}
+                  </span>
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {groups.map((g, gIdx) => {
+                  const key = String(g?.key || g?.meta?.strategy_key || gIdx);
+                  const nums = parseNums(g?.nums);
+                  const matchDetail = detail.find(d => String(d?.strategy_key) === key);
+                  const hit = matchDetail ? toNum(matchDetail.hit, 0) : 0;
+                  return (
+                    <div key={key} style={{
+                      background: hit >= 3 ? C.goldBg : hit >= 2 ? C.greenBg : C.grayLight,
+                      borderRadius: 8, padding: '4px 8px', fontSize: 12,
+                      border: `1px solid ${hit >= 3 ? C.goldLight : hit >= 2 ? '#86EFAC' : C.border}`,
+                    }}>
+                      <span style={{ color: C.textSub, marginRight: 4 }}>{zoneLabel(key)}</span>
+                      {nums.map(n => padNum(n)).join(' ')}
+                      {isDone && <span style={{ marginLeft: 4, fontWeight: 700, color: hit >= 2 ? C.gold : C.gray }}>中{hit}</span>}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </Card>
+    </div>
+  );
+}
+
+// ── 頁面：統計 ────────────────────────────────────
+function StatsPage({ strategyStats, prediction }) {
+  const stats = toArray(strategyStats);
+  const totalRounds = stats.reduce((a, s) => a + toNum(s.total_rounds), 0);
+  const totalHit3 = stats.reduce((a, s) => a + toNum(s.hit3), 0);
+  const overallRate = totalRounds > 0 ? totalHit3 / totalRounds : 0;
+
+  return (
+    <div style={S.page}>
+      {/* 整體命中率 */}
+      <Card title="整體命中率" icon="📊">
+        <div style={{ textAlign: 'center', padding: '10px 0' }}>
+          <div style={S.bigNum}>{fmtPercent(overallRate)}</div>
+          <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>
+            共 {totalRounds} 組｜中3：{totalHit3} 次
+          </div>
+        </div>
+        <div style={S.divider} />
+        <StatRow label="理論值（隨機）" value="3.75%" valueColor={C.textSub} />
+        <StatRow label="目前命中率" value={fmtPercent(overallRate)} valueColor={overallRate > 0.0375 ? C.green : C.orange} />
+      </Card>
+
+      {/* 各區段統計 */}
+      <Card title="各區段統計" icon="🗂️">
+        {!stats.length ? (
+          <div style={S.empty}>累積數據中，請稍候...</div>
+        ) : stats.sort((a,b) => toNum(b.hit3) - toNum(a.hit3)).map(s => {
+          const rounds = toNum(s.total_rounds);
+          const hit3 = toNum(s.hit3);
+          const rate = rounds > 0 ? hit3 / rounds : 0;
+          return (
+            <div key={s.strategy_key} style={S.statRow}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>{s.strategy_key}</div>
+                <div style={{ fontSize: 11, color: C.textSub }}>{rounds} 組｜中3：{hit3} 次</div>
+              </div>
+              <div style={{ textAlign: 'right' }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: rate > 0.0375 ? C.green : C.textSub }}>
+                  {fmtPercent(rate)}
+                </div>
+                <div style={{ fontSize: 11, color: C.textSub }}>ROI: {fmtPercent(toNum(s.roi))}</div>
+              </div>
+            </div>
+          );
+        })}
+      </Card>
+    </div>
+  );
+}
+
+// ── 頁面：開獎回顧 ────────────────────────────────
+function MarketPage({ recent20 }) {
+  const rows = toArray(recent20).slice(0, 20);
+
+  return (
+    <div style={S.page}>
+      <Card title="最近20期開獎" icon="🎯">
+        {!rows.length ? (
+          <div style={S.empty}>載入中...</div>
+        ) : rows.map((row, idx) => {
+          const nums = parseNums(row?.numbers).sort((a,b)=>a-b);
+          return (
+            <div key={row?.draw_no || idx} style={{ ...S.statRow, alignItems: 'flex-start', paddingTop: 10, paddingBottom: 10 }}>
+              <div style={{ minWidth: 80 }}>
+                <div style={{ fontSize: 13, fontWeight: 700 }}>#{fmt(row?.draw_no)}</div>
+                <div style={{ fontSize: 11, color: C.textSub }}>{fmt(row?.draw_time)?.slice(11,16)}</div>
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, flex: 1 }}>
+                {nums.map(n => (
+                  <div key={n} style={{ ...S.recentBall(false), width: 28, height: 28, fontSize: 11 }}>{padNum(n)}</div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </Card>
+    </div>
+  );
+}
+
+// ── 主 APP ────────────────────────────────────────
+export default function App() {
+  const [tab, setTab] = useState('quick');
+  const [loading, setLoading] = useState(false);
+  const [prediction, setPrediction] = useState(null);
+  const [aiPlayer, setAiPlayer] = useState(null);
+  const [recent20, setRecent20] = useState([]);
+  const [historyRows, setHistoryRows] = useState([]);
+  const [strategyStats, setStrategyStats] = useState([]);
+  const [loopStatus, setLoopStatus] = useState('初始化中...');
+  const timerRef = useRef(null);
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [predRes, aiRes, recentRes] = await Promise.all([
+        apiFetch('/api/prediction-latest').catch(() => ({})),
+        apiFetch('/api/ai-player').catch(() => ({})),
+        apiFetch('/api/recent20').catch(() => ({})),
+      ]);
+
+      setPrediction(predRes);
+      setAiPlayer(aiRes);
+
+      const rows = predRes?.recent_3star_compared_rows || predRes?.recent_compared_rows || [];
+      setHistoryRows(rows);
+
+      const recentRows = recentRes?.recent20 || recentRes?.data || [];
+      setRecent20(recentRows);
+
+      setLoopStatus(isNight() ? '夜間停止（00:00-07:00）' : `已更新 ${new Date().toLocaleTimeString('zh-TW', {hour12:false})}`);
+    } catch (e) {
+      setLoopStatus('載入失敗，稍後重試');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // 載入策略統計
+  useEffect(() => {
+    const loadStats = async () => {
+      try {
+        const res = await apiFetch('/api/ai-player');
+        const top = toArray(res?.currentTopStrategies);
+        if (top.length) setStrategyStats(top);
+      } catch {}
+    };
+    loadStats();
+  }, []);
+
+  useEffect(() => {
+    loadData();
+    timerRef.current = setInterval(loadData, REFRESH_INTERVAL_MS);
+    return () => clearInterval(timerRef.current);
+  }, [loadData]);
+
+  const TABS = [
+    { key: 'quick', label: '快速', icon: '⚡' },
+    { key: 'history', label: '近期', icon: '📋' },
+    { key: 'stats', label: '統計', icon: '📊' },
+    { key: 'market', label: '開獎', icon: '🎱' },
+  ];
+
+  return (
+    <div style={S.app}>
+      {/* Header */}
+      <div style={S.header}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          <div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI</div>
+            <div style={S.headerSub}>{loopStatus}</div>
+          </div>
+          <div style={{ textAlign: 'right' }}>
+            {aiPlayer?.latestDrawNo && (
+              <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.9)', fontWeight: 600 }}>
+                最新期 {fmt(aiPlayer.latestDrawNo)}
+              </div>
+            )}
+            <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
+              {new Date().toLocaleString('zh-TW', { hour12: false, month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' })}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div style={S.tabs}>
+        {TABS.map(t => (
+          <button key={t.key} style={S.tab(tab === t.key)} onClick={() => setTab(t.key)}>
+            <div>{t.icon}</div>
+            <div>{t.label}</div>
+          </button>
+        ))}
+      </div>
+
+      {/* Content */}
+      {loading && tab === 'quick' && <Spinner />}
+
+      {tab === 'quick' && (
+        <QuickPage
+          prediction={prediction}
+          aiPlayer={aiPlayer}
+          recent20={recent20}
+          onRefresh={loadData}
+          loading={loading}
+        />
+      )}
+      {tab === 'history' && <HistoryPage historyRows={historyRows} />}
+      {tab === 'stats' && <StatsPage strategyStats={strategyStats} prediction={prediction} />}
+      {tab === 'market' && <MarketPage recent20={recent20} />}
+    </div>
+  );
+}
