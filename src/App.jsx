@@ -231,7 +231,7 @@ function QuickPage({ prediction, aiPlayer, recent20, onRefresh, loading }) {
   const row = prediction?.latest_3star_row;
   const compareResult = safeJson(row?.compare_result_json) || safeJson(row?.compare_result);
   const detail = toArray(compareResult?.detail);
-  const groups = toArray(row?.groups_json);
+  const groups = toArray(row?.groups_json).slice(0, 20); // 最多顯示20組，避免手機卡死
   const isDone = row?.compare_status === 'done';
   const bestHit = toNum(row?.hit_count, 0);
   const latestDraw = toArray(recent20)[0];
@@ -285,7 +285,7 @@ function QuickPage({ prediction, aiPlayer, recent20, onRefresh, loading }) {
           <>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
               <span style={S.badge(C.textSub, C.grayLight)}>期號 {fmt(row?.source_draw_no)}</span>
-              <span style={S.badge(C.teal, C.greenBg)}>{groups.length} 組</span>
+              <span style={S.badge(C.teal, C.greenBg)}>{toArray(row?.groups_json).length} 組（顯示前{groups.length}）</span>
               {isDone && (
                 <span style={S.badge(bestHit >= 2 ? C.green : C.gray, bestHit >= 2 ? C.greenBg : C.grayLight)}>
                   已比對
