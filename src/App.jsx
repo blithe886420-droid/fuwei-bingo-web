@@ -274,6 +274,13 @@ function QuickPage({ prediction, aiPlayer, recent20, onRefresh, loading }) {
       >
         {!row ? (
           <div style={S.empty}>尚無預測資料，等待自動產生中...</div>
+        ) : groups.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '16px 0' }}>
+            <div style={{ fontSize: 28, marginBottom: 8 }}>⏸️</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: C.textSub }}>本期無符合條件熱號</div>
+            <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>四週期穩定熱號不足，暫停出號</div>
+            <div style={{ fontSize: 11, color: C.textSub, marginTop: 2 }}>期號 {fmt(row?.source_draw_no)}</div>
+          </div>
         ) : (
           <>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
