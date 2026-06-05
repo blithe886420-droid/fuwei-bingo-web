@@ -58,7 +58,10 @@ function padNum(n) {
 
 function zoneLabel(key) {
   const map = { zone_1:'1-10', zone_2:'11-20', zone_3:'21-30', zone_4:'31-40', zone_5:'41-50', zone_6:'51-60', zone_7:'61-70', zone_8:'71-80' };
-  return map[key] || key;
+  if (map[key]) return map[key];
+  // 新格式 h3_27_35，直接顯示號碼
+  if (String(key).startsWith('h')) return String(key).replace('h','').replace(/_/g,'-');
+  return key;
 }
 
 // ── API ───────────────────────────────────────────
@@ -305,7 +308,7 @@ function QuickPage({ prediction, aiPlayer, recent20, onRefresh, loading }) {
                 <div key={key} style={S.groupCard(is3)}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                     <div style={{ fontSize: 12, fontWeight: 600, color: C.textSub }}>
-                      第{idx+1}組｜區段 {zoneLabel(key)}
+                      第{idx+1}組｜{String(key).startsWith('h') ? key : `區段 ${zoneLabel(key)}`}
                     </div>
                     {isDone && hit >= 0 && (
                       <span style={{ fontSize: 16, fontWeight: 900, color: is3 ? C.gold : is2 ? C.green : C.gray }}>
@@ -357,7 +360,8 @@ function HistoryPage({ historyRows }) {
         ) : rows.map((row, idx) => {
           const compareResult = safeJson(row?.compare_result_json) || safeJson(row?.compare_result);
           const detail = toArray(compareResult?.detail);
-          const groups = toArray(row?.groups_json);
+          const allGroups = toArray(row?.groups_json);
+          const groups = allGroups.slice(0, 20);
           const bestHit = toNum(row?.hit_count, 0);
           const isDone = row?.compare_status === 'done';
           const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.green : C.gray;
@@ -366,7 +370,7 @@ function HistoryPage({ historyRows }) {
             <div key={row?.id || idx} style={{ ...S.card, marginBottom: 10, padding: '12px 14px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                 <span style={{ fontSize: 13, fontWeight: 700, color: C.textSub }}>
-                  期號 {fmt(row?.source_draw_no)}
+                  期號 {fmt(row?.source_draw_no)}｜{allGroups.length}組
                 </span>
                 {isDone && (
                   <span style={{ fontSize: 15, fontWeight: 900, color: hitColor }}>
