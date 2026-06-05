@@ -506,6 +506,7 @@ async function getLatestRowByMode(mode) {
     .from(PREDICTIONS_TABLE)
     .select('id, mode, status, source_draw_no, target_periods, created_at, compared_at, compare_status, verdict, hit_count, groups_json, compare_result_json, compare_result, compare_history_json, best_single_hit, confidence_score, market_phase, last_hit_level, recommend')  // ✅ 加入 recommend
     .eq('mode', mode)
+    .neq('status', 'skipped')
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();
