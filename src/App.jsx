@@ -289,7 +289,7 @@ function QuickPage({ prediction, aiPlayer, recent20, onRefresh, loading }) {
               <span style={S.badge(C.textSub, C.grayLight)}>
                 {isDone && detail.length > 0
                   ? `比對期號 ${fmt(detail[0]?.draw_no)}`
-                  : `預測下一期（基於 ${fmt(row?.source_draw_no)}）`}
+                  : `預測期號 ${fmt(toNum(row?.source_draw_no, 0) + 1)}`}
               </span>
               <span style={S.badge(C.teal, C.greenBg)}>{toArray(row?.groups_json).length} 組（顯示前{groups.length}）</span>
               {isDone && (
