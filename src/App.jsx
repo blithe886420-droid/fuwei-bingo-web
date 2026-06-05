@@ -286,8 +286,11 @@ function QuickPage({ prediction, aiPlayer, recent20, onRefresh, loading }) {
         ) : (
           <>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
-              <span style={S.badge(C.textSub, C.grayLight)}>期號 {fmt(row?.source_draw_no)}</span>
-              <span style={S.badge(C.teal, C.greenBg)}>{groups.length} 組</span>
+              <span style={S.badge(C.textSub, C.grayLight)}>
+                預測 {fmt(row?.source_draw_no)}
+                {isDone && detail.length > 0 ? ` → 比對 ${fmt(detail[0]?.draw_no)}` : ''}
+              </span>
+              <span style={S.badge(C.teal, C.greenBg)}>{toArray(row?.groups_json).length} 組（顯示前{groups.length}）</span>
               {isDone && (
                 <span style={S.badge(bestHit >= 2 ? C.green : C.gray, bestHit >= 2 ? C.greenBg : C.grayLight)}>
                   已比對
@@ -370,7 +373,7 @@ function HistoryPage({ historyRows }) {
             <div key={row?.id || idx} style={{ ...S.card, marginBottom: 10, padding: '12px 14px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                 <span style={{ fontSize: 13, fontWeight: 700, color: C.textSub }}>
-                  期號 {fmt(row?.source_draw_no)}
+                  預測 {fmt(row?.source_draw_no)} → 比對 {fmt(toArray(safeJson(row?.compare_result_json)?.detail)[0]?.draw_no || '')}
                 </span>
                 {isSkipped ? (
                   <span style={{ fontSize: 12, color: C.textSub }}>⏸️ 無符合熱號</span>
