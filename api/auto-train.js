@@ -162,7 +162,7 @@ async function comparePending(db) {
       roi: compareResult?.roi || 0,
       groups_count: groups.length,
       // detail 只存有中3的組
-      detail: (compareResult?.detail || []).filter(d => toNum(d?.hit, 0) >= 2).slice(0, 20),
+      detail: (compareResult?.detail || []).slice(0, 20),
     };
 
     // 更新 bingo_predictions
