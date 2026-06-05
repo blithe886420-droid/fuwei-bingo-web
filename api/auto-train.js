@@ -302,7 +302,39 @@ export default async function handler(req, res) {
     const recent20 = await fetchRecent20(db);
     const groups = buildBingoGroups(recent20, latestDrawNo);
 
-    // Step 4: 存入預測
+    // Step 4: 存入預測（groups 為空時建立跳過記錄）
+    if (groups.length === 0) {
+      console.log(`[auto-train] 本期無符合條件熱號，建立跳過記錄 draw_no=${latestDrawNo}`);
+      const { data: existing } = await db
+        .from(PREDICTIONS_TABLE)
+        .select('id')
+        .eq('mode', MODE)
+        .eq('source_draw_no', String(latestDrawNo))
+        .maybeSingle();
+
+      if (!existing?.id) {
+        await db.from(PREDICTIONS_TABLE).insert({
+          mode: MODE,
+          status: 'skipped',
+          source_draw_no: String(latestDrawNo),
+          target_periods: 1,
+          groups_json: [],
+          compare_status: 'skipped',
+          latest_draw_numbers: latestDrawNumbers,
+          created_at: new Date().toISOString(),
+        });
+      }
+      return res.status(200).json({
+        ok: true,
+        latest_draw_no: latestDrawNo,
+        compared_count: toNum(compareResult?.processed, 0),
+        created_count: 0,
+        groups_count: 0,
+        skipped: true,
+        reason: '四週期熱號不足',
+      });
+    }
+
     const prediction = await createPrediction(db, latestDrawNo, groups, latestDrawNumbers);
 
     return res.status(200).json({
