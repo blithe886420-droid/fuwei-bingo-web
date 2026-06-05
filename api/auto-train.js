@@ -167,8 +167,8 @@ async function comparePending(db) {
       })
       .eq('id', prediction.id);
 
-    // 寫入 strategy_stats
-    await updateStrategyStats(db, compareResult);
+    // 四週期全排列版本組數太多，跳過 strategy_stats 寫入
+    // await updateStrategyStats(db, compareResult);
 
     processed++;
     console.log(`[comparePending] draw_no=${sourceDrawNo} 比對完成 best_hit=${bestHit} verdict=${verdict}`);
@@ -304,7 +304,7 @@ export default async function handler(req, res) {
 
     // Step 4: 存入預測（groups 為空時建立跳過記錄）
     if (groups.length === 0) {
-      console.log(`[auto-train] 本期無符合條件熱號，建立跳過記錄 draw_no=${latestDrawNo}`);
+      console.log(`[auto-train] 本期無符合條件熱號，跳過 draw_no=${latestDrawNo}`);
       const { data: existing } = await db
         .from(PREDICTIONS_TABLE)
         .select('id')
