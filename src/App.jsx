@@ -59,7 +59,6 @@ function padNum(n) {
 function zoneLabel(key) {
   const map = { zone_1:'1-10', zone_2:'11-20', zone_3:'21-30', zone_4:'31-40', zone_5:'41-50', zone_6:'51-60', zone_7:'61-70', zone_8:'71-80' };
   if (map[key]) return map[key];
-  // 新格式 h3_27_35，直接顯示號碼
   if (String(key).startsWith('h')) return String(key).replace('h','').replace(/_/g,'-');
   return key;
 }
@@ -234,7 +233,7 @@ function QuickPage({ prediction, aiPlayer, recent20, onRefresh, loading }) {
   const row = prediction?.latest_3star_row;
   const compareResult = safeJson(row?.compare_result_json) || safeJson(row?.compare_result);
   const detail = toArray(compareResult?.detail);
-  const groups = toArray(row?.groups_json).slice(0, 20); // 最多顯示20組，避免手機卡死
+  const groups = toArray(row?.groups_json).slice(0, 20);
   const isDone = row?.compare_status === 'done';
   const bestHit = toNum(row?.hit_count, 0);
   const latestDraw = toArray(recent20)[0];
@@ -277,7 +276,7 @@ function QuickPage({ prediction, aiPlayer, recent20, onRefresh, loading }) {
       >
         {!row ? (
           <div style={S.empty}>尚無預測資料，等待自動產生中...</div>
-        ) : groups.length === 0 ? (
+        ) : toArray(row?.groups_json).length === 0 ? (
           <div style={{ textAlign: 'center', padding: '16px 0' }}>
             <div style={{ fontSize: 28, marginBottom: 8 }}>⏸️</div>
             <div style={{ fontSize: 14, fontWeight: 700, color: C.textSub }}>本期無符合條件熱號</div>
@@ -288,7 +287,7 @@ function QuickPage({ prediction, aiPlayer, recent20, onRefresh, loading }) {
           <>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
               <span style={S.badge(C.textSub, C.grayLight)}>期號 {fmt(row?.source_draw_no)}</span>
-              <span style={S.badge(C.teal, C.greenBg)}>{toArray(row?.groups_json).length} 組（顯示前{groups.length}）</span>
+              <span style={S.badge(C.teal, C.greenBg)}>{groups.length} 組</span>
               {isDone && (
                 <span style={S.badge(bestHit >= 2 ? C.green : C.gray, bestHit >= 2 ? C.greenBg : C.grayLight)}>
                   已比對
@@ -308,7 +307,7 @@ function QuickPage({ prediction, aiPlayer, recent20, onRefresh, loading }) {
                 <div key={key} style={S.groupCard(is3)}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                     <div style={{ fontSize: 12, fontWeight: 600, color: C.textSub }}>
-                      第{idx+1}組｜{String(key).startsWith('h') ? key : `區段 ${zoneLabel(key)}`}
+                      第{idx+1}組｜區段 {zoneLabel(key)}
                     </div>
                     {isDone && hit >= 0 && (
                       <span style={{ fontSize: 16, fontWeight: 900, color: is3 ? C.gold : is2 ? C.green : C.gray }}>
@@ -364,21 +363,24 @@ function HistoryPage({ historyRows }) {
           const groups = allGroups.slice(0, 20);
           const bestHit = toNum(row?.hit_count, 0);
           const isDone = row?.compare_status === 'done';
+          const isSkipped = row?.status === 'skipped' || allGroups.length === 0;
           const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.green : C.gray;
 
           return (
             <div key={row?.id || idx} style={{ ...S.card, marginBottom: 10, padding: '12px 14px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                 <span style={{ fontSize: 13, fontWeight: 700, color: C.textSub }}>
-                  期號 {fmt(row?.source_draw_no)}｜{allGroups.length}組
+                  期號 {fmt(row?.source_draw_no)}
                 </span>
-                {isDone && (
+                {isSkipped ? (
+                  <span style={{ fontSize: 12, color: C.textSub }}>⏸️ 無符合熱號</span>
+                ) : isDone ? (
                   <span style={{ fontSize: 15, fontWeight: 900, color: hitColor }}>
                     {bestHit >= 3 ? `🏆 中${bestHit}` : bestHit >= 2 ? `✅ 中${bestHit}` : `❌ 未中`}
                   </span>
-                )}
+                ) : null}
               </div>
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {!isSkipped && <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                 {groups.map((g, gIdx) => {
                   const key = String(g?.key || g?.meta?.strategy_key || gIdx);
                   const nums = parseNums(g?.nums);
@@ -396,7 +398,7 @@ function HistoryPage({ historyRows }) {
                     </div>
                   );
                 })}
-              </div>
+              </div>}
             </div>
           );
         })}
