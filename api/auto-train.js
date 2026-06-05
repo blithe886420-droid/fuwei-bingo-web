@@ -153,13 +153,25 @@ async function comparePending(db) {
     const bestHit = toNum(compareResult?.best_hit, 0);
     const verdict = compareResult?.best_reward > 0 ? 'good' : 'bad';
 
+    // 只存摘要，不存完整 compare_result_json（避免幾百組 JSON 太大）
+    const resultSummary = {
+      best_hit: compareResult?.best_hit || 0,
+      best_reward: compareResult?.best_reward || 0,
+      total_cost: compareResult?.total_cost || 0,
+      total_reward: compareResult?.total_reward || 0,
+      roi: compareResult?.roi || 0,
+      groups_count: groups.length,
+      // detail 只存有中3的組
+      detail: (compareResult?.detail || []).filter(d => toNum(d?.hit, 0) >= 2).slice(0, 20),
+    };
+
     // 更新 bingo_predictions
     await db
       .from(PREDICTIONS_TABLE)
       .update({
         status: 'compared',
         compare_status: 'done',
-        compare_result_json: compareResult,
+        compare_result_json: resultSummary,
         hit_count: bestHit,
         best_single_hit: bestHit,
         verdict,
