@@ -97,6 +97,25 @@ async function fetchNextDraw(db, sourceDrawNo) {
   return data;
 }
 
+// ── 純隨機選號（對照組）────────────────────────────
+function buildRandomGroups() {
+  const pool = Array.from({length: 80}, (_, i) => i + 1);
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  const selected = pool.slice(0, 5);
+  const groups = [];
+  for (let i = 0; i < selected.length; i++)
+    for (let j = i+1; j < selected.length; j++)
+      for (let k = j+1; k < selected.length; k++) {
+        const nums = [selected[i], selected[j], selected[k]].sort((a,b)=>a-b);
+        const key = `r${nums[0]}_${nums[1]}_${nums[2]}`;
+        groups.push({ key, label: key, nums, meta: { type: 'random', strategy_key: key } });
+      }
+  return groups;
+}
+
 // ── 建立預測 ──────────────────────────────────────
 async function createPrediction(db, latestDrawNo, groups, latestDrawNumbers) {
   // 確認此期是否已有預測
@@ -138,7 +157,7 @@ async function comparePending(db) {
   const { data: predictions, error } = await db
     .from(PREDICTIONS_TABLE)
     .select('*')
-    .eq('mode', MODE)
+    .in('mode', [MODE, 'random_test'])
     .eq('status', 'created')
     .eq('compare_status', 'pending')
     .order('created_at', { ascending: true })
@@ -368,6 +387,27 @@ export default async function handler(req, res) {
     }
 
     const prediction = await createPrediction(db, latestDrawNo, groups, latestDrawNumbers);
+
+    // 同時跑純隨機對照組
+    const randomGroups = buildRandomGroups();
+    const { data: existingRandom } = await db
+      .from(PREDICTIONS_TABLE)
+      .select('id')
+      .eq('mode', 'random_test')
+      .eq('source_draw_no', String(latestDrawNo))
+      .maybeSingle();
+    if (!existingRandom?.id) {
+      await db.from(PREDICTIONS_TABLE).insert({
+        mode: 'random_test',
+        status: 'created',
+        source_draw_no: String(latestDrawNo),
+        target_periods: 1,
+        groups_json: randomGroups,
+        compare_status: 'pending',
+        latest_draw_numbers: latestDrawNumbers,
+        created_at: new Date().toISOString(),
+      });
+    }
 
     return res.status(200).json({
       ok: true,
