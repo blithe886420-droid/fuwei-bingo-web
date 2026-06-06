@@ -55,12 +55,12 @@ async function fetchLatestDraw(db) {
 }
 
 // ── 取得最近20期 ──────────────────────────────────
-async function fetchRecent20(db) {
+async function fetchRecent30(db) {
   const { data, error } = await db
     .from(DRAWS_TABLE)
     .select('draw_no, numbers')
     .order('draw_no', { ascending: false })
-    .limit(20);
+    .limit(30);
   if (error) throw error;
   return data || [];
 }
@@ -311,8 +311,8 @@ export default async function handler(req, res) {
     const latestDrawNumbers = String(latestDraw.numbers || '');
 
     // Step 3: 取得最近20期，建立選號
-    const recent20 = await fetchRecent20(db);
-    const groups = buildBingoGroups(recent20, latestDrawNo);
+    const recent30 = await fetchRecent30(db);
+    const groups = buildBingoGroups(recent30, latestDrawNo);
 
     // Step 4: 存入預測（groups 為空時建立跳過記錄）
     if (groups.length === 0) {
