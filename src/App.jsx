@@ -234,7 +234,8 @@ function QuickPage({ prediction, aiPlayer, recent20, onRefresh, loading }) {
   const row = prediction?.latest_3star_row;
   const compareResult = safeJson(row?.compare_result_json) || safeJson(row?.compare_result);
   const detail = toArray(compareResult?.detail);
-  const groups = toArray(row?.groups_json).slice(0, 20);
+  const allGroups = toArray(row?.groups_json);
+  const groups = allGroups.slice(0, 20);
   const isDone = row?.compare_status === 'done';
   const bestHit = toNum(row?.hit_count, 0);
   const latestDraw = toArray(recent20)[0];
@@ -314,7 +315,7 @@ function QuickPage({ prediction, aiPlayer, recent20, onRefresh, loading }) {
                   ? `比對期號 ${fmt(detail[0]?.draw_no)}`
                   : `預測期號 ${fmt(toNum(row?.source_draw_no, 0) + 1)}`}
               </span>
-              <span style={S.badge(C.teal, C.greenBg)}>{groups.length} 組</span>
+              <span style={S.badge(C.teal, C.greenBg)}>{allGroups.length <= 20 ? `${allGroups.length} 組` : `顯示 ${groups.length}/${allGroups.length} 組`}</span>
               {isDone && (
                 <span style={S.badge(bestHit >= 2 ? C.green : C.gray, bestHit >= 2 ? C.greenBg : C.grayLight)}>
                   已比對
