@@ -65,6 +65,25 @@ async function fetchRecent30(db) {
   return data || [];
 }
 
+async function fetchRecent3Predictions(db) {
+  const { data, error } = await db
+    .from(PREDICTIONS_TABLE)
+    .select('status, hit_count, groups_json, compare_result_json')
+    .eq('mode', MODE)
+    .order('created_at', { ascending: false })
+    .limit(3);
+  if (error) throw error;
+  return (data || []).map(p => ({
+    status: p.status,
+    hit_count: p.hit_count || 0,
+    groups_count: Array.isArray(p.groups_json) ? p.groups_json.length : 0,
+    pool_size: p.groups_json?.[0]?.meta?.hot_pool_size || 0,
+    hit2_groups: Array.isArray(p.compare_result_json?.detail)
+      ? p.compare_result_json.detail.filter(d => d?.hit === 2).length
+      : 0,
+  }));
+}
+
 // ── 取得下一期開獎資料（用來比對） ────────────────
 async function fetchNextDraw(db, sourceDrawNo) {
   const { data, error } = await db
@@ -310,9 +329,10 @@ export default async function handler(req, res) {
     const latestDrawNo = toNum(latestDraw.draw_no, 0);
     const latestDrawNumbers = String(latestDraw.numbers || '');
 
-    // Step 3: 取得最近20期，建立選號
+    // Step 3: 取得最近30期和最近3期預測，建立選號
     const recent30 = await fetchRecent30(db);
-    const groups = buildBingoGroups(recent30, latestDrawNo);
+    const recent3Predictions = await fetchRecent3Predictions(db);
+    const groups = buildBingoGroups(recent30, latestDrawNo, recent3Predictions);
 
     // Step 4: 存入預測（groups 為空時建立跳過記錄）
     if (groups.length === 0) {
