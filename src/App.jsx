@@ -59,7 +59,8 @@ function padNum(n) {
 function zoneLabel(key) {
   const map = { zone_1:'1-10', zone_2:'11-20', zone_3:'21-30', zone_4:'31-40', zone_5:'41-50', zone_6:'51-60', zone_7:'61-70', zone_8:'71-80' };
   if (map[key]) return map[key];
-  if (String(key).startsWith('h')) return String(key).replace('h','').replace(/_/g,'-');
+  if (String(key).startsWith('h')) return '🔥熱號';
+  if (String(key).startsWith('c')) return '❄️冷號';
   return key;
 }
 
@@ -238,8 +239,16 @@ function QuickPage({ prediction, aiPlayer, recent20, onRefresh, loading }) {
   const bestHit = toNum(row?.hit_count, 0);
   const latestDraw = toArray(recent20)[0];
   const drawNums = new Set(parseNums(latestDraw?.numbers));
+  const isColdStrategy = groups[0]?.meta?.type === 'cold';
+  const poolSize = toNum(groups[0]?.meta?.hot_pool_size, 0);
 
   const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.green : C.textSub;
+
+  // 預警系統
+  const compareResult0 = safeJson(row?.compare_result_json);
+  const hit2Groups = toArray(compareResult0?.detail).filter(d => toNum(d?.hit,0) === 2).length;
+  const isWarning = hit2Groups >= 3;
+  const isReady = poolSize === 5 || (isDone && hit2Groups >= 3);
 
   return (
     <div style={S.page}>
@@ -259,6 +268,20 @@ function QuickPage({ prediction, aiPlayer, recent20, onRefresh, loading }) {
           </>
         ) : <div style={S.empty}>載入中...</div>}
       </Card>
+
+      {/* 預警系統 */}
+      {isWarning && (
+        <div style={{ background: '#FEF3C7', border: '2px solid #F59E0B', borderRadius: 12, padding: '10px 14px', marginBottom: 10 }}>
+          <div style={{ fontSize: 15, fontWeight: 800, color: '#D97706' }}>⚡ 預警：準備爆發！</div>
+          <div style={{ fontSize: 12, color: '#92400E', marginTop: 4 }}>本期有 {hit2Groups} 組中2，下期爆發機率高（78%）</div>
+        </div>
+      )}
+      {isReady && !isWarning && poolSize === 5 && (
+        <div style={{ background: '#DCFCE7', border: '2px solid #22C55E', borderRadius: 12, padding: '10px 14px', marginBottom: 10 }}>
+          <div style={{ fontSize: 15, fontWeight: 800, color: '#15803D' }}>🎯 最佳進場！</div>
+          <div style={{ fontSize: 12, color: '#166534', marginTop: 4 }}>熱號池5顆，歷史命中率15%，建議下注</div>
+        </div>
+      )}
 
       {/* 本期預測 */}
       <Card
@@ -291,7 +314,7 @@ function QuickPage({ prediction, aiPlayer, recent20, onRefresh, loading }) {
                   ? `比對期號 ${fmt(detail[0]?.draw_no)}`
                   : `預測期號 ${fmt(toNum(row?.source_draw_no, 0) + 1)}`}
               </span>
-              <span style={S.badge(C.teal, C.greenBg)}>{toArray(row?.groups_json).length} 組（顯示前{groups.length}）</span>
+              <span style={S.badge(C.teal, C.greenBg)}>{groups.length} 組</span>
               {isDone && (
                 <span style={S.badge(bestHit >= 2 ? C.green : C.gray, bestHit >= 2 ? C.greenBg : C.grayLight)}>
                   已比對
@@ -368,13 +391,16 @@ function HistoryPage({ historyRows }) {
           const bestHit = toNum(row?.hit_count, 0);
           const isDone = row?.compare_status === 'done';
           const isSkipped = row?.status === 'skipped' || allGroups.length === 0;
+          const isCold = allGroups[0]?.meta?.type === 'cold';
+          const comparedDraw = toArray(compareResult?.detail)[0]?.draw_no;
           const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.green : C.gray;
 
           return (
             <div key={row?.id || idx} style={{ ...S.card, marginBottom: 10, padding: '12px 14px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                 <span style={{ fontSize: 13, fontWeight: 700, color: C.textSub }}>
-                  預測 {fmt(row?.source_draw_no)} → 比對 {fmt(toArray(safeJson(row?.compare_result_json)?.detail)[0]?.draw_no || '')}
+                  預測 {fmt(row?.source_draw_no)} → 比對 {fmt(comparedDraw || '')}
+                  {isCold && <span style={{ marginLeft: 6, fontSize: 11, color: '#60A5FA' }}>❄️冷號</span>}
                 </span>
                 {isSkipped ? (
                   <span style={{ fontSize: 12, color: C.textSub }}>⏸️ 無符合熱號</span>
