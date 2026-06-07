@@ -60,8 +60,30 @@ function zoneLabel(key) {
   const map = { zone_1:'1-10', zone_2:'11-20', zone_3:'21-30', zone_4:'31-40', zone_5:'41-50', zone_6:'51-60', zone_7:'61-70', zone_8:'71-80' };
   if (map[key]) return map[key];
   if (String(key).startsWith('h')) return '🔥熱號';
+  if (String(key).startsWith('r')) return '🎲隨機';
   if (String(key).startsWith('c')) return '❄️冷號';
   return key;
+}
+
+// ★ 產生4組純隨機號碼（前端即時生成，不存資料庫）
+function buildRandomGroups4() {
+  const pool = Array.from({ length: 80 }, (_, i) => i + 1);
+  // Fisher-Yates shuffle
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  // 取前12顆，組成4組不重複的3球組合
+  const selected = pool.slice(0, 12);
+  const groups = [];
+  for (let g = 0; g < 4; g++) {
+    const nums = selected.slice(g * 3, g * 3 + 3).sort((a, b) => a - b);
+    groups.push({
+      key: `rand_${g + 1}`,
+      nums,
+    });
+  }
+  return groups;
 }
 
 // ── API ───────────────────────────────────────────
@@ -91,6 +113,9 @@ const C = {
   border: '#E5DDD0',
   text: '#2C1810',
   textSub: '#7B6E5C',
+  purple: '#7C3AED',
+  purpleBg: '#F5F3FF',
+  purpleLight: '#DDD6FE',
   shadow: '0 2px 12px rgba(200,134,10,0.10)',
   shadowHover: '0 4px 20px rgba(200,134,10,0.18)',
 };
@@ -149,19 +174,23 @@ const S = {
     boxShadow: hit === true ? `0 2px 8px ${C.goldLight}` : 'none',
     transition: 'all 0.2s',
   }),
+  randomBall: () => ({
+    width: 44, height: 44, borderRadius: '50%', display: 'flex', alignItems: 'center',
+    justifyContent: 'center', fontSize: 15, fontWeight: 800,
+    background: C.purpleBg,
+    color: C.purple,
+    border: `2px solid ${C.purpleLight}`,
+    transition: 'all 0.2s',
+  }),
   groupCard: (hit3) => ({
     background: hit3 ? C.goldBg : C.grayLight,
     border: `2px solid ${hit3 ? C.goldLight : C.border}`,
     borderRadius: 12, padding: '12px 14px', marginBottom: 10,
   }),
-  statusBar: (color) => ({
-    background: color + '22', border: `1.5px solid ${color}44`,
-    borderRadius: 10, padding: '10px 14px', marginBottom: 10,
-    display: 'flex', alignItems: 'center', gap: 10,
-  }),
-  dot: (color) => ({
-    width: 10, height: 10, borderRadius: '50%', background: color,
-    boxShadow: `0 0 6px ${color}`, flexShrink: 0,
+  randomGroupCard: () => ({
+    background: C.purpleBg,
+    border: `2px solid ${C.purpleLight}`,
+    borderRadius: 12, padding: '12px 14px', marginBottom: 10,
   }),
   statRow: {
     display: 'flex', justifyContent: 'space-between', alignItems: 'center',
@@ -207,6 +236,10 @@ function Ball({ n, hit }) {
   return <div style={S.ball(hit)}>{padNum(n)}</div>;
 }
 
+function RandomBall({ n }) {
+  return <div style={S.randomBall()}>{padNum(n)}</div>;
+}
+
 function StatRow({ label, value, valueColor }) {
   return (
     <div style={S.statRow}>
@@ -229,6 +262,53 @@ function Spinner() {
   );
 }
 
+// ★ 隨機組顯示元件（跳過期用）
+function RandomGroupsCard({ drawNo }) {
+  // 每次跳過期渲染時固定產生4組，用 useMemo 讓同一期不會每次刷新都換號
+  const [randomGroups] = useState(() => buildRandomGroups4());
+
+  return (
+    <Card
+      title="本期參考"
+      icon="🎲"
+      right={
+        <span style={S.badge(C.purple, C.purpleBg)}>純隨機參考</span>
+      }
+    >
+      {/* 說明Banner */}
+      <div style={{
+        background: C.purpleBg, border: `1.5px solid ${C.purpleLight}`,
+        borderRadius: 10, padding: '10px 14px', marginBottom: 12,
+      }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: C.purple }}>⏸️ AI暫停出號</div>
+        <div style={{ fontSize: 11, color: C.purple, opacity: 0.8, marginTop: 3 }}>
+          當期條件不符，以下為純隨機號碼供參考，不納入AI命中統計
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+        <span style={S.badge(C.textSub, C.grayLight)}>期號 {fmt(drawNo)}</span>
+        <span style={S.badge(C.purple, C.purpleBg)}>4 組</span>
+      </div>
+
+      {randomGroups.map((g, idx) => (
+        <div key={g.key} style={S.randomGroupCard()}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: C.purple, marginBottom: 8 }}>
+            第{idx + 1}組｜🎲 隨機
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            {g.nums.map(n => <RandomBall key={n} n={n} />)}
+          </div>
+        </div>
+      ))}
+
+      <div style={{ fontSize: 11, color: C.textSub, textAlign: 'center', marginTop: 4 }}>
+        ⚠️ 隨機號碼僅供娛樂參考，不代表AI推薦
+      </div>
+    </Card>
+  );
+}
+
 // ── 頁面：快速 ────────────────────────────────────
 function QuickPage({ prediction, aiPlayer, recent20, onRefresh, loading }) {
   const row = prediction?.latest_3star_row;
@@ -239,16 +319,16 @@ function QuickPage({ prediction, aiPlayer, recent20, onRefresh, loading }) {
   const isDone = row?.compare_status === 'done';
   const bestHit = toNum(row?.hit_count, 0);
   const latestDraw = toArray(recent20)[0];
-  const isColdStrategy = groups[0]?.meta?.type === 'cold';
   const poolSize = toNum(groups[0]?.meta?.hot_pool_size, 0);
+  const isSkipped = !row || row?.status === 'skipped' || allGroups.length === 0;
+  const isStuckUnlock = groups[0]?.meta?.is_stuck_unlock === true;
 
-  // ★ 修正：優先用 compare_result_json.draw_nums（比對期開獎號碼）
-  // 舊版用 recent20[0] 會拿到「現在最新一期」而非「被比對那期」，導致球高亮錯誤
+  // ★ 修正：優先用比對期開獎號碼（draw_nums），避免球高亮用錯期號
   const comparedDrawNumsArr = toArray(compareResult?.draw_nums);
   const drawNums = new Set(
     comparedDrawNumsArr.length > 0
       ? comparedDrawNumsArr
-      : parseNums(latestDraw?.numbers)   // fallback：舊資料沒有 draw_nums 時用最新一期
+      : parseNums(latestDraw?.numbers)
   );
 
   const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.green : C.textSub;
@@ -269,7 +349,7 @@ function QuickPage({ prediction, aiPlayer, recent20, onRefresh, loading }) {
               <span style={S.statLabel}>{fmt(latestDraw?.draw_time)}</span>
             </div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
-              {parseNums(latestDraw?.numbers).sort((a,b)=>a-b).map(n => (
+              {parseNums(latestDraw?.numbers).sort((a, b) => a - b).map(n => (
                 <div key={n} style={S.recentBall(false)}>{padNum(n)}</div>
               ))}
             </div>
@@ -291,89 +371,93 @@ function QuickPage({ prediction, aiPlayer, recent20, onRefresh, loading }) {
         </div>
       )}
 
-      {/* 本期預測 */}
-      <Card
-        title="本期預測"
-        icon="⭐"
-        right={
-          isDone ? (
-            <span style={S.badge(hitColor, hitColor + '18')}>
-              {bestHit >= 3 ? `🏆 中${bestHit}！` : bestHit >= 2 ? `✅ 中${bestHit}` : `❌ 中${bestHit}`}
-            </span>
-          ) : row ? (
-            <span style={S.badge(C.orange, C.orangeLight)}>等待開獎</span>
-          ) : null
-        }
-      >
-        {!row ? (
-          <div style={S.empty}>尚無預測資料，等待自動產生中...</div>
-        ) : toArray(row?.groups_json).length === 0 ? (
-          <div style={{ textAlign: 'center', padding: '16px 0' }}>
-            <div style={{ fontSize: 28, marginBottom: 8 }}>⏸️</div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: C.textSub }}>本期無符合條件熱號</div>
-            <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>四週期穩定熱號不足，暫停出號</div>
-            <div style={{ fontSize: 11, color: C.textSub, marginTop: 2 }}>期號 {fmt(row?.source_draw_no)}</div>
-          </div>
-        ) : (
-          <>
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
-              <span style={S.badge(C.textSub, C.grayLight)}>
-                {isDone && detail.length > 0
-                  ? `比對期號 ${fmt(detail[0]?.draw_no)}`
-                  : `預測期號 ${fmt(toNum(row?.source_draw_no, 0) + 1)}`}
+      {/* ★ 跳過期：顯示隨機參考號碼 */}
+      {isSkipped ? (
+        <RandomGroupsCard drawNo={row?.source_draw_no || latestDraw?.draw_no} />
+      ) : (
+        /* 本期預測（AI出號） */
+        <Card
+          title="本期預測"
+          icon="⭐"
+          right={
+            isDone ? (
+              <span style={S.badge(hitColor, hitColor + '18')}>
+                {bestHit >= 3 ? `🏆 中${bestHit}！` : bestHit >= 2 ? `✅ 中${bestHit}` : `❌ 中${bestHit}`}
               </span>
-              <span style={S.badge(C.teal, C.greenBg)}>{allGroups.length <= 20 ? `${allGroups.length} 組` : `顯示 ${groups.length}/${allGroups.length} 組`}</span>
-              {isDone && (
-                <span style={S.badge(bestHit >= 2 ? C.green : C.gray, bestHit >= 2 ? C.greenBg : C.grayLight)}>
-                  已比對
-                </span>
-              )}
+            ) : row ? (
+              <span style={S.badge(C.orange, C.orangeLight)}>等待開獎</span>
+            ) : null
+          }
+        >
+          {/* 解鎖出號提示 */}
+          {isStuckUnlock && (
+            <div style={{
+              background: '#FFF7ED', border: '1.5px solid #FED7AA',
+              borderRadius: 8, padding: '8px 12px', marginBottom: 10,
+              fontSize: 11, color: '#C2410C',
+            }}>
+              🔓 連續跳過過多，系統降門檻解鎖出號（pool≥3）
             </div>
+          )}
 
-            {groups.map((g, idx) => {
-              const nums = parseNums(g?.nums);
-              const key = String(g?.key || g?.meta?.strategy_key || idx);
-              const matchDetail = detail.find(d => String(d?.strategy_key) === key);
-              const hit = matchDetail ? toNum(matchDetail.hit, -1) : -1;
-              const is3 = hit >= 3;
-              const is2 = hit === 2;
-
-              return (
-                <div key={key} style={S.groupCard(is3)}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                    <div style={{ fontSize: 12, fontWeight: 600, color: C.textSub }}>
-                      第{idx+1}組｜區段 {zoneLabel(key)}
-                    </div>
-                    {isDone && hit >= 0 && (
-                      <span style={{ fontSize: 16, fontWeight: 900, color: is3 ? C.gold : is2 ? C.green : C.gray }}>
-                        {is3 ? `🏆 中${hit}` : `中${hit}`}
-                      </span>
-                    )}
-                  </div>
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    {nums.map(n => {
-                      // ★ 修正：isHit 用 drawNums（比對期開獎號碼），不是最新一期
-                      const isHit = isDone && drawNums.has(n);
-                      return <Ball key={n} n={n} hit={isDone ? (isHit ? true : false) : undefined} />;
-                    })}
-                  </div>
-                </div>
-              );
-            })}
-
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+            <span style={S.badge(C.textSub, C.grayLight)}>
+              {isDone && detail.length > 0
+                ? `比對期號 ${fmt(detail[0]?.draw_no)}`
+                : `預測期號 ${fmt(toNum(row?.source_draw_no, 0) + 1)}`}
+            </span>
+            <span style={S.badge(C.teal, C.greenBg)}>
+              {allGroups.length <= 20 ? `${allGroups.length} 組` : `顯示 ${groups.length}/${allGroups.length} 組`}
+            </span>
             {isDone && (
-              <div style={{ background: bestHit >= 2 ? C.goldBg : C.grayLight, borderRadius: 10, padding: '12px 14px', textAlign: 'center', marginTop: 4 }}>
-                <div style={{ ...S.bigNum, color: hitColor }}>
-                  {bestHit >= 3 ? '🏆 恭喜中3！' : bestHit >= 2 ? '✅ 中2' : '❌ 未中'}
+              <span style={S.badge(bestHit >= 2 ? C.green : C.gray, bestHit >= 2 ? C.greenBg : C.grayLight)}>
+                已比對
+              </span>
+            )}
+          </div>
+
+          {groups.map((g, idx) => {
+            const nums = parseNums(g?.nums);
+            const key = String(g?.key || g?.meta?.strategy_key || idx);
+            const matchDetail = detail.find(d => String(d?.strategy_key) === key);
+            const hit = matchDetail ? toNum(matchDetail.hit, -1) : -1;
+            const is3 = hit >= 3;
+            const is2 = hit === 2;
+
+            return (
+              <div key={key} style={S.groupCard(is3)}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: C.textSub }}>
+                    第{idx + 1}組｜區段 {zoneLabel(key)}
+                  </div>
+                  {isDone && hit >= 0 && (
+                    <span style={{ fontSize: 16, fontWeight: 900, color: is3 ? C.gold : is2 ? C.green : C.gray }}>
+                      {is3 ? `🏆 中${hit}` : `中${hit}`}
+                    </span>
+                  )}
                 </div>
-                <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>
-                  獎金：{bestHit >= 3 ? '+500元' : bestHit >= 2 ? '+50元' : '0元'} ｜ 成本：{groups.length * 25}元
+                <div style={{ display: 'flex', gap: 8 }}>
+                  {nums.map(n => {
+                    const isHit = isDone && drawNums.has(n);
+                    return <Ball key={n} n={n} hit={isDone ? (isHit ? true : false) : undefined} />;
+                  })}
                 </div>
               </div>
-            )}
-          </>
-        )}
-      </Card>
+            );
+          })}
+
+          {isDone && (
+            <div style={{ background: bestHit >= 2 ? C.goldBg : C.grayLight, borderRadius: 10, padding: '12px 14px', textAlign: 'center', marginTop: 4 }}>
+              <div style={{ ...S.bigNum, color: hitColor }}>
+                {bestHit >= 3 ? '🏆 恭喜中3！' : bestHit >= 2 ? '✅ 中2' : '❌ 未中'}
+              </div>
+              <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>
+                獎金：{bestHit >= 3 ? '+500元' : bestHit >= 2 ? '+50元' : '0元'} ｜ 成本：{groups.length * 25}元
+              </div>
+            </div>
+          )}
+        </Card>
+      )}
 
       {/* 刷新按鈕 */}
       <button style={S.btn(loading)} onClick={onRefresh} disabled={loading}>
@@ -401,6 +485,7 @@ function HistoryPage({ historyRows }) {
           const isDone = row?.compare_status === 'done';
           const isSkipped = row?.status === 'skipped' || allGroups.length === 0;
           const isCold = allGroups[0]?.meta?.type === 'cold';
+          const isStuckUnlock = allGroups[0]?.meta?.is_stuck_unlock === true;
           const comparedDraw = toArray(compareResult?.detail)[0]?.draw_no;
           const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.green : C.gray;
 
@@ -410,34 +495,43 @@ function HistoryPage({ historyRows }) {
                 <span style={{ fontSize: 13, fontWeight: 700, color: C.textSub }}>
                   預測 {fmt(row?.source_draw_no)} → 比對 {fmt(comparedDraw || '')}
                   {isCold && <span style={{ marginLeft: 6, fontSize: 11, color: '#60A5FA' }}>❄️冷號</span>}
+                  {isStuckUnlock && <span style={{ marginLeft: 6, fontSize: 11, color: '#C2410C' }}>🔓解鎖</span>}
                 </span>
                 {isSkipped ? (
-                  <span style={{ fontSize: 12, color: C.textSub }}>⏸️ 無符合熱號</span>
+                  <span style={{ fontSize: 12, color: C.purple }}>⏸️ 隨機參考期</span>
                 ) : isDone ? (
                   <span style={{ fontSize: 15, fontWeight: 900, color: hitColor }}>
                     {bestHit >= 3 ? `🏆 中${bestHit}` : bestHit >= 2 ? `✅ 中${bestHit}` : `❌ 未中`}
                   </span>
                 ) : null}
               </div>
-              {!isSkipped && <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                {groups.map((g, gIdx) => {
-                  const key = String(g?.key || g?.meta?.strategy_key || gIdx);
-                  const nums = parseNums(g?.nums);
-                  const matchDetail = detail.find(d => String(d?.strategy_key) === key);
-                  const hit = matchDetail ? toNum(matchDetail.hit, 0) : 0;
-                  return (
-                    <div key={key} style={{
-                      background: hit >= 3 ? C.goldBg : hit >= 2 ? C.greenBg : C.grayLight,
-                      borderRadius: 8, padding: '4px 8px', fontSize: 12,
-                      border: `1px solid ${hit >= 3 ? C.goldLight : hit >= 2 ? '#86EFAC' : C.border}`,
-                    }}>
-                      <span style={{ color: C.textSub, marginRight: 4 }}>{zoneLabel(key)}</span>
-                      {nums.map(n => padNum(n)).join(' ')}
-                      {isDone && <span style={{ marginLeft: 4, fontWeight: 700, color: hit >= 2 ? C.gold : C.gray }}>中{hit}</span>}
-                    </div>
-                  );
-                })}
-              </div>}
+
+              {/* 跳過期：顯示小型隨機號碼標示 */}
+              {isSkipped ? (
+                <div style={{ fontSize: 11, color: C.purple, background: C.purpleBg, borderRadius: 6, padding: '4px 8px', display: 'inline-block' }}>
+                  🎲 該期AI暫停，無命中統計
+                </div>
+              ) : (
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {groups.map((g, gIdx) => {
+                    const key = String(g?.key || g?.meta?.strategy_key || gIdx);
+                    const nums = parseNums(g?.nums);
+                    const matchDetail = detail.find(d => String(d?.strategy_key) === key);
+                    const hit = matchDetail ? toNum(matchDetail.hit, 0) : 0;
+                    return (
+                      <div key={key} style={{
+                        background: hit >= 3 ? C.goldBg : hit >= 2 ? C.greenBg : C.grayLight,
+                        borderRadius: 8, padding: '4px 8px', fontSize: 12,
+                        border: `1px solid ${hit >= 3 ? C.goldLight : hit >= 2 ? '#86EFAC' : C.border}`,
+                      }}>
+                        <span style={{ color: C.textSub, marginRight: 4 }}>{zoneLabel(key)}</span>
+                        {nums.map(n => padNum(n)).join(' ')}
+                        {isDone && <span style={{ marginLeft: 4, fontWeight: 700, color: hit >= 2 ? C.gold : C.gray }}>中{hit}</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           );
         })}
@@ -455,7 +549,6 @@ function StatsPage({ strategyStats, prediction }) {
 
   return (
     <div style={S.page}>
-      {/* 整體命中率 */}
       <Card title="整體命中率" icon="📊">
         <div style={{ textAlign: 'center', padding: '10px 0' }}>
           <div style={S.bigNum}>{fmtPercent(overallRate)}</div>
@@ -468,11 +561,10 @@ function StatsPage({ strategyStats, prediction }) {
         <StatRow label="目前命中率" value={fmtPercent(overallRate)} valueColor={overallRate > 0.0375 ? C.green : C.orange} />
       </Card>
 
-      {/* 各區段統計 */}
       <Card title="各區段統計" icon="🗂️">
         {!stats.length ? (
           <div style={S.empty}>累積數據中，請稍候...</div>
-        ) : stats.sort((a,b) => toNum(b.hit3) - toNum(a.hit3)).map(s => {
+        ) : stats.sort((a, b) => toNum(b.hit3) - toNum(a.hit3)).map(s => {
           const rounds = toNum(s.total_rounds);
           const hit3 = toNum(s.hit3);
           const rate = rounds > 0 ? hit3 / rounds : 0;
@@ -506,12 +598,12 @@ function MarketPage({ recent20 }) {
         {!rows.length ? (
           <div style={S.empty}>載入中...</div>
         ) : rows.map((row, idx) => {
-          const nums = parseNums(row?.numbers).sort((a,b)=>a-b);
+          const nums = parseNums(row?.numbers).sort((a, b) => a - b);
           return (
             <div key={row?.draw_no || idx} style={{ ...S.statRow, alignItems: 'flex-start', paddingTop: 10, paddingBottom: 10 }}>
               <div style={{ minWidth: 80 }}>
                 <div style={{ fontSize: 13, fontWeight: 700 }}>#{fmt(row?.draw_no)}</div>
-                <div style={{ fontSize: 11, color: C.textSub }}>{fmt(row?.draw_time)?.slice(11,16)}</div>
+                <div style={{ fontSize: 11, color: C.textSub }}>{fmt(row?.draw_time)?.slice(11, 16)}</div>
               </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, flex: 1 }}>
                 {nums.map(n => (
@@ -525,7 +617,6 @@ function MarketPage({ recent20 }) {
     </div>
   );
 }
-
 
 // ── 頁面：熱號分析 ────────────────────────────────
 function HotPage({ recent20 }) {
@@ -615,7 +706,7 @@ export default function App() {
       const recentRows = recentRes?.recent20 || recentRes?.data || [];
       setRecent20(recentRows);
 
-      setLoopStatus(isNight() ? '夜間停止（00:00-07:00）' : `已更新 ${new Date().toLocaleTimeString('zh-TW', {hour12:false})}`);
+      setLoopStatus(isNight() ? '夜間停止（00:00-07:00）' : `已更新 ${new Date().toLocaleTimeString('zh-TW', { hour12: false })}`);
     } catch (e) {
       setLoopStatus('載入失敗，稍後重試');
     } finally {
@@ -623,7 +714,6 @@ export default function App() {
     }
   }, []);
 
-  // 載入策略統計
   useEffect(() => {
     const loadStats = async () => {
       try {
@@ -652,7 +742,6 @@ export default function App() {
 
   return (
     <div style={S.app}>
-      {/* Header */}
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
@@ -666,13 +755,12 @@ export default function App() {
               </div>
             )}
             <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
-              {new Date().toLocaleString('zh-TW', { hour12: false, month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' })}
+              {new Date().toLocaleString('zh-TW', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
             </div>
           </div>
         </div>
       </div>
 
-      {/* Tabs */}
       <div style={S.tabs}>
         {TABS.map(t => (
           <button key={t.key} style={S.tab(tab === t.key)} onClick={() => setTab(t.key)}>
@@ -682,7 +770,6 @@ export default function App() {
         ))}
       </div>
 
-      {/* Content */}
       {loading && tab === 'quick' && <Spinner />}
 
       {tab === 'quick' && (
