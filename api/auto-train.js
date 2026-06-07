@@ -197,7 +197,12 @@ async function comparePending(db) {
       roi: compareResult?.roi || 0,
       groups_count: groups.length,
       draw_nums: compareResult?.draw_nums || [],   // ★ 新增：比對期開獎號碼
-      detail: (compareResult?.detail || []).slice(0, 20),
+      // ★ 修正：優先存中3、中2的組，確保球高亮能找到命中組
+      detail: [
+        ...(compareResult?.detail || []).filter(d => d?.hit >= 3),
+        ...(compareResult?.detail || []).filter(d => d?.hit === 2),
+        ...(compareResult?.detail || []).filter(d => d?.hit <= 1),
+      ].slice(0, 20),
     };
 
     await db
