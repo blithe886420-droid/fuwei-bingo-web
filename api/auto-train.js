@@ -54,7 +54,7 @@ async function fetchLatestDraw(db) {
   return data;
 }
 
-// ── 取得最近20期 ──────────────────────────────────
+// ── 取得最近30期 ──────────────────────────────────
 async function fetchRecent30(db) {
   const { data, error } = await db
     .from(DRAWS_TABLE)
@@ -153,7 +153,6 @@ async function createPrediction(db, latestDrawNo, groups, latestDrawNumbers) {
 
 // ── 比對待比對的預測 ──────────────────────────────
 async function comparePending(db) {
-  // 取得所有待比對的預測
   const { data: predictions, error } = await db
     .from(PREDICTIONS_TABLE)
     .select('*')
@@ -172,14 +171,12 @@ async function comparePending(db) {
     const sourceDrawNo = toNum(prediction.source_draw_no, 0);
     if (!sourceDrawNo) continue;
 
-    // 找下一期開獎資料
     const nextDraw = await fetchNextDraw(db, sourceDrawNo);
     if (!nextDraw) {
       console.log(`[comparePending] draw_no=${sourceDrawNo} 下一期尚未開獎，等待`);
       continue;
     }
 
-    // 比對
     const groups = Array.isArray(prediction.groups_json) ? prediction.groups_json : [];
     const { compareResult } = buildComparePayload({
       groups,
@@ -191,7 +188,7 @@ async function comparePending(db) {
     const bestHit = toNum(compareResult?.best_hit, 0);
     const verdict = compareResult?.best_reward > 0 ? 'good' : 'bad';
 
-    // 只存摘要，不存完整 compare_result_json（避免幾百組 JSON 太大）
+    // ★ draw_nums 提到最外層，前端球高亮直接讀，不需要去找 recent20
     const resultSummary = {
       best_hit: compareResult?.best_hit || 0,
       best_reward: compareResult?.best_reward || 0,
@@ -199,11 +196,10 @@ async function comparePending(db) {
       total_reward: compareResult?.total_reward || 0,
       roi: compareResult?.roi || 0,
       groups_count: groups.length,
-      // detail 只存有中3的組
+      draw_nums: compareResult?.draw_nums || [],   // ★ 新增：比對期開獎號碼
       detail: (compareResult?.detail || []).slice(0, 20),
     };
 
-    // 更新 bingo_predictions
     await db
       .from(PREDICTIONS_TABLE)
       .update({
@@ -216,9 +212,6 @@ async function comparePending(db) {
         compared_at: new Date().toISOString(),
       })
       .eq('id', prediction.id);
-
-    // 四週期全排列版本組數太多，跳過 strategy_stats 寫入
-    // await updateStrategyStats(db, compareResult);
 
     processed++;
     console.log(`[comparePending] draw_no=${sourceDrawNo} 比對完成 best_hit=${bestHit} verdict=${verdict}`);
@@ -248,7 +241,6 @@ async function updateStrategyStats(db, compareResult) {
     const totalReward = toNum(sd?.total_reward, 0);
     const totalProfit = totalReward - totalCost;
 
-    // 先讀現有數據
     const { data: existing } = await db
       .from(STRATEGY_STATS_TABLE)
       .select('*')
@@ -271,7 +263,6 @@ async function updateStrategyStats(db, compareResult) {
     const hitRate = newRounds > 0 ? round4((newHit2 + newHit3) / newRounds) : 0;
     const roi     = newCost > 0 ? round4(newProfit / newCost) : 0;
 
-    // recent_hits：保留最近50筆
     const recentHits = Array.isArray(prev.recent_hits) ? prev.recent_hits : [];
     recentHits.push(totalHits);
     if (recentHits.length > 50) recentHits.shift();
@@ -336,7 +327,7 @@ export default async function handler(req, res) {
   try {
     const db = getSupabase();
 
-    // Step 1: 比對待比對的預測（先比對再選號，避免同一期重複）
+    // Step 1: 比對待比對的預測（先比對再選號）
     const compareResult = await comparePending(db);
 
     // Step 2: 取得最新開獎
