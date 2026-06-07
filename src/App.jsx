@@ -239,15 +239,22 @@ function QuickPage({ prediction, aiPlayer, recent20, onRefresh, loading }) {
   const isDone = row?.compare_status === 'done';
   const bestHit = toNum(row?.hit_count, 0);
   const latestDraw = toArray(recent20)[0];
-  const drawNums = new Set(parseNums(latestDraw?.numbers));
   const isColdStrategy = groups[0]?.meta?.type === 'cold';
   const poolSize = toNum(groups[0]?.meta?.hot_pool_size, 0);
+
+  // ★ 修正：優先用 compare_result_json.draw_nums（比對期開獎號碼）
+  // 舊版用 recent20[0] 會拿到「現在最新一期」而非「被比對那期」，導致球高亮錯誤
+  const comparedDrawNumsArr = toArray(compareResult?.draw_nums);
+  const drawNums = new Set(
+    comparedDrawNumsArr.length > 0
+      ? comparedDrawNumsArr
+      : parseNums(latestDraw?.numbers)   // fallback：舊資料沒有 draw_nums 時用最新一期
+  );
 
   const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.green : C.textSub;
 
   // 預警系統
-  const compareResult0 = safeJson(row?.compare_result_json);
-  const hit2Groups = toArray(compareResult0?.detail).filter(d => toNum(d?.hit,0) === 2).length;
+  const hit2Groups = detail.filter(d => toNum(d?.hit, 0) === 2).length;
   const isWarning = hit2Groups >= 3;
   const isReady = poolSize === 5 || (isDone && hit2Groups >= 3);
 
@@ -345,7 +352,8 @@ function QuickPage({ prediction, aiPlayer, recent20, onRefresh, loading }) {
                   </div>
                   <div style={{ display: 'flex', gap: 8 }}>
                     {nums.map(n => {
-                      const isHit = isDone && matchDetail && drawNums.has(n);
+                      // ★ 修正：isHit 用 drawNums（比對期開獎號碼），不是最新一期
+                      const isHit = isDone && drawNums.has(n);
                       return <Ball key={n} n={n} hit={isDone ? (isHit ? true : false) : undefined} />;
                     })}
                   </div>
