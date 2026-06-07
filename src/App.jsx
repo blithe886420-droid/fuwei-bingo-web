@@ -177,7 +177,9 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
   // 球高亮：優先用比對期開獎號碼
   const comparedDrawNumsArr = toArray(compareResult?.draw_nums);
   const drawNums = new Set(
-    comparedDrawNumsArr.length > 0 ? comparedDrawNumsArr : parseNums(latestDraw?.numbers)
+    comparedDrawNumsArr.length > 0 
+      ? comparedDrawNumsArr.map(Number)
+      : parseNums(latestDraw?.numbers)
   );
 
   // 預警：多組中2
