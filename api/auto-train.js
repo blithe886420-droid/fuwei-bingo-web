@@ -373,7 +373,7 @@ export default async function handler(req, res) {
         created_count: 0,
         groups_count: 0,
         skipped: true,
-        reason: '四週期熱號不足',
+        reason: '號碼不足（冷場期）',
       });
     }
 
