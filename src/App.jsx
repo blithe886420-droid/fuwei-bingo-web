@@ -165,7 +165,7 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
   const compareResult = safeJson(row?.compare_result_json) || safeJson(row?.compare_result);
   const detail = toArray(compareResult?.detail);
   const allGroups = toArray(row?.groups_json);
-  const groups = allGroups.slice(0, 20);
+  const groups = allGroups.slice(0, 10);
   const isDone = row?.compare_status === 'done';
   const bestHit = toNum(row?.hit_count, 0);
   const latestDraw = toArray(recent20)[0];
@@ -305,7 +305,7 @@ function HistoryPage({ historyRows }) {
           const compareResult = safeJson(row?.compare_result_json) || safeJson(row?.compare_result);
           const detail = toArray(compareResult?.detail);
           const allGroups = toArray(row?.groups_json);
-          const groups = allGroups.slice(0, 20);
+          const groups = allGroups.slice(0, 10);
           const bestHit = toNum(row?.hit_count, 0);
           const isDone = row?.compare_status === 'done';
           const isSkipped = row?.status === 'skipped' || allGroups.length === 0;
