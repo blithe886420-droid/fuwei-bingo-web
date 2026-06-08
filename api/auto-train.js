@@ -1,26 +1,17 @@
 /**
- * auto-train.js - v20 純覆蓋效率版
- *
- * 流程：
- * 1. 取得最新開獎號碼
- * 2. 用覆蓋效率邏輯選出8組號碼
- * 3. 存入 bingo_predictions（status=created）
- * 4. 比對上一期的預測結果
- * 5. 寫入 strategy_stats
+ * auto-train.js - v36 SQL驗證優化版
  */
 
 import { createClient } from '@supabase/supabase-js';
 import { buildBingoGroups } from '../lib/buildBingoV1Strategies.js';
 import { buildComparePayload } from '../lib/buildComparePayload.js';
 
-// ── 常數 ─────────────────────────────────────────
 const PREDICTIONS_TABLE  = 'bingo_predictions';
 const STRATEGY_STATS_TABLE = 'strategy_stats';
 const DRAWS_TABLE        = 'bingo_draws';
 const MODE               = 'formal_3star';
 const COST_PER_GROUP     = 25;
 
-// ── Supabase ──────────────────────────────────────
 function getSupabase() {
   const url = process.env.SUPABASE_URL;
   const key =
@@ -31,7 +22,6 @@ function getSupabase() {
   return createClient(url, key, { auth: { persistSession: false } });
 }
 
-// ── 工具函數 ──────────────────────────────────────
 function toNum(v, fallback = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
@@ -42,7 +32,6 @@ function round4(v) {
   return Number.isFinite(n) ? Number(n.toFixed(4)) : 0;
 }
 
-// ── 取得最新開獎 ──────────────────────────────────
 async function fetchLatestDraw(db) {
   const { data, error } = await db
     .from(DRAWS_TABLE)
@@ -54,7 +43,6 @@ async function fetchLatestDraw(db) {
   return data;
 }
 
-// ── 取得最近30期 ──────────────────────────────────
 async function fetchRecent30(db) {
   const { data, error } = await db
     .from(DRAWS_TABLE)
@@ -78,13 +66,15 @@ async function fetchRecent3Predictions(db) {
     hit_count: p.hit_count || 0,
     groups_count: Array.isArray(p.groups_json) ? p.groups_json.length : 0,
     pool_size: p.groups_json?.[0]?.meta?.hot_pool_size || 0,
+    // ★ 傳入 position 和 action 給策略函數判斷連續爆發次數
+    position: p.groups_json?.[0]?.meta?.position || '',
+    action: p.groups_json?.[0]?.meta?.action || '',
     hit2_groups: Array.isArray(p.compare_result_json?.detail)
       ? p.compare_result_json.detail.filter(d => d?.hit === 2).length
       : 0,
   }));
 }
 
-// ── 取得下一期開獎資料（用來比對） ────────────────
 async function fetchNextDraw(db, sourceDrawNo) {
   const { data, error } = await db
     .from(DRAWS_TABLE)
@@ -97,7 +87,6 @@ async function fetchNextDraw(db, sourceDrawNo) {
   return data;
 }
 
-// ── 純隨機選號（對照組）────────────────────────────
 function buildRandomGroups() {
   const pool = Array.from({length: 80}, (_, i) => i + 1);
   for (let i = pool.length - 1; i > 0; i--) {
@@ -116,9 +105,7 @@ function buildRandomGroups() {
   return groups;
 }
 
-// ── 建立預測 ──────────────────────────────────────
 async function createPrediction(db, latestDrawNo, groups, latestDrawNumbers) {
-  // 確認此期是否已有預測
   const { data: existing } = await db
     .from(PREDICTIONS_TABLE)
     .select('id, status')
@@ -151,7 +138,6 @@ async function createPrediction(db, latestDrawNo, groups, latestDrawNumbers) {
   return data;
 }
 
-// ── 比對待比對的預測 ──────────────────────────────
 async function comparePending(db) {
   const { data: predictions, error } = await db
     .from(PREDICTIONS_TABLE)
@@ -188,7 +174,6 @@ async function comparePending(db) {
     const bestHit = toNum(compareResult?.best_hit, 0);
     const verdict = compareResult?.best_reward > 0 ? 'good' : 'bad';
 
-    // ★ draw_nums 提到最外層，前端球高亮直接讀，不需要去找 recent20
     const resultSummary = {
       best_hit: compareResult?.best_hit || 0,
       best_reward: compareResult?.best_reward || 0,
@@ -196,8 +181,7 @@ async function comparePending(db) {
       total_reward: compareResult?.total_reward || 0,
       roi: compareResult?.roi || 0,
       groups_count: groups.length,
-      draw_nums: compareResult?.draw_nums || [],   // ★ 新增：比對期開獎號碼
-      // ★ 修正：優先存中3、中2的組，確保球高亮能找到命中組
+      draw_nums: compareResult?.draw_nums || [],
       detail: [
         ...(compareResult?.detail || []).filter(d => d?.hit >= 3),
         ...(compareResult?.detail || []).filter(d => d?.hit === 2),
@@ -225,104 +209,11 @@ async function comparePending(db) {
   return { processed };
 }
 
-// ── 寫入 strategy_stats ───────────────────────────
-async function updateStrategyStats(db, compareResult) {
-  const detail = Array.isArray(compareResult?.strategy_detail)
-    ? compareResult.strategy_detail
-    : [];
-
-  if (detail.length === 0) return;
-
-  for (const sd of detail) {
-    const key = String(sd?.strategy_key || '');
-    if (!key) continue;
-
-    const hit3Count = toNum(sd?.hit3, 0);
-    const hit2Count = toNum(sd?.hit2, 0);
-    const hit1Count = toNum(sd?.hit1, 0);
-    const hit0Count = toNum(sd?.hit0, 0);
-    const totalHits = toNum(sd?.total_hits, 0);
-    const totalCost = toNum(sd?.total_cost, 0);
-    const totalReward = toNum(sd?.total_reward, 0);
-    const totalProfit = totalReward - totalCost;
-
-    const { data: existing } = await db
-      .from(STRATEGY_STATS_TABLE)
-      .select('*')
-      .eq('strategy_key', key)
-      .maybeSingle();
-
-    const prev = existing || {};
-    const prevRounds   = toNum(prev.total_rounds, 0);
-    const newRounds    = prevRounds + 1;
-    const newHits      = toNum(prev.total_hits, 0) + totalHits;
-    const newHit0      = toNum(prev.hit0, 0) + hit0Count;
-    const newHit1      = toNum(prev.hit1, 0) + hit1Count;
-    const newHit2      = toNum(prev.hit2, 0) + hit2Count;
-    const newHit3      = toNum(prev.hit3, 0) + hit3Count;
-    const newCost      = toNum(prev.total_cost, 0) + totalCost;
-    const newReward    = toNum(prev.total_reward, 0) + totalReward;
-    const newProfit    = toNum(prev.total_profit, 0) + totalProfit;
-
-    const avgHit  = newRounds > 0 ? round4(newHits / newRounds) : 0;
-    const hitRate = newRounds > 0 ? round4((newHit2 + newHit3) / newRounds) : 0;
-    const roi     = newCost > 0 ? round4(newProfit / newCost) : 0;
-
-    const recentHits = Array.isArray(prev.recent_hits) ? prev.recent_hits : [];
-    recentHits.push(totalHits);
-    if (recentHits.length > 50) recentHits.shift();
-
-    const recent50Hit3Rate = recentHits.length > 0
-      ? round4(recentHits.filter(h => h >= 3).length / recentHits.length)
-      : 0;
-
-    const recentProfit = Array.isArray(prev.recent_profit) ? prev.recent_profit : [];
-    recentProfit.push(totalProfit);
-    if (recentProfit.length > 50) recentProfit.shift();
-
-    const recentCost50 = recentProfit.length * COST_PER_GROUP;
-    const recentProfit50Total = recentProfit.reduce((a, b) => a + b, 0);
-    const recent50Roi = recentCost50 > 0 ? round4(recentProfit50Total / recentCost50) : 0;
-
-    await db
-      .from(STRATEGY_STATS_TABLE)
-      .upsert({
-        strategy_key: key,
-        strategy_name: key,
-        total_rounds: newRounds,
-        total_hits: newHits,
-        hit0: newHit0,
-        hit1: newHit1,
-        hit2: newHit2,
-        hit3: newHit3,
-        hit4: 0,
-        avg_hit: avgHit,
-        hit_rate: hitRate,
-        hit3_rate: newRounds > 0 ? round4(newHit3 / newRounds) : 0,
-        total_cost: newCost,
-        total_reward: newReward,
-        total_profit: newProfit,
-        roi,
-        recent_hits: recentHits,
-        recent_profit: recentProfit,
-        recent_50_hit_rate: recent50Hit3Rate,
-        recent_50_roi: recent50Roi,
-        recent_50_hit3_rate: recent50Hit3Rate,
-        last_result_draw_no: toNum(compareResult?.draw_detail?.[0]?.draw_no, 0),
-        last_updated: new Date().toISOString(),
-      }, { onConflict: 'strategy_key' });
-  }
-
-  console.log(`[updateStrategyStats] 寫入 ${detail.length} 筆策略統計`);
-}
-
-// ── 主 handler ────────────────────────────────────
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ ok: false, error: 'Method not allowed' });
   }
 
-  // 台灣時間 00:00~07:00 停止訓練
   const taipeiHour = (new Date().getUTCHours() + 8) % 24;
   if (taipeiHour >= 0 && taipeiHour < 7) {
     console.log(`[auto-train] 非營業時間 ${taipeiHour}:xx，跳過`);
@@ -332,10 +223,8 @@ export default async function handler(req, res) {
   try {
     const db = getSupabase();
 
-    // Step 1: 比對待比對的預測（先比對再選號）
     const compareResult = await comparePending(db);
 
-    // Step 2: 取得最新開獎
     const latestDraw = await fetchLatestDraw(db);
     if (!latestDraw) {
       return res.status(200).json({ ok: false, error: '無法取得最新開獎資料' });
@@ -344,14 +233,13 @@ export default async function handler(req, res) {
     const latestDrawNo = toNum(latestDraw.draw_no, 0);
     const latestDrawNumbers = String(latestDraw.numbers || '');
 
-    // Step 3: 取得最近30期和最近3期預測，建立選號
     const recent30 = await fetchRecent30(db);
+    // ★ fetchRecent3Predictions 現在也回傳 position 和 action
     const recent3Predictions = await fetchRecent3Predictions(db);
     const groups = buildBingoGroups(recent30, latestDrawNo, recent3Predictions);
 
-    // Step 4: 存入預測（groups 為空時建立跳過記錄）
     if (groups.length === 0) {
-      console.log(`[auto-train] 本期無符合條件熱號，跳過 draw_no=${latestDrawNo}`);
+      console.log(`[auto-train] 本期無符合條件，跳過 draw_no=${latestDrawNo}`);
       const { data: existing } = await db
         .from(PREDICTIONS_TABLE)
         .select('id')
@@ -378,13 +266,12 @@ export default async function handler(req, res) {
         created_count: 0,
         groups_count: 0,
         skipped: true,
-        reason: '號碼不足（冷場期）',
+        reason: '冷場期',
       });
     }
 
     const prediction = await createPrediction(db, latestDrawNo, groups, latestDrawNumbers);
 
-    // 同時跑純隨機對照組
     const randomGroups = buildRandomGroups();
     const { data: existingRandom } = await db
       .from(PREDICTIONS_TABLE)
