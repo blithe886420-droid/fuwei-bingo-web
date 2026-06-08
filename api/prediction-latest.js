@@ -585,7 +585,7 @@ async function getRecentFormalComparedRows(limit = 5) {
 }
 
 async function getRecent3StarComparedRows(limit = 40) {
-  const safeLimit = Math.max(10, Math.min(40, toInt(limit, 40))); // ✅ 固定40期追蹤
+  const safeLimit = Math.max(10, Math.min(100, toInt(limit, 100))); // ✅ 固定40期追蹤
 
   const { data, error } = await supabase
     .from(PREDICTIONS_TABLE)
@@ -841,7 +841,7 @@ export default async function handler(req, res) {
       getRecentDrawRows(20),
       getRecentComparedRows(10),
       getRecentFormalComparedRows(5),
-      getRecent3StarComparedRows(20)
+      getRecent3StarComparedRows(100)
     ]);
     // v2: build tierLeaderboard from leaderboard data instead of extra DB query
     // ✅ fix：改用 total_rounds > 0 過濾，避免因 strategy_name 邏輯誤殺有效策略
