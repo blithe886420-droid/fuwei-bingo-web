@@ -2,9 +2,6 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 const RAILWAY_URL = 'https://fuwei-bingo-backend-production.up.railway.app';
 const REFRESH_INTERVAL_MS = 30000;
-const NIGHT_STOP_START = 0;
-const NIGHT_STOP_END = 7 * 60;
-// 只計算 v35 之後的數據（避免舊資料污染統計）
 const STATS_START_DATE = '2026-06-08T00:00:00.000Z';
 
 function toNum(v, fallback = 0) {
@@ -36,7 +33,7 @@ function safeJson(v, fallback = null) {
 function isNight() {
   const now = new Date();
   const m = now.getHours() * 60 + now.getMinutes();
-  return m >= NIGHT_STOP_START && m < NIGHT_STOP_END;
+  return m >= 0 && m < 7 * 60;
 }
 function padNum(n) { return String(Number(n)).padStart(2, '0'); }
 
@@ -61,7 +58,9 @@ async function apiFetch(path, options = {}) {
   try { return JSON.parse(text); } catch { return { raw: text }; }
 }
 
-function getActionStyle(action) {
+function getActionStyle(action, forcedSwitch, lowConfidence) {
+  if (lowConfidence) return { icon: '👀', label: '觀察期（低信心時段）', color: '#0F766E', bg: '#F0FDFA', border: '#99F6E4' };
+  if (forcedSwitch) return { icon: '⚡', label: '醞釀期（爆發切換）', color: '#D97706', bg: '#FFFBEB', border: '#FDE68A' };
   switch (action) {
     case '爆發出號': return { icon: '🔥', label: '爆發期', color: '#C8860A', bg: '#FFF9EC', border: '#F5D78B' };
     case '預備出號': return { icon: '⚡', label: '醞釀期', color: '#D97706', bg: '#FFFBEB', border: '#FDE68A' };
@@ -120,7 +119,6 @@ function Card({ title, icon, children, right }) {
 
 function Ball({ n, hit }) { return <div style={S.ball(hit)}>{padNum(n)}</div>; }
 function RandomBall({ n }) { return <div style={S.randomBall()}>{padNum(n)}</div>; }
-
 function StatRow({ label, value, valueColor }) {
   return (
     <div style={S.statRow}>
@@ -173,7 +171,10 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
   const latestDraw = toArray(recent20)[0];
   const isSkipped = !row || row?.status === 'skipped' || allGroups.length === 0;
   const action = groups[0]?.meta?.action || '出號';
-  const actionStyle = getActionStyle(action);
+  const forcedSwitch = groups[0]?.meta?.forced_switch === true;
+  const lowConfidence = groups[0]?.meta?.low_confidence_hour === true;
+  const consecutiveBurst = toNum(groups[0]?.meta?.consecutive_burst, 0);
+  const actionStyle = getActionStyle(action, forcedSwitch, lowConfidence);
   const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.green : C.textSub;
 
   const comparedDrawNumsArr = toArray(compareResult?.draw_nums);
@@ -185,9 +186,13 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
 
   const hit2Groups = detail.filter(d => toNum(d?.hit, 0) === 2).length;
   const isWarning = hit2Groups >= 3;
+  // ★ 中3後下一期是強烈進場信號（SQL8：命中率23.53%）
+  const isPrevHit3 = toNum(row?.hit_count, 0) === 3 ||
+    toArray(prediction?.recent_3star_compared_rows)?.[1]?.hit_count >= 3;
 
   return (
     <div style={S.page}>
+      {/* 最新開獎 */}
       <Card title="最新開獎" icon="🎱">
         {latestDraw ? (
           <>
@@ -204,13 +209,39 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
         ) : <div style={S.empty}>載入中...</div>}
       </Card>
 
+      {/* ★ 預警系統 */}
       {isWarning && (
         <div style={{ background: '#FEF3C7', border: '2px solid #F59E0B', borderRadius: 12, padding: '10px 14px', marginBottom: 10 }}>
           <div style={{ fontSize: 15, fontWeight: 800, color: '#D97706' }}>⚡ 預警：準備爆發！</div>
-          <div style={{ fontSize: 12, color: '#92400E', marginTop: 4 }}>本期有 {hit2Groups} 組中2，下期爆發機率高</div>
+          <div style={{ fontSize: 12, color: '#92400E', marginTop: 4 }}>本期有 {hit2Groups} 組中2，下期爆發機率較高</div>
         </div>
       )}
 
+      {/* ★ 中3後強烈進場信號（SQL8：命中率23.53%）*/}
+      {isPrevHit3 && !isDone && (
+        <div style={{ background: '#DCFCE7', border: '2px solid #22C55E', borderRadius: 12, padding: '10px 14px', marginBottom: 10 }}>
+          <div style={{ fontSize: 15, fontWeight: 800, color: '#15803D' }}>🎯 強烈進場信號！</div>
+          <div style={{ fontSize: 12, color: '#166534', marginTop: 4 }}>前一期中3，本期命中率高達23.5%，強烈建議下注</div>
+        </div>
+      )}
+
+      {/* ★ 低信心時段警告（12-15點）*/}
+      {lowConfidence && (
+        <div style={{ background: '#FEF9C3', border: '2px solid #EAB308', borderRadius: 12, padding: '10px 14px', marginBottom: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#A16207' }}>⚠️ 低信心時段（12-15點）</div>
+          <div style={{ fontSize: 11, color: '#A16207', marginTop: 3 }}>SQL驗證此時段命中率偏低，建議觀察為主，謹慎下注</div>
+        </div>
+      )}
+
+      {/* ★ 爆發期連續切換警告 */}
+      {forcedSwitch && !lowConfidence && (
+        <div style={{ background: '#FFF7ED', border: '1.5px solid #FED7AA', borderRadius: 12, padding: '8px 12px', marginBottom: 10 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: '#C2410C' }}>🔄 爆發期已連續{consecutiveBurst + 1}期，自動切換醞釀期號碼</div>
+          <div style={{ fontSize: 11, color: '#C2410C', marginTop: 2 }}>SQL驗證爆發期第3期後命中率趨近0%</div>
+        </div>
+      )}
+
+      {/* 本期預測 */}
       {isSkipped ? (
         <RandomGroupsCard drawNo={row?.source_draw_no || latestDraw?.draw_no} />
       ) : (
@@ -232,9 +263,11 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
               {actionStyle.icon} {actionStyle.label}
             </div>
             <div style={{ fontSize: 11, color: actionStyle.color, opacity: 0.8, marginTop: 2 }}>
-              {action === '爆發出號' && '四週期穩定熱號，最強信號'}
-              {action === '預備出號' && '三週期持續出現，即將爆發'}
-              {action === '參考出號' && '兩週期觀察號碼，謹慎參考'}
+              {action === '爆發出號' && !forcedSwitch && '四週期穩定熱號，最強信號'}
+              {action === '預備出號' && !forcedSwitch && '三週期持續出現，即將爆發'}
+              {action === '參考出號' && !forcedSwitch && !lowConfidence && '兩週期觀察號碼，謹慎參考'}
+              {forcedSwitch && !lowConfidence && '爆發期已過峰值，切換三週期號碼'}
+              {lowConfidence && '12-15點低信心時段，僅供參考'}
             </div>
           </div>
 
@@ -307,7 +340,9 @@ function HistoryPage({ historyRows }) {
           const isSkipped = row?.status === 'skipped' || allGroups.length === 0;
           const action = allGroups[0]?.meta?.action || '';
           const position = allGroups[0]?.meta?.position || '';
-          const actionStyle = getActionStyle(action);
+          const forcedSwitch = allGroups[0]?.meta?.forced_switch === true;
+          const lowConfidence = allGroups[0]?.meta?.low_confidence_hour === true;
+          const actionStyle = getActionStyle(action, forcedSwitch, lowConfidence);
           const comparedDraw = toArray(compareResult?.detail)[0]?.draw_no;
           const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.green : C.gray;
 
@@ -318,17 +353,9 @@ function HistoryPage({ historyRows }) {
                   <span style={{ fontSize: 13, fontWeight: 700, color: C.textSub }}>
                     預測 {fmt(row?.source_draw_no)} → 比對 {fmt(comparedDraw || '')}
                   </span>
-                  {/* ★ 明確顯示週期文字標示 */}
                   {!isSkipped && position && (
                     <div style={{ marginTop: 3 }}>
-                      <span style={{
-                        fontSize: 11, fontWeight: 700,
-                        color: actionStyle.color,
-                        background: actionStyle.bg,
-                        border: `1px solid ${actionStyle.border}`,
-                        borderRadius: 6, padding: '2px 8px',
-                        display: 'inline-block'
-                      }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: actionStyle.color, background: actionStyle.bg, border: `1px solid ${actionStyle.border}`, borderRadius: 6, padding: '2px 8px', display: 'inline-block' }}>
                         {actionStyle.icon} {actionStyle.label}
                       </span>
                     </div>
@@ -370,14 +397,12 @@ function HistoryPage({ historyRows }) {
   );
 }
 
-// ★ 統計頁：分三個子頁顯示各週期命中率
 function StatsPage({ historyRows }) {
   const [subTab, setSubTab] = useState('all');
 
-  const allRows = toArray(historyRows).filter(row => {
-    // 只計算新版數據
-    return row?.created_at >= STATS_START_DATE && row?.status === 'compared' && toArray(row?.groups_json).length > 0;
-  });
+  const allRows = toArray(historyRows).filter(row =>
+    row?.created_at >= STATS_START_DATE && row?.status === 'compared' && toArray(row?.groups_json).length > 0
+  );
 
   const filterByPosition = (pos) => {
     if (pos === 'all') return allRows;
@@ -410,7 +435,6 @@ function StatsPage({ historyRows }) {
 
   return (
     <div style={S.page}>
-      {/* 子頁切換 */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 14, background: C.card, borderRadius: 12, padding: 8, boxShadow: C.shadow }}>
         {subTabs.map(t => (
           <button key={t.key} style={S.subTab(subTab === t.key)} onClick={() => setSubTab(t.key)}>
@@ -422,9 +446,7 @@ function StatsPage({ historyRows }) {
       <Card title={`${subTabs.find(t => t.key === subTab)?.icon} ${subTabs.find(t => t.key === subTab)?.label} 命中率`} icon="">
         <div style={{ textAlign: 'center', padding: '10px 0' }}>
           <div style={{ ...S.bigNum, color: rateColor }}>{fmtPercent(stats.rate)}</div>
-          <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>
-            共 {stats.total} 期｜中3：{stats.hit3} 次
-          </div>
+          <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>共 {stats.total} 期｜中3：{stats.hit3} 次</div>
         </div>
         <div style={S.divider} />
         <StatRow label="理論值（隨機）" value="3.75%" valueColor={C.textSub} />
@@ -434,7 +456,6 @@ function StatsPage({ historyRows }) {
         <StatRow label="中1次數" value={`${stats.hit1} 次`} />
         <StatRow label="未中次數" value={`${stats.hit0} 次`} />
       </Card>
-
       <div style={{ fontSize: 11, color: C.textSub, textAlign: 'center', padding: '4px 0' }}>
         ※ 統計數據從 6/8 起算（v35新版）
       </div>
