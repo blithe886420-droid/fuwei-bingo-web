@@ -4,6 +4,8 @@ const RAILWAY_URL = 'https://fuwei-bingo-backend-production.up.railway.app';
 const REFRESH_INTERVAL_MS = 30000;
 const NIGHT_STOP_START = 0;
 const NIGHT_STOP_END = 7 * 60;
+// 只計算 v35 之後的數據（避免舊資料污染統計）
+const STATS_START_DATE = '2026-06-08T00:00:00.000Z';
 
 function toNum(v, fallback = 0) {
   const n = Number(v);
@@ -59,7 +61,6 @@ async function apiFetch(path, options = {}) {
   try { return JSON.parse(text); } catch { return { raw: text }; }
 }
 
-// 根據 action 決定顯示樣式
 function getActionStyle(action) {
   switch (action) {
     case '爆發出號': return { icon: '🔥', label: '爆發期', color: '#C8860A', bg: '#FFF9EC', border: '#F5D78B' };
@@ -86,6 +87,7 @@ const S = {
   headerSub: { fontSize: 12, color: 'rgba(255,255,255,0.85)', marginTop: 3 },
   tabs: { display: 'flex', background: C.card, borderBottom: `2px solid ${C.border}`, position: 'sticky', top: 0, zIndex: 100, boxShadow: '0 2px 8px rgba(200,134,10,0.08)' },
   tab: (active) => ({ flex: 1, padding: '10px 2px 8px', border: 'none', background: 'transparent', cursor: 'pointer', fontSize: 11, fontWeight: active ? 700 : 400, color: active ? C.gold : C.gray, borderBottom: active ? `3px solid ${C.gold}` : '3px solid transparent', transition: 'all 0.2s' }),
+  subTab: (active) => ({ flex: 1, padding: '8px 4px', border: 'none', background: active ? C.goldBg : 'transparent', cursor: 'pointer', fontSize: 12, fontWeight: active ? 700 : 400, color: active ? C.gold : C.gray, borderRadius: 8, transition: 'all 0.2s' }),
   page: { padding: '16px 14px', maxWidth: 600, margin: '0 auto' },
   card: { background: C.card, borderRadius: 16, padding: '16px 16px 14px', marginBottom: 14, boxShadow: C.shadow, border: `1px solid ${C.border}` },
   cardTitle: { fontSize: 14, fontWeight: 700, color: C.gold, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 },
@@ -174,21 +176,18 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
   const actionStyle = getActionStyle(action);
   const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.green : C.textSub;
 
-  // 球高亮：優先用比對期開獎號碼
   const comparedDrawNumsArr = toArray(compareResult?.draw_nums);
   const drawNums = new Set(
-    comparedDrawNumsArr.length > 0 
+    comparedDrawNumsArr.length > 0
       ? comparedDrawNumsArr.map(Number)
       : parseNums(latestDraw?.numbers)
   );
 
-  // 預警：多組中2
   const hit2Groups = detail.filter(d => toNum(d?.hit, 0) === 2).length;
   const isWarning = hit2Groups >= 3;
 
   return (
     <div style={S.page}>
-      {/* 最新開獎 */}
       <Card title="最新開獎" icon="🎱">
         {latestDraw ? (
           <>
@@ -205,7 +204,6 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
         ) : <div style={S.empty}>載入中...</div>}
       </Card>
 
-      {/* 預警 */}
       {isWarning && (
         <div style={{ background: '#FEF3C7', border: '2px solid #F59E0B', borderRadius: 12, padding: '10px 14px', marginBottom: 10 }}>
           <div style={{ fontSize: 15, fontWeight: 800, color: '#D97706' }}>⚡ 預警：準備爆發！</div>
@@ -213,7 +211,6 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
         </div>
       )}
 
-      {/* 本期預測 or 隨機參考 */}
       {isSkipped ? (
         <RandomGroupsCard drawNo={row?.source_draw_no || latestDraw?.draw_no} />
       ) : (
@@ -230,7 +227,6 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
             ) : null
           }
         >
-          {/* 狀態標示 */}
           <div style={{ background: actionStyle.bg, border: `1.5px solid ${actionStyle.border}`, borderRadius: 8, padding: '8px 12px', marginBottom: 10 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: actionStyle.color }}>
               {actionStyle.icon} {actionStyle.label}
@@ -246,9 +242,7 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
             <span style={S.badge(C.textSub, C.grayLight)}>
               {isDone && detail.length > 0 ? `比對期號 ${fmt(detail[0]?.draw_no)}` : `預測期號 ${fmt(toNum(row?.source_draw_no, 0) + 1)}`}
             </span>
-            <span style={S.badge(C.teal, C.greenBg)}>
-              {allGroups.length <= 20 ? `${allGroups.length} 組` : `顯示 ${groups.length}/${allGroups.length} 組`}
-            </span>
+            <span style={S.badge(C.teal, C.greenBg)}>{groups.length} 組</span>
           </div>
 
           {groups.map((g, idx) => {
@@ -312,6 +306,7 @@ function HistoryPage({ historyRows }) {
           const isDone = row?.compare_status === 'done';
           const isSkipped = row?.status === 'skipped' || allGroups.length === 0;
           const action = allGroups[0]?.meta?.action || '';
+          const position = allGroups[0]?.meta?.position || '';
           const actionStyle = getActionStyle(action);
           const comparedDraw = toArray(compareResult?.detail)[0]?.draw_no;
           const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.green : C.gray;
@@ -319,9 +314,26 @@ function HistoryPage({ historyRows }) {
           return (
             <div key={row?.id || idx} style={{ ...S.card, marginBottom: 10, padding: '12px 14px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                <span style={{ fontSize: 13, fontWeight: 700, color: C.textSub }}>
-                  {actionStyle.icon} 預測 {fmt(row?.source_draw_no)} → 比對 {fmt(comparedDraw || '')}
-                </span>
+                <div>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: C.textSub }}>
+                    預測 {fmt(row?.source_draw_no)} → 比對 {fmt(comparedDraw || '')}
+                  </span>
+                  {/* ★ 明確顯示週期文字標示 */}
+                  {!isSkipped && position && (
+                    <div style={{ marginTop: 3 }}>
+                      <span style={{
+                        fontSize: 11, fontWeight: 700,
+                        color: actionStyle.color,
+                        background: actionStyle.bg,
+                        border: `1px solid ${actionStyle.border}`,
+                        borderRadius: 6, padding: '2px 8px',
+                        display: 'inline-block'
+                      }}>
+                        {actionStyle.icon} {actionStyle.label}
+                      </span>
+                    </div>
+                  )}
+                </div>
                 {isSkipped ? (
                   <span style={{ fontSize: 12, color: C.purple }}>⏸️ 隨機參考期</span>
                 ) : isDone ? (
@@ -358,22 +370,74 @@ function HistoryPage({ historyRows }) {
   );
 }
 
-function StatsPage({ strategyStats }) {
-  const stats = toArray(strategyStats);
-  const totalRounds = stats.reduce((a, s) => a + toNum(s.total_rounds), 0);
-  const totalHit3 = stats.reduce((a, s) => a + toNum(s.hit3), 0);
-  const overallRate = totalRounds > 0 ? totalHit3 / totalRounds : 0;
+// ★ 統計頁：分三個子頁顯示各週期命中率
+function StatsPage({ historyRows }) {
+  const [subTab, setSubTab] = useState('all');
+
+  const allRows = toArray(historyRows).filter(row => {
+    // 只計算新版數據
+    return row?.created_at >= STATS_START_DATE && row?.status === 'compared' && toArray(row?.groups_json).length > 0;
+  });
+
+  const filterByPosition = (pos) => {
+    if (pos === 'all') return allRows;
+    return allRows.filter(row => {
+      const p = toArray(row?.groups_json)[0]?.meta?.position || '';
+      return p === pos;
+    });
+  };
+
+  const calcStats = (rows) => {
+    const total = rows.length;
+    const hit3 = rows.filter(r => toNum(r?.hit_count) >= 3).length;
+    const hit2 = rows.filter(r => toNum(r?.hit_count) === 2).length;
+    const hit1 = rows.filter(r => toNum(r?.hit_count) === 1).length;
+    const hit0 = rows.filter(r => toNum(r?.hit_count) === 0).length;
+    const rate = total > 0 ? hit3 / total : 0;
+    return { total, hit3, hit2, hit1, hit0, rate };
+  };
+
+  const subTabs = [
+    { key: 'all', label: '全部', icon: '📊' },
+    { key: '爆發期', label: '爆發期', icon: '🔥' },
+    { key: '醞釀期', label: '醞釀期', icon: '⚡' },
+    { key: '觀察期', label: '觀察期', icon: '👀' },
+  ];
+
+  const currentRows = filterByPosition(subTab);
+  const stats = calcStats(currentRows);
+  const rateColor = stats.rate > 0.0375 ? C.green : C.orange;
+
   return (
     <div style={S.page}>
-      <Card title="整體命中率" icon="📊">
+      {/* 子頁切換 */}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 14, background: C.card, borderRadius: 12, padding: 8, boxShadow: C.shadow }}>
+        {subTabs.map(t => (
+          <button key={t.key} style={S.subTab(subTab === t.key)} onClick={() => setSubTab(t.key)}>
+            {t.icon} {t.label}
+          </button>
+        ))}
+      </div>
+
+      <Card title={`${subTabs.find(t => t.key === subTab)?.icon} ${subTabs.find(t => t.key === subTab)?.label} 命中率`} icon="">
         <div style={{ textAlign: 'center', padding: '10px 0' }}>
-          <div style={S.bigNum}>{fmtPercent(overallRate)}</div>
-          <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>共 {totalRounds} 組｜中3：{totalHit3} 次</div>
+          <div style={{ ...S.bigNum, color: rateColor }}>{fmtPercent(stats.rate)}</div>
+          <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>
+            共 {stats.total} 期｜中3：{stats.hit3} 次
+          </div>
         </div>
         <div style={S.divider} />
         <StatRow label="理論值（隨機）" value="3.75%" valueColor={C.textSub} />
-        <StatRow label="目前命中率" value={fmtPercent(overallRate)} valueColor={overallRate > 0.0375 ? C.green : C.orange} />
+        <StatRow label="中3命中率" value={fmtPercent(stats.rate)} valueColor={rateColor} />
+        <StatRow label="中3次數" value={`${stats.hit3} 次`} />
+        <StatRow label="中2次數" value={`${stats.hit2} 次`} />
+        <StatRow label="中1次數" value={`${stats.hit1} 次`} />
+        <StatRow label="未中次數" value={`${stats.hit0} 次`} />
       </Card>
+
+      <div style={{ fontSize: 11, color: C.textSub, textAlign: 'center', padding: '4px 0' }}>
+        ※ 統計數據從 6/8 起算（v35新版）
+      </div>
     </div>
   );
 }
@@ -451,7 +515,6 @@ export default function App() {
   const [prediction, setPrediction] = useState(null);
   const [recent20, setRecent20] = useState([]);
   const [historyRows, setHistoryRows] = useState([]);
-  const [strategyStats, setStrategyStats] = useState([]);
   const [loopStatus, setLoopStatus] = useState('初始化中...');
   const timerRef = useRef(null);
 
@@ -471,12 +534,6 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, []);
-
-  useEffect(() => {
-    apiFetch('/api/strategy-stats').then(res => {
-      if (res?.ok && Array.isArray(res.data)) setStrategyStats(res.data);
-    }).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -501,10 +558,8 @@ export default function App() {
             <div style={S.headerTitle}>🏆 富緯賓果 AI</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
-          <div style={{ textAlign: 'right' }}>
-            <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
-              {new Date().toLocaleString('zh-TW', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
-            </div>
+          <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
+            {new Date().toLocaleString('zh-TW', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
           </div>
         </div>
       </div>
@@ -519,7 +574,7 @@ export default function App() {
       {loading && tab === 'quick' && <Spinner />}
       {tab === 'quick' && <QuickPage prediction={prediction} recent20={recent20} onRefresh={loadData} loading={loading} />}
       {tab === 'history' && <HistoryPage historyRows={historyRows} />}
-      {tab === 'stats' && <StatsPage strategyStats={strategyStats} />}
+      {tab === 'stats' && <StatsPage historyRows={historyRows} />}
       {tab === 'market' && <MarketPage recent20={recent20} />}
       {tab === 'hot' && <HotPage recent20={recent20} />}
     </div>
