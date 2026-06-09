@@ -228,6 +228,56 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
   const isPrevHit3 = toNum(row?.hit_count, 0) === 3 ||
     toArray(prediction?.recent_3star_compared_rows)?.[1]?.hit_count >= 3;
 
+  // ★ 綜合信心指數計算
+  let confidenceScore = 0;
+  let confidenceReasons = [];
+
+  // 醞釀第4期以上 +30
+  if (brewCount >= 4) {
+    confidenceScore += 30;
+    confidenceReasons.push(`醞釀第${brewCount}期(+30)`);
+  }
+  // 爆發第1期 +20
+  if (burstNo === 1) {
+    confidenceScore += 20;
+    confidenceReasons.push('爆發第1期(+20)');
+  }
+  // 高命中時段 09-11點或16-18點 +20
+  if ((nowHour >= 9 && nowHour <= 11) || (nowHour >= 16 && nowHour <= 18)) {
+    confidenceScore += 20;
+    confidenceReasons.push(`${nowHour}點高命中時段(+20)`);
+  }
+  // 換手0-1顆 +25（從 recentRows 推算）
+  const prevPool = (recentRows[0]?.groups_json?.[0]?.meta?.hot_pool || '').split(',').filter(Boolean);
+  const curPool = (groups[0]?.meta?.hot_pool || '').split(',').filter(Boolean);
+  const changedCount = curPool.filter(n => !prevPool.includes(n)).length;
+  if (prevPool.length > 0 && changedCount <= 1) {
+    confidenceScore += 25;
+    confidenceReasons.push(`換手${changedCount}顆(+25)`);
+  }
+  // 連續2期未中 +15
+  if (consecutiveZero >= 2) {
+    confidenceScore += 15;
+    confidenceReasons.push(`連續${consecutiveZero}期未中(+15)`);
+  }
+  // 號碼集中61-80或21-40 +10
+  if (zoneLabel.includes('61-80') || zoneLabel.includes('21-40')) {
+    confidenceScore += 10;
+    confidenceReasons.push(`${zoneLabel}(+10)`);
+  }
+  // 前1期中2或中3 +10
+  if (toNum(recentRows[0]?.hit_count, 0) >= 2) {
+    confidenceScore += 10;
+    confidenceReasons.push('前1期有中(+10)');
+  }
+
+  // 信心等級
+  const confidenceLevel =
+    confidenceScore >= 90 ? { label: '🔥🔥 最強信號！強烈建議下注', color: '#DC2626', bg: '#FEF2F2', border: '#FCA5A5' } :
+    confidenceScore >= 70 ? { label: '🎯 強烈建議進場', color: '#15803D', bg: '#DCFCE7', border: '#86EFAC' } :
+    confidenceScore >= 50 ? { label: '⚡ 建議進場', color: '#D97706', bg: '#FEF3C7', border: '#FDE68A' } :
+    { label: '👀 觀察為主', color: '#6B7280', bg: '#F3F4F6', border: '#E5E7EB' };
+
   return (
     <div style={S.page}>
       {/* 最新開獎 */}
@@ -248,6 +298,25 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
       </Card>
 
       {/* ★ 預警系統 */}
+      {/* ★ 綜合信心指數 */}
+      {!isSkipped && !isDone && (
+        <div style={{ background: confidenceLevel.bg, border: `2px solid ${confidenceLevel.border}`, borderRadius: 14, padding: '12px 16px', marginBottom: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ fontSize: 16, fontWeight: 900, color: confidenceLevel.color }}>
+              {confidenceLevel.label}
+            </div>
+            <div style={{ fontSize: 24, fontWeight: 900, color: confidenceLevel.color }}>
+              {confidenceScore}分
+            </div>
+          </div>
+          {confidenceReasons.length > 0 && (
+            <div style={{ fontSize: 11, color: confidenceLevel.color, marginTop: 6, opacity: 0.85 }}>
+              {confidenceReasons.join(' · ')}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ★ 12-15點低信心時段警告 */}
       {lowConfidence && (
         <div style={{ background: '#FEF9C3', border: '2px solid #EAB308', borderRadius: 12, padding: '10px 14px', marginBottom: 10 }}>
