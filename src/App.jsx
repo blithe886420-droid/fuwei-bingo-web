@@ -179,19 +179,39 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
   const actionStyle = getActionStyle(action, forcedSwitch, lowConfidence);
 
   // ★ 連續期數計算（用於醒目提示）
-  // 連續爆發期：從最近預測的 consecutive_burst 判斷
   const burstNo = action === '爆發出號' && !forcedSwitch ? consecutiveBurst + 1 : 0;
-  // 連續醞釀期：從 historyRows 計算
   const recentRows = toArray(prediction?.recent_3star_compared_rows) || [];
   let brewCount = 0;
   if (action === '預備出號') {
     brewCount = 1;
     for (const r of recentRows) {
-      const rAction = toArray(r?.groups_json)[0]?.meta?.action || '';
       const rPos = toArray(r?.groups_json)[0]?.meta?.position || '';
-      if (rPos === '醞釀期' || rAction === '預備出號') brewCount++;
+      if (rPos === '醞釀期') brewCount++;
       else break;
     }
+  }
+
+  // ★ 連續未中計算（SQL28：連續2-3期未中命中率20%+）
+  let consecutiveZero = 0;
+  for (const r of recentRows) {
+    if (toNum(r?.hit_count, -1) === 0) consecutiveZero++;
+    else break;
+  }
+
+  // ★ 號碼區間分布（SQL27：61-80和21-40命中率17-20%）
+  const hotPool = (groups[0]?.meta?.hot_pool || '').split(',').map(Number).filter(Boolean);
+  const zone1 = hotPool.filter(n => n >= 1 && n <= 20).length;
+  const zone2 = hotPool.filter(n => n >= 21 && n <= 40).length;
+  const zone3 = hotPool.filter(n => n >= 41 && n <= 60).length;
+  const zone4 = hotPool.filter(n => n >= 61 && n <= 80).length;
+  const maxZone = Math.max(zone1, zone2, zone3, zone4);
+  let zoneLabel = '';
+  let zoneRate = '';
+  if (maxZone >= 3) {
+    if (zone4 === maxZone) { zoneLabel = '高號區(61-80)'; zoneRate = '20%'; }
+    else if (zone2 === maxZone) { zoneLabel = '中高號區(21-40)'; zoneRate = '17%'; }
+    else if (zone3 === maxZone) { zoneLabel = '中低號區(41-60)'; zoneRate = '11%'; }
+    else if (zone1 === maxZone) { zoneLabel = '低號區(1-20)'; zoneRate = '6%'; }
   }
   const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.green : C.textSub;
 
@@ -271,6 +291,23 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
         <div style={{ background: '#FFF9EC', border: '2px solid #C8860A', borderRadius: 12, padding: '10px 14px', marginBottom: 10 }}>
           <div style={{ fontSize: 14, fontWeight: 800, color: '#C8860A' }}>🏆 前一期中3，本期命中率12%</div>
           <div style={{ fontSize: 12, color: '#92400E', marginTop: 4 }}>中3後繼續押，命中率高於平均</div>
+        </div>
+      )}
+
+      {/* ★ 連續未中反彈信號（SQL28：連續2-3期未中命中率20%+）*/}
+      {consecutiveZero >= 2 && !isDone && !lowConfidence && (
+        <div style={{ background: '#EFF6FF', border: '2px solid #3B82F6', borderRadius: 12, padding: '10px 14px', marginBottom: 10 }}>
+          <div style={{ fontSize: 15, fontWeight: 800, color: '#1D4ED8' }}>🎯 連續{consecutiveZero}期未中，命中率20%+</div>
+          <div style={{ fontSize: 12, color: '#1E40AF', marginTop: 4 }}>SQL驗證連續未中後反彈，建議進場</div>
+        </div>
+      )}
+
+      {/* ★ 號碼區間提示（SQL27：高號區和中高號區命中率更高）*/}
+      {zoneLabel && !isDone && !lowConfidence && (
+        <div style={{ background: '#F5F3FF', border: '1.5px solid #A78BFA', borderRadius: 10, padding: '8px 12px', marginBottom: 10 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: '#7C3AED' }}>
+            📊 本期熱號集中{zoneLabel}，歷史命中率{zoneRate}
+          </div>
         </div>
       )}
 
