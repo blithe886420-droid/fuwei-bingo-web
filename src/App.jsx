@@ -172,11 +172,27 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
   const isSkipped = !row || row?.status === 'skipped' || allGroups.length === 0;
   const action = groups[0]?.meta?.action || '出號';
   const forcedSwitch = groups[0]?.meta?.forced_switch === true;
-  // ★ 修正：用當前時間判斷低信心時段，不從 meta 讀（meta 是建立時寫入的，不代表現在）
+  // ★ 修正：用當前時間判斷低信心時段
   const nowHour = new Date().getHours();
   const lowConfidence = nowHour >= 12 && nowHour <= 15;
   const consecutiveBurst = toNum(groups[0]?.meta?.consecutive_burst, 0);
   const actionStyle = getActionStyle(action, forcedSwitch, lowConfidence);
+
+  // ★ 連續期數計算（用於醒目提示）
+  // 連續爆發期：從最近預測的 consecutive_burst 判斷
+  const burstNo = action === '爆發出號' && !forcedSwitch ? consecutiveBurst + 1 : 0;
+  // 連續醞釀期：從 historyRows 計算
+  const recentRows = toArray(prediction?.recent_3star_compared_rows) || [];
+  let brewCount = 0;
+  if (action === '預備出號') {
+    brewCount = 1;
+    for (const r of recentRows) {
+      const rAction = toArray(r?.groups_json)[0]?.meta?.action || '';
+      const rPos = toArray(r?.groups_json)[0]?.meta?.position || '';
+      if (rPos === '醞釀期' || rAction === '預備出號') brewCount++;
+      else break;
+    }
+  }
   const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.green : C.textSub;
 
   const comparedDrawNumsArr = toArray(compareResult?.draw_nums);
@@ -212,34 +228,64 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
       </Card>
 
       {/* ★ 預警系統 */}
-      {isWarning && (
-        <div style={{ background: '#FEF3C7', border: '2px solid #F59E0B', borderRadius: 12, padding: '10px 14px', marginBottom: 10 }}>
-          <div style={{ fontSize: 15, fontWeight: 800, color: '#D97706' }}>⚡ 預警：準備爆發！</div>
-          <div style={{ fontSize: 12, color: '#92400E', marginTop: 4 }}>本期有 {hit2Groups} 組中2，下期爆發機率較高</div>
-        </div>
-      )}
-
-      {/* ★ 中3後強烈進場信號（SQL8：命中率23.53%）*/}
-      {isPrevHit3 && !isDone && (
-        <div style={{ background: '#DCFCE7', border: '2px solid #22C55E', borderRadius: 12, padding: '10px 14px', marginBottom: 10 }}>
-          <div style={{ fontSize: 15, fontWeight: 800, color: '#15803D' }}>🎯 強烈進場信號！</div>
-          <div style={{ fontSize: 12, color: '#166534', marginTop: 4 }}>前一期中3，本期命中率高達23.5%，強烈建議下注</div>
-        </div>
-      )}
-
-      {/* ★ 低信心時段警告（12-15點）*/}
+      {/* ★ 12-15點低信心時段警告 */}
       {lowConfidence && (
         <div style={{ background: '#FEF9C3', border: '2px solid #EAB308', borderRadius: 12, padding: '10px 14px', marginBottom: 10 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: '#A16207' }}>⚠️ 低信心時段（12-15點）</div>
-          <div style={{ fontSize: 11, color: '#A16207', marginTop: 3 }}>SQL驗證此時段命中率偏低，建議觀察為主，謹慎下注</div>
+          <div style={{ fontSize: 13, fontWeight: 800, color: '#A16207' }}>⚠️ 低命中時段（12-15點）</div>
+          <div style={{ fontSize: 11, color: '#A16207', marginTop: 3 }}>歷史數據顯示此時段命中率偏低（0-4%），建議觀察為主，謹慎下注</div>
         </div>
       )}
 
-      {/* ★ 爆發期連續切換警告 */}
+      {/* ★ 爆發第1期：強力進場信號 */}
+      {burstNo === 1 && !isDone && !lowConfidence && (
+        <div style={{ background: '#FFF9EC', border: '2px solid #F59E0B', borderRadius: 12, padding: '10px 14px', marginBottom: 10 }}>
+          <div style={{ fontSize: 16, fontWeight: 900, color: '#C8860A' }}>🔥 爆發第1期！歷史命中率 15%</div>
+          <div style={{ fontSize: 12, color: '#92400E', marginTop: 4 }}>四週期熱號剛進入爆發，最佳進場時機，建議下注</div>
+        </div>
+      )}
+
+      {/* ★ 爆發第2期：注意 */}
+      {burstNo === 2 && !isDone && !lowConfidence && (
+        <div style={{ background: '#FFF7ED', border: '2px solid #FB923C', borderRadius: 12, padding: '10px 14px', marginBottom: 10 }}>
+          <div style={{ fontSize: 14, fontWeight: 800, color: '#EA580C' }}>🔥 爆發第2期，歷史命中率 6%</div>
+          <div style={{ fontSize: 12, color: '#C2410C', marginTop: 4 }}>命中率開始下滑，可小試，第3期將自動切換</div>
+        </div>
+      )}
+
+      {/* ★ 醞釀期第4期以上：強力進場 */}
+      {brewCount >= 7 && !isDone && !lowConfidence && (
+        <div style={{ background: '#DCFCE7', border: '2px solid #16A34A', borderRadius: 12, padding: '10px 14px', marginBottom: 10 }}>
+          <div style={{ fontSize: 16, fontWeight: 900, color: '#15803D' }}>🎯 醞釀連續第{brewCount}期！命中率25%+</div>
+          <div style={{ fontSize: 12, color: '#166534', marginTop: 4 }}>長期醞釀，最佳進場時機，強烈建議下注</div>
+        </div>
+      )}
+      {brewCount >= 4 && brewCount < 7 && !isDone && !lowConfidence && (
+        <div style={{ background: '#F0FDF4', border: '2px solid #4ADE80', borderRadius: 12, padding: '10px 14px', marginBottom: 10 }}>
+          <div style={{ fontSize: 15, fontWeight: 800, color: '#16A34A' }}>⚡ 醞釀連續第{brewCount}期！命中率20%</div>
+          <div style={{ fontSize: 12, color: '#166534', marginTop: 4 }}>進入高命中區間，建議進場</div>
+        </div>
+      )}
+
+      {/* ★ 前1期中3信號 */}
+      {isPrevHit3 && !isDone && !lowConfidence && burstNo === 0 && brewCount < 4 && (
+        <div style={{ background: '#FFF9EC', border: '2px solid #C8860A', borderRadius: 12, padding: '10px 14px', marginBottom: 10 }}>
+          <div style={{ fontSize: 14, fontWeight: 800, color: '#C8860A' }}>🏆 前一期中3，本期命中率12%</div>
+          <div style={{ fontSize: 12, color: '#92400E', marginTop: 4 }}>中3後繼續押，命中率高於平均</div>
+        </div>
+      )}
+
+      {/* ★ 多組中2預警 */}
+      {isWarning && (
+        <div style={{ background: '#FEF3C7', border: '2px solid #F59E0B', borderRadius: 12, padding: '10px 14px', marginBottom: 10 }}>
+          <div style={{ fontSize: 14, fontWeight: 800, color: '#D97706' }}>⚡ 多組中2，下期注意</div>
+          <div style={{ fontSize: 12, color: '#92400E', marginTop: 4 }}>本期有 {hit2Groups} 組中2，下期前1期中2命中率11.94%</div>
+        </div>
+      )}
+
+      {/* ★ 爆發切換提示 */}
       {forcedSwitch && !lowConfidence && (
         <div style={{ background: '#FFF7ED', border: '1.5px solid #FED7AA', borderRadius: 12, padding: '8px 12px', marginBottom: 10 }}>
           <div style={{ fontSize: 12, fontWeight: 700, color: '#C2410C' }}>🔄 爆發期已連續{consecutiveBurst + 1}期，自動切換醞釀期號碼</div>
-          <div style={{ fontSize: 11, color: '#C2410C', marginTop: 2 }}>SQL驗證爆發期第3期後命中率趨近0%</div>
         </div>
       )}
 
@@ -265,11 +311,11 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
               {actionStyle.icon} {actionStyle.label}
             </div>
             <div style={{ fontSize: 11, color: actionStyle.color, opacity: 0.8, marginTop: 2 }}>
-              {lowConfidence && '目前12-15點低信心時段，號碼僅供參考'}
-              {!lowConfidence && action === '爆發出號' && !forcedSwitch && '四週期穩定熱號，最強信號'}
-              {!lowConfidence && action === '預備出號' && !forcedSwitch && '三週期持續出現，即將爆發'}
+              {lowConfidence && '12-15點低信心時段，號碼僅供參考'}
+              {!lowConfidence && action === '爆發出號' && !forcedSwitch && `四週期熱號，爆發第${burstNo}期`}
+              {!lowConfidence && action === '預備出號' && !forcedSwitch && `三週期持續醞釀，連續第${brewCount}期`}
               {!lowConfidence && action === '參考出號' && !forcedSwitch && '兩週期觀察號碼，謹慎參考'}
-              {!lowConfidence && forcedSwitch && '爆發期已過峰值，切換三週期號碼'}
+              {!lowConfidence && forcedSwitch && '爆發已過峰值，切換三週期號碼'}
             </div>
           </div>
 
@@ -343,9 +389,7 @@ function HistoryPage({ historyRows }) {
           const action = allGroups[0]?.meta?.action || '';
           const position = allGroups[0]?.meta?.position || '';
           const forcedSwitch = allGroups[0]?.meta?.forced_switch === true;
-          // ★ 修正：近期頁也用建立時間判斷低信心時段，不用當前時間
-          const createdHour = row?.created_at ? new Date(row.created_at).getHours() + 8 : 0;
-          const lowConfidence = (createdHour % 24) >= 12 && (createdHour % 24) <= 15;
+          const lowConfidence = allGroups[0]?.meta?.low_confidence_hour === true;
           const actionStyle = getActionStyle(action, forcedSwitch, lowConfidence);
           const comparedDraw = toArray(compareResult?.detail)[0]?.draw_no;
           const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.green : C.gray;
