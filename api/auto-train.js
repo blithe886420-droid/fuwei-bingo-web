@@ -69,6 +69,7 @@ async function fetchRecent3Predictions(db) {
     // ★ 傳入 position 和 action 給策略函數判斷連續爆發次數
     position: p.groups_json?.[0]?.meta?.position || '',
     action: p.groups_json?.[0]?.meta?.action || '',
+    hot_pool: p.groups_json?.[0]?.meta?.hot_pool || '',
     hit2_groups: Array.isArray(p.compare_result_json?.detail)
       ? p.compare_result_json.detail.filter(d => d?.hit === 2).length
       : 0,
