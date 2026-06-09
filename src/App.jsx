@@ -172,7 +172,9 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
   const isSkipped = !row || row?.status === 'skipped' || allGroups.length === 0;
   const action = groups[0]?.meta?.action || '出號';
   const forcedSwitch = groups[0]?.meta?.forced_switch === true;
-  const lowConfidence = groups[0]?.meta?.low_confidence_hour === true;
+  // ★ 修正：用當前時間判斷低信心時段，不從 meta 讀（meta 是建立時寫入的，不代表現在）
+  const nowHour = new Date().getHours();
+  const lowConfidence = nowHour >= 12 && nowHour <= 15;
   const consecutiveBurst = toNum(groups[0]?.meta?.consecutive_burst, 0);
   const actionStyle = getActionStyle(action, forcedSwitch, lowConfidence);
   const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.green : C.textSub;
@@ -341,7 +343,9 @@ function HistoryPage({ historyRows }) {
           const action = allGroups[0]?.meta?.action || '';
           const position = allGroups[0]?.meta?.position || '';
           const forcedSwitch = allGroups[0]?.meta?.forced_switch === true;
-          const lowConfidence = allGroups[0]?.meta?.low_confidence_hour === true;
+          // ★ 修正：近期頁也用建立時間判斷低信心時段，不用當前時間
+          const createdHour = row?.created_at ? new Date(row.created_at).getHours() + 8 : 0;
+          const lowConfidence = (createdHour % 24) >= 12 && (createdHour % 24) <= 15;
           const actionStyle = getActionStyle(action, forcedSwitch, lowConfidence);
           const comparedDraw = toArray(compareResult?.detail)[0]?.draw_no;
           const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.green : C.gray;
