@@ -263,11 +263,11 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
               {actionStyle.icon} {actionStyle.label}
             </div>
             <div style={{ fontSize: 11, color: actionStyle.color, opacity: 0.8, marginTop: 2 }}>
-              {action === '爆發出號' && !forcedSwitch && '四週期穩定熱號，最強信號'}
-              {action === '預備出號' && !forcedSwitch && '三週期持續出現，即將爆發'}
-              {action === '參考出號' && !forcedSwitch && !lowConfidence && '兩週期觀察號碼，謹慎參考'}
-              {forcedSwitch && !lowConfidence && '爆發期已過峰值，切換三週期號碼'}
-              {lowConfidence && '12-15點低信心時段，僅供參考'}
+              {lowConfidence && '目前12-15點低信心時段，號碼僅供參考'}
+              {!lowConfidence && action === '爆發出號' && !forcedSwitch && '四週期穩定熱號，最強信號'}
+              {!lowConfidence && action === '預備出號' && !forcedSwitch && '三週期持續出現，即將爆發'}
+              {!lowConfidence && action === '參考出號' && !forcedSwitch && '兩週期觀察號碼，謹慎參考'}
+              {!lowConfidence && forcedSwitch && '爆發期已過峰值，切換三週期號碼'}
             </div>
           </div>
 
