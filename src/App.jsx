@@ -500,6 +500,38 @@ function HistoryPage({ historyRows }) {
           const comparedDraw = toArray(compareResult?.detail)[0]?.draw_no;
           const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.green : C.gray;
 
+          // ★ 從 meta 讀取信心分數資料
+          const metaBrewCount = toNum(allGroups[0]?.meta?.brew_count, 0);
+          const metaConsecZero = toNum(allGroups[0]?.meta?.consecutive_zero, 0);
+          const metaPrevHit = toNum(allGroups[0]?.meta?.prev_hit_count, 0);
+          const metaPrevPool = (allGroups[0]?.meta?.prev_hot_pool || '').split(',').filter(Boolean);
+          const metaCurPool = (allGroups[0]?.meta?.hot_pool || '').split(',').filter(Boolean);
+          const metaChanged = metaCurPool.filter(n => !metaPrevPool.includes(n)).length;
+          const metaBurstNo = action === '爆發出號' && !forcedSwitch ? toNum(allGroups[0]?.meta?.consecutive_burst, 0) + 1 : 0;
+          const metaHour = row?.created_at ? (new Date(row.created_at).getUTCHours() + 8) % 24 : 0;
+          const metaIsHighHour = (metaHour >= 9 && metaHour <= 11) || (metaHour >= 16 && metaHour <= 18);
+          const metaZone = (() => {
+            const pool = metaCurPool.map(Number);
+            const z4 = pool.filter(n => n >= 61 && n <= 80).length;
+            const z2 = pool.filter(n => n >= 21 && n <= 40).length;
+            return (z4 >= 3 || z2 >= 3);
+          })();
+
+          // 計算信心分數
+          let histScore = 0;
+          if (metaBrewCount >= 4) histScore += 30;
+          if (metaBurstNo === 1) histScore += 20;
+          if (metaIsHighHour) histScore += 20;
+          if (metaPrevPool.length > 0 && metaChanged <= 1) histScore += 25;
+          if (metaConsecZero >= 2) histScore += 15;
+          if (metaZone) histScore += 10;
+          if (metaPrevHit >= 2) histScore += 10;
+
+          const histLevel = histScore >= 90 ? { label: '🔥🔥最強', color: '#DC2626' } :
+            histScore >= 70 ? { label: '🎯強烈建議', color: '#15803D' } :
+            histScore >= 50 ? { label: '⚡建議進場', color: '#D97706' } :
+            { label: '👀觀察', color: '#6B7280' };
+
           return (
             <div key={row?.id || idx} style={{ ...S.card, marginBottom: 10, padding: '12px 14px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
@@ -508,9 +540,12 @@ function HistoryPage({ historyRows }) {
                     預測 {fmt(row?.source_draw_no)} → 比對 {fmt(comparedDraw || '')}
                   </span>
                   {!isSkipped && position && (
-                    <div style={{ marginTop: 3 }}>
+                    <div style={{ marginTop: 3, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                       <span style={{ fontSize: 11, fontWeight: 700, color: actionStyle.color, background: actionStyle.bg, border: `1px solid ${actionStyle.border}`, borderRadius: 6, padding: '2px 8px', display: 'inline-block' }}>
                         {actionStyle.icon} {actionStyle.label}
+                      </span>
+                      <span style={{ fontSize: 11, fontWeight: 800, color: histLevel.color, background: histLevel.color + '18', borderRadius: 6, padding: '2px 8px', display: 'inline-block' }}>
+                        {histLevel.label} {histScore}分
                       </span>
                     </div>
                   )}
