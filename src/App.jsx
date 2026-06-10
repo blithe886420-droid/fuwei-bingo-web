@@ -235,71 +235,49 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
   const isFastTurnover = prevPool.length > 0 && changedCount >= 4;
   const isSlowTurnover = prevPool.length > 0 && changedCount <= 1;
 
-  // ★ 綜合信心指數計算（根據SQL最新發現調整）
+  // ★ 綜合信心指數（根據SQL完整數據重新校正）
+  // 核心原則：時段是最重要的信號，其次是號碼區間
+  // 兩個同時出現命中率28%，單獨時段15%，單獨高號區21%
   let confidenceScore = 0;
   let confidenceReasons = [];
 
-  // 醞釀第4期以上 +30（SQL4：命中率20%+）
-  if (brewCount >= 4) {
-    confidenceScore += 30;
-    confidenceReasons.push(`醞釀第${brewCount}期(+30)`);
+  const isHighHour = (nowHour >= 9 && nowHour <= 11) || (nowHour >= 16 && nowHour <= 18);
+
+  // ★ 高命中時段（09-11或16-18點）+50分 — 最強單一信號，命中率15.68%
+  if (isHighHour) {
+    confidenceScore += 50;
+    confidenceReasons.push(`${nowHour}點高命中時段(+50)`);
   }
-  // 爆發第1期 +20（SQL3：命中率11%）
-  if (burstNo === 1) {
-    confidenceScore += 20;
-    confidenceReasons.push('爆發第1期(+20)');
-  }
-  // 強制切換醞釀期 +15（SQL19：命中率12.5%，比正常醞釀期高）
-  if (forcedSwitch && action === '預備出號') {
-    confidenceScore += 15;
-    confidenceReasons.push('強制切換醞釀(+15)');
-  }
-  // 高命中時段 09-11點或16-18點 +20（SQL2：命中率16-22%）
-  if ((nowHour >= 9 && nowHour <= 11) || (nowHour >= 16 && nowHour <= 18)) {
-    confidenceScore += 20;
-    confidenceReasons.push(`${nowHour}點高命中時段(+20)`);
-  }
-  // 換手0-1顆 +25（SQL6：命中率13-25%）
-  if (isSlowTurnover) {
-    confidenceScore += 25;
-    confidenceReasons.push(`換手${changedCount}顆(+25)`);
-  }
-  // 換手快+爆發期 +10（SQL22：命中率12.82%，換手快時爆發期反而比醞釀期強）
-  if (isFastTurnover && burstNo >= 1) {
-    confidenceScore += 10;
-    confidenceReasons.push(`換手快+爆發期(+10)`);
-  }
-  // 連續2期未中 +15（SQL8：命中率14%）
-  if (consecutiveZero >= 2) {
-    confidenceScore += 15;
-    confidenceReasons.push(`連續${consecutiveZero}期未中(+15)`);
-  }
-  // 號碼集中61-80 +15（SQL23：換手快時21%，最強區間）
+  // ★ 號碼集中61-80 +30分 — 單獨21%，配合時段28%
   if (zoneLabel.includes('61-80')) {
-    confidenceScore += 15;
-    confidenceReasons.push(`${zoneLabel}(+15)`);
+    confidenceScore += 30;
+    confidenceReasons.push(`高號區61-80(+30)`);
   }
-  // 號碼集中21-40 +10（SQL9：命中率12.68%）
+  // ★ 號碼集中21-40 +15分 — 單獨11.54%
   else if (zoneLabel.includes('21-40')) {
-    confidenceScore += 10;
-    confidenceReasons.push(`${zoneLabel}(+10)`);
+    confidenceScore += 15;
+    confidenceReasons.push(`中高號區21-40(+15)`);
   }
-  // 前1期中2或中3 +10（SQL7：命中率11-14%）
+  // 前1期有中 +10分 — 命中率12.24%
   if (toNum(recentRows[0]?.hit_count, 0) >= 2) {
     confidenceScore += 10;
     confidenceReasons.push('前1期有中(+10)');
   }
-  // 12-15點低信心時段 -20（SQL2：命中率0-5%）
+  // 醞釀4期以上 +10分 — 單獨0%但配合時段15%，輔助加分
+  if (brewCount >= 4 && isHighHour) {
+    confidenceScore += 10;
+    confidenceReasons.push(`醞釀第${brewCount}期(+10)`);
+  }
+  // 12-15點 -50分 — 命中率1.92%，幾乎必輸
   if (lowConfidence) {
-    confidenceScore -= 20;
-    confidenceReasons.push('12-15點低信心(-20)');
+    confidenceScore -= 50;
+    confidenceReasons.push('12-15點低信心(-50)');
   }
 
-  // 信心等級（調整門檻，反映更精準的進場條件）
+  // 信心等級（根據真實命中率設門檻）
   const confidenceLevel =
-    confidenceScore >= 90 ? { label: '🔥🔥 最強信號！強烈建議下注', color: '#DC2626', bg: '#FEF2F2', border: '#FCA5A5' } :
-    confidenceScore >= 70 ? { label: '🎯 強烈建議進場', color: '#15803D', bg: '#DCFCE7', border: '#86EFAC' } :
-    confidenceScore >= 50 ? { label: '⚡ 建議進場', color: '#D97706', bg: '#FEF3C7', border: '#FDE68A' } :
+    confidenceScore >= 80 ? { label: '🔥🔥 最強信號！強烈建議下注', color: '#DC2626', bg: '#FEF2F2', border: '#FCA5A5' } :
+    confidenceScore >= 50 ? { label: '🎯 建議進場', color: '#15803D', bg: '#DCFCE7', border: '#86EFAC' } :
     confidenceScore >= 30 ? { label: '👀 觀察為主', color: '#6B7280', bg: '#F3F4F6', border: '#E5E7EB' } :
     { label: '⏸️ 不建議進場', color: '#9CA3AF', bg: '#F9FAFB', border: '#E5E7EB' };
 
