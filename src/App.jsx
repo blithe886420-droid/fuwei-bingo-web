@@ -235,50 +235,69 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
   const isFastTurnover = prevPool.length > 0 && changedCount >= 4;
   const isSlowTurnover = prevPool.length > 0 && changedCount <= 1;
 
-  // ★ 綜合信心指數（根據SQL完整數據重新校正）
-  // 核心原則：時段是最重要的信號，其次是號碼區間
-  // 兩個同時出現命中率28%，單獨時段15%，單獨高號區21%
+  // ★ 市場狀態感知
+  const isHighHour = (nowHour >= 9 && nowHour <= 11) || (nowHour >= 16 && nowHour <= 18);
+  const isDeadHour = nowHour >= 12 && nowHour <= 15;
+  const metaIsHighHour = groups[0]?.meta?.is_high_hour === true;
+  const metaIsDeadHour = groups[0]?.meta?.is_dead_hour === true;
+  const isBadBoard = groups[0]?.meta?.is_bad_board === true;
+  const position = groups[0]?.meta?.position || '';
+
+  // ★ 綜合信心指數（完整市場感知版）
   let confidenceScore = 0;
   let confidenceReasons = [];
 
-  const isHighHour = (nowHour >= 9 && nowHour <= 11) || (nowHour >= 16 && nowHour <= 18);
-
-  // ★ 高命中時段（09-11或16-18點）+50分 — 最強單一信號，命中率15.68%
+  // ★ 高命中時段 +50分（命中率15.68%）
   if (isHighHour) {
     confidenceScore += 50;
     confidenceReasons.push(`${nowHour}點高命中時段(+50)`);
   }
-  // ★ 號碼集中61-80 +30分 — 單獨21%，配合時段28%
+  // ★ 號碼集中61-80 +30分（單獨21%，配合時段28%）
   if (zoneLabel.includes('61-80')) {
     confidenceScore += 30;
     confidenceReasons.push(`高號區61-80(+30)`);
   }
-  // ★ 號碼集中21-40 +15分 — 單獨11.54%
+  // ★ 號碼集中21-40 +15分（命中率11.54%）
   else if (zoneLabel.includes('21-40')) {
     confidenceScore += 15;
     confidenceReasons.push(`中高號區21-40(+15)`);
   }
-  // 前1期有中 +10分 — 命中率12.24%
+  // ★ 換手慢(0-1顆) +20分（命中率13-25%）
+  if (isSlowTurnover) {
+    confidenceScore += 20;
+    confidenceReasons.push(`換手${changedCount}顆穩定(+20)`);
+  }
+  // ★ 換手快+爆發期 +10分（命中率12.82%）
+  if (isFastTurnover && action === '爆發出號') {
+    confidenceScore += 10;
+    confidenceReasons.push(`換手快+爆發期(+10)`);
+  }
+  // ★ 醞釀4期+高命中時段 +10分（命中率15.38%）
+  if (brewCount >= 4 && isHighHour) {
+    confidenceScore += 10;
+    confidenceReasons.push(`醞釀第${brewCount}期+時段(+10)`);
+  }
+  // ★ 前1期有中 +10分（命中率12.24%）
   if (toNum(recentRows[0]?.hit_count, 0) >= 2) {
     confidenceScore += 10;
     confidenceReasons.push('前1期有中(+10)');
   }
-  // 醞釀4期以上 +10分 — 單獨0%但配合時段15%，輔助加分
-  if (brewCount >= 4 && isHighHour) {
-    confidenceScore += 10;
-    confidenceReasons.push(`醞釀第${brewCount}期(+10)`);
-  }
-  // 12-15點 -50分 — 命中率1.92%，幾乎必輸
-  if (lowConfidence) {
+  // ★ 12-15點死亡時段 -50分（命中率1.92%）
+  if (isDeadHour) {
     confidenceScore -= 50;
-    confidenceReasons.push('12-15點低信心(-50)');
+    confidenceReasons.push('12-15點死亡時段(-50)');
+  }
+  // ★ 觀察期 -20分（命中率2.44%）
+  if (position === '觀察期') {
+    confidenceScore -= 20;
+    confidenceReasons.push('觀察期弱信號(-20)');
   }
 
-  // 信心等級（根據真實命中率設門檻）
+  // 信心等級
   const confidenceLevel =
     confidenceScore >= 80 ? { label: '🔥🔥 最強信號！強烈建議下注', color: '#DC2626', bg: '#FEF2F2', border: '#FCA5A5' } :
     confidenceScore >= 50 ? { label: '🎯 建議進場', color: '#15803D', bg: '#DCFCE7', border: '#86EFAC' } :
-    confidenceScore >= 30 ? { label: '👀 觀察為主', color: '#6B7280', bg: '#F3F4F6', border: '#E5E7EB' } :
+    confidenceScore >= 20 ? { label: '👀 觀察為主', color: '#6B7280', bg: '#F3F4F6', border: '#E5E7EB' } :
     { label: '⏸️ 不建議進場', color: '#9CA3AF', bg: '#F9FAFB', border: '#E5E7EB' };
 
   return (
@@ -320,11 +339,11 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
         </div>
       )}
 
-      {/* ★ 12-15點低信心時段警告 */}
-      {lowConfidence && (
-        <div style={{ background: '#FEF9C3', border: '2px solid #EAB308', borderRadius: 12, padding: '10px 14px', marginBottom: 10 }}>
-          <div style={{ fontSize: 13, fontWeight: 800, color: '#A16207' }}>⚠️ 低命中時段（12-15點）</div>
-          <div style={{ fontSize: 11, color: '#A16207', marginTop: 3 }}>歷史數據顯示此時段命中率偏低（0-4%），建議觀察為主，謹慎下注</div>
+      {/* ★ 12-15點死亡時段警告 */}
+      {isDeadHour && (
+        <div style={{ background: '#FEE2E2', border: '2px solid #EF4444', borderRadius: 12, padding: '10px 14px', marginBottom: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 800, color: '#DC2626' }}>🚫 死亡時段（12-15點）</div>
+          <div style={{ fontSize: 11, color: '#DC2626', marginTop: 3 }}>命中率1.92%，系統已切換保守策略，強烈不建議下注</div>
         </div>
       )}
 
@@ -768,7 +787,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0611-1</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
