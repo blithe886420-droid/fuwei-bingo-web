@@ -248,16 +248,24 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
   const sigPrevHit = groups[0]?.meta?.sig_prev_hit === true;
   const totalQualified = toNum(groups[0]?.meta?.total_qualified, 0);
 
-  // ★ 蜘蛛感知信心指數
-  // 不是加減分，而是條件檢查
-  // 真獵物 = 多個真信號同時出現
+  // ★ 蜘蛛感知信心指數 V0611-3
+  const sigConcentrated = groups[0]?.meta?.sig_concentrated === true;
+  const isBrewLowPoint = groups[0]?.meta?.is_brew_low_point === true;
+  const isConcentrated = groups[0]?.meta?.is_concentrated === true;
+
   let confidenceScore = 0;
   let confidenceReasons = [];
 
-  // 基礎：時段是最重要的門（命中率15%+）
+  // ★ 高命中時段+換手快 = 假信號，直接0分（系統已不出手）
+  // 高命中時段（命中率15%+）
   if (sigHighHour) {
     confidenceScore += 50;
     confidenceReasons.push(`${nowHour}點高命中時段(+50)`);
+  }
+  // 號碼集中（SQL E：集中17.95% vs 分散12.11%）
+  if (sigConcentrated) {
+    confidenceScore += 20;
+    confidenceReasons.push(`號碼集中(+20)`);
   }
   // 換手穩定（命中率13-25%）
   if (sigSlowTurnover) {
@@ -266,33 +274,38 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
   }
   // 有高號區號碼（命中率+）
   if (sigHighZone) {
-    confidenceScore += 20;
-    confidenceReasons.push(`高號區61-80(+20)`);
+    confidenceScore += 15;
+    confidenceReasons.push(`高號區61-80(+15)`);
   }
   // 醞釀4期+時段（命中率15.38%）
   if (sigBrew4Hour) {
     confidenceScore += 15;
     confidenceReasons.push(`醞釀${brewCount}期+時段(+15)`);
   }
-  // 前1期有中（命中率12.24%）
+  // 前1期中2後（命中率12.78%）
   if (sigPrevHit) {
     confidenceScore += 10;
     confidenceReasons.push(`前1期有中(+10)`);
   }
-  // 號碼池太少（網有破洞）
+  // 號碼池太少
   if (totalQualified < 8) {
     confidenceScore -= 30;
-    confidenceReasons.push(`號碼池稀少${totalQualified}顆(-30)`);
+    confidenceReasons.push(`號碼池稀少(-30)`);
   }
   // 12-15點死亡時段
   if (isDeadHour) {
     confidenceScore -= 50;
     confidenceReasons.push(`12-15點死亡時段(-50)`);
   }
-  // 觀察期（命中率2.44%）
+  // 觀察期
   if (position === '觀察期') {
     confidenceScore -= 20;
     confidenceReasons.push(`觀察期弱信號(-20)`);
+  }
+  // ★ 醞釀期第5期低谷（命中率0%）
+  if (isBrewLowPoint) {
+    confidenceScore -= 40;
+    confidenceReasons.push(`醞釀第5期低谷(-40)`);
   }
 
   // 信心等級
@@ -789,7 +802,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0611-2</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0612-1</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
