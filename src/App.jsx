@@ -802,7 +802,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0612-1</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0612-2</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
