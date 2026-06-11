@@ -1,5 +1,10 @@
 /**
- * auto-train.js - v36 SQL驗證優化版
+ * auto-train.js - V0611-2
+ *
+ * ★ cron 觸發時間說明：
+ * 請在 server.js 把 cron 從 "3,8 * * * *" 改成 "2,7 * * * *"
+ * 讓系統在每5分鐘的第2分和第7分觸發
+ * 賓果開獎是0分和5分，改成2分和7分後有3分鐘填單時間
  */
 
 import { createClient } from '@supabase/supabase-js';
@@ -293,12 +298,17 @@ export default async function handler(req, res) {
       });
     }
 
+    const spiderMode = groups[0]?.meta?.spider_mode || 'normal';
+    const trueSignalCount = groups[0]?.meta?.true_signal_count || 0;
+
     return res.status(200).json({
       ok: true,
       latest_draw_no: latestDrawNo,
       compared_count: toNum(compareResult?.processed, 0),
       created_count: prediction ? 1 : 0,
       groups_count: groups.length,
+      spider_mode: spiderMode,
+      true_signal_count: trueSignalCount,
     });
 
   } catch (error) {
