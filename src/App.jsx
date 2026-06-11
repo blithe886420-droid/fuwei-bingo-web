@@ -235,70 +235,72 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
   const isFastTurnover = prevPool.length > 0 && changedCount >= 4;
   const isSlowTurnover = prevPool.length > 0 && changedCount <= 1;
 
-  // ★ 市場狀態感知
+  // ★ 蜘蛛感知系統：從meta讀取後端計算的真信號
   const isHighHour = (nowHour >= 9 && nowHour <= 11) || (nowHour >= 16 && nowHour <= 18);
   const isDeadHour = nowHour >= 12 && nowHour <= 15;
-  const metaIsHighHour = groups[0]?.meta?.is_high_hour === true;
-  const metaIsDeadHour = groups[0]?.meta?.is_dead_hour === true;
-  const isBadBoard = groups[0]?.meta?.is_bad_board === true;
   const position = groups[0]?.meta?.position || '';
+  const spiderMode = groups[0]?.meta?.spider_mode || 'normal';
+  const trueSignalCount = toNum(groups[0]?.meta?.true_signal_count, 0);
+  const sigHighHour = groups[0]?.meta?.sig_high_hour === true;
+  const sigSlowTurnover = groups[0]?.meta?.sig_slow_turnover === true;
+  const sigHighZone = groups[0]?.meta?.sig_high_zone === true;
+  const sigBrew4Hour = groups[0]?.meta?.sig_brew4_hour === true;
+  const sigPrevHit = groups[0]?.meta?.sig_prev_hit === true;
+  const totalQualified = toNum(groups[0]?.meta?.total_qualified, 0);
 
-  // ★ 綜合信心指數（完整市場感知版）
+  // ★ 蜘蛛感知信心指數
+  // 不是加減分，而是條件檢查
+  // 真獵物 = 多個真信號同時出現
   let confidenceScore = 0;
   let confidenceReasons = [];
 
-  // ★ 高命中時段 +50分（命中率15.68%）
-  if (isHighHour) {
+  // 基礎：時段是最重要的門（命中率15%+）
+  if (sigHighHour) {
     confidenceScore += 50;
     confidenceReasons.push(`${nowHour}點高命中時段(+50)`);
   }
-  // ★ 號碼集中61-80 +30分（單獨21%，配合時段28%）
-  if (zoneLabel.includes('61-80')) {
-    confidenceScore += 30;
-    confidenceReasons.push(`高號區61-80(+30)`);
-  }
-  // ★ 號碼集中21-40 +15分（命中率11.54%）
-  else if (zoneLabel.includes('21-40')) {
-    confidenceScore += 15;
-    confidenceReasons.push(`中高號區21-40(+15)`);
-  }
-  // ★ 換手慢(0-1顆) +20分（命中率13-25%）
-  if (isSlowTurnover) {
+  // 換手穩定（命中率13-25%）
+  if (sigSlowTurnover) {
     confidenceScore += 20;
-    confidenceReasons.push(`換手${changedCount}顆穩定(+20)`);
+    confidenceReasons.push(`換手穩定(+20)`);
   }
-  // ★ 換手快+爆發期 +10分（命中率12.82%）
-  if (isFastTurnover && action === '爆發出號') {
+  // 有高號區號碼（命中率+）
+  if (sigHighZone) {
+    confidenceScore += 20;
+    confidenceReasons.push(`高號區61-80(+20)`);
+  }
+  // 醞釀4期+時段（命中率15.38%）
+  if (sigBrew4Hour) {
+    confidenceScore += 15;
+    confidenceReasons.push(`醞釀${brewCount}期+時段(+15)`);
+  }
+  // 前1期有中（命中率12.24%）
+  if (sigPrevHit) {
     confidenceScore += 10;
-    confidenceReasons.push(`換手快+爆發期(+10)`);
+    confidenceReasons.push(`前1期有中(+10)`);
   }
-  // ★ 醞釀4期+高命中時段 +10分（命中率15.38%）
-  if (brewCount >= 4 && isHighHour) {
-    confidenceScore += 10;
-    confidenceReasons.push(`醞釀第${brewCount}期+時段(+10)`);
+  // 號碼池太少（網有破洞）
+  if (totalQualified < 8) {
+    confidenceScore -= 30;
+    confidenceReasons.push(`號碼池稀少${totalQualified}顆(-30)`);
   }
-  // ★ 前1期有中 +10分（命中率12.24%）
-  if (toNum(recentRows[0]?.hit_count, 0) >= 2) {
-    confidenceScore += 10;
-    confidenceReasons.push('前1期有中(+10)');
-  }
-  // ★ 12-15點死亡時段 -50分（命中率1.92%）
+  // 12-15點死亡時段
   if (isDeadHour) {
     confidenceScore -= 50;
-    confidenceReasons.push('12-15點死亡時段(-50)');
+    confidenceReasons.push(`12-15點死亡時段(-50)`);
   }
-  // ★ 觀察期 -20分（命中率2.44%）
+  // 觀察期（命中率2.44%）
   if (position === '觀察期') {
     confidenceScore -= 20;
-    confidenceReasons.push('觀察期弱信號(-20)');
+    confidenceReasons.push(`觀察期弱信號(-20)`);
   }
 
   // 信心等級
   const confidenceLevel =
-    confidenceScore >= 80 ? { label: '🔥🔥 最強信號！強烈建議下注', color: '#DC2626', bg: '#FEF2F2', border: '#FCA5A5' } :
+    confidenceScore >= 80 ? { label: '🕷️ 真獵物！閃電出手', color: '#DC2626', bg: '#FEF2F2', border: '#FCA5A5' } :
     confidenceScore >= 50 ? { label: '🎯 建議進場', color: '#15803D', bg: '#DCFCE7', border: '#86EFAC' } :
-    confidenceScore >= 20 ? { label: '👀 觀察為主', color: '#6B7280', bg: '#F3F4F6', border: '#E5E7EB' } :
-    { label: '⏸️ 不建議進場', color: '#9CA3AF', bg: '#F9FAFB', border: '#E5E7EB' };
+    confidenceScore >= 20 ? { label: '👀 觀察等待', color: '#6B7280', bg: '#F3F4F6', border: '#E5E7EB' } :
+    { label: '⏸️ 葉子，不要衝', color: '#9CA3AF', bg: '#F9FAFB', border: '#E5E7EB' };
 
   return (
     <div style={S.page}>
@@ -787,7 +789,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0611-1</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0611-2</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
