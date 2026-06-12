@@ -538,37 +538,36 @@ function HistoryPage({ historyRows }) {
           const comparedDraw = toArray(compareResult?.detail)[0]?.draw_no;
           const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.green : C.gray;
 
-          // ★ 從 meta 讀取信心分數資料
-          const metaBrewCount = toNum(allGroups[0]?.meta?.brew_count, 0);
-          const metaConsecZero = toNum(allGroups[0]?.meta?.consecutive_zero, 0);
-          const metaPrevHit = toNum(allGroups[0]?.meta?.prev_hit_count, 0);
-          const metaPrevPool = (allGroups[0]?.meta?.prev_hot_pool || '').split(',').filter(Boolean);
-          const metaCurPool = (allGroups[0]?.meta?.hot_pool || '').split(',').filter(Boolean);
-          const metaChanged = metaCurPool.filter(n => !metaPrevPool.includes(n)).length;
-          const metaBurstNo = action === '爆發出號' && !forcedSwitch ? toNum(allGroups[0]?.meta?.consecutive_burst, 0) + 1 : 0;
+          // ★ 信心分數：改用 confidenceScore 已驗證公式（與快速頁一致）
+          // 直接讀取後端輸出的 sig_* 欄位，而非重新用 meta 推算
           const metaHour = row?.created_at ? (new Date(row.created_at).getUTCHours() + 8) % 24 : 0;
-          const metaIsHighHour = (metaHour >= 9 && metaHour <= 11) || (metaHour >= 16 && metaHour <= 18);
-          const metaZone = (() => {
-            const pool = metaCurPool.map(Number);
-            const z4 = pool.filter(n => n >= 61 && n <= 80).length;
-            const z2 = pool.filter(n => n >= 21 && n <= 40).length;
-            return (z4 >= 3 || z2 >= 3);
-          })();
+          const meta0 = allGroups[0]?.meta || {};
+          const sigConcentrated = meta0?.sig_concentrated === true;
+          const sigSlowTurnover = meta0?.sig_slow_turnover === true;
+          const sigHighZone = meta0?.sig_high_zone === true;
+          const sigBrew4Hour = meta0?.sig_brew4_hour === true;
+          const sigPrevHit = meta0?.sig_prev_hit === true;
+          const totalQualified = toNum(meta0?.total_qualified, 0);
+          const isBrewLowPoint = meta0?.is_brew_low_point === true;
+          const isDeadHourHist = metaHour >= 12 && metaHour <= 15;
 
-          // 計算信心分數
           let histScore = 0;
-          if (metaBrewCount >= 4) histScore += 30;
-          if (metaBurstNo === 1) histScore += 20;
-          if (metaIsHighHour) histScore += 20;
-          if (metaPrevPool.length > 0 && metaChanged <= 1) histScore += 25;
-          if (metaConsecZero >= 2) histScore += 15;
-          if (metaZone) histScore += 10;
-          if (metaPrevHit >= 2) histScore += 10;
+          // sig_high_hour：SQL驗證方向相反，已中立化為0分（與快速頁一致，不計分）
+          if (sigConcentrated) histScore += 20;       // 號碼集中(+20)
+          if (sigSlowTurnover) histScore += 20;        // 換手穩定(+20)
+          if (sigHighZone) histScore += 15;            // 高號區61-80(+15)
+          if (sigBrew4Hour) histScore += 15;           // 醞釀期+時段(+15)
+          if (sigPrevHit) histScore += 10;             // 前1期有中(+10)
+          if (totalQualified < 8) histScore -= 30;     // 號碼池稀少(-30)
+          if (isDeadHourHist) histScore -= 50;         // 12-15點死亡時段(-50)
+          if (position === '觀察期') histScore -= 20;  // 觀察期弱信號(-20)
+          if (isBrewLowPoint) histScore -= 40;         // 醞釀第5期低谷(-40)
 
-          const histLevel = histScore >= 90 ? { label: '🔥🔥最強', color: '#DC2626' } :
-            histScore >= 70 ? { label: '🎯強烈建議', color: '#15803D' } :
-            histScore >= 50 ? { label: '⚡建議進場', color: '#D97706' } :
-            { label: '👀觀察', color: '#6B7280' };
+          // ★ 等級門檻對齊快速頁（80/60/30）
+          const histLevel = histScore >= 80 ? { label: '🕷️真獵物', color: '#DC2626' } :
+            histScore >= 60 ? { label: '🎯建議進場', color: '#15803D' } :
+            histScore >= 30 ? { label: '👀觀察等待', color: '#6B7280' } :
+            { label: '⏸️不要衝', color: '#9CA3AF' };
 
           return (
             <div key={row?.id || idx} style={{ ...S.card, marginBottom: 10, padding: '12px 14px' }}>
@@ -733,6 +732,25 @@ function HotPage({ recent20 }) {
     { label: '15期（中期觀察）', data: calcHot(rows.slice(0, 15)) },
     { label: '20期（穩定底盤）', data: calcHot(rows.slice(0, 20)) },
   ];
+
+  // ★ 計算每個號碼出現在幾個區塊裡（用於跨區塊標色）
+  const blockCountMap = new Map();
+  periods.forEach(p => {
+    const seenInThisBlock = new Set(p.data.map(d => d.num));
+    seenInThisBlock.forEach(num => {
+      blockCountMap.set(num, (blockCountMap.get(num) || 0) + 1);
+    });
+  });
+
+  // 跨區塊出現次數 -> 顏色（2個區塊淺、3個區塊中、4個區塊深）
+  const crossBlockStyle = (num) => {
+    const c = blockCountMap.get(num) || 0;
+    if (c >= 4) return { background: '#FCA5A5', border: '#DC2626', color: '#7F1D1D' };       // 4區塊：深紅
+    if (c === 3) return { background: '#FED7AA', border: '#EA580C', color: '#9A3412' };       // 3區塊：橘
+    if (c === 2) return { background: '#FEF08A', border: '#CA8A04', color: '#854D0E' };       // 2區塊：黃
+    return null; // 只出現在1個區塊：維持原樣
+  };
+
   return (
     <div style={S.page}>
       <Card title="熱門號分析" icon="🔥">
@@ -740,18 +758,31 @@ function HotPage({ recent20 }) {
           <div key={p.label} style={{ marginBottom: 16 }}>
             <div style={{ fontSize: 12, color: C.textSub, fontWeight: 600, marginBottom: 8 }}>{p.label}</div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-              {p.data.map(({ num, count }) => (
-                <div key={num} style={{ textAlign: 'center' }}>
-                  <div style={{ width: 40, height: 40, borderRadius: '50%', background: C.goldBg, border: `2px solid ${C.goldLight}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, fontWeight: 800, color: C.gold }}>
-                    {padNum(num)}
+              {p.data.map(({ num, count }) => {
+                const cross = crossBlockStyle(num);
+                return (
+                  <div key={num} style={{ textAlign: 'center' }}>
+                    <div style={{
+                      width: 40, height: 40, borderRadius: '50%',
+                      background: cross ? cross.background : C.goldBg,
+                      border: `2px solid ${cross ? cross.border : C.goldLight}`,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontSize: 14, fontWeight: 800,
+                      color: cross ? cross.color : C.gold,
+                    }}>
+                      {padNum(num)}
+                    </div>
+                    <div style={{ fontSize: 11, color: C.textSub, marginTop: 2 }}>{count}</div>
                   </div>
-                  <div style={{ fontSize: 11, color: C.textSub, marginTop: 2 }}>{count}</div>
-                </div>
-              ))}
+                );
+              })}
             </div>
             <div style={S.divider} />
           </div>
         ))}
+        <div style={{ fontSize: 11, color: C.textSub, marginTop: 4 }}>
+          🟡 出現在2個區塊　🟠 出現在3個區塊　🔴 出現在4個區塊
+        </div>
       </Card>
     </div>
   );
