@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { buildBingoGroups } from '../lib/buildBingoV1Strategies.js';
 
-const API_VERSION = 'prediction-save-v15-3star-sync';
+const API_VERSION = 'prediction-save-v0612-3-3star-recent-predictions';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL ||
@@ -1620,7 +1620,6 @@ function getRoleSeedPools(role = 'mix', pools = {}, phaseContext = null) {
   if (role === 'recent') return [pools.streak2, pools.recent, pools.attack, pools.hot5 || pools.hot, pools.preStreak, pools.extend, pools.all];
   return [pools.streak2, pools.hot, pools.extend, pools.guard, pools.preStreak, pools.all];
 }
-
 function evaluateFormalCandidateScore(sourceGroup, nums, slotRole, selection, pools, phaseContext, existingGroups = []) {
   const report = buildGroupQualityReport(nums, pools);
   let score = scoreGroupForMode(
@@ -3081,7 +3080,31 @@ async function insertThreeStarDerivative(db, formalGroups, sourceDrawNo, latestD
 
     // ✅ v20：改用覆蓋效率選號（buildBingoGroups）
     const latestDrawNo3s = Number((marketRows.data || [])[0]?.draw_no || 0);
-    const rawGroups3s = buildBingoGroups(marketRows.data || [], latestDrawNo3s);
+
+    // ★ V0612-3：補上recentPredictions參數，讓連續期數邏輯(consecutive_burst/brew_count/prev_hot_pool)正常運作
+    // 邏輯與auto-train.js的fetchRecent3Predictions一致，避免三星預測路徑因缺少近期歷史而導致
+    // 爆發期/醞釀期判斷失準（污染SQL分析樣本）
+    const { data: recent3Rows3s } = await db
+      .from(PREDICTIONS_TABLE)
+      .select('status, hit_count, groups_json, compare_result_json')
+      .eq('mode', 'formal_3star')
+      .order('created_at', { ascending: false })
+      .limit(3);
+
+    const recentPredictions3s = (recent3Rows3s || []).map(p => ({
+      status: p.status,
+      hit_count: p.hit_count || 0,
+      groups_count: Array.isArray(p.groups_json) ? p.groups_json.length : 0,
+      pool_size: p.groups_json?.[0]?.meta?.hot_pool_size || 0,
+      position: p.groups_json?.[0]?.meta?.position || '',
+      action: p.groups_json?.[0]?.meta?.action || '',
+      hot_pool: p.groups_json?.[0]?.meta?.hot_pool || '',
+      hit2_groups: Array.isArray(p.compare_result_json?.detail)
+        ? p.compare_result_json.detail.filter(d => d?.hit === 2).length
+        : 0,
+    }));
+
+    const rawGroups3s = buildBingoGroups(marketRows.data || [], latestDrawNo3s, recentPredictions3s);
 
     const threeStarGroups = rawGroups3s.map((s, idx) => ({
       key: s.key,
