@@ -256,11 +256,11 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
   let confidenceScore = 0;
   let confidenceReasons = [];
 
-  // ★ 高命中時段+換手快 = 假信號，直接0分（系統已不出手）
-  // 高命中時段（命中率15%+）
+  // ★ V0612-3：sig_high_hour 反向歸納SQL驗證 true(1.04%) < false(1.59%)
+  // 方向與系統假設相反，原+50分暫時中立化為0分，待累積更多資料後再決定方向
   if (sigHighHour) {
-    confidenceScore += 50;
-    confidenceReasons.push(`${nowHour}點高命中時段(+50)`);
+    confidenceScore += 0;
+    confidenceReasons.push(`${nowHour}點高命中時段(中立化，待驗證)`);
   }
   // 號碼集中（SQL E：集中17.95% vs 分散12.11%）
   if (sigConcentrated) {
@@ -268,6 +268,7 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
     confidenceReasons.push(`號碼集中(+20)`);
   }
   // 換手穩定（命中率13-25%）
+  // ★ V0612-3：B.txt已補上sig_slow_turnover欄位輸出，此項目原為死代碼，現恢復生效
   if (sigSlowTurnover) {
     confidenceScore += 20;
     confidenceReasons.push(`換手穩定(+20)`);
@@ -308,11 +309,11 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
     confidenceReasons.push(`醞釀第5期低谷(-40)`);
   }
 
-  // 信心等級
+  // ★ V0612-3：信心等級門檻 50/20 → 60/30，對齊系統摘要文件規範
   const confidenceLevel =
     confidenceScore >= 80 ? { label: '🕷️ 真獵物！閃電出手', color: '#DC2626', bg: '#FEF2F2', border: '#FCA5A5' } :
-    confidenceScore >= 50 ? { label: '🎯 建議進場', color: '#15803D', bg: '#DCFCE7', border: '#86EFAC' } :
-    confidenceScore >= 20 ? { label: '👀 觀察等待', color: '#6B7280', bg: '#F3F4F6', border: '#E5E7EB' } :
+    confidenceScore >= 60 ? { label: '🎯 建議進場', color: '#15803D', bg: '#DCFCE7', border: '#86EFAC' } :
+    confidenceScore >= 30 ? { label: '👀 觀察等待', color: '#6B7280', bg: '#F3F4F6', border: '#E5E7EB' } :
     { label: '⏸️ 葉子，不要衝', color: '#9CA3AF', bg: '#F9FAFB', border: '#E5E7EB' };
 
   return (
@@ -802,7 +803,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0612-2</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0612-3</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
