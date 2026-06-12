@@ -734,22 +734,21 @@ function HotPage({ recent20 }) {
   ];
 
   // ★ 只針對「這次實際出現在4個區塊裡」的不重複號碼分配專屬顏色
-  // 用色環平均分配，候選數量越少，顏色差異越明顯
+  // 用黃金角度(137.5°)跳號分配色相，避免排序相鄰的號碼顏色也相鄰、難以區分
   const uniqueNumsInView = [...new Set(periods.flatMap(p => p.data.map(d => d.num)))].sort((a, b) => a - b);
   const colorIndexMap = new Map(uniqueNumsInView.map((num, idx) => [num, idx]));
   const numColor = (num) => {
     const idx = colorIndexMap.get(num) || 0;
-    const total = Math.max(uniqueNumsInView.length, 1);
-    const hue = (idx * (360 / total)) % 360;
+    const hue = (idx * 137.5) % 360;
     return {
       hue,
-      bg: `hsl(${hue}, 70%, 92%)`,
-      text: `hsl(${hue}, 65%, 38%)`,
-      border: `hsl(${hue}, 65%, 60%)`,
+      bg: `hsl(${hue}, 75%, 55%)`,
+      text: '#FFFFFF',
+      border: `hsl(${hue}, 75%, 40%)`,
     };
   };
 
-  // ★ 計算每個號碼出現在幾個區塊裡（用於邊框粗細/深淺）
+  // ★ 計算每個號碼出現在幾個區塊裡（用於右上角徽章顯示 ×N）
   const blockCountMap = new Map();
   periods.forEach(p => {
     const seenInThisBlock = new Set(p.data.map(d => d.num));
@@ -758,14 +757,6 @@ function HotPage({ recent20 }) {
     });
   });
 
-  // 跨區塊出現次數 -> 邊框粗細與顏色深淺（次數越多，邊框越粗、越深）
-  const crossBlockBorder = (num, baseColor) => {
-    const c = blockCountMap.get(num) || 0;
-    if (c >= 4) return { width: 4, color: `hsl(${baseColor.hue}, 75%, 35%)` };  // 4區塊：粗+深
-    if (c === 3) return { width: 3, color: `hsl(${baseColor.hue}, 70%, 45%)` }; // 3區塊：中粗+中深
-    if (c === 2) return { width: 2.5, color: `hsl(${baseColor.hue}, 65%, 55%)` }; // 2區塊：略粗
-    return { width: 2, color: baseColor.border }; // 只出現在1個區塊：原樣細邊框
-  };
 
   return (
     <div style={S.page}>
@@ -776,18 +767,32 @@ function HotPage({ recent20 }) {
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
               {p.data.map(({ num, count }) => {
                 const nc = numColor(num);
-                const cb = crossBlockBorder(num, nc);
+                const blockCount = blockCountMap.get(num) || 0;
                 return (
                   <div key={num} style={{ textAlign: 'center' }}>
-                    <div style={{
-                      width: 40, height: 40, borderRadius: '50%',
-                      background: nc.bg,
-                      border: `${cb.width}px solid ${cb.color}`,
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      fontSize: 14, fontWeight: 800,
-                      color: nc.text,
-                    }}>
-                      {padNum(num)}
+                    <div style={{ position: 'relative', width: 40, height: 40, margin: '0 auto' }}>
+                      <div style={{
+                        width: 40, height: 40, borderRadius: '50%',
+                        background: nc.bg,
+                        border: `2px solid ${nc.border}`,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        fontSize: 14, fontWeight: 800,
+                        color: nc.text,
+                      }}>
+                        {padNum(num)}
+                      </div>
+                      {blockCount >= 2 && (
+                        <div style={{
+                          position: 'absolute', top: -6, right: -6,
+                          background: '#1F2937', color: '#FFFFFF',
+                          fontSize: 10, fontWeight: 800,
+                          borderRadius: 99, padding: '1px 5px',
+                          border: '1.5px solid #FFFFFF',
+                          lineHeight: 1.3,
+                        }}>
+                          ×{blockCount}
+                        </div>
+                      )}
                     </div>
                     <div style={{ fontSize: 11, color: C.textSub, marginTop: 2 }}>{count}</div>
                   </div>
@@ -798,7 +803,7 @@ function HotPage({ recent20 }) {
           </div>
         ))}
         <div style={{ fontSize: 11, color: C.textSub, marginTop: 4 }}>
-          每個號碼有專屬顏色；邊框越粗越深代表該號碼出現在越多個區塊（最多4個）
+          每個號碼有專屬顏色；右上角 ×N 代表該號碼出現在N個區塊（最多4個）
         </div>
       </Card>
     </div>
