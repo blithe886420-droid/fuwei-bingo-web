@@ -733,7 +733,23 @@ function HotPage({ recent20 }) {
     { label: '20期（穩定底盤）', data: calcHot(rows.slice(0, 20)) },
   ];
 
-  // ★ 計算每個號碼出現在幾個區塊裡（用於跨區塊標色）
+  // ★ 只針對「這次實際出現在4個區塊裡」的不重複號碼分配專屬顏色
+  // 用色環平均分配，候選數量越少，顏色差異越明顯
+  const uniqueNumsInView = [...new Set(periods.flatMap(p => p.data.map(d => d.num)))].sort((a, b) => a - b);
+  const colorIndexMap = new Map(uniqueNumsInView.map((num, idx) => [num, idx]));
+  const numColor = (num) => {
+    const idx = colorIndexMap.get(num) || 0;
+    const total = Math.max(uniqueNumsInView.length, 1);
+    const hue = (idx * (360 / total)) % 360;
+    return {
+      hue,
+      bg: `hsl(${hue}, 70%, 92%)`,
+      text: `hsl(${hue}, 65%, 38%)`,
+      border: `hsl(${hue}, 65%, 60%)`,
+    };
+  };
+
+  // ★ 計算每個號碼出現在幾個區塊裡（用於邊框粗細/深淺）
   const blockCountMap = new Map();
   periods.forEach(p => {
     const seenInThisBlock = new Set(p.data.map(d => d.num));
@@ -742,13 +758,13 @@ function HotPage({ recent20 }) {
     });
   });
 
-  // 跨區塊出現次數 -> 顏色（2個區塊淺、3個區塊中、4個區塊深）
-  const crossBlockStyle = (num) => {
+  // 跨區塊出現次數 -> 邊框粗細與顏色深淺（次數越多，邊框越粗、越深）
+  const crossBlockBorder = (num, baseColor) => {
     const c = blockCountMap.get(num) || 0;
-    if (c >= 4) return { background: '#FCA5A5', border: '#DC2626', color: '#7F1D1D' };       // 4區塊：深紅
-    if (c === 3) return { background: '#FED7AA', border: '#EA580C', color: '#9A3412' };       // 3區塊：橘
-    if (c === 2) return { background: '#FEF08A', border: '#CA8A04', color: '#854D0E' };       // 2區塊：黃
-    return null; // 只出現在1個區塊：維持原樣
+    if (c >= 4) return { width: 4, color: `hsl(${baseColor.hue}, 75%, 35%)` };  // 4區塊：粗+深
+    if (c === 3) return { width: 3, color: `hsl(${baseColor.hue}, 70%, 45%)` }; // 3區塊：中粗+中深
+    if (c === 2) return { width: 2.5, color: `hsl(${baseColor.hue}, 65%, 55%)` }; // 2區塊：略粗
+    return { width: 2, color: baseColor.border }; // 只出現在1個區塊：原樣細邊框
   };
 
   return (
@@ -759,16 +775,17 @@ function HotPage({ recent20 }) {
             <div style={{ fontSize: 12, color: C.textSub, fontWeight: 600, marginBottom: 8 }}>{p.label}</div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
               {p.data.map(({ num, count }) => {
-                const cross = crossBlockStyle(num);
+                const nc = numColor(num);
+                const cb = crossBlockBorder(num, nc);
                 return (
                   <div key={num} style={{ textAlign: 'center' }}>
                     <div style={{
                       width: 40, height: 40, borderRadius: '50%',
-                      background: cross ? cross.background : C.goldBg,
-                      border: `2px solid ${cross ? cross.border : C.goldLight}`,
+                      background: nc.bg,
+                      border: `${cb.width}px solid ${cb.color}`,
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
                       fontSize: 14, fontWeight: 800,
-                      color: cross ? cross.color : C.gold,
+                      color: nc.text,
                     }}>
                       {padNum(num)}
                     </div>
@@ -781,7 +798,7 @@ function HotPage({ recent20 }) {
           </div>
         ))}
         <div style={{ fontSize: 11, color: C.textSub, marginTop: 4 }}>
-          🟡 出現在2個區塊　🟠 出現在3個區塊　🔴 出現在4個區塊
+          每個號碼有專屬顏色；邊框越粗越深代表該號碼出現在越多個區塊（最多4個）
         </div>
       </Card>
     </div>
