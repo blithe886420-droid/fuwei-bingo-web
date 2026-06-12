@@ -716,95 +716,136 @@ function MarketPage({ recent20 }) {
 }
 
 function HotPage({ recent20 }) {
-  const rows = toArray(recent20);
-  function calcHot(periodRows) {
-    const countMap = new Map();
-    for (const row of periodRows) {
-      for (const n of parseNums(row?.numbers)) {
-        countMap.set(n, (countMap.get(n) || 0) + 1);
-      }
+  const rows = toArray(recent20).slice(0, 20);
+
+  // ★ 連續開出期數：從最新一期(rows[0])往前算，這個號碼連續幾期都有開出
+  // 一旦遇到某期沒開出該號碼就停止計算
+  function consecutiveCount(num) {
+    let c = 0;
+    for (const row of rows) {
+      if (parseNums(row?.numbers).includes(num)) c++;
+      else break;
     }
-    return [...countMap.entries()].sort((a, b) => b[1] - a[1] || a[0] - b[0]).slice(0, 10).map(([num, count]) => ({ num, count }));
+    return c;
   }
-  const periods = [
-    { label: '5期（短期爆發）', data: calcHot(rows.slice(0, 5)) },
-    { label: '10期（趨勢延續）', data: calcHot(rows.slice(0, 10)) },
-    { label: '15期（中期觀察）', data: calcHot(rows.slice(0, 15)) },
-    { label: '20期（穩定底盤）', data: calcHot(rows.slice(0, 20)) },
-  ];
 
-  // ★ 只針對「這次實際出現在4個區塊裡」的不重複號碼分配專屬顏色
-  // 用黃金角度(137.5°)跳號分配色相，避免排序相鄰的號碼顏色也相鄰、難以區分
-  const uniqueNumsInView = [...new Set(periods.flatMap(p => p.data.map(d => d.num)))].sort((a, b) => a - b);
-  const colorIndexMap = new Map(uniqueNumsInView.map((num, idx) => [num, idx]));
-  const numColor = (num) => {
-    const idx = colorIndexMap.get(num) || 0;
-    const hue = (idx * 137.5) % 360;
-    return {
-      hue,
-      bg: `hsl(${hue}, 75%, 55%)`,
-      text: '#FFFFFF',
-      border: `hsl(${hue}, 75%, 40%)`,
-    };
+  // 計算1-80每個號碼目前的連續開出期數
+  const numStats = [];
+  for (let n = 1; n <= 80; n++) {
+    const consec = consecutiveCount(n);
+    if (consec >= 1) numStats.push({ n, consec });
+  }
+
+  // 依連續期數分組：5/4/3/2/1
+  const groups = [5, 4, 3, 2, 1].map(level => ({
+    level,
+    data: numStats.filter(s => s.consec === level).sort((a, b) => a.n - b.n)
+  }));
+
+  const levelInfo = {
+    5: { label: '連續5期（最熱）', color: '#DC2626', bg: '#FEF2F2', border: '#FCA5A5' },
+    4: { label: '連續4期', color: '#EA580C', bg: '#FFF7ED', border: '#FED7AA' },
+    3: { label: '連續3期', color: '#D97706', bg: '#FFFBEB', border: '#FDE68A' },
+    2: { label: '連續2期', color: '#0F766E', bg: '#F0FDFA', border: '#99F6E4' },
+    1: { label: '連續1期（剛開出）', color: '#6B7280', bg: '#F3F4F6', border: '#E5E7EB' },
   };
-
-  // ★ 計算每個號碼出現在幾個區塊裡（用於右上角徽章顯示 ×N）
-  const blockCountMap = new Map();
-  periods.forEach(p => {
-    const seenInThisBlock = new Set(p.data.map(d => d.num));
-    seenInThisBlock.forEach(num => {
-      blockCountMap.set(num, (blockCountMap.get(num) || 0) + 1);
-    });
-  });
-
 
   return (
     <div style={S.page}>
-      <Card title="熱門號分析" icon="🔥">
-        {!rows.length ? <div style={S.empty}>載入中...</div> : periods.map(p => (
-          <div key={p.label} style={{ marginBottom: 16 }}>
-            <div style={{ fontSize: 12, color: C.textSub, fontWeight: 600, marginBottom: 8 }}>{p.label}</div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-              {p.data.map(({ num, count }) => {
-                const nc = numColor(num);
-                const blockCount = blockCountMap.get(num) || 0;
-                return (
-                  <div key={num} style={{ textAlign: 'center' }}>
-                    <div style={{ position: 'relative', width: 40, height: 40, margin: '0 auto' }}>
-                      <div style={{
-                        width: 40, height: 40, borderRadius: '50%',
-                        background: nc.bg,
-                        border: `2px solid ${nc.border}`,
-                        display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        fontSize: 14, fontWeight: 800,
-                        color: nc.text,
-                      }}>
-                        {padNum(num)}
-                      </div>
-                      {blockCount >= 2 && (
-                        <div style={{
-                          position: 'absolute', top: -6, right: -6,
-                          background: '#1F2937', color: '#FFFFFF',
-                          fontSize: 10, fontWeight: 800,
-                          borderRadius: 99, padding: '1px 5px',
-                          border: '1.5px solid #FFFFFF',
-                          lineHeight: 1.3,
-                        }}>
-                          ×{blockCount}
-                        </div>
-                      )}
-                    </div>
-                    <div style={{ fontSize: 11, color: C.textSub, marginTop: 2 }}>{count}</div>
-                  </div>
-                );
-              })}
-            </div>
-            <div style={S.divider} />
-          </div>
-        ))}
-        <div style={{ fontSize: 11, color: C.textSub, marginTop: 4 }}>
-          每個號碼有專屬顏色；右上角 ×N 代表該號碼出現在N個區塊（最多4個）
+      <Card title="連續熱號看盤" icon="🔥">
+        <div style={{ fontSize: 11, color: C.textSub, marginBottom: 12, lineHeight: 1.6 }}>
+          純粹看盤用：依「最近20期」資料，從最新一期往前算，列出每個號碼目前連續開出幾期。
+          此頁僅供參考，與AI選號邏輯（本期預測頁）無關、不互相影響。
+          想看AI本期實際選中的號碼池，請至「熱號池」頁。
         </div>
+        {!rows.length ? <div style={S.empty}>載入中...</div> : groups.map(g => {
+          const info = levelInfo[g.level];
+          return (
+            <div key={g.level} style={{ marginBottom: 16 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: info.color, background: info.bg, border: `1px solid ${info.border}`, borderRadius: 6, padding: '2px 8px' }}>
+                  {info.label}
+                </span>
+                <span style={{ fontSize: 11, color: C.textSub }}>{g.data.length} 顆</span>
+              </div>
+              {g.data.length === 0 ? (
+                <div style={{ fontSize: 12, color: C.textSub, padding: '4px 0' }}>目前無號碼符合此等級</div>
+              ) : (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  {g.data.map(({ n }) => (
+                    <div key={n} style={{
+                      width: 40, height: 40, borderRadius: '50%',
+                      background: info.bg,
+                      border: `2px solid ${info.border}`,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontSize: 14, fontWeight: 800,
+                      color: info.color,
+                    }}>
+                      {padNum(n)}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div style={S.divider} />
+            </div>
+          );
+        })}
+      </Card>
+    </div>
+  );
+}
+
+function HotPoolPage({ prediction }) {
+  const row = prediction?.latest_3star_row;
+  const groups = toArray(row?.groups_json);
+  const meta0 = groups[0]?.meta || {};
+  const hotPool = (meta0?.hot_pool || '').split(',').map(Number).filter(Boolean);
+  const action = meta0?.action || '';
+  const position = meta0?.position || '';
+  const spiderMode = meta0?.spider_mode || '';
+  const forcedSwitch = meta0?.forced_switch === true;
+  const nowHour = new Date().getHours();
+  const lowConfidence = nowHour >= 12 && nowHour <= 15;
+  const actionStyle = getActionStyle(action, forcedSwitch, lowConfidence);
+  const isSkipped = !row || row?.status === 'skipped' || groups.length === 0;
+
+  return (
+    <div style={S.page}>
+      <Card title="本期AI熱號池" icon="🕷️">
+        <div style={{ fontSize: 11, color: C.textSub, marginBottom: 12, lineHeight: 1.6 }}>
+          這裡顯示的號碼池，與「本期預測」（快速頁）使用完全同一份資料，
+          是 buildBingoGroups 本期實際選出、用來組成3星預測的熱號池（最多7顆）。
+        </div>
+        {isSkipped ? (
+          <div style={S.empty}>本期AI暫停出號（冷場期），無熱號池資料</div>
+        ) : (
+          <>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: actionStyle.color, background: actionStyle.bg, border: `1px solid ${actionStyle.border}`, borderRadius: 6, padding: '2px 8px' }}>
+                {actionStyle.icon} {actionStyle.label}
+              </span>
+              {spiderMode && <span style={S.badge(C.textSub, C.grayLight)}>模式：{spiderMode}</span>}
+              <span style={S.badge(C.textSub, C.grayLight)}>期號 {fmt(row?.source_draw_no)}</span>
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {hotPool.map(n => (
+                <div key={n} style={{
+                  width: 44, height: 44, borderRadius: '50%',
+                  background: C.goldBg,
+                  border: `2px solid ${C.goldLight}`,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 15, fontWeight: 800,
+                  color: C.gold,
+                }}>
+                  {padNum(n)}
+                </div>
+              ))}
+            </div>
+            <div style={{ fontSize: 11, color: C.textSub, marginTop: 12 }}>
+              共 {hotPool.length} 顆；AI會優先從這個池子裡組合出3星預測。
+            </div>
+          </>
+        )}
       </Card>
     </div>
   );
@@ -849,6 +890,7 @@ export default function App() {
     { key: 'stats', label: '統計', icon: '📊' },
     { key: 'market', label: '開獎', icon: '🎱' },
     { key: 'hot', label: '熱號', icon: '🔥' },
+    { key: 'hotpool', label: '熱號池', icon: '🕷️' },
   ];
 
   return (
@@ -878,6 +920,7 @@ export default function App() {
       {tab === 'stats' && <StatsPage historyRows={historyRows} />}
       {tab === 'market' && <MarketPage recent20={recent20} />}
       {tab === 'hot' && <HotPage recent20={recent20} />}
+      {tab === 'hotpool' && <HotPoolPage prediction={prediction} />}
     </div>
   );
 }
