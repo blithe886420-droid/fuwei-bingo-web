@@ -731,7 +731,6 @@ function HotPoolPage({ prediction }) {
   const groups = toArray(row?.groups_json);
   const meta0 = groups[0]?.meta || {};
   const hotPool = (meta0?.hot_pool || '').split(',').map(Number).filter(Boolean);
-  const top24 = (meta0?.top24 || '').split(',').map(Number).filter(Boolean);
   const action = meta0?.action || '';
   const position = meta0?.position || '';
   const spiderMode = meta0?.spider_mode || '';
@@ -741,24 +740,17 @@ function HotPoolPage({ prediction }) {
   const actionStyle = getActionStyle(action, forcedSwitch, lowConfidence);
   const isSkipped = !row || row?.status === 'skipped' || groups.length === 0;
 
-  // ★ V0613-4：依8組(每組3顆)分組顯示，直接對應groups_json裡的8組
-  const groupedNums = [];
-  for (let i = 0; i < 8; i++) {
-    const g = top24.slice(i * 3, i * 3 + 3);
-    if (g.length === 3) groupedNums.push(g);
-  }
-
   return (
     <div style={S.page}>
-      <Card title="本期AI候選池" icon="🕷️">
+      <Card title="本期AI熱號池" icon="🕷️">
         <div style={{ fontSize: 11, color: C.textSub, marginBottom: 12, lineHeight: 1.6 }}>
-          這裡顯示的24顆號碼，與「本期預測」（快速頁）使用完全同一份資料，
-          是 buildBingoGroups 本期實際選出、依序切成8組(每組3顆，互不重疊)
-          組成3星預測的候選池。V0613-4將分組方式由「7顆池重疊組合」改為
-          「24顆不重疊分組」，理論平均命中數可由1.38提升至1.87。
+          這裡顯示的號碼池，與「本期預測」（快速頁）使用完全同一份資料，
+          是 buildBingoGroups 本期實際選出、用來組成3星預測的熱號池（最多7顆）。
+          V0613-4曾改為24顆不重疊分組，但實測63期淨利惡化(-40.43→-111.11/期，
+          因為失去多組同時中2的機會)，已於V0613-5回滾為7顆池重疊組合。
         </div>
         {isSkipped ? (
-          <div style={S.empty}>本期AI暫停出號（冷場期），無候選池資料</div>
+          <div style={S.empty}>本期AI暫停出號（冷場期），無熱號池資料</div>
         ) : (
           <>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
@@ -768,53 +760,23 @@ function HotPoolPage({ prediction }) {
               {spiderMode && <span style={S.badge(C.textSub, C.grayLight)}>模式：{spiderMode}</span>}
               <span style={S.badge(C.textSub, C.grayLight)}>期號 {fmt(row?.source_draw_no)}</span>
             </div>
-            {top24.length === 24 ? (
-              <>
-                {groupedNums.map((g, idx) => (
-                  <div key={idx} style={{ marginBottom: 10 }}>
-                    <div style={{ fontSize: 11, color: C.textSub, fontWeight: 600, marginBottom: 4 }}>第{idx + 1}組</div>
-                    <div style={{ display: 'flex', gap: 8 }}>
-                      {g.map(n => (
-                        <div key={n} style={{
-                          width: 44, height: 44, borderRadius: '50%',
-                          background: C.goldBg,
-                          border: `2px solid ${C.goldLight}`,
-                          display: 'flex', alignItems: 'center', justifyContent: 'center',
-                          fontSize: 15, fontWeight: 800,
-                          color: C.gold,
-                        }}>
-                          {padNum(n)}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-                <div style={{ fontSize: 11, color: C.textSub, marginTop: 8 }}>
-                  共 {top24.length} 顆，分成 {groupedNums.length} 組，每組3顆互不重疊。
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {hotPool.map(n => (
+                <div key={n} style={{
+                  width: 44, height: 44, borderRadius: '50%',
+                  background: C.goldBg,
+                  border: `2px solid ${C.goldLight}`,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 15, fontWeight: 800,
+                  color: C.gold,
+                }}>
+                  {padNum(n)}
                 </div>
-              </>
-            ) : (
-              // ★ 相容舊資料：top24尚未產生時，顯示舊版hot_pool(7顆)
-              <>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                  {hotPool.map(n => (
-                    <div key={n} style={{
-                      width: 44, height: 44, borderRadius: '50%',
-                      background: C.goldBg,
-                      border: `2px solid ${C.goldLight}`,
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      fontSize: 15, fontWeight: 800,
-                      color: C.gold,
-                    }}>
-                      {padNum(n)}
-                    </div>
-                  ))}
-                </div>
-                <div style={{ fontSize: 11, color: C.textSub, marginTop: 12 }}>
-                  共 {hotPool.length} 顆（舊版資料，尚未更新為24顆候選池）。
-                </div>
-              </>
-            )}
+              ))}
+            </div>
+            <div style={{ fontSize: 11, color: C.textSub, marginTop: 12 }}>
+              共 {hotPool.length} 顆；AI會優先從這個池子裡組合出8組(C(7,3)取前8組，含top5≥2顆優先)。
+            </div>
           </>
         )}
       </Card>
@@ -861,7 +823,7 @@ export default function App() {
     { key: 'stats', label: '統計', icon: '📊' },
     { key: 'market', label: '開獎', icon: '🎱' },
     { key: 'hot', label: '熱號', icon: '🔥' },
-    { key: 'hotpool', label: '候選池', icon: '🕷️' },
+    { key: 'hotpool', label: '熱號池', icon: '🕷️' },
   ];
 
   return (
@@ -869,7 +831,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0613-4</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0613-5</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
