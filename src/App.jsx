@@ -226,7 +226,6 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
 
   // ★ 蜘蛛感知信心指數 V0611-3
   const sigConcentrated = groups[0]?.meta?.sig_concentrated === true;
-  const isBrewLowPoint = groups[0]?.meta?.is_brew_low_point === true;
   const isConcentrated = groups[0]?.meta?.is_concentrated === true;
 
   let confidenceScore = 0;
@@ -281,11 +280,14 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
     confidenceScore -= 20;
     confidenceReasons.push(`觀察期弱信號(-20)`);
   }
-  // ★ 醞釀期第5期低谷（命中率0%）
-  if (isBrewLowPoint) {
-    confidenceScore -= 40;
-    confidenceReasons.push(`醞釀第5期低谷(-40)`);
+  // ★ V0613-3：爆發期+normal組合驗證後hit3率14.29%(56筆)，
+  // 是目前驗證樣本裡最高的單一組合，新增加分項
+  if (position === '爆發期') {
+    confidenceScore += 10;
+    confidenceReasons.push(`爆發期(+10)`);
   }
+  // ★ V0613-3：is_brew_low_point 全歷史245筆樣本裡從未出現true，
+  // 確認為死代碼（此規則從未被觸發），原-40分規則已移除
 
   // ★ V0612-3：信心等級門檻 50/20 → 60/30，對齊系統摘要文件規範
   const confidenceLevel =
@@ -476,7 +478,6 @@ function HistoryPage({ historyRows }) {
           const sigBrew4Hour = meta0?.sig_brew4_hour === true;
           const sigPrevHit = meta0?.sig_prev_hit === true;
           const totalQualified = toNum(meta0?.total_qualified, 0);
-          const isBrewLowPoint = meta0?.is_brew_low_point === true;
           const isDeadHourHist = metaHour >= 12 && metaHour <= 15;
 
           let histScore = 0;
@@ -489,7 +490,9 @@ function HistoryPage({ historyRows }) {
           if (totalQualified < 8) histScore -= 30;     // 號碼池稀少(-30)
           if (isDeadHourHist) histScore -= 50;         // 12-15點死亡時段(-50)
           if (position === '觀察期') histScore -= 20;  // 觀察期弱信號(-20)
-          if (isBrewLowPoint) histScore -= 40;         // 醞釀第5期低谷(-40)
+          // ★ V0613-3：爆發期+normal組合hit3率14.29%(56筆)，新增加分項
+          if (position === '爆發期') histScore += 10;  // 爆發期(+10)
+          // ★ V0613-3：is_brew_low_point 全歷史從未出現true，確認為死代碼，已移除(-40)
 
           // ★ 等級門檻對齊快速頁（80/60/30）
           const histLevel = histScore >= 80 ? { label: '🕷️真獵物', color: '#DC2626' } :
@@ -826,7 +829,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0613-2</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0613-3</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
