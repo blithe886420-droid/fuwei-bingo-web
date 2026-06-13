@@ -191,28 +191,6 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
     }
   }
 
-  // ★ 連續未中計算（SQL28：連續2-3期未中命中率20%+）
-  let consecutiveZero = 0;
-  for (const r of recentRows) {
-    if (toNum(r?.hit_count, -1) === 0) consecutiveZero++;
-    else break;
-  }
-
-  // ★ 號碼區間分布（SQL27：61-80和21-40命中率17-20%）
-  const hotPool = (groups[0]?.meta?.hot_pool || '').split(',').map(Number).filter(Boolean);
-  const zone1 = hotPool.filter(n => n >= 1 && n <= 20).length;
-  const zone2 = hotPool.filter(n => n >= 21 && n <= 40).length;
-  const zone3 = hotPool.filter(n => n >= 41 && n <= 60).length;
-  const zone4 = hotPool.filter(n => n >= 61 && n <= 80).length;
-  const maxZone = Math.max(zone1, zone2, zone3, zone4);
-  let zoneLabel = '';
-  let zoneRate = '';
-  if (maxZone >= 3) {
-    if (zone4 === maxZone) { zoneLabel = '高號區(61-80)'; zoneRate = '20%'; }
-    else if (zone2 === maxZone) { zoneLabel = '中高號區(21-40)'; zoneRate = '17%'; }
-    else if (zone3 === maxZone) { zoneLabel = '中低號區(41-60)'; zoneRate = '11%'; }
-    else if (zone1 === maxZone) { zoneLabel = '低號區(1-20)'; zoneRate = '6%'; }
-  }
   const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.green : C.textSub;
 
   const comparedDrawNumsArr = toArray(compareResult?.draw_nums);
@@ -224,9 +202,7 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
 
   const hit2Groups = detail.filter(d => toNum(d?.hit, 0) === 2).length;
   const isWarning = hit2Groups >= 3;
-  // ★ 中3後下一期是強烈進場信號（SQL8：命中率23.53%）
-  const isPrevHit3 = toNum(row?.hit_count, 0) === 3 ||
-    toArray(prediction?.recent_3star_compared_rows)?.[1]?.hit_count >= 3;
+
 
   // ★ 換手率計算
   const prevPool = (recentRows[0]?.groups_json?.[0]?.meta?.hot_pool || '').split(',').filter(Boolean);
@@ -363,60 +339,11 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
         </div>
       )}
 
-      {/* ★ 爆發第1期：強力進場信號 */}
-      {burstNo === 1 && !isDone && !lowConfidence && (
-        <div style={{ background: '#FFF9EC', border: '2px solid #F59E0B', borderRadius: 12, padding: '10px 14px', marginBottom: 10 }}>
-          <div style={{ fontSize: 16, fontWeight: 900, color: '#C8860A' }}>🔥 爆發第1期！歷史命中率 15%</div>
-          <div style={{ fontSize: 12, color: '#92400E', marginTop: 4 }}>四週期熱號剛進入爆發，最佳進場時機，建議下注</div>
-        </div>
-      )}
-
-      {/* ★ 爆發第2期：注意 */}
-      {burstNo === 2 && !isDone && !lowConfidence && (
-        <div style={{ background: '#FFF7ED', border: '2px solid #FB923C', borderRadius: 12, padding: '10px 14px', marginBottom: 10 }}>
-          <div style={{ fontSize: 14, fontWeight: 800, color: '#EA580C' }}>🔥 爆發第2期，歷史命中率 6%</div>
-          <div style={{ fontSize: 12, color: '#C2410C', marginTop: 4 }}>命中率開始下滑，可小試，第3期將自動切換</div>
-        </div>
-      )}
-
-      {/* ★ 醞釀期第4期以上：強力進場 */}
-      {brewCount >= 7 && !isDone && !lowConfidence && (
-        <div style={{ background: '#DCFCE7', border: '2px solid #16A34A', borderRadius: 12, padding: '10px 14px', marginBottom: 10 }}>
-          <div style={{ fontSize: 16, fontWeight: 900, color: '#15803D' }}>🎯 醞釀連續第{brewCount}期！命中率25%+</div>
-          <div style={{ fontSize: 12, color: '#166534', marginTop: 4 }}>長期醞釀，最佳進場時機，強烈建議下注</div>
-        </div>
-      )}
-      {brewCount >= 4 && brewCount < 7 && !isDone && !lowConfidence && (
-        <div style={{ background: '#F0FDF4', border: '2px solid #4ADE80', borderRadius: 12, padding: '10px 14px', marginBottom: 10 }}>
-          <div style={{ fontSize: 15, fontWeight: 800, color: '#16A34A' }}>⚡ 醞釀連續第{brewCount}期！命中率20%</div>
-          <div style={{ fontSize: 12, color: '#166534', marginTop: 4 }}>進入高命中區間，建議進場</div>
-        </div>
-      )}
-
-      {/* ★ 前1期中3信號 */}
-      {isPrevHit3 && !isDone && !lowConfidence && burstNo === 0 && brewCount < 4 && (
-        <div style={{ background: '#FFF9EC', border: '2px solid #C8860A', borderRadius: 12, padding: '10px 14px', marginBottom: 10 }}>
-          <div style={{ fontSize: 14, fontWeight: 800, color: '#C8860A' }}>🏆 前一期中3，本期命中率12%</div>
-          <div style={{ fontSize: 12, color: '#92400E', marginTop: 4 }}>中3後繼續押，命中率高於平均</div>
-        </div>
-      )}
-
-      {/* ★ 連續未中反彈信號（SQL28：連續2-3期未中命中率20%+）*/}
-      {consecutiveZero >= 2 && !isDone && !lowConfidence && (
-        <div style={{ background: '#EFF6FF', border: '2px solid #3B82F6', borderRadius: 12, padding: '10px 14px', marginBottom: 10 }}>
-          <div style={{ fontSize: 15, fontWeight: 800, color: '#1D4ED8' }}>🎯 連續{consecutiveZero}期未中，命中率20%+</div>
-          <div style={{ fontSize: 12, color: '#1E40AF', marginTop: 4 }}>SQL驗證連續未中後反彈，建議進場</div>
-        </div>
-      )}
-
-      {/* ★ 號碼區間提示（SQL27：高號區和中高號區命中率更高）*/}
-      {zoneLabel && !isDone && !lowConfidence && (
-        <div style={{ background: '#F5F3FF', border: '1.5px solid #A78BFA', borderRadius: 10, padding: '8px 12px', marginBottom: 10 }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: '#7C3AED' }}>
-            📊 本期熱號集中{zoneLabel}，歷史命中率{zoneRate}
-          </div>
-        </div>
-      )}
+      {/* ★ V0613-1統一：以下提示已整合進「綜合信心指數」框內的加分理由，
+          不再以獨立框呈現，避免分數與提示矛盾。
+          原「爆發第1/2期」「醞釀≥7期」「連續未中反彈」因從未經過SQL驗證，已移除。
+          原「醞釀4-6期」「前期中3」「號碼區間」因條件與sig_*不完全一致，已移除，
+          改由上方信心框的 confidenceReasons 統一呈現對應理由。 */}
 
       {/* ★ 多組中2預警 */}
       {isWarning && (
@@ -898,7 +825,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0612-3</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0613-1</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
