@@ -249,10 +249,12 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
     confidenceScore += 20;
     confidenceReasons.push(`換手穩定(+20)`);
   }
-  // 有高號區號碼（命中率+）
+  // ★ V0613-2：sig_high_zone(合格池61-80號碼數>=2)驗證後發現
+  // 在total_qualified>=15時幾乎恆為true(315筆裡313筆為true)，
+  // 門檻相對池子大小過低、幾乎無區分力，原+15分中立化為0分
   if (sigHighZone) {
-    confidenceScore += 15;
-    confidenceReasons.push(`高號區61-80(+15)`);
+    confidenceScore += 0;
+    confidenceReasons.push(`高號區61-80(中立化，待驗證)`);
   }
   // 醞釀4期+時段（命中率15.38%）
   if (sigBrew4Hour) {
@@ -471,7 +473,6 @@ function HistoryPage({ historyRows }) {
           const meta0 = allGroups[0]?.meta || {};
           const sigConcentrated = meta0?.sig_concentrated === true;
           const sigSlowTurnover = meta0?.sig_slow_turnover === true;
-          const sigHighZone = meta0?.sig_high_zone === true;
           const sigBrew4Hour = meta0?.sig_brew4_hour === true;
           const sigPrevHit = meta0?.sig_prev_hit === true;
           const totalQualified = toNum(meta0?.total_qualified, 0);
@@ -480,9 +481,9 @@ function HistoryPage({ historyRows }) {
 
           let histScore = 0;
           // sig_high_hour：SQL驗證方向相反，已中立化為0分（與快速頁一致，不計分）
+          // sig_high_zone：V0613-2驗證後發現幾乎恆真、無區分力，已中立化為0分（與快速頁一致）
           if (sigConcentrated) histScore += 20;       // 號碼集中(+20)
           if (sigSlowTurnover) histScore += 20;        // 換手穩定(+20)
-          if (sigHighZone) histScore += 15;            // 高號區61-80(+15)
           if (sigBrew4Hour) histScore += 15;           // 醞釀期+時段(+15)
           if (sigPrevHit) histScore += 10;             // 前1期有中(+10)
           if (totalQualified < 8) histScore -= 30;     // 號碼池稀少(-30)
@@ -825,7 +826,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0613-1</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0613-2</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
