@@ -747,7 +747,7 @@ function HotPoolPage({ prediction }) {
           這裡顯示的號碼池，與「本期預測」（快速頁）使用完全同一份資料，
           是 buildBingoGroups 本期實際選出、用來組成3星預測的熱號池（最多7顆）。
           V0613-4曾改為24顆不重疊分組，但實測63期淨利惡化(-40.43→-111.11/期，
-          因為失去多組同時中2的機會)，已於V0613-5回滾為7顆池重疊組合，V0613-6改為固定取8種最佳位置組合(平均每期-75.88元，優於原-96.13元)。
+          因為失去多組同時中2的機會)，已於V0613-5回滾為7顆池重疊組合，V0613-6固定取8種最佳位置組合(-75.88)，V0613-7改用候選池前10名+G策略8組，3000期驗證avg_pnl=-84.22(優於V0613-6的-90.52，約6元/期)。
         </div>
         {isSkipped ? (
           <div style={S.empty}>本期AI暫停出號（冷場期），無熱號池資料</div>
@@ -831,7 +831,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0613-6</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0613-7</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
