@@ -318,33 +318,25 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
       {/* ★ V0614-9：行動建議框(主角) + 細節收納 */}
       {!isSkipped && !isDone && (() => {
         const activeMode = groups[0]?.meta?.active_mode || 'standard';
+        const totalSignals = toNum(groups[0]?.meta?.total_signals, 0);
         const prevDetail = toArray(recentRows[0]?.compare_result_json?.detail);
         const prevHit1Count = prevDetail.filter(d => toNum(d?.hit, 0) === 1).length;
         const prevHit2Count = prevDetail.filter(d => toNum(d?.hit, 0) === 2).length;
         const prevHit3Count = prevDetail.filter(d => toNum(d?.hit, 0) === 3).length;
 
         // 行動建議判斷
-        const isAvoid = isDeadHour || prevHit3Count >= 2;
-        const isGo = !isAvoid && [
-          'burst_brew','slow_rich','spider','tail_slow',
-          'loss_fast','high_zone_rich','high_zone'
-        ].includes(activeMode);
+        const isAvoid = isDeadHour || prevHit3Count >= 2 || activeMode === 'skip';
+        const isGo = !isAvoid && (activeMode === 'ultra' || activeMode === 'strong' || activeMode === 'spider');
         const isWatch = !isAvoid && !isGo;
 
-        // 主要原因(只顯示最重要的1句)
+        // 主要原因
         const mainReason = isDeadHour ? '12-15點死亡時段，歷史命中率極低'
           : prevHit3Count >= 2 ? `上期${prevHit3Count}組中3，下期反轉風險極高(-164)`
-          : activeMode === 'burst_brew' ? '換手5顆+醞釀期，歷史+186元/期'
-          : activeMode === 'slow_rich' ? '換手1顆+合格池豐富，歷史+23元/期'
-          : activeMode === 'spider' ? '合格池豐富+連續換手穩定，已擴展12顆候選池'
-          : activeMode === 'tail_slow' ? `上期同尾${groups[0]?.meta?.prev_max_tail}顆後換手穩定，歷史+96元/期`
-          : activeMode === 'loss_fast' ? '槓龜後換手5顆，歷史+53元/期'
-          : activeMode === 'high_zone_rich' ? `上期高號${groups[0]?.meta?.prev_high_zone}顆+和值${groups[0]?.meta?.prev_sum_val}，歷史+25元/期`
-          : activeMode === 'high_zone' ? `上期高號${groups[0]?.meta?.prev_high_zone}顆(首爆)，歷史+4元/期`
-          : activeMode === 'consec8' ? `上期連號${groups[0]?.meta?.prev_consec_count}組，歷史+253元/期`
-          : activeMode === 'balanced2' ? '連續2期奇偶均衡，歷史+23元/期(230筆驗證)'
-          : activeMode === 'odd_odd' ? '連續2期奇數和值，已切換相對最佳8組(-25)'
-          : '標準模式，歷史avg_pnl=-84元/期';
+          : activeMode === 'skip' ? '目前無任何訊號，系統不出手'
+          : activeMode === 'ultra' ? `${totalSignals}個訊號共鳴！歷史avg_pnl=+115元/期`
+          : activeMode === 'strong' ? `${totalSignals}個訊號共鳴，歷史avg_pnl=-31元/期`
+          : activeMode === 'spider' ? '蜘蛛感知(TQ22+連穩)，已擴展12顆候選池'
+          : `${totalSignals}個訊號，標準模式`;
 
         const actionBg = isAvoid ? '#FEE2E2' : isGo ? '#DCFCE7' : '#FEF9C3';
         const actionBorder = isAvoid ? '#DC2626' : isGo ? '#16A34A' : '#D97706';
@@ -578,8 +570,8 @@ function HistoryPage({ historyRows }) {
                       {(() => {
                         const histMode = meta0?.active_mode || '';
                         const histDeadHour = isDeadHourHist;
-                        const histIsAvoid = histDeadHour;
-                        const histIsGo = !histIsAvoid && ['burst_brew','slow_rich','spider','tail_slow','loss_fast','high_zone_rich','high_zone','consec8','balanced2'].includes(histMode);
+                        const histIsAvoid = histDeadHour || histMode === 'skip';
+                        const histIsGo = !histIsAvoid && ['ultra','strong','spider'].includes(histMode);
                         const label = histIsAvoid ? '🔴 不要衝' : histIsGo ? '🟢 可以進場' : '🟡 觀望';
                         const bg = histIsAvoid ? '#FEE2E2' : histIsGo ? '#DCFCE7' : '#FEF9C3';
                         const color = histIsAvoid ? '#DC2626' : histIsGo ? '#15803D' : '#92400E';
@@ -905,7 +897,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0614-11</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0614-12</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
