@@ -342,6 +342,7 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
           : activeMode === 'high_zone_rich' ? `上期高號${groups[0]?.meta?.prev_high_zone}顆+和值${groups[0]?.meta?.prev_sum_val}，歷史+25元/期`
           : activeMode === 'high_zone' ? `上期高號${groups[0]?.meta?.prev_high_zone}顆(首爆)，歷史+4元/期`
           : activeMode === 'consec8' ? `上期連號${groups[0]?.meta?.prev_consec_count}組，歷史+253元/期`
+          : activeMode === 'balanced2' ? '連續2期奇偶均衡，歷史+23元/期(230筆驗證)'
           : activeMode === 'odd_odd' ? '連續2期奇數和值，已切換相對最佳8組(-25)'
           : '標準模式，歷史avg_pnl=-84元/期';
 
@@ -411,6 +412,15 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
                   🚫死亡時段
                 </span>
               )}
+              {(() => {
+                const prevEvenTail = groups[0]?.meta?.prev_even_tail;
+                if (!prevEvenTail || prevEvenTail < 11 || prevEvenTail > 12) return null;
+                return (
+                  <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, fontWeight: 700, background: '#FEE2E2', color: '#DC2626' }}>
+                    ⚠️偶數尾偏多{prevEvenTail}顆
+                  </span>
+                );
+              })()}
             </div>
           </div>
         );
@@ -902,7 +912,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0614-10</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0614-11</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
