@@ -431,6 +431,16 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
                     </div>
                   </div>
                 )}
+                {activeMode === 'high_zone' && (
+                  <div style={{ background: 'linear-gradient(135deg,#EDE9FE,#DDD6FE)', border: '2px solid #7C3AED', borderRadius: 10, padding: '8px 12px', marginBottom: 6 }}>
+                    <div style={{ fontSize: 14, fontWeight: 900, color: '#5B21B6' }}>
+                      🎱 高號區爆發！上期61-80出現{groups[0]?.meta?.prev_high_zone}顆
+                    </div>
+                    <div style={{ fontSize: 11, color: '#5B21B6', marginTop: 3 }}>
+                      歷史驗證：216筆avg_pnl=-12.73元(優於平均-84)，已切換高號區專屬8組
+                    </div>
+                  </div>
+                )}
                 {almostThere && (
                   <div style={{ background: '#EFF6FF', border: '2px solid #3B82F6', borderRadius: 10, padding: '8px 12px', marginBottom: 6 }}>
                     <div style={{ fontSize: 14, fontWeight: 900, color: '#1D4ED8' }}>
@@ -943,7 +953,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0614-4</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0614-5</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
