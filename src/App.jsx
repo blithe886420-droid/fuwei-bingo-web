@@ -80,24 +80,24 @@ const C = {
 };
 
 const S = {
-  app: { minHeight: '100vh', background: C.bg, fontFamily: '"Segoe UI", "PingFang TC", "Noto Sans TC", sans-serif', color: C.text, paddingBottom: 80 },
-  header: { background: `linear-gradient(135deg, ${C.gold} 0%, ${C.orange} 100%)`, padding: '18px 20px 14px', boxShadow: '0 2px 16px rgba(200,134,10,0.25)' },
-  headerTitle: { fontSize: 22, fontWeight: 900, color: '#FFF', letterSpacing: 2, margin: 0 },
-  headerSub: { fontSize: 12, color: 'rgba(255,255,255,0.85)', marginTop: 3 },
+  app: { minHeight: '100vh', background: C.bg, fontFamily: '"Segoe UI", "PingFang TC", "Noto Sans TC", sans-serif', color: C.text, paddingBottom: 70 },
+  header: { background: `linear-gradient(135deg, ${C.gold} 0%, ${C.orange} 100%)`, padding: '12px 14px 10px', boxShadow: '0 2px 16px rgba(200,134,10,0.25)' },
+  headerTitle: { fontSize: 17, fontWeight: 900, color: '#FFF', letterSpacing: 1, margin: 0 },
+  headerSub: { fontSize: 11, color: 'rgba(255,255,255,0.85)', marginTop: 2 },
   tabs: { display: 'flex', background: C.card, borderBottom: `2px solid ${C.border}`, position: 'sticky', top: 0, zIndex: 100, boxShadow: '0 2px 8px rgba(200,134,10,0.08)' },
-  tab: (active) => ({ flex: 1, padding: '10px 2px 8px', border: 'none', background: 'transparent', cursor: 'pointer', fontSize: 11, fontWeight: active ? 700 : 400, color: active ? C.gold : C.gray, borderBottom: active ? `3px solid ${C.gold}` : '3px solid transparent', transition: 'all 0.2s' }),
-  subTab: (active) => ({ flex: 1, padding: '8px 4px', border: 'none', background: active ? C.goldBg : 'transparent', cursor: 'pointer', fontSize: 12, fontWeight: active ? 700 : 400, color: active ? C.gold : C.gray, borderRadius: 8, transition: 'all 0.2s' }),
-  page: { padding: '16px 14px', maxWidth: 600, margin: '0 auto' },
-  card: { background: C.card, borderRadius: 16, padding: '16px 16px 14px', marginBottom: 14, boxShadow: C.shadow, border: `1px solid ${C.border}` },
-  cardTitle: { fontSize: 14, fontWeight: 700, color: C.gold, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 },
-  badge: (color, bg) => ({ display: 'inline-block', fontSize: 11, padding: '2px 8px', borderRadius: 99, fontWeight: 600, color, background: bg }),
-  ball: (hit) => ({ width: 44, height: 44, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15, fontWeight: 800, background: hit === true ? C.gold : hit === false ? C.grayLight : C.goldBg, color: hit === true ? '#FFF' : hit === false ? C.gray : C.gold, border: `2px solid ${hit === true ? C.gold : hit === false ? C.border : C.goldLight}`, boxShadow: hit === true ? `0 2px 8px ${C.goldLight}` : 'none' }),
-  randomBall: () => ({ width: 44, height: 44, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15, fontWeight: 800, background: C.purpleBg, color: C.purple, border: `2px solid ${C.purpleLight}` }),
-  statRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: `1px solid ${C.border}` },
-  statLabel: { fontSize: 13, color: C.textSub },
-  statValue: { fontSize: 14, fontWeight: 700, color: C.text },
-  bigNum: { fontSize: 32, fontWeight: 900, color: C.gold },
-  btn: (disabled) => ({ background: disabled ? C.grayLight : `linear-gradient(135deg, ${C.gold}, ${C.orange})`, color: disabled ? C.gray : '#FFF', border: 'none', borderRadius: 10, padding: '11px 20px', fontSize: 14, fontWeight: 700, cursor: disabled ? 'not-allowed' : 'pointer', boxShadow: disabled ? 'none' : C.shadow, width: '100%', marginTop: 8 }),
+  tab: (active) => ({ flex: 1, padding: '8px 2px 6px', border: 'none', background: 'transparent', cursor: 'pointer', fontSize: 10, fontWeight: active ? 700 : 400, color: active ? C.gold : C.gray, borderBottom: active ? `3px solid ${C.gold}` : '3px solid transparent', transition: 'all 0.2s' }),
+  subTab: (active) => ({ flex: 1, padding: '6px 4px', border: 'none', background: active ? C.goldBg : 'transparent', cursor: 'pointer', fontSize: 11, fontWeight: active ? 700 : 400, color: active ? C.gold : C.gray, borderRadius: 8, transition: 'all 0.2s' }),
+  page: { padding: '10px 10px', maxWidth: 600, margin: '0 auto' },
+  card: { background: C.card, borderRadius: 12, padding: '12px 12px 10px', marginBottom: 10, boxShadow: C.shadow, border: `1px solid ${C.border}` },
+  cardTitle: { fontSize: 13, fontWeight: 700, color: C.gold, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 },
+  badge: (color, bg) => ({ display: 'inline-block', fontSize: 10, padding: '2px 6px', borderRadius: 99, fontWeight: 600, color, background: bg }),
+  ball: (hit) => ({ width: 36, height: 36, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 800, background: hit === true ? C.gold : hit === false ? C.grayLight : C.goldBg, color: hit === true ? '#FFF' : hit === false ? C.gray : C.gold, border: `2px solid ${hit === true ? C.gold : hit === false ? C.border : C.goldLight}`, boxShadow: hit === true ? `0 2px 8px ${C.goldLight}` : 'none' }),
+  randomBall: () => ({ width: 36, height: 36, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 800, background: C.purpleBg, color: C.purple, border: `2px solid ${C.purpleLight}` }),
+  statRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderBottom: `1px solid ${C.border}` },
+  statLabel: { fontSize: 12, color: C.textSub },
+  statValue: { fontSize: 13, fontWeight: 700, color: C.text },
+  bigNum: { fontSize: 26, fontWeight: 900, color: C.gold },
+  btn: (disabled) => ({ background: disabled ? C.grayLight : `linear-gradient(135deg, ${C.gold}, ${C.orange})`, color: disabled ? C.gray : '#FFF', border: 'none', borderRadius: 10, padding: '9px 16px', fontSize: 13, fontWeight: 700, cursor: disabled ? 'not-allowed' : 'pointer', boxShadow: disabled ? 'none' : C.shadow, width: '100%', marginTop: 6 }),
   divider: { height: 1, background: C.border, margin: '10px 0' },
   empty: { color: C.textSub, fontSize: 13, padding: '12px 0', textAlign: 'center' },
   recentBall: () => ({ width: 32, height: 32, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700, background: C.grayLight, color: C.textSub }),
@@ -315,211 +315,105 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
         ) : <div style={S.empty}>載入中...</div>}
       </Card>
 
-      {/* ★ V0613-8：盤面狀態儀表板 */}
-      {!isSkipped && !isDone && (
-        <div style={{ background: '#F8FAFC', border: '2px solid #CBD5E1', borderRadius: 14, padding: '12px 16px', marginBottom: 12 }}>
-          <div style={{ fontSize: 13, fontWeight: 800, color: '#334155', marginBottom: 10 }}>📊 盤面狀態</div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-            {/* 週期 */}
-            <div style={{
-              padding: '6px 12px', borderRadius: 8, fontSize: 13, fontWeight: 700,
-              background: position === '爆發期' ? '#FEF9C3' : position === '醞釀期' ? '#DCFCE7' : '#F1F5F9',
-              color: position === '爆發期' ? '#92400E' : position === '醞釀期' ? '#166534' : '#64748B',
-              border: `1.5px solid ${position === '爆發期' ? '#FCD34D' : position === '醞釀期' ? '#86EFAC' : '#CBD5E1'}`
-            }}>
-              {position === '爆發期' ? '🔥' : position === '醞釀期' ? '🌱' : '👁️'} {position}
-              {brewCount > 0 && position === '醞釀期' ? ` 連續${brewCount}期` : ''}
-              {burstNo > 0 ? ` 第${burstNo}期` : ''}
-            </div>
-            {/* 換手穩定 */}
-            <div style={{
-              padding: '6px 12px', borderRadius: 8, fontSize: 13, fontWeight: 700,
-              background: sigSlowTurnover ? '#DCFCE7' : '#FEF2F2',
-              color: sigSlowTurnover ? '#166534' : '#DC2626',
-              border: `1.5px solid ${sigSlowTurnover ? '#86EFAC' : '#FCA5A5'}`
-            }}>
-              {sigSlowTurnover ? '🔒 換手穩定' : '🔀 換手劇烈'}
-            </div>
-            {/* 號碼集中 */}
-            <div style={{
-              padding: '6px 12px', borderRadius: 8, fontSize: 13, fontWeight: 700,
-              background: sigConcentrated ? '#DCFCE7' : '#F1F5F9',
-              color: sigConcentrated ? '#166534' : '#64748B',
-              border: `1.5px solid ${sigConcentrated ? '#86EFAC' : '#CBD5E1'}`
-            }}>
-              {sigConcentrated ? '🎯 號碼集中' : '⭕ 號碼分散'}
-            </div>
-            {/* 合格池豐富度 */}
-            <div style={{
-              padding: '6px 12px', borderRadius: 8, fontSize: 13, fontWeight: 700,
-              background: totalQualified >= 22 ? '#FEF9C3' : totalQualified >= 15 ? '#F0FDF4' : '#FEF2F2',
-              color: totalQualified >= 22 ? '#92400E' : totalQualified >= 15 ? '#166534' : '#DC2626',
-              border: `1.5px solid ${totalQualified >= 22 ? '#FCD34D' : totalQualified >= 15 ? '#86EFAC' : '#FCA5A5'}`
-            }}>
-              {totalQualified >= 22 ? '🌊 合格池豐富' : totalQualified >= 15 ? '💧 合格池正常' : '⚠️ 合格池稀少'} {totalQualified}顆
-            </div>
-            {/* 前期有中 */}
-            {sigPrevHit && (
-              <div style={{
-                padding: '6px 12px', borderRadius: 8, fontSize: 13, fontWeight: 700,
-                background: '#EFF6FF', color: '#1D4ED8',
-                border: '1.5px solid #93C5FD'
-              }}>
-                ✅ 前期有中
+      {/* ★ V0614-9：行動建議框(主角) + 細節收納 */}
+      {!isSkipped && !isDone && (() => {
+        const activeMode = groups[0]?.meta?.active_mode || 'standard';
+        const prevDetail = toArray(recentRows[0]?.compare_result_json?.detail);
+        const prevHit1Count = prevDetail.filter(d => toNum(d?.hit, 0) === 1).length;
+        const prevHit2Count = prevDetail.filter(d => toNum(d?.hit, 0) === 2).length;
+        const prevHit3Count = prevDetail.filter(d => toNum(d?.hit, 0) === 3).length;
+
+        // 行動建議判斷
+        const isAvoid = isDeadHour || prevHit3Count >= 2;
+        const isGo = !isAvoid && [
+          'burst_brew','slow_rich','spider','tail_slow',
+          'loss_fast','high_zone_rich','high_zone'
+        ].includes(activeMode);
+        const isWatch = !isAvoid && !isGo;
+
+        // 主要原因(只顯示最重要的1句)
+        const mainReason = isDeadHour ? '12-15點死亡時段，歷史命中率極低'
+          : prevHit3Count >= 2 ? `上期${prevHit3Count}組中3，下期反轉風險極高(-164)`
+          : activeMode === 'burst_brew' ? '換手5顆+醞釀期，歷史+186元/期'
+          : activeMode === 'slow_rich' ? '換手1顆+合格池豐富，歷史+23元/期'
+          : activeMode === 'spider' ? '合格池豐富+連續換手穩定，已擴展12顆候選池'
+          : activeMode === 'tail_slow' ? `上期同尾${groups[0]?.meta?.prev_max_tail}顆後換手穩定，歷史+96元/期`
+          : activeMode === 'loss_fast' ? '槓龜後換手5顆，歷史+53元/期'
+          : activeMode === 'high_zone_rich' ? `上期高號${groups[0]?.meta?.prev_high_zone}顆+和值${groups[0]?.meta?.prev_sum_val}，歷史+25元/期`
+          : activeMode === 'high_zone' ? `上期高號${groups[0]?.meta?.prev_high_zone}顆(首爆)，歷史+4元/期`
+          : activeMode === 'odd_odd' ? '連續2期奇數和值，已切換相對最佳8組(-25)'
+          : '標準模式，歷史avg_pnl=-84元/期';
+
+        const actionBg = isAvoid ? '#FEE2E2' : isGo ? '#DCFCE7' : '#FEF9C3';
+        const actionBorder = isAvoid ? '#DC2626' : isGo ? '#16A34A' : '#D97706';
+        const actionColor = isAvoid ? '#DC2626' : isGo ? '#15803D' : '#92400E';
+        const actionIcon = isAvoid ? '🔴' : isGo ? '🟢' : '🟡';
+        const actionText = isAvoid ? '不要衝' : isGo ? '可以進場' : '觀望';
+
+        return (
+          <div style={{ marginBottom: 12 }}>
+            {/* 行動建議主框 */}
+            <div style={{ background: actionBg, border: `2px solid ${actionBorder}`, borderRadius: 12, padding: '10px 12px', marginBottom: 6 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ fontSize: 18, fontWeight: 900, color: actionColor }}>
+                  {actionIcon} {actionText}
+                </div>
+                <div style={{ fontSize: 10, fontWeight: 700, color: actionColor, background: actionBorder + '22', borderRadius: 6, padding: '3px 8px' }}>
+                  {activeMode}
+                </div>
               </div>
-            )}
-            {/* 醞釀4期+時段 */}
-            {sigBrew4Hour && (
-              <div style={{
-                padding: '6px 12px', borderRadius: 8, fontSize: 13, fontWeight: 700,
-                background: '#F0FDF4', color: '#15803D',
-                border: '1.5px solid #86EFAC'
-              }}>
-                ⏱️ 醞釀時段
+              <div style={{ fontSize: 11, color: actionColor, marginTop: 4, opacity: 0.9 }}>
+                {mainReason}
               </div>
-            )}
-            {/* 死亡時段 */}
-            {isDeadHour && (
-              <div style={{
-                padding: '6px 12px', borderRadius: 8, fontSize: 13, fontWeight: 700,
-                background: '#FEE2E2', color: '#DC2626',
-                border: '1.5px solid #FCA5A5'
-              }}>
-                🚫 12-15點死亡時段
-              </div>
-            )}
+            </div>
+
+            {/* 細節標籤(小字收納) */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, fontWeight: 700,
+                background: position === '爆發期' ? '#FEF9C3' : position === '醞釀期' ? '#DCFCE7' : '#F1F5F9',
+                color: position === '爆發期' ? '#92400E' : position === '醞釀期' ? '#166534' : '#64748B' }}>
+                {position === '爆發期' ? '🔥' : position === '醞釀期' ? '🌱' : '👁️'}
+                {position}{burstNo > 0 ? ` 第${burstNo}期` : ''}{brewCount > 0 && position === '醞釀期' ? ` 連${brewCount}期` : ''}
+              </span>
+              <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, fontWeight: 700,
+                background: sigSlowTurnover ? '#DCFCE7' : '#FEF2F2',
+                color: sigSlowTurnover ? '#166534' : '#DC2626' }}>
+                {sigSlowTurnover ? '🔒穩定' : '🔀劇烈'}
+              </span>
+              <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, fontWeight: 700,
+                background: sigConcentrated ? '#DCFCE7' : '#F1F5F9',
+                color: sigConcentrated ? '#166534' : '#64748B' }}>
+                {sigConcentrated ? '🎯集中' : '⭕分散'}
+              </span>
+              <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, fontWeight: 700,
+                background: totalQualified >= 22 ? '#FEF9C3' : totalQualified >= 15 ? '#F0FDF4' : '#FEF2F2',
+                color: totalQualified >= 22 ? '#92400E' : totalQualified >= 15 ? '#166534' : '#DC2626' }}>
+                合格池{totalQualified}顆
+              </span>
+              {prevHit2Count >= 4 && (
+                <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, fontWeight: 700, background: '#F0FDF4', color: '#15803D' }}>
+                  💰上期{prevHit2Count}組中2
+                </span>
+              )}
+              {prevHit1Count >= 8 && (
+                <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, fontWeight: 700, background: '#EFF6FF', color: '#1D4ED8' }}>
+                  ⚡上期{prevHit1Count}組差一點
+                </span>
+              )}
+              {prevHit3Count >= 2 && (
+                <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, fontWeight: 700, background: '#FEE2E2', color: '#DC2626' }}>
+                  🚨上期{prevHit3Count}組中3
+                </span>
+              )}
+              {isDeadHour && (
+                <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, fontWeight: 700, background: '#FEE2E2', color: '#DC2626' }}>
+                  🚫死亡時段
+                </span>
+              )}
+            </div>
           </div>
-          {/* ★ 蜘蛛感知層：複合條件觸發 */}
-          {(() => {
-            const spiderSense = groups[0]?.meta?.spider_sense_active === true;
-            const activeMode = groups[0]?.meta?.active_mode || 'standard';
-            const prevDetail = toArray(recentRows[0]?.compare_result_json?.detail);
-            const prevHit1Count = prevDetail.filter(d => toNum(d?.hit, 0) === 1).length;
-            const prevHit2Count = prevDetail.filter(d => toNum(d?.hit, 0) === 2).length;
-            const almostThere = prevHit1Count >= 8;
-            const prevRich = prevHit2Count >= 4;
-            if (!spiderSense && !almostThere && !prevRich) return null;
-            return (
-              <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid #E2E8F0' }}>
-                {activeMode === 'burst_brew' && (
-                  <div style={{ background: 'linear-gradient(135deg,#FEE2E2,#FEF3C7)', border: '2px solid #EF4444', borderRadius: 10, padding: '8px 12px', marginBottom: 6 }}>
-                    <div style={{ fontSize: 14, fontWeight: 900, color: '#DC2626' }}>
-                      🔥🌱 爆衝醞釀！換手5顆+醞釀期
-                    </div>
-                    <div style={{ fontSize: 11, color: '#DC2626', marginTop: 3 }}>
-                      歷史驗證：29筆avg_pnl=+186.21元/期，已切換專屬8組策略
-                    </div>
-                  </div>
-                )}
-                {activeMode === 'slow_rich' && (
-                  <div style={{ background: 'linear-gradient(135deg,#DCFCE7,#FEF9C3)', border: '2px solid #22C55E', borderRadius: 10, padding: '8px 12px', marginBottom: 6 }}>
-                    <div style={{ fontSize: 14, fontWeight: 900, color: '#15803D' }}>
-                      🔒🌊 穩富模式！換手1顆+合格池豐富
-                    </div>
-                    <div style={{ fontSize: 11, color: '#15803D', marginTop: 3 }}>
-                      歷史驗證：63筆avg_pnl=+23.81元/期，已切換專屬8組策略
-                    </div>
-                  </div>
-                )}
-                {activeMode === 'spider' && (
-                  <div style={{ background: 'linear-gradient(135deg,#FEF9C3,#FEF3C7)', border: '2px solid #F59E0B', borderRadius: 10, padding: '8px 12px', marginBottom: 6 }}>
-                    <div style={{ fontSize: 14, fontWeight: 900, color: '#92400E' }}>
-                      🕷️ 蜘蛛感知啟動！合格池豐富+連續換手穩定
-                    </div>
-                    <div style={{ fontSize: 11, color: '#92400E', marginTop: 3 }}>
-                      已切換12顆擴展候選池，歷史驗證avg_pnl=+390元/期
-                    </div>
-                  </div>
-                )}
-                {activeMode === 'tail_slow' && (
-                  <div style={{ background: 'linear-gradient(135deg,#FEF3C7,#DCFCE7)', border: '2px solid #F59E0B', borderRadius: 10, padding: '8px 12px', marginBottom: 6 }}>
-                    <div style={{ fontSize: 14, fontWeight: 900, color: '#92400E' }}>
-                      🐌🎯 同尾反轉！上期同尾{groups[0]?.meta?.prev_max_tail}顆+換手穩定
-                    </div>
-                    <div style={{ fontSize: 11, color: '#92400E', marginTop: 3 }}>
-                      歷史驗證：16筆avg_pnl=+96.88元/期，已切換反向專屬8組
-                    </div>
-                  </div>
-                )}
-                {activeMode === 'high_zone' && (
-                  <div style={{ background: 'linear-gradient(135deg,#EDE9FE,#DDD6FE)', border: '2px solid #7C3AED', borderRadius: 10, padding: '8px 12px', marginBottom: 6 }}>
-                    <div style={{ fontSize: 14, fontWeight: 900, color: '#5B21B6' }}>
-                      🎱 高號首爆！上期61-80出現{groups[0]?.meta?.prev_high_zone}顆(單期)
-                    </div>
-                    <div style={{ fontSize: 11, color: '#5B21B6', marginTop: 3 }}>
-                      歷史驗證：186筆avg_pnl=+4.84元/期(連續2期反而-121)，已切換高號專屬8組
-                    </div>
-                  </div>
-                )}
-                {activeMode === 'loss_fast' && (
-                  <div style={{ background: 'linear-gradient(135deg,#FEF3C7,#FEE2E2)', border: '2px solid #F97316', borderRadius: 10, padding: '8px 12px', marginBottom: 6 }}>
-                    <div style={{ fontSize: 14, fontWeight: 900, color: '#C2410C' }}>
-                      🔄 槓龜反轉！上期全沒中+換手5顆
-                    </div>
-                    <div style={{ fontSize: 11, color: '#C2410C', marginTop: 3 }}>
-                      歷史驗證：32筆avg_pnl=+53.13元/期，已切換爆衝專屬8組
-                    </div>
-                  </div>
-                )}
-                {activeMode === 'high_zone_rich' && (
-                  <div style={{ background: 'linear-gradient(135deg,#EDE9FE,#FEF9C3)', border: '2px solid #7C3AED', borderRadius: 10, padding: '8px 12px', marginBottom: 6 }}>
-                    <div style={{ fontSize: 14, fontWeight: 900, color: '#5B21B6' }}>
-                      🎱📊 高號首爆+高和值！61-80出現{groups[0]?.meta?.prev_high_zone}顆，和值{groups[0]?.meta?.prev_sum_val}
-                    </div>
-                    <div style={{ fontSize: 11, color: '#5B21B6', marginTop: 3 }}>
-                      歷史驗證：60筆avg_pnl=+25.83元/期，複合最強組合
-                    </div>
-                  </div>
-                )}
-                {activeMode === 'odd_odd' && (
-                  <div style={{ background: 'linear-gradient(135deg,#F1F5F9,#E2E8F0)', border: '2px solid #64748B', borderRadius: 10, padding: '8px 12px', marginBottom: 6 }}>
-                    <div style={{ fontSize: 14, fontWeight: 900, color: '#334155' }}>
-                      🔢 奇奇模式！連續2期和值為奇數
-                    </div>
-                    <div style={{ fontSize: 11, color: '#334155', marginTop: 3 }}>
-                      歷史驗證：166筆avg_pnl=-25元(標準-84)，已切換相對最佳8組
-                    </div>
-                  </div>
-                )}
-                {almostThere && (
-                  <div style={{ background: '#EFF6FF', border: '2px solid #3B82F6', borderRadius: 10, padding: '8px 12px', marginBottom: 6 }}>
-                    <div style={{ fontSize: 14, fontWeight: 900, color: '#1D4ED8' }}>
-                      ⚡ 上期{prevHit1Count}組差一點！(中1→距中2只差1顆)
-                    </div>
-                    <div style={{ fontSize: 11, color: '#1D4ED8', marginTop: 3 }}>
-                      歷史驗證：上期8+組中1後，avg_pnl=-14.84(優於平均-95)
-                    </div>
-                  </div>
-                )}
-                {prevRich && (
-                  <div style={{ background: '#F0FDF4', border: '2px solid #22C55E', borderRadius: 10, padding: '8px 12px', marginBottom: 6 }}>
-                    <div style={{ fontSize: 14, fontWeight: 900, color: '#15803D' }}>
-                      💰 上期豐收！{prevHit2Count}組中2
-                    </div>
-                    <div style={{ fontSize: 11, color: '#15803D', marginTop: 3 }}>
-                      歷史驗證：上期4+組中2後，avg_pnl=-66.52(優於平均-91)
-                    </div>
-                  </div>
-                )}
-                {(() => {
-                  const prevHit3Count = prevDetail.filter(d => toNum(d?.hit, 0) === 3).length;
-                  if (prevHit3Count < 2) return null;
-                  return (
-                    <div style={{ background: '#FEE2E2', border: '2px solid #DC2626', borderRadius: 10, padding: '8px 12px' }}>
-                      <div style={{ fontSize: 14, fontWeight: 900, color: '#DC2626' }}>
-                        🚨 強烈迴避！上期{prevHit3Count}組中3，下期反轉風險極高
-                      </div>
-                      <div style={{ fontSize: 11, color: '#DC2626', marginTop: 3 }}>
-                        歷史驗證：17筆avg_pnl=-164.71元，強烈建議這期觀望不下注
-                      </div>
-                    </div>
-                  );
-                })()}
-              </div>
-            );
-          })()}
-        </div>
-      )}
+        );
+      })()}
 
       {/* ★ 多組中2預警 */}
       {isWarning && (
@@ -881,7 +775,7 @@ function HotPage({ recent20 }) {
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                   {g.data.map(({ n }) => (
                     <div key={n} style={{
-                      width: 40, height: 40, borderRadius: '50%',
+                      width: 32, height: 32, borderRadius: '50%',
                       background: info.bg,
                       border: `2px solid ${info.border}`,
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -939,7 +833,7 @@ function HotPoolPage({ prediction }) {
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
               {hotPool.map(n => (
                 <div key={n} style={{
-                  width: 44, height: 44, borderRadius: '50%',
+                  width: 36, height: 36, borderRadius: '50%',
                   background: C.goldBg,
                   border: `2px solid ${C.goldLight}`,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -1007,7 +901,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0614-8</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0614-9</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
