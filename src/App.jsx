@@ -567,35 +567,28 @@ function HistoryPage({ historyRows }) {
                   </span>
                   {!isSkipped && position && (
                     <div style={{ marginTop: 3, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-                      <span style={{ fontSize: 11, fontWeight: 700, color: actionStyle.color, background: actionStyle.bg, border: `1px solid ${actionStyle.border}`, borderRadius: 6, padding: '2px 8px', display: 'inline-block' }}>
-                        {actionStyle.icon} {actionStyle.label}
+                      {/* 週期標籤 */}
+                      <span style={{ fontSize: 11, fontWeight: 700,
+                        color: position === '爆發期' ? '#92400E' : position === '醞釀期' ? '#166534' : '#64748B',
+                        background: position === '爆發期' ? '#FEF9C3' : position === '醞釀期' ? '#DCFCE7' : '#F1F5F9',
+                        borderRadius: 6, padding: '2px 8px', display: 'inline-block' }}>
+                        {position === '爆發期' ? '🔥' : position === '醞釀期' ? '🌱' : '👁️'} {position}
                       </span>
-                      {/* ★ V0613-8：移除histScore分數標籤，改為獨立盤面狀態標籤 */}
-                      {sigSlowTurnover && (
-                        <span style={{ fontSize: 11, fontWeight: 700, color: '#166534', background: '#DCFCE7', borderRadius: 6, padding: '2px 8px', display: 'inline-block' }}>
-                          🔒 換手穩定
-                        </span>
-                      )}
-                      {sigConcentrated && (
-                        <span style={{ fontSize: 11, fontWeight: 700, color: '#1D4ED8', background: '#EFF6FF', borderRadius: 6, padding: '2px 8px', display: 'inline-block' }}>
-                          🎯 號碼集中
-                        </span>
-                      )}
-                      {sigPrevHit && (
-                        <span style={{ fontSize: 11, fontWeight: 700, color: '#7C3AED', background: '#F5F3FF', borderRadius: 6, padding: '2px 8px', display: 'inline-block' }}>
-                          ✅ 前期有中
-                        </span>
-                      )}
-                      {sigBrew4Hour && (
-                        <span style={{ fontSize: 11, fontWeight: 700, color: '#15803D', background: '#F0FDF4', borderRadius: 6, padding: '2px 8px', display: 'inline-block' }}>
-                          ⏱️ 醞釀時段
-                        </span>
-                      )}
-                      {isDeadHourHist && (
-                        <span style={{ fontSize: 11, fontWeight: 700, color: '#DC2626', background: '#FEE2E2', borderRadius: 6, padding: '2px 8px', display: 'inline-block' }}>
-                          🚫 死亡時段
-                        </span>
-                      )}
+                      {/* 行動建議標籤(對應第一頁大框) */}
+                      {(() => {
+                        const histMode = meta0?.active_mode || '';
+                        const histDeadHour = isDeadHourHist;
+                        const histIsAvoid = histDeadHour;
+                        const histIsGo = !histIsAvoid && ['burst_brew','slow_rich','spider','tail_slow','loss_fast','high_zone_rich','high_zone','consec8','balanced2'].includes(histMode);
+                        const label = histIsAvoid ? '🔴 不要衝' : histIsGo ? '🟢 可以進場' : '🟡 觀望';
+                        const bg = histIsAvoid ? '#FEE2E2' : histIsGo ? '#DCFCE7' : '#FEF9C3';
+                        const color = histIsAvoid ? '#DC2626' : histIsGo ? '#15803D' : '#92400E';
+                        return (
+                          <span style={{ fontSize: 11, fontWeight: 700, color, background: bg, borderRadius: 6, padding: '2px 8px', display: 'inline-block' }}>
+                            {label}
+                          </span>
+                        );
+                      })()}
                     </div>
                   )}
                 </div>
