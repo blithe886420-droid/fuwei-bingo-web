@@ -391,26 +391,43 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
           </div>
           {/* ★ 蜘蛛感知層：複合條件觸發 */}
           {(() => {
-            // ★ V0614-2：直接讀後端計算的spider_sense_active(更準確)
             const spiderSense = groups[0]?.meta?.spider_sense_active === true;
-            // 上一期8組裡中2的組數
+            const activeMode = groups[0]?.meta?.active_mode || 'standard';
             const prevDetail = toArray(recentRows[0]?.compare_result_json?.detail);
             const prevHit1Count = prevDetail.filter(d => toNum(d?.hit, 0) === 1).length;
             const prevHit2Count = prevDetail.filter(d => toNum(d?.hit, 0) === 2).length;
-            // 上期差一點：8+組中1
             const almostThere = prevHit1Count >= 8;
-            // 上期豐收：4+組中2
             const prevRich = prevHit2Count >= 4;
             if (!spiderSense && !almostThere && !prevRich) return null;
             return (
               <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid #E2E8F0' }}>
-                {spiderSense && (
+                {activeMode === 'burst_brew' && (
+                  <div style={{ background: 'linear-gradient(135deg,#FEE2E2,#FEF3C7)', border: '2px solid #EF4444', borderRadius: 10, padding: '8px 12px', marginBottom: 6 }}>
+                    <div style={{ fontSize: 14, fontWeight: 900, color: '#DC2626' }}>
+                      🔥🌱 爆衝醞釀！換手5顆+醞釀期
+                    </div>
+                    <div style={{ fontSize: 11, color: '#DC2626', marginTop: 3 }}>
+                      歷史驗證：29筆avg_pnl=+186.21元/期，已切換專屬8組策略
+                    </div>
+                  </div>
+                )}
+                {activeMode === 'slow_rich' && (
+                  <div style={{ background: 'linear-gradient(135deg,#DCFCE7,#FEF9C3)', border: '2px solid #22C55E', borderRadius: 10, padding: '8px 12px', marginBottom: 6 }}>
+                    <div style={{ fontSize: 14, fontWeight: 900, color: '#15803D' }}>
+                      🔒🌊 穩富模式！換手1顆+合格池豐富
+                    </div>
+                    <div style={{ fontSize: 11, color: '#15803D', marginTop: 3 }}>
+                      歷史驗證：63筆avg_pnl=+23.81元/期，已切換專屬8組策略
+                    </div>
+                  </div>
+                )}
+                {activeMode === 'spider' && (
                   <div style={{ background: 'linear-gradient(135deg,#FEF9C3,#FEF3C7)', border: '2px solid #F59E0B', borderRadius: 10, padding: '8px 12px', marginBottom: 6 }}>
                     <div style={{ fontSize: 14, fontWeight: 900, color: '#92400E' }}>
-                      🕷️ 蜘蛛感知啟動！合格池豐富({totalQualified}顆) + 連續換手穩定
+                      🕷️ 蜘蛛感知啟動！合格池豐富+連續換手穩定
                     </div>
                     <div style={{ fontSize: 11, color: '#92400E', marginTop: 3 }}>
-                      已自動切換至12顆擴展候選池，歷史驗證此條件avg_pnl=+390元/期
+                      已切換12顆擴展候選池，歷史驗證avg_pnl=+390元/期
                     </div>
                   </div>
                 )}
@@ -420,7 +437,7 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
                       ⚡ 上期{prevHit1Count}組差一點！(中1→距中2只差1顆)
                     </div>
                     <div style={{ fontSize: 11, color: '#1D4ED8', marginTop: 3 }}>
-                      歷史驗證：上期8+組中1後，這期avg_pnl=-14.84(優於平均-95)
+                      歷史驗證：上期8+組中1後，avg_pnl=-14.84(優於平均-95)
                     </div>
                   </div>
                 )}
@@ -430,7 +447,7 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
                       💰 上期豐收！{prevHit2Count}組中2
                     </div>
                     <div style={{ fontSize: 11, color: '#15803D', marginTop: 3 }}>
-                      歷史驗證：上期4+組中2後，這期avg_pnl=-66.52(優於平均-91)
+                      歷史驗證：上期4+組中2後，avg_pnl=-66.52(優於平均-91)
                     </div>
                   </div>
                 )}
@@ -926,7 +943,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0614-2</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0614-4</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
