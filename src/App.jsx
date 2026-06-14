@@ -171,7 +171,7 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
   const latestDraw = toArray(recent20)[0];
   const isSkipped = !row || row?.status === 'skipped' || allGroups.length === 0;
   const action = groups[0]?.meta?.action || '出號';
-  const forcedSwitch = groups[0]?.meta?.forced_switch === true;
+  const forcedSwitch = false;  // V0615-1後端已移除此欄位
   // ★ 修正：用當前時間判斷低信心時段
   const nowHour = new Date().getHours();
   const lowConfidence = nowHour >= 12 && nowHour <= 15;
@@ -215,8 +215,8 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
   const isHighHour = (nowHour >= 9 && nowHour <= 11) || (nowHour >= 16 && nowHour <= 18);
   const isDeadHour = nowHour >= 12 && nowHour <= 15;
   const position = groups[0]?.meta?.position || '';
-  const spiderMode = groups[0]?.meta?.spider_mode || 'normal';
-  const trueSignalCount = toNum(groups[0]?.meta?.true_signal_count, 0);
+  const spiderMode = '';  // V0615-1後端已移除此欄位
+  const trueSignalCount = toNum(groups[0]?.meta?.total_signals, 0);  // 改讀新版total_signals
   const sigHighHour = groups[0]?.meta?.sig_high_hour === true;
   const sigSlowTurnover = groups[0]?.meta?.sig_slow_turnover === true;
   const sigHighZone = groups[0]?.meta?.sig_high_zone === true;
@@ -532,7 +532,7 @@ function HistoryPage({ historyRows }) {
           const isSkipped = row?.status === 'skipped' || allGroups.length === 0;
           const action = allGroups[0]?.meta?.action || '';
           const position = allGroups[0]?.meta?.position || '';
-          const forcedSwitch = allGroups[0]?.meta?.forced_switch === true;
+          const forcedSwitch = false;  // V0615-1已移除
           const lowConfidence = allGroups[0]?.meta?.low_confidence_hour === true;
           const actionStyle = getActionStyle(action, forcedSwitch, lowConfidence);
           const comparedDraw = toArray(compareResult?.detail)[0]?.draw_no;
@@ -799,8 +799,8 @@ function HotPoolPage({ prediction }) {
   const hotPool = (meta0?.hot_pool || '').split(',').map(Number).filter(Boolean);
   const action = meta0?.action || '';
   const position = meta0?.position || '';
-  const spiderMode = meta0?.spider_mode || '';
-  const forcedSwitch = meta0?.forced_switch === true;
+  const spiderMode = '';  // V0615-1已移除
+  const forcedSwitch = false;  // V0615-1已移除
   const nowHour = new Date().getHours();
   const lowConfidence = nowHour >= 12 && nowHour <= 15;
   const actionStyle = getActionStyle(action, forcedSwitch, lowConfidence);
@@ -897,7 +897,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0614-12</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0615-1</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
