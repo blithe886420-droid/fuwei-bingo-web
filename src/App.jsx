@@ -315,39 +315,76 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
         ) : <div style={S.empty}>載入中...</div>}
       </Card>
 
-      {/* ★ 預警系統 */}
-      {/* ★ 綜合信心指數 */}
+      {/* ★ V0613-8：盤面狀態儀表板，移除分數與建議等級，
+          改為直接顯示各獨立盤面訊號，讓使用者自行判斷是否進場。
+          原因：逐期驗證發現高分期≠大賺、低分期反而常出現+1000元以上，
+          分數系統無法預測單期結果(賓果獨立隨機)，改為純盤面狀態顯示。 */}
       {!isSkipped && !isDone && (
-        <div style={{ background: confidenceLevel.bg, border: `2px solid ${confidenceLevel.border}`, borderRadius: 14, padding: '12px 16px', marginBottom: 12 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div style={{ fontSize: 16, fontWeight: 900, color: confidenceLevel.color }}>
-              {confidenceLevel.label}
+        <div style={{ background: '#F8FAFC', border: '2px solid #CBD5E1', borderRadius: 14, padding: '12px 16px', marginBottom: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 800, color: '#334155', marginBottom: 10 }}>📊 盤面狀態</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {/* 週期 */}
+            <div style={{
+              padding: '6px 12px', borderRadius: 8, fontSize: 13, fontWeight: 700,
+              background: position === '爆發期' ? '#FEF9C3' : position === '醞釀期' ? '#DCFCE7' : '#F1F5F9',
+              color: position === '爆發期' ? '#92400E' : position === '醞釀期' ? '#166534' : '#64748B',
+              border: `1.5px solid ${position === '爆發期' ? '#FCD34D' : position === '醞釀期' ? '#86EFAC' : '#CBD5E1'}`
+            }}>
+              {position === '爆發期' ? '🔥' : position === '醞釀期' ? '🌱' : '👁️'} {position}
+              {brewCount > 0 && position === '醞釀期' ? ` 連續${brewCount}期` : ''}
+              {burstNo > 0 ? ` 第${burstNo}期` : ''}
             </div>
-            <div style={{ fontSize: 24, fontWeight: 900, color: confidenceLevel.color }}>
-              {confidenceScore}分
+            {/* 換手穩定 */}
+            <div style={{
+              padding: '6px 12px', borderRadius: 8, fontSize: 13, fontWeight: 700,
+              background: sigSlowTurnover ? '#DCFCE7' : '#FEF2F2',
+              color: sigSlowTurnover ? '#166534' : '#DC2626',
+              border: `1.5px solid ${sigSlowTurnover ? '#86EFAC' : '#FCA5A5'}`
+            }}>
+              {sigSlowTurnover ? '🔒 換手穩定' : '🔀 換手劇烈'}
             </div>
+            {/* 號碼集中 */}
+            <div style={{
+              padding: '6px 12px', borderRadius: 8, fontSize: 13, fontWeight: 700,
+              background: sigConcentrated ? '#DCFCE7' : '#F1F5F9',
+              color: sigConcentrated ? '#166534' : '#64748B',
+              border: `1.5px solid ${sigConcentrated ? '#86EFAC' : '#CBD5E1'}`
+            }}>
+              {sigConcentrated ? '🎯 號碼集中' : '⭕ 號碼分散'}
+            </div>
+            {/* 前期有中 */}
+            {sigPrevHit && (
+              <div style={{
+                padding: '6px 12px', borderRadius: 8, fontSize: 13, fontWeight: 700,
+                background: '#EFF6FF', color: '#1D4ED8',
+                border: '1.5px solid #93C5FD'
+              }}>
+                ✅ 前期有中
+              </div>
+            )}
+            {/* 醞釀4期+時段 */}
+            {sigBrew4Hour && (
+              <div style={{
+                padding: '6px 12px', borderRadius: 8, fontSize: 13, fontWeight: 700,
+                background: '#F0FDF4', color: '#15803D',
+                border: '1.5px solid #86EFAC'
+              }}>
+                ⏱️ 醞釀時段
+              </div>
+            )}
+            {/* 死亡時段 */}
+            {isDeadHour && (
+              <div style={{
+                padding: '6px 12px', borderRadius: 8, fontSize: 13, fontWeight: 700,
+                background: '#FEE2E2', color: '#DC2626',
+                border: '1.5px solid #FCA5A5'
+              }}>
+                🚫 12-15點死亡時段
+              </div>
+            )}
           </div>
-          {confidenceReasons.length > 0 && (
-            <div style={{ fontSize: 11, color: confidenceLevel.color, marginTop: 6, opacity: 0.85 }}>
-              {confidenceReasons.join(' · ')}
-            </div>
-          )}
         </div>
       )}
-
-      {/* ★ 12-15點死亡時段警告 */}
-      {isDeadHour && (
-        <div style={{ background: '#FEE2E2', border: '2px solid #EF4444', borderRadius: 12, padding: '10px 14px', marginBottom: 10 }}>
-          <div style={{ fontSize: 13, fontWeight: 800, color: '#DC2626' }}>🚫 死亡時段（12-15點）</div>
-          <div style={{ fontSize: 11, color: '#DC2626', marginTop: 3 }}>命中率1.92%，系統已切換保守策略，強烈不建議下注</div>
-        </div>
-      )}
-
-      {/* ★ V0613-1統一：以下提示已整合進「綜合信心指數」框內的加分理由，
-          不再以獨立框呈現，避免分數與提示矛盾。
-          原「爆發第1/2期」「醞釀≥7期」「連續未中反彈」因從未經過SQL驗證，已移除。
-          原「醞釀4-6期」「前期中3」「號碼區間」因條件與sig_*不完全一致，已移除，
-          改由上方信心框的 confidenceReasons 統一呈現對應理由。 */}
 
       {/* ★ 多組中2預警 */}
       {isWarning && (
@@ -479,26 +516,7 @@ function HistoryPage({ historyRows }) {
           const sigPrevHit = meta0?.sig_prev_hit === true;
           const totalQualified = toNum(meta0?.total_qualified, 0);
           const isDeadHourHist = metaHour >= 12 && metaHour <= 15;
-
-          let histScore = 0;
-          // sig_high_hour：SQL驗證方向相反，已中立化為0分（與快速頁一致，不計分）
-          // sig_high_zone：V0613-2驗證後發現幾乎恆真、無區分力，已中立化為0分（與快速頁一致）
-          if (sigConcentrated) histScore += 20;       // 號碼集中(+20)
-          if (sigSlowTurnover) histScore += 20;        // 換手穩定(+20)
-          if (sigBrew4Hour) histScore += 15;           // 醞釀期+時段(+15)
-          if (sigPrevHit) histScore += 10;             // 前1期有中(+10)
-          if (totalQualified < 8) histScore -= 30;     // 號碼池稀少(-30)
-          if (isDeadHourHist) histScore -= 50;         // 12-15點死亡時段(-50)
-          if (position === '觀察期') histScore -= 20;  // 觀察期弱信號(-20)
-          // ★ V0613-3：爆發期+normal組合hit3率14.29%(56筆)，新增加分項
-          if (position === '爆發期') histScore += 10;  // 爆發期(+10)
-          // ★ V0613-3：is_brew_low_point 全歷史從未出現true，確認為死代碼，已移除(-40)
-
-          // ★ 等級門檻對齊快速頁（80/60/30）
-          const histLevel = histScore >= 80 ? { label: '🕷️真獵物', color: '#DC2626' } :
-            histScore >= 60 ? { label: '🎯建議進場', color: '#15803D' } :
-            histScore >= 30 ? { label: '👀觀察等待', color: '#6B7280' } :
-            { label: '⏸️不要衝', color: '#9CA3AF' };
+          // ★ V0613-8：histScore/histLevel已移除，改為直接顯示sig_*盤面狀態標籤
 
           return (
             <div key={row?.id || idx} style={{ ...S.card, marginBottom: 10, padding: '12px 14px' }}>
@@ -512,9 +530,32 @@ function HistoryPage({ historyRows }) {
                       <span style={{ fontSize: 11, fontWeight: 700, color: actionStyle.color, background: actionStyle.bg, border: `1px solid ${actionStyle.border}`, borderRadius: 6, padding: '2px 8px', display: 'inline-block' }}>
                         {actionStyle.icon} {actionStyle.label}
                       </span>
-                      <span style={{ fontSize: 11, fontWeight: 800, color: histLevel.color, background: histLevel.color + '18', borderRadius: 6, padding: '2px 8px', display: 'inline-block' }}>
-                        {histLevel.label} {histScore}分
-                      </span>
+                      {/* ★ V0613-8：移除histScore分數標籤，改為獨立盤面狀態標籤 */}
+                      {sigSlowTurnover && (
+                        <span style={{ fontSize: 11, fontWeight: 700, color: '#166534', background: '#DCFCE7', borderRadius: 6, padding: '2px 8px', display: 'inline-block' }}>
+                          🔒 換手穩定
+                        </span>
+                      )}
+                      {sigConcentrated && (
+                        <span style={{ fontSize: 11, fontWeight: 700, color: '#1D4ED8', background: '#EFF6FF', borderRadius: 6, padding: '2px 8px', display: 'inline-block' }}>
+                          🎯 號碼集中
+                        </span>
+                      )}
+                      {sigPrevHit && (
+                        <span style={{ fontSize: 11, fontWeight: 700, color: '#7C3AED', background: '#F5F3FF', borderRadius: 6, padding: '2px 8px', display: 'inline-block' }}>
+                          ✅ 前期有中
+                        </span>
+                      )}
+                      {sigBrew4Hour && (
+                        <span style={{ fontSize: 11, fontWeight: 700, color: '#15803D', background: '#F0FDF4', borderRadius: 6, padding: '2px 8px', display: 'inline-block' }}>
+                          ⏱️ 醞釀時段
+                        </span>
+                      )}
+                      {isDeadHourHist && (
+                        <span style={{ fontSize: 11, fontWeight: 700, color: '#DC2626', background: '#FEE2E2', borderRadius: 6, padding: '2px 8px', display: 'inline-block' }}>
+                          🚫 死亡時段
+                        </span>
+                      )}
                     </div>
                   )}
                 </div>
@@ -831,7 +872,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0613-7</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0613-8</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
