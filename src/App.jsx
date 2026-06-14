@@ -391,16 +391,17 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
           </div>
           {/* ★ 蜘蛛感知層：複合條件觸發 */}
           {(() => {
-            // 上一期的換手穩定狀態
-            const prevSlowTurnover = recentRows[0]?.groups_json?.[0]?.meta?.sig_slow_turnover === true;
-            // 上一期8組裡中1的組數
+            // ★ V0614-2：直接讀後端計算的spider_sense_active(更準確)
+            const spiderSense = groups[0]?.meta?.spider_sense_active === true;
+            // 上一期8組裡中2的組數
             const prevDetail = toArray(recentRows[0]?.compare_result_json?.detail);
             const prevHit1Count = prevDetail.filter(d => toNum(d?.hit, 0) === 1).length;
-            // 蜘蛛感知：TQ>=22 + 連續換手穩定2期(本期+上期)
-            const spiderSense = totalQualified >= 22 && sigSlowTurnover && prevSlowTurnover;
-            // 上期差一點：上期8組中有8組以上中1
+            const prevHit2Count = prevDetail.filter(d => toNum(d?.hit, 0) === 2).length;
+            // 上期差一點：8+組中1
             const almostThere = prevHit1Count >= 8;
-            if (!spiderSense && !almostThere) return null;
+            // 上期豐收：4+組中2
+            const prevRich = prevHit2Count >= 4;
+            if (!spiderSense && !almostThere && !prevRich) return null;
             return (
               <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid #E2E8F0' }}>
                 {spiderSense && (
@@ -409,17 +410,27 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
                       🕷️ 蜘蛛感知啟動！合格池豐富({totalQualified}顆) + 連續換手穩定
                     </div>
                     <div style={{ fontSize: 11, color: '#92400E', marginTop: 3 }}>
-                      歷史驗證：此條件下avg_pnl=+390元/期(打平30%)，是今天驗證最強的複合訊號
+                      已自動切換至12顆擴展候選池，歷史驗證此條件avg_pnl=+390元/期
                     </div>
                   </div>
                 )}
                 {almostThere && (
-                  <div style={{ background: '#EFF6FF', border: '2px solid #3B82F6', borderRadius: 10, padding: '8px 12px' }}>
+                  <div style={{ background: '#EFF6FF', border: '2px solid #3B82F6', borderRadius: 10, padding: '8px 12px', marginBottom: 6 }}>
                     <div style={{ fontSize: 14, fontWeight: 900, color: '#1D4ED8' }}>
-                      ⚡ 上期8組全部差一點！({prevHit1Count}組中1)
+                      ⚡ 上期{prevHit1Count}組差一點！(中1→距中2只差1顆)
                     </div>
                     <div style={{ fontSize: 11, color: '#1D4ED8', marginTop: 3 }}>
-                      歷史驗證：上期8+組中1後，這期avg_pnl=-14.84(遠優於其他情況的-95)
+                      歷史驗證：上期8+組中1後，這期avg_pnl=-14.84(優於平均-95)
+                    </div>
+                  </div>
+                )}
+                {prevRich && (
+                  <div style={{ background: '#F0FDF4', border: '2px solid #22C55E', borderRadius: 10, padding: '8px 12px' }}>
+                    <div style={{ fontSize: 14, fontWeight: 900, color: '#15803D' }}>
+                      💰 上期豐收！{prevHit2Count}組中2
+                    </div>
+                    <div style={{ fontSize: 11, color: '#15803D', marginTop: 3 }}>
+                      歷史驗證：上期4+組中2後，這期avg_pnl=-66.52(優於平均-91)
                     </div>
                   </div>
                 )}
@@ -915,7 +926,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0614-1</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0614-2</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
