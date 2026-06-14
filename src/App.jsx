@@ -451,13 +451,33 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
                     </div>
                   </div>
                 )}
-                {activeMode === 'high_sum' && (
-                  <div style={{ background: 'linear-gradient(135deg,#FEF9C3,#FEF3C7)', border: '2px solid #D97706', borderRadius: 10, padding: '8px 12px', marginBottom: 6 }}>
-                    <div style={{ fontSize: 14, fontWeight: 900, color: '#92400E' }}>
-                      📊 高和值！上期號碼總和{groups[0]?.meta?.prev_sum_val}
+                {activeMode === 'loss_fast' && (
+                  <div style={{ background: 'linear-gradient(135deg,#FEF3C7,#FEE2E2)', border: '2px solid #F97316', borderRadius: 10, padding: '8px 12px', marginBottom: 6 }}>
+                    <div style={{ fontSize: 14, fontWeight: 900, color: '#C2410C' }}>
+                      🔄 槓龜反轉！上期全沒中+換手5顆
                     </div>
-                    <div style={{ fontSize: 11, color: '#92400E', marginTop: 3 }}>
-                      歷史驗證：93筆avg_pnl=-2.42元(優於平均-84)，已切換高和值專屬8組
+                    <div style={{ fontSize: 11, color: '#C2410C', marginTop: 3 }}>
+                      歷史驗證：32筆avg_pnl=+53.13元/期，已切換爆衝專屬8組
+                    </div>
+                  </div>
+                )}
+                {activeMode === 'high_zone_rich' && (
+                  <div style={{ background: 'linear-gradient(135deg,#EDE9FE,#FEF9C3)', border: '2px solid #7C3AED', borderRadius: 10, padding: '8px 12px', marginBottom: 6 }}>
+                    <div style={{ fontSize: 14, fontWeight: 900, color: '#5B21B6' }}>
+                      🎱📊 高號首爆+高和值！61-80出現{groups[0]?.meta?.prev_high_zone}顆，和值{groups[0]?.meta?.prev_sum_val}
+                    </div>
+                    <div style={{ fontSize: 11, color: '#5B21B6', marginTop: 3 }}>
+                      歷史驗證：60筆avg_pnl=+25.83元/期，複合最強組合
+                    </div>
+                  </div>
+                )}
+                {activeMode === 'odd_odd' && (
+                  <div style={{ background: 'linear-gradient(135deg,#F1F5F9,#E2E8F0)', border: '2px solid #64748B', borderRadius: 10, padding: '8px 12px', marginBottom: 6 }}>
+                    <div style={{ fontSize: 14, fontWeight: 900, color: '#334155' }}>
+                      🔢 奇奇模式！連續2期和值為奇數
+                    </div>
+                    <div style={{ fontSize: 11, color: '#334155', marginTop: 3 }}>
+                      歷史驗證：166筆avg_pnl=-25元(標準-84)，已切換相對最佳8組
                     </div>
                   </div>
                 )}
@@ -472,7 +492,7 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
                   </div>
                 )}
                 {prevRich && (
-                  <div style={{ background: '#F0FDF4', border: '2px solid #22C55E', borderRadius: 10, padding: '8px 12px' }}>
+                  <div style={{ background: '#F0FDF4', border: '2px solid #22C55E', borderRadius: 10, padding: '8px 12px', marginBottom: 6 }}>
                     <div style={{ fontSize: 14, fontWeight: 900, color: '#15803D' }}>
                       💰 上期豐收！{prevHit2Count}組中2
                     </div>
@@ -481,6 +501,20 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
                     </div>
                   </div>
                 )}
+                {(() => {
+                  const prevHit3Count = prevDetail.filter(d => toNum(d?.hit, 0) === 3).length;
+                  if (prevHit3Count < 2) return null;
+                  return (
+                    <div style={{ background: '#FEE2E2', border: '2px solid #DC2626', borderRadius: 10, padding: '8px 12px' }}>
+                      <div style={{ fontSize: 14, fontWeight: 900, color: '#DC2626' }}>
+                        🚨 強烈迴避！上期{prevHit3Count}組中3，下期反轉風險極高
+                      </div>
+                      <div style={{ fontSize: 11, color: '#DC2626', marginTop: 3 }}>
+                        歷史驗證：17筆avg_pnl=-164.71元，強烈建議這期觀望不下注
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             );
           })()}
@@ -973,7 +1007,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0614-7</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0614-8</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
