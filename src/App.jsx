@@ -341,6 +341,7 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
           : activeMode === 'loss_fast' ? '槓龜後換手5顆，歷史+53元/期'
           : activeMode === 'high_zone_rich' ? `上期高號${groups[0]?.meta?.prev_high_zone}顆+和值${groups[0]?.meta?.prev_sum_val}，歷史+25元/期`
           : activeMode === 'high_zone' ? `上期高號${groups[0]?.meta?.prev_high_zone}顆(首爆)，歷史+4元/期`
+          : activeMode === 'consec8' ? `上期連號${groups[0]?.meta?.prev_consec_count}組，歷史+253元/期`
           : activeMode === 'odd_odd' ? '連續2期奇數和值，已切換相對最佳8組(-25)'
           : '標準模式，歷史avg_pnl=-84元/期';
 
@@ -589,12 +590,12 @@ function HistoryPage({ historyRows }) {
                   )}
                 </div>
                 {isSkipped ? (
-                  <span style={{ fontSize: 12, color: C.purple }}>⏸️ 隨機參考期</span>
+                  <span style={{ fontSize: 12, color: C.purple, whiteSpace: 'nowrap' }}>⏸️ 隨機參考期</span>
                 ) : isDone ? (
-                  <span style={{ fontSize: 15, fontWeight: 900, color: hitColor }}>
+                  <span style={{ fontSize: 15, fontWeight: 900, color: hitColor, whiteSpace: 'nowrap' }}>
                     {bestHit >= 3 ? `🏆 中${bestHit}` : bestHit >= 2 ? `✅ 中${bestHit}` : `❌ 未中`}
                   </span>
-                ) : <span style={{ fontSize: 12, color: C.orange }}>等待比對</span>}
+                ) : <span style={{ fontSize: 12, color: C.orange, whiteSpace: 'nowrap' }}>等待比對</span>}
               </div>
               {isSkipped ? (
                 <div style={{ fontSize: 11, color: C.purple, background: C.purpleBg, borderRadius: 6, padding: '4px 8px', display: 'inline-block' }}>
@@ -901,7 +902,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0614-9</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0614-10</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
