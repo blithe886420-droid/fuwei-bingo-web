@@ -451,6 +451,16 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
                     </div>
                   </div>
                 )}
+                {activeMode === 'high_sum' && (
+                  <div style={{ background: 'linear-gradient(135deg,#FEF9C3,#FEF3C7)', border: '2px solid #D97706', borderRadius: 10, padding: '8px 12px', marginBottom: 6 }}>
+                    <div style={{ fontSize: 14, fontWeight: 900, color: '#92400E' }}>
+                      📊 高和值！上期號碼總和{groups[0]?.meta?.prev_sum_val}
+                    </div>
+                    <div style={{ fontSize: 11, color: '#92400E', marginTop: 3 }}>
+                      歷史驗證：93筆avg_pnl=-2.42元(優於平均-84)，已切換高和值專屬8組
+                    </div>
+                  </div>
+                )}
                 {almostThere && (
                   <div style={{ background: '#EFF6FF', border: '2px solid #3B82F6', borderRadius: 10, padding: '8px 12px', marginBottom: 6 }}>
                     <div style={{ fontSize: 14, fontWeight: 900, color: '#1D4ED8' }}>
@@ -963,7 +973,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0614-6</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0614-7</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
