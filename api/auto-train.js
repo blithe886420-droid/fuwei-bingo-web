@@ -1,5 +1,5 @@
 /**
- * auto-train.js - V0615-4
+ * auto-train.js - V0615-5
  *
  * ★ V0615-3 重大升級：加入「近期表現感知」自動微調靈魂
  *
@@ -80,6 +80,7 @@ async function fetchRecentPredictions(db, limit = 5) {
 }
 
 // ★ 靈魂核心：讀取近期表現，計算自動微調信號
+// 過濾掉verdict='anomaly'的異常期(系統bug造成的不正常資料)
 async function fetchRecentPerformance(db) {
   const { data, error } = await db
     .from(PREDICTIONS_TABLE)
@@ -87,6 +88,7 @@ async function fetchRecentPerformance(db) {
     .eq('mode', MODE)
     .eq('status', 'compared')
     .eq('compare_status', 'done')
+    .neq('verdict', 'anomaly')
     .order('created_at', { ascending: false })
     .limit(30);
 
