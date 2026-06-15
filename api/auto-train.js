@@ -1,5 +1,5 @@
 /**
- * auto-train.js - V0615-3
+ * auto-train.js - V0615-4
  *
  * ★ V0615-3 重大升級：加入「近期表現感知」自動微調靈魂
  *
@@ -136,9 +136,9 @@ async function fetchRecentPerformance(db) {
 function calcConfidenceLevel(perf) {
   const { avgPnl30, avgPnl10, consecutiveLoss } = perf;
 
-  // 連續虧損10期以上 → 冷靜期，只允許ultra出手
-  if (consecutiveLoss >= 10) {
-    console.log(`[靈魂] 連續虧損${consecutiveLoss}期，進入冷靜期，只允許ultra出手`);
+  // 連續虧損20期以上 → 冷靜期，只允許strong/ultra出手
+  if (consecutiveLoss >= 20) {
+    console.log(`[靈魂] 連續虧損${consecutiveLoss}期，進入冷靜期，只允許strong/ultra出手`);
     return 'cautious';
   }
 
@@ -340,9 +340,9 @@ export default async function handler(req, res) {
     let shouldOutput = groups.length > 0;
 
     if (confidenceLevel === 'cautious') {
-      // 冷靜期：只允許ultra(4+訊號)出手
-      shouldOutput = activeMode === 'ultra';
-      if (!shouldOutput) console.log(`[靈魂] 冷靜期封鎖 mode=${activeMode}，只允許ultra`);
+      // 冷靜期：只允許strong/ultra出手(原本只允許ultra太嚴，會鎖死)
+      shouldOutput = ['ultra', 'strong'].includes(activeMode);
+      if (!shouldOutput) console.log(`[靈魂] 冷靜期封鎖 mode=${activeMode}，只允許strong/ultra`);
     } else if (confidenceLevel === 'conservative') {
       // 保守期：只允許strong/ultra出手
       shouldOutput = ['ultra', 'strong'].includes(activeMode);
