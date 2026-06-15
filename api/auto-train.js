@@ -1,21 +1,26 @@
 /**
- * auto-train.js - V0611-2
+ * auto-train.js - V0615-3
  *
- * ★ cron 觸發時間說明：
- * 請在 server.js 把 cron 從 "3,8 * * * *" 改成 "2,7 * * * *"
- * 讓系統在每5分鐘的第2分和第7分觸發
- * 賓果開獎是0分和5分，改成2分和7分後有3分鐘填單時間
+ * ★ V0615-3 重大升級：加入「近期表現感知」自動微調靈魂
+ *
+ * 靈魂機制：
+ * 1. 每次觸發時，先讀取最近30期的實際結果
+ * 2. 計算各mode(ultra/strong/standard)的近期avg_pnl
+ * 3. 根據近期表現動態調整信心等級：
+ *    - 近30期avg_pnl > 0 → 正常出手
+ *    - 近30期avg_pnl < -150 → 保守模式(只出ultra/strong)
+ *    - 近10期連續虧損 → 冷靜期(skip 2期再恢復)
+ * 4. 把感知結果傳給buildBingoGroups，讓選號邏輯知道當前狀態
  */
 
 import { createClient } from '@supabase/supabase-js';
 import { buildBingoGroups } from '../lib/buildBingoV1Strategies.js';
 import { buildComparePayload } from '../lib/buildComparePayload.js';
 
-const PREDICTIONS_TABLE  = 'bingo_predictions';
-const STRATEGY_STATS_TABLE = 'strategy_stats';
-const DRAWS_TABLE        = 'bingo_draws';
-const MODE               = 'formal_3star';
-const COST_PER_GROUP     = 25;
+const PREDICTIONS_TABLE = 'bingo_predictions';
+const DRAWS_TABLE = 'bingo_draws';
+const MODE = 'formal_3star';
+const COST_PER_GROUP = 25;
 
 function getSupabase() {
   const url = process.env.SUPABASE_URL;
@@ -32,11 +37,6 @@ function toNum(v, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function round4(v) {
-  const n = Number(v);
-  return Number.isFinite(n) ? Number(n.toFixed(4)) : 0;
-}
-
 async function fetchLatestDraw(db) {
   const { data, error } = await db
     .from(DRAWS_TABLE)
@@ -48,7 +48,7 @@ async function fetchLatestDraw(db) {
   return data;
 }
 
-async function fetchRecent30(db) {
+async function fetchRecent30Draws(db) {
   const { data, error } = await db
     .from(DRAWS_TABLE)
     .select('draw_no, numbers')
@@ -58,20 +58,18 @@ async function fetchRecent30(db) {
   return data || [];
 }
 
-async function fetchRecent3Predictions(db) {
+async function fetchRecentPredictions(db, limit = 5) {
   const { data, error } = await db
     .from(PREDICTIONS_TABLE)
     .select('status, hit_count, groups_json, compare_result_json')
     .eq('mode', MODE)
     .order('created_at', { ascending: false })
-    .limit(3);
+    .limit(limit);
   if (error) throw error;
   return (data || []).map(p => ({
     status: p.status,
     hit_count: p.hit_count || 0,
     groups_count: Array.isArray(p.groups_json) ? p.groups_json.length : 0,
-    pool_size: p.groups_json?.[0]?.meta?.hot_pool_size || 0,
-    // ★ 傳入 position 和 action 給策略函數判斷連續爆發次數
     position: p.groups_json?.[0]?.meta?.position || '',
     action: p.groups_json?.[0]?.meta?.action || '',
     hot_pool: p.groups_json?.[0]?.meta?.hot_pool || '',
@@ -79,6 +77,86 @@ async function fetchRecent3Predictions(db) {
       ? p.compare_result_json.detail.filter(d => d?.hit === 2).length
       : 0,
   }));
+}
+
+// ★ 靈魂核心：讀取近期表現，計算自動微調信號
+async function fetchRecentPerformance(db) {
+  const { data, error } = await db
+    .from(PREDICTIONS_TABLE)
+    .select('groups_json, compare_result_json')
+    .eq('mode', MODE)
+    .eq('status', 'compared')
+    .eq('compare_status', 'done')
+    .order('created_at', { ascending: false })
+    .limit(30);
+
+  if (error || !data || data.length === 0) {
+    return { avgPnl30: -84, avgPnl10: -84, consecutiveLoss: 0, modeStats: {} };
+  }
+
+  // 計算每期淨利
+  const pnlList = data.map(p => {
+    const detail = p.compare_result_json?.detail || [];
+    return detail.reduce((sum, e) => {
+      const hit = toNum(e?.hit, 0);
+      return sum + (hit === 3 ? 500 : hit === 2 ? 50 : 0);
+    }, 0) - 200;
+  });
+
+  const avgPnl30 = pnlList.length > 0
+    ? pnlList.reduce((a, b) => a + b, 0) / pnlList.length : -84;
+  const avgPnl10 = pnlList.slice(0, 10).length > 0
+    ? pnlList.slice(0, 10).reduce((a, b) => a + b, 0) / pnlList.slice(0, 10).length : -84;
+
+  // 計算連續虧損期數
+  let consecutiveLoss = 0;
+  for (const pnl of pnlList) {
+    if (pnl < 0) consecutiveLoss++;
+    else break;
+  }
+
+  // 各mode近期表現
+  const modeStats = {};
+  for (const p of data) {
+    const mode = p.groups_json?.[0]?.meta?.active_mode || 'standard';
+    const detail = p.compare_result_json?.detail || [];
+    const pnl = detail.reduce((sum, e) => {
+      const hit = toNum(e?.hit, 0);
+      return sum + (hit === 3 ? 500 : hit === 2 ? 50 : 0);
+    }, 0) - 200;
+    if (!modeStats[mode]) modeStats[mode] = { total: 0, count: 0 };
+    modeStats[mode].total += pnl;
+    modeStats[mode].count++;
+  }
+
+  return { avgPnl30, avgPnl10, consecutiveLoss, modeStats };
+}
+
+// ★ 靈魂決策：根據近期表現決定信心等級
+function calcConfidenceLevel(perf) {
+  const { avgPnl30, avgPnl10, consecutiveLoss } = perf;
+
+  // 連續虧損10期以上 → 冷靜期，只允許ultra出手
+  if (consecutiveLoss >= 10) {
+    console.log(`[靈魂] 連續虧損${consecutiveLoss}期，進入冷靜期，只允許ultra出手`);
+    return 'cautious';
+  }
+
+  // 近10期嚴重虧損 → 保守模式，只允許strong/ultra出手
+  if (avgPnl10 < -150) {
+    console.log(`[靈魂] 近10期avg=${avgPnl10.toFixed(0)}，進入保守模式`);
+    return 'conservative';
+  }
+
+  // 近30期表現良好 → 積極模式，所有模式都出手
+  if (avgPnl30 > 0) {
+    console.log(`[靈魂] 近30期avg=${avgPnl30.toFixed(0)}，維持積極模式`);
+    return 'aggressive';
+  }
+
+  // 正常模式
+  console.log(`[靈魂] 近30期avg=${avgPnl30.toFixed(0)}，維持正常模式`);
+  return 'normal';
 }
 
 async function fetchNextDraw(db, sourceDrawNo) {
@@ -94,7 +172,7 @@ async function fetchNextDraw(db, sourceDrawNo) {
 }
 
 function buildRandomGroups() {
-  const pool = Array.from({length: 80}, (_, i) => i + 1);
+  const pool = Array.from({ length: 80 }, (_, i) => i + 1);
   for (let i = pool.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [pool[i], pool[j]] = [pool[j], pool[i]];
@@ -102,9 +180,9 @@ function buildRandomGroups() {
   const selected = pool.slice(0, 5);
   const groups = [];
   for (let i = 0; i < selected.length; i++)
-    for (let j = i+1; j < selected.length; j++)
-      for (let k = j+1; k < selected.length; k++) {
-        const nums = [selected[i], selected[j], selected[k]].sort((a,b)=>a-b);
+    for (let j = i + 1; j < selected.length; j++)
+      for (let k = j + 1; k < selected.length; k++) {
+        const nums = [selected[i], selected[j], selected[k]].sort((a, b) => a - b);
         const key = `r${nums[0]}_${nums[1]}_${nums[2]}`;
         groups.push({ key, label: key, nums, meta: { type: 'random', strategy_key: key } });
       }
@@ -229,8 +307,10 @@ export default async function handler(req, res) {
   try {
     const db = getSupabase();
 
+    // 1. 先比對待處理的預測
     const compareResult = await comparePending(db);
 
+    // 2. 取得最新開獎
     const latestDraw = await fetchLatestDraw(db);
     if (!latestDraw) {
       return res.status(200).json({ ok: false, error: '無法取得最新開獎資料' });
@@ -239,13 +319,40 @@ export default async function handler(req, res) {
     const latestDrawNo = toNum(latestDraw.draw_no, 0);
     const latestDrawNumbers = String(latestDraw.numbers || '');
 
-    const recent30 = await fetchRecent30(db);
-    // ★ fetchRecent3Predictions 現在也回傳 position 和 action
-    const recent3Predictions = await fetchRecent3Predictions(db);
-    const groups = buildBingoGroups(recent30, latestDrawNo, recent3Predictions);
+    // 3. ★ 靈魂：讀取近期表現，計算信心等級
+    const perf = await fetchRecentPerformance(db);
+    const confidenceLevel = calcConfidenceLevel(perf);
 
-    if (groups.length === 0) {
-      console.log(`[auto-train] 本期無符合條件，跳過 draw_no=${latestDrawNo}`);
+    console.log(`[靈魂狀態] level=${confidenceLevel} avg30=${perf.avgPnl30.toFixed(0)} avg10=${perf.avgPnl10.toFixed(0)} 連虧=${perf.consecutiveLoss}期`);
+    console.log(`[靈魂modeStats] ${JSON.stringify(Object.entries(perf.modeStats).map(([k,v]) => `${k}:${(v.total/v.count).toFixed(0)}(${v.count}筆)`))}`);
+
+    // 4. 取得開獎資料和預測歷史
+    const recent30 = await fetchRecent30Draws(db);
+    const recentPredictions = await fetchRecentPredictions(db, 5);
+
+    // 5. 選號
+    const groups = buildBingoGroups(recent30, latestDrawNo, recentPredictions);
+
+    // 6. ★ 靈魂：根據信心等級決定是否出手
+    const activeMode = groups[0]?.meta?.active_mode || 'standard';
+    const totalSignals = toNum(groups[0]?.meta?.total_signals, 0);
+
+    let shouldOutput = groups.length > 0;
+
+    if (confidenceLevel === 'cautious') {
+      // 冷靜期：只允許ultra(4+訊號)出手
+      shouldOutput = activeMode === 'ultra';
+      if (!shouldOutput) console.log(`[靈魂] 冷靜期封鎖 mode=${activeMode}，只允許ultra`);
+    } else if (confidenceLevel === 'conservative') {
+      // 保守期：只允許strong/ultra出手
+      shouldOutput = ['ultra', 'strong'].includes(activeMode);
+      if (!shouldOutput) console.log(`[靈魂] 保守期封鎖 mode=${activeMode}，只允許strong/ultra`);
+    }
+    // normal/aggressive：不額外限制，buildBingoGroups自己的skip條件已處理
+
+    if (!shouldOutput || groups.length === 0) {
+      console.log(`[auto-train] 本期不出手 draw_no=${latestDrawNo} mode=${activeMode} confidence=${confidenceLevel}`);
+
       const { data: existing } = await db
         .from(PREDICTIONS_TABLE)
         .select('id')
@@ -265,6 +372,7 @@ export default async function handler(req, res) {
           created_at: new Date().toISOString(),
         });
       }
+
       return res.status(200).json({
         ok: true,
         latest_draw_no: latestDrawNo,
@@ -272,12 +380,18 @@ export default async function handler(req, res) {
         created_count: 0,
         groups_count: 0,
         skipped: true,
-        reason: '冷場期',
+        reason: groups.length === 0 ? '選號條件不符' : `靈魂封鎖(${confidenceLevel})`,
+        confidence_level: confidenceLevel,
+        avg_pnl_30: Math.round(perf.avgPnl30),
+        avg_pnl_10: Math.round(perf.avgPnl10),
+        consecutive_loss: perf.consecutiveLoss,
       });
     }
 
+    // 7. 建立預測
     const prediction = await createPrediction(db, latestDrawNo, groups, latestDrawNumbers);
 
+    // 8. 同步建立隨機對照組
     const randomGroups = buildRandomGroups();
     const { data: existingRandom } = await db
       .from(PREDICTIONS_TABLE)
@@ -298,17 +412,18 @@ export default async function handler(req, res) {
       });
     }
 
-    const spiderMode = groups[0]?.meta?.spider_mode || 'normal';
-    const trueSignalCount = groups[0]?.meta?.true_signal_count || 0;
-
     return res.status(200).json({
       ok: true,
       latest_draw_no: latestDrawNo,
       compared_count: toNum(compareResult?.processed, 0),
       created_count: prediction ? 1 : 0,
       groups_count: groups.length,
-      spider_mode: spiderMode,
-      true_signal_count: trueSignalCount,
+      active_mode: activeMode,
+      total_signals: totalSignals,
+      confidence_level: confidenceLevel,
+      avg_pnl_30: Math.round(perf.avgPnl30),
+      avg_pnl_10: Math.round(perf.avgPnl10),
+      consecutive_loss: perf.consecutiveLoss,
     });
 
   } catch (error) {
