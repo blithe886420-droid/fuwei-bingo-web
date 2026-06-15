@@ -1,5 +1,5 @@
 /**
- * auto-train.js - V0615-5
+ * auto-train.js - V0615-6
  *
  * ★ V0615-3 重大升級：加入「近期表現感知」自動微調靈魂
  *
@@ -84,40 +84,19 @@ async function fetchRecentPredictions(db, limit = 5) {
 async function fetchRecentPerformance(db) {
   const { data, error } = await db
     .from(PREDICTIONS_TABLE)
-    .select('groups_json, compare_result_json')
+    .select('groups_json, compare_result_json, created_at')
     .eq('mode', MODE)
     .eq('status', 'compared')
     .eq('compare_status', 'done')
     .neq('verdict', 'anomaly')
     .order('created_at', { ascending: false })
-    .limit(30);
+    .limit(500);
 
   if (error || !data || data.length === 0) {
-    return { avgPnl30: -84, avgPnl10: -84, consecutiveLoss: 0, modeStats: {} };
+    return { avgPnl30: -84, avgPnl10: -84, consecutiveLoss: 0, modeStats: {}, isSealBroken: false, sealStatus: '資料不足' };
   }
 
-  // 計算每期淨利
-  const pnlList = data.map(p => {
-    const detail = p.compare_result_json?.detail || [];
-    return detail.reduce((sum, e) => {
-      const hit = toNum(e?.hit, 0);
-      return sum + (hit === 3 ? 500 : hit === 2 ? 50 : 0);
-    }, 0) - 200;
-  });
-
-  const avgPnl30 = pnlList.length > 0
-    ? pnlList.reduce((a, b) => a + b, 0) / pnlList.length : -84;
-  const avgPnl10 = pnlList.slice(0, 10).length > 0
-    ? pnlList.slice(0, 10).reduce((a, b) => a + b, 0) / pnlList.slice(0, 10).length : -84;
-
-  // 計算連續虧損期數
-  let consecutiveLoss = 0;
-  for (const pnl of pnlList) {
-    if (pnl < 0) consecutiveLoss++;
-    else break;
-  }
-
-  // 各mode近期表現
+  // 各mode統計(用全部500筆)
   const modeStats = {};
   for (const p of data) {
     const mode = p.groups_json?.[0]?.meta?.active_mode || 'standard';
@@ -131,32 +110,66 @@ async function fetchRecentPerformance(db) {
     modeStats[mode].count++;
   }
 
-  return { avgPnl30, avgPnl10, consecutiveLoss, modeStats };
+  // ★ 封印檢查：需要累積2天400期乾淨資料才解封
+  const cleanPeriods = data.length;
+  const oldestDate = new Date(data[data.length - 1]?.created_at);
+  const daysPassed = (Date.now() - oldestDate) / (1000 * 60 * 60 * 24);
+  const strongCount = modeStats['strong']?.count || 0;
+  const isSealBroken = cleanPeriods >= 400 && daysPassed >= 2 && strongCount >= 20;
+  const sealStatus = isSealBroken
+    ? '已解封✅'
+    : `封印中🔒 ${cleanPeriods}/400期 ${daysPassed.toFixed(1)}/2天 strong:${strongCount}/20`;
+  console.log(`[靈魂封印] ${sealStatus}`);
+
+  // 近30期用於信心等級判斷
+  const recent30 = data.slice(0, 30);
+  const pnlList = recent30.map(p => {
+    const detail = p.compare_result_json?.detail || [];
+    return detail.reduce((sum, e) => {
+      const hit = toNum(e?.hit, 0);
+      return sum + (hit === 3 ? 500 : hit === 2 ? 50 : 0);
+    }, 0) - 200;
+  });
+
+  const avgPnl30 = pnlList.length > 0
+    ? pnlList.reduce((a, b) => a + b, 0) / pnlList.length : -84;
+  const avgPnl10 = pnlList.slice(0, 10).length > 0
+    ? pnlList.slice(0, 10).reduce((a, b) => a + b, 0) / pnlList.slice(0, 10).length : -84;
+
+  let consecutiveLoss = 0;
+  for (const pnl of pnlList) {
+    if (pnl < 0) consecutiveLoss++;
+    else break;
+  }
+
+  return { avgPnl30, avgPnl10, consecutiveLoss, modeStats, isSealBroken, sealStatus };
 }
 
 // ★ 靈魂決策：根據近期表現決定信心等級
 function calcConfidenceLevel(perf) {
-  const { avgPnl30, avgPnl10, consecutiveLoss } = perf;
+  const { avgPnl30, avgPnl10, consecutiveLoss, isSealBroken } = perf;
 
-  // 連續虧損20期以上 → 冷靜期，只允許strong/ultra出手
+  // 封印期間：靈魂只觀察，不干預
+  if (!isSealBroken) {
+    return 'learning';
+  }
+
+  // 解封後才啟動信心等級機制
   if (consecutiveLoss >= 20) {
     console.log(`[靈魂] 連續虧損${consecutiveLoss}期，進入冷靜期，只允許strong/ultra出手`);
     return 'cautious';
   }
 
-  // 近10期嚴重虧損 → 保守模式，只允許strong/ultra出手
   if (avgPnl10 < -150) {
     console.log(`[靈魂] 近10期avg=${avgPnl10.toFixed(0)}，進入保守模式`);
     return 'conservative';
   }
 
-  // 近30期表現良好 → 積極模式，所有模式都出手
   if (avgPnl30 > 0) {
     console.log(`[靈魂] 近30期avg=${avgPnl30.toFixed(0)}，維持積極模式`);
     return 'aggressive';
   }
 
-  // 正常模式
   console.log(`[靈魂] 近30期avg=${avgPnl30.toFixed(0)}，維持正常模式`);
   return 'normal';
 }
@@ -341,8 +354,11 @@ export default async function handler(req, res) {
 
     let shouldOutput = groups.length > 0;
 
-    if (confidenceLevel === 'cautious') {
-      // 冷靜期：只允許strong/ultra出手(原本只允許ultra太嚴，會鎖死)
+    if (confidenceLevel === 'learning') {
+      // 封印期：靈魂只觀察，完全不干預，buildBingoGroups自己決定
+      console.log(`[靈魂] 封印學習期，不干預出手 mode=${activeMode} signals=${totalSignals}`);
+    } else if (confidenceLevel === 'cautious') {
+      // 冷靜期：只允許strong/ultra出手
       shouldOutput = ['ultra', 'strong'].includes(activeMode);
       if (!shouldOutput) console.log(`[靈魂] 冷靜期封鎖 mode=${activeMode}，只允許strong/ultra`);
     } else if (confidenceLevel === 'conservative') {
