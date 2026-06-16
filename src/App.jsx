@@ -137,13 +137,21 @@ function Spinner() {
   );
 }
 
-function RandomGroupsCard({ drawNo }) {
+function RandomGroupsCard({ drawNo, skipMeta }) {
   const [randomGroups] = useState(() => buildRandomGroups4());
+  const skipReason = skipMeta?.skip_reason || '';
+  const isSoulBlocked = skipReason === 'soul_blocked';
+  const confidenceLevel = skipMeta?.confidence_level || '';
+  const confidenceLabel = confidenceLevel === 'cautious' ? '冷靜期' : confidenceLevel === 'conservative' ? '保守期' : '';
+  const title = isSoulBlocked ? `🧠 靈魂判斷${confidenceLabel}，暫不出手` : '⏸️ 冷場期，AI暫停出號';
+  const subtitle = isSoulBlocked
+    ? `mode=${skipMeta?.active_mode || '-'}，靈魂評估近期表現後選擇保守，以下為純隨機號碼供參考`
+    : '當期號碼不足，以下為純隨機號碼供參考，不納入AI命中統計';
   return (
     <Card title="本期參考" icon="🎲" right={<span style={S.badge(C.purple, C.purpleBg)}>純隨機參考</span>}>
       <div style={{ background: C.purpleBg, border: `1.5px solid ${C.purpleLight}`, borderRadius: 10, padding: '10px 14px', marginBottom: 12 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: C.purple }}>⏸️ 冷場期，AI暫停出號</div>
-        <div style={{ fontSize: 11, color: C.purple, opacity: 0.8, marginTop: 3 }}>當期號碼不足，以下為純隨機號碼供參考，不納入AI命中統計</div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: C.purple }}>{title}</div>
+        <div style={{ fontSize: 11, color: C.purple, opacity: 0.8, marginTop: 3 }}>{subtitle}</div>
       </div>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
         <span style={S.badge(C.textSub, C.grayLight)}>期號 {fmt(drawNo)}</span>
@@ -319,6 +327,7 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
       {!isSkipped && !isDone && (() => {
         const activeMode = groups[0]?.meta?.active_mode || 'standard';
         const totalSignals = toNum(groups[0]?.meta?.total_signals, 0);
+        const confidenceLevel = groups[0]?.meta?.confidence_level || '';
         const prevDetail = toArray(recentRows[0]?.compare_result_json?.detail);
         const prevHit1Count = prevDetail.filter(d => toNum(d?.hit, 0) === 1).length;
         const prevHit2Count = prevDetail.filter(d => toNum(d?.hit, 0) === 2).length;
@@ -344,6 +353,13 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
         const actionIcon = isAvoid ? '🔴' : isGo ? '🟢' : '🟡';
         const actionText = isAvoid ? '不要衝' : isGo ? '可以進場' : '觀望';
 
+        // ★ V0616-3：靈魂信心等級標籤
+        const soulLabel = confidenceLevel === 'cautious' ? '🧠冷靜期'
+          : confidenceLevel === 'conservative' ? '🧠保守期'
+          : confidenceLevel === 'aggressive' ? '🧠積極期'
+          : confidenceLevel === 'learning' ? '🧠學習中'
+          : confidenceLevel === 'normal' ? '🧠正常' : '';
+
         return (
           <div style={{ marginBottom: 12 }}>
             {/* 行動建議主框 */}
@@ -352,8 +368,15 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
                 <div style={{ fontSize: 18, fontWeight: 900, color: actionColor }}>
                   {actionIcon} {actionText}
                 </div>
-                <div style={{ fontSize: 10, fontWeight: 700, color: actionColor, background: actionBorder + '22', borderRadius: 6, padding: '3px 8px' }}>
-                  {activeMode}
+                <div style={{ display: 'flex', gap: 4 }}>
+                  {soulLabel && (
+                    <div style={{ fontSize: 10, fontWeight: 700, color: '#6D28D9', background: '#EDE9FE', borderRadius: 6, padding: '3px 8px' }}>
+                      {soulLabel}
+                    </div>
+                  )}
+                  <div style={{ fontSize: 10, fontWeight: 700, color: actionColor, background: actionBorder + '22', borderRadius: 6, padding: '3px 8px' }}>
+                    {activeMode}
+                  </div>
                 </div>
               </div>
               <div style={{ fontSize: 11, color: actionColor, marginTop: 4, opacity: 0.9 }}>
@@ -435,7 +458,7 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
 
       {/* 本期預測 */}
       {isSkipped ? (
-        <RandomGroupsCard drawNo={row?.source_draw_no || latestDraw?.draw_no} />
+        <RandomGroupsCard drawNo={row?.source_draw_no || latestDraw?.draw_no} skipMeta={allGroups[0]?.meta} />
       ) : (
         <Card
           title="本期預測"
@@ -585,18 +608,35 @@ function HistoryPage({ historyRows }) {
                   )}
                 </div>
                 {isSkipped ? (
-                  <span style={{ fontSize: 12, color: C.purple, whiteSpace: 'nowrap' }}>⏸️ 隨機參考期</span>
+                  (() => {
+                    const skipReason = allGroups[0]?.meta?.skip_reason || '';
+                    return skipReason === 'soul_blocked'
+                      ? <span style={{ fontSize: 12, color: '#92400E', whiteSpace: 'nowrap' }}>🧠 靈魂封鎖</span>
+                      : <span style={{ fontSize: 12, color: C.purple, whiteSpace: 'nowrap' }}>⏸️ 隨機參考期</span>;
+                  })()
                 ) : isDone ? (
                   <span style={{ fontSize: 15, fontWeight: 900, color: hitColor, whiteSpace: 'nowrap' }}>
                     {bestHit >= 3 ? `🏆 中${bestHit}` : bestHit >= 2 ? `✅ 中${bestHit}` : `❌ 未中`}
                   </span>
                 ) : <span style={{ fontSize: 12, color: C.orange, whiteSpace: 'nowrap' }}>等待比對</span>}
               </div>
-              {isSkipped ? (
-                <div style={{ fontSize: 11, color: C.purple, background: C.purpleBg, borderRadius: 6, padding: '4px 8px', display: 'inline-block' }}>
-                  🎲 該期AI暫停，無命中統計
-                </div>
-              ) : (
+              {isSkipped ? (() => {
+                const skipMeta = allGroups[0]?.meta || {};
+                const skipReason = skipMeta?.skip_reason || '';
+                const skipConfidence = skipMeta?.confidence_level || '';
+                if (skipReason === 'soul_blocked') {
+                  return (
+                    <div style={{ fontSize: 11, color: '#92400E', background: '#FEF9C3', borderRadius: 6, padding: '4px 8px', display: 'inline-block' }}>
+                      🧠 靈魂封鎖（{skipConfidence === 'cautious' ? '冷靜期' : '保守期'}）：mode={skipMeta?.active_mode || '-'} 暫不出手
+                    </div>
+                  );
+                }
+                return (
+                  <div style={{ fontSize: 11, color: C.purple, background: C.purpleBg, borderRadius: 6, padding: '4px 8px', display: 'inline-block' }}>
+                    🎲 該期訊號不足，無命中統計
+                  </div>
+                );
+              })() : (
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   {groups.map((g, gIdx) => {
                     const key = String(g?.key || g?.meta?.strategy_key || gIdx);
@@ -956,7 +996,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0616-2</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0616-3</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
