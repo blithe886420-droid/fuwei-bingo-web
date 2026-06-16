@@ -622,38 +622,29 @@ function HistoryPage({ historyRows }) {
 
 function StatsPage({ historyRows }) {
   const [subTab, setSubTab] = useState('all');
+  const [soulStatus, setSoulStatus] = useState(null);
+  const [soulLoading, setSoulLoading] = useState(true);
+
+  // ★ V0616-1：靈魂戰況板改用獨立API直查資料庫，不受recent_3star_compared_rows的100筆視窗限制
+  useEffect(() => {
+    let active = true;
+    apiFetch('/api/soul-status')
+      .then(res => { if (active) setSoulStatus(res); })
+      .catch(() => { if (active) setSoulStatus(null); })
+      .finally(() => { if (active) setSoulLoading(false); });
+    return () => { active = false; };
+  }, []);
 
   const allRows = toArray(historyRows).filter(row =>
     row?.created_at >= STATS_START_DATE && row?.status === 'compared' && toArray(row?.groups_json).length > 0
   );
 
-  // ★ 靈魂戰況板：計算V0615版本的學習進度
-  const V0615_START = '2026-06-15T00:00:00+00:00';
-  const cleanRows = toArray(historyRows).filter(row =>
-    row?.created_at >= V0615_START &&
-    row?.status === 'compared' &&
-    row?.compare_status === 'done' &&
-    row?.verdict !== 'anomaly' &&
-    toArray(row?.groups_json).length > 0
-  );
-  const cleanCount = cleanRows.length;
-  const sealTarget = 400;
-  const sealPct = Math.min(100, Math.round(cleanCount / sealTarget * 100));
-  const isSealBroken = cleanCount >= sealTarget;
-
-  // 各mode統計
-  const modeMap = {};
-  for (const row of cleanRows) {
-    const mode = toArray(row?.groups_json)[0]?.meta?.active_mode || 'standard';
-    const detail = toArray(row?.compare_result_json?.detail);
-    const pnl = detail.reduce((sum, e) => {
-      const hit = toNum(e?.hit, 0);
-      return sum + (hit === 3 ? 500 : hit === 2 ? 50 : 0);
-    }, 0) - 200;
-    if (!modeMap[mode]) modeMap[mode] = { count: 0, total: 0 };
-    modeMap[mode].count++;
-    modeMap[mode].total += pnl;
-  }
+  const cleanCount = toNum(soulStatus?.clean_periods, 0);
+  const sealTarget = toNum(soulStatus?.seal_target, 400);
+  const sealPct = toNum(soulStatus?.seal_pct, 0);
+  const isSealBroken = soulStatus?.is_seal_broken === true;
+  const daysPassed = toNum(soulStatus?.days_passed, 0);
+  const modeMap = soulStatus?.mode_stats || {};
 
   const filterByPosition = (pos) => {
     if (pos === 'all') return allRows;
@@ -686,37 +677,45 @@ function StatsPage({ historyRows }) {
 
   return (
     <div style={S.page}>
-      {/* ★ 靈魂戰況板 */}
+      {/* ★ 靈魂戰況板(V0616-1：直查資料庫，不受前端視窗限制) */}
       <div style={{ background: C.card, borderRadius: 12, padding: '12px 14px', marginBottom: 10, boxShadow: C.shadow, border: `1px solid ${C.border}` }}>
         <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>
           🧠 靈魂學習進度
         </div>
-        {/* 進度條 */}
-        <div style={{ background: C.grayLight, borderRadius: 99, height: 8, marginBottom: 6 }}>
-          <div style={{ background: isSealBroken ? C.green : C.gold, borderRadius: 99, height: 8, width: `${sealPct}%`, transition: 'width 0.3s' }} />
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: C.textSub, marginBottom: 8 }}>
-          <span>{isSealBroken ? '✅ 封印已解除，靈魂啟動' : `🔒 封印學習期`}</span>
-          <span style={{ fontWeight: 700, color: isSealBroken ? C.green : C.gold }}>{cleanCount}/{sealTarget}期 ({sealPct}%)</span>
-        </div>
-        {/* 各mode表現 */}
-        <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 8 }}>
-          <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>V0615版本各模式表現：</div>
-          {Object.entries(modeMap).sort((a,b) => b[1].count - a[1].count).map(([mode, stat]) => {
-            const avg = stat.count > 0 ? Math.round(stat.total / stat.count) : 0;
-            const color = avg > 0 ? C.green : avg > -100 ? C.orange : '#DC2626';
-            return (
-              <div key={mode} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, padding: '2px 0' }}>
-                <span style={{ color: C.text, fontWeight: 600 }}>{mode}</span>
-                <span style={{ color: C.textSub }}>{stat.count}期</span>
-                <span style={{ color, fontWeight: 700 }}>{avg > 0 ? '+' : ''}{avg}元/期</span>
-              </div>
-            );
-          })}
-          {Object.keys(modeMap).length === 0 && (
-            <div style={{ fontSize: 11, color: C.textSub }}>尚無V0615資料</div>
-          )}
-        </div>
+        {soulLoading ? (
+          <div style={{ fontSize: 11, color: C.textSub }}>載入中...</div>
+        ) : !soulStatus?.ok ? (
+          <div style={{ fontSize: 11, color: C.textSub }}>暫無法取得靈魂狀態</div>
+        ) : (
+          <>
+            {/* 進度條 */}
+            <div style={{ background: C.grayLight, borderRadius: 99, height: 8, marginBottom: 6 }}>
+              <div style={{ background: isSealBroken ? C.green : C.gold, borderRadius: 99, height: 8, width: `${sealPct}%`, transition: 'width 0.3s' }} />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: C.textSub, marginBottom: 8 }}>
+              <span>{isSealBroken ? '✅ 封印已解除，靈魂啟動' : `🔒 封印學習期(${daysPassed}天)`}</span>
+              <span style={{ fontWeight: 700, color: isSealBroken ? C.green : C.gold }}>{cleanCount}/{sealTarget}期 ({sealPct}%)</span>
+            </div>
+            {/* 各mode表現 */}
+            <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 8 }}>
+              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>V0615版本各模式表現：</div>
+              {Object.entries(modeMap).sort((a,b) => b[1].count - a[1].count).map(([mode, stat]) => {
+                const avg = toNum(stat?.avg_pnl, 0);
+                const color = avg > 0 ? C.green : avg > -100 ? C.orange : '#DC2626';
+                return (
+                  <div key={mode} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, padding: '2px 0' }}>
+                    <span style={{ color: C.text, fontWeight: 600 }}>{mode}</span>
+                    <span style={{ color: C.textSub }}>{stat.count}期</span>
+                    <span style={{ color, fontWeight: 700 }}>{avg > 0 ? '+' : ''}{avg}元/期</span>
+                  </div>
+                );
+              })}
+              {Object.keys(modeMap).length === 0 && (
+                <div style={{ fontSize: 11, color: C.textSub }}>尚無V0615資料</div>
+              )}
+            </div>
+          </>
+        )}
       </div>
       <div style={{ display: 'flex', gap: 6, marginBottom: 14, background: C.card, borderRadius: 12, padding: 8, boxShadow: C.shadow }}>
         {subTabs.map(t => (
@@ -957,7 +956,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0615-6</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0616-1</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
