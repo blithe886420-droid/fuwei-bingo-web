@@ -1,5 +1,5 @@
 /**
- * auto-train.js - V0615-6
+ * auto-train.js - V0616-4
  *
  * ★ V0615-3 重大升級：加入「近期表現感知」自動微調靈魂
  *
@@ -110,15 +110,17 @@ async function fetchRecentPerformance(db) {
     modeStats[mode].count++;
   }
 
-  // ★ 封印檢查：需要累積2天400期乾淨資料才解封
+  // ★ V0616-2修正：封印門檻從400期+2天降為100期
+  // 第二階段只是簡單統計判斷(avg30/avg10/連虧次數)，不需要等400期
+  // 第三階段(自動SQL重新驗證訊號有效性)才需要大樣本，屆時再調整
   const cleanPeriods = data.length;
   const oldestDate = new Date(data[data.length - 1]?.created_at);
   const daysPassed = (Date.now() - oldestDate) / (1000 * 60 * 60 * 24);
   const strongCount = modeStats['strong']?.count || 0;
-  const isSealBroken = cleanPeriods >= 400 && daysPassed >= 2 && strongCount >= 20;
+  const isSealBroken = cleanPeriods >= 100 && strongCount >= 20;
   const sealStatus = isSealBroken
     ? '已解封✅'
-    : `封印中🔒 ${cleanPeriods}/400期 ${daysPassed.toFixed(1)}/2天 strong:${strongCount}/20`;
+    : `封印中🔒 ${cleanPeriods}/100期 strong:${strongCount}/20`;
   console.log(`[靈魂封印] ${sealStatus}`);
 
   // 近30期用於信心等級判斷
@@ -172,6 +174,22 @@ function calcConfidenceLevel(perf) {
 
   console.log(`[靈魂] 近30期avg=${avgPnl30.toFixed(0)}，維持正常模式`);
   return 'normal';
+}
+
+// ★ V0616-4：讀取signal_weights表，組成傳給buildBingoGroups的開關物件
+async function fetchSignalEnabled(db) {
+  const { data, error } = await db
+    .from('signal_weights')
+    .select('signal_key, is_enabled');
+  if (error || !data) {
+    console.log('[signal_weights] 讀取失敗，全部訊號預設啟用');
+    return {};
+  }
+  const result = {};
+  for (const row of data) {
+    result[row.signal_key] = row.is_enabled !== false;
+  }
+  return result;
 }
 
 async function fetchNextDraw(db, sourceDrawNo) {
@@ -345,8 +363,11 @@ export default async function handler(req, res) {
     const recent30 = await fetchRecent30Draws(db);
     const recentPredictions = await fetchRecentPredictions(db, 5);
 
+    // 4.5 ★ V0616-4：讀取訊號開關狀態(由signal-revalidate.js定期更新)
+    const signalEnabled = await fetchSignalEnabled(db);
+
     // 5. 選號
-    const groups = buildBingoGroups(recent30, latestDrawNo, recentPredictions);
+    const groups = buildBingoGroups(recent30, latestDrawNo, recentPredictions, signalEnabled);
 
     // 6. ★ 靈魂：根據信心等級決定是否出手
     const activeMode = groups[0]?.meta?.active_mode || 'standard';
@@ -369,7 +390,8 @@ export default async function handler(req, res) {
     // normal/aggressive：不額外限制，buildBingoGroups自己的skip條件已處理
 
     if (!shouldOutput || groups.length === 0) {
-      console.log(`[auto-train] 本期不出手 draw_no=${latestDrawNo} mode=${activeMode} confidence=${confidenceLevel}`);
+      const skipReason = groups.length === 0 ? 'no_signal' : 'soul_blocked';
+      console.log(`[auto-train] 本期不出手 draw_no=${latestDrawNo} mode=${activeMode} confidence=${confidenceLevel} reason=${skipReason}`);
 
       const { data: existing } = await db
         .from(PREDICTIONS_TABLE)
@@ -379,12 +401,18 @@ export default async function handler(req, res) {
         .maybeSingle();
 
       if (!existing?.id) {
+        // ★ V0616-3：把skip原因存進meta，讓App.jsx能分辨「訊號不足」vs「靈魂封鎖」
         await db.from(PREDICTIONS_TABLE).insert({
           mode: MODE,
           status: 'skipped',
           source_draw_no: String(latestDrawNo),
           target_periods: 1,
-          groups_json: [],
+          groups_json: [{ key: 'skip_meta', label: 'skip_meta', nums: [], meta: {
+            active_mode: activeMode,
+            total_signals: totalSignals,
+            confidence_level: confidenceLevel,
+            skip_reason: skipReason,
+          } }],
           compare_status: 'skipped',
           latest_draw_numbers: latestDrawNumbers,
           created_at: new Date().toISOString(),
@@ -398,7 +426,7 @@ export default async function handler(req, res) {
         created_count: 0,
         groups_count: 0,
         skipped: true,
-        reason: groups.length === 0 ? '選號條件不符' : `靈魂封鎖(${confidenceLevel})`,
+        reason: skipReason === 'no_signal' ? '選號條件不符' : `靈魂封鎖(${confidenceLevel})`,
         confidence_level: confidenceLevel,
         avg_pnl_30: Math.round(perf.avgPnl30),
         avg_pnl_10: Math.round(perf.avgPnl10),
@@ -406,7 +434,10 @@ export default async function handler(req, res) {
       });
     }
 
-    // 7. 建立預測
+    // 7. ★ V0616-3：把靈魂的confidence_level注入第一組的meta，讓前端能顯示
+    if (groups[0]?.meta) {
+      groups[0].meta.confidence_level = confidenceLevel;
+    }
     const prediction = await createPrediction(db, latestDrawNo, groups, latestDrawNumbers);
 
     // 8. 同步建立隨機對照組
