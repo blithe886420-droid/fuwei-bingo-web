@@ -227,7 +227,10 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
   // 避免「不要衝」卻還顯示完整號碼列表的矛盾
   const _prevDetailForAvoid = toArray(recentRows[0]?.compare_result_json?.detail);
   const _prevHit3CountForAvoid = _prevDetailForAvoid.filter(d => toNum(d?.hit, 0) === 3).length;
-  const isAvoidNow = isDeadHour || _prevHit3CountForAvoid >= 2 || (groups[0]?.meta?.active_mode || 'standard') === 'skip';
+  // ★ V0617-3：改用「是否skip」當唯一標準，不疊加isDeadHour/prevHit3Count等規則
+  // 避免「有出手卻被判定不要衝」這種曖昧狀態，現實使用上只要二元判斷：有出手=可進場，skip=不推薦
+  const _activeModeNow = groups[0]?.meta?.active_mode || 'standard';
+  const isAvoidNow = isSkipped || _activeModeNow === 'skip';
   const spiderMode = '';  // V0615-1後端已移除此欄位
   const trueSignalCount = toNum(groups[0]?.meta?.total_signals, 0);  // 改讀新版total_signals
   const sigHighHour = groups[0]?.meta?.sig_high_hour === true;
@@ -328,37 +331,25 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
         ) : <div style={S.empty}>載入中...</div>}
       </Card>
 
-      {/* ★ V0614-9：行動建議框(主角) + 細節收納 */}
+      {/* ★ V0617-3：行動建議框改為二元判斷(可進場/不推薦)，不再有「觀望」這種曖昧狀態 */}
       {!isSkipped && !isDone && (() => {
         const activeMode = groups[0]?.meta?.active_mode || 'standard';
         const totalSignals = toNum(groups[0]?.meta?.total_signals, 0);
         const confidenceLevel = groups[0]?.meta?.confidence_level || '';
-        const prevDetail = toArray(recentRows[0]?.compare_result_json?.detail);
-        const prevHit1Count = prevDetail.filter(d => toNum(d?.hit, 0) === 1).length;
-        const prevHit2Count = prevDetail.filter(d => toNum(d?.hit, 0) === 2).length;
-        const prevHit3Count = prevDetail.filter(d => toNum(d?.hit, 0) === 3).length;
 
-        // 行動建議判斷(沿用元件最外層算好的isAvoidNow，確保跟本期預測卡片一致)
-        const isAvoid = isAvoidNow;
-        const isGo = !isAvoid && (activeMode === 'ultra' || activeMode === 'strong' || activeMode === 'spider');
-        const isWatch = !isAvoid && !isGo;
+        const isGo = !isAvoidNow;
 
-        // 主要原因
-        const mainReason = isDeadHour ? '12-15點死亡時段，歷史命中率極低'
-          : prevHit3Count >= 2 ? `上期${prevHit3Count}組中3，下期反轉風險極高(-164)`
-          : activeMode === 'skip' ? '目前無任何訊號，系統不出手'
-          : activeMode === 'ultra' ? `${totalSignals}個訊號共鳴！歷史avg_pnl=+115元/期`
+        const mainReason = activeMode === 'ultra' ? `${totalSignals}個訊號共鳴！歷史avg_pnl=+115元/期`
           : activeMode === 'strong' ? `${totalSignals}個訊號共鳴，歷史avg_pnl=-31元/期`
           : activeMode === 'spider' ? '蜘蛛感知(TQ22+連穩)，已擴展12顆候選池'
           : `${totalSignals}個訊號，標準模式`;
 
-        const actionBg = isAvoid ? '#FEE2E2' : isGo ? '#DCFCE7' : '#FEF9C3';
-        const actionBorder = isAvoid ? '#DC2626' : isGo ? '#16A34A' : '#D97706';
-        const actionColor = isAvoid ? '#DC2626' : isGo ? '#15803D' : '#92400E';
-        const actionIcon = isAvoid ? '🔴' : isGo ? '🟢' : '🟡';
-        const actionText = isAvoid ? '不要衝' : isGo ? '可以進場' : '觀望';
+        const actionBg = isGo ? '#DCFCE7' : '#FEE2E2';
+        const actionBorder = isGo ? '#16A34A' : '#DC2626';
+        const actionColor = isGo ? '#15803D' : '#DC2626';
+        const actionIcon = isGo ? '🟢' : '🔴';
+        const actionText = isGo ? '本期可進場' : '本期不推薦號碼';
 
-        // ★ V0616-3：靈魂信心等級標籤
         const soulLabel = confidenceLevel === 'cautious' ? '🧠冷靜期'
           : confidenceLevel === 'conservative' ? '🧠保守期'
           : confidenceLevel === 'aggressive' ? '🧠積極期'
@@ -367,80 +358,29 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
 
         return (
           <div style={{ marginBottom: 12 }}>
-            {/* 行動建議主框 */}
-            <div style={{ background: actionBg, border: `2px solid ${actionBorder}`, borderRadius: 12, padding: '10px 12px', marginBottom: 6 }}>
+            <div style={{ background: actionBg, border: `2px solid ${actionBorder}`, borderRadius: 12, padding: '10px 12px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div style={{ fontSize: 18, fontWeight: 900, color: actionColor }}>
                   {actionIcon} {actionText}
                 </div>
                 <div style={{ display: 'flex', gap: 4 }}>
-                  {soulLabel && (
+                  {isGo && soulLabel && (
                     <div style={{ fontSize: 10, fontWeight: 700, color: '#6D28D9', background: '#EDE9FE', borderRadius: 6, padding: '3px 8px' }}>
                       {soulLabel}
                     </div>
                   )}
-                  <div style={{ fontSize: 10, fontWeight: 700, color: actionColor, background: actionBorder + '22', borderRadius: 6, padding: '3px 8px' }}>
-                    {activeMode}
-                  </div>
+                  {isGo && (
+                    <div style={{ fontSize: 10, fontWeight: 700, color: actionColor, background: actionBorder + '22', borderRadius: 6, padding: '3px 8px' }}>
+                      {activeMode}
+                    </div>
+                  )}
                 </div>
               </div>
-              <div style={{ fontSize: 11, color: actionColor, marginTop: 4, opacity: 0.9 }}>
-                {mainReason}
-              </div>
-            </div>
-
-            {/* 細節標籤(小字收納) */}
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-              <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, fontWeight: 700,
-                background: position === '爆發期' ? '#FEF9C3' : position === '醞釀期' ? '#DCFCE7' : '#F1F5F9',
-                color: position === '爆發期' ? '#92400E' : position === '醞釀期' ? '#166534' : '#64748B' }}>
-                {position === '爆發期' ? '🔥' : position === '醞釀期' ? '🌱' : '👁️'}
-                {position}{burstNo > 0 ? ` 第${burstNo}期` : ''}{brewCount > 0 && position === '醞釀期' ? ` 連${brewCount}期` : ''}
-              </span>
-              <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, fontWeight: 700,
-                background: sigSlowTurnover ? '#DCFCE7' : '#FEF2F2',
-                color: sigSlowTurnover ? '#166534' : '#DC2626' }}>
-                {sigSlowTurnover ? '🔒穩定' : '🔀劇烈'}
-              </span>
-              <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, fontWeight: 700,
-                background: sigConcentrated ? '#DCFCE7' : '#F1F5F9',
-                color: sigConcentrated ? '#166534' : '#64748B' }}>
-                {sigConcentrated ? '🎯集中' : '⭕分散'}
-              </span>
-              <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, fontWeight: 700,
-                background: totalQualified >= 22 ? '#FEF9C3' : totalQualified >= 15 ? '#F0FDF4' : '#FEF2F2',
-                color: totalQualified >= 22 ? '#92400E' : totalQualified >= 15 ? '#166534' : '#DC2626' }}>
-                合格池{totalQualified}顆
-              </span>
-              {prevHit2Count >= 4 && (
-                <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, fontWeight: 700, background: '#F0FDF4', color: '#15803D' }}>
-                  💰上期{prevHit2Count}組中2
-                </span>
+              {isGo && (
+                <div style={{ fontSize: 11, color: actionColor, marginTop: 4, opacity: 0.9 }}>
+                  {mainReason}
+                </div>
               )}
-              {prevHit1Count >= 8 && (
-                <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, fontWeight: 700, background: '#EFF6FF', color: '#1D4ED8' }}>
-                  ⚡上期{prevHit1Count}組差一點
-                </span>
-              )}
-              {prevHit3Count >= 2 && (
-                <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, fontWeight: 700, background: '#FEE2E2', color: '#DC2626' }}>
-                  🚨上期{prevHit3Count}組中3
-                </span>
-              )}
-              {isDeadHour && (
-                <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, fontWeight: 700, background: '#FEE2E2', color: '#DC2626' }}>
-                  🚫死亡時段
-                </span>
-              )}
-              {(() => {
-                const prevEvenTail = groups[0]?.meta?.prev_even_tail;
-                if (!prevEvenTail || prevEvenTail < 11 || prevEvenTail > 12) return null;
-                return (
-                  <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, fontWeight: 700, background: '#FEE2E2', color: '#DC2626' }}>
-                    ⚠️偶數尾偏多{prevEvenTail}顆
-                  </span>
-                );
-              })()}
             </div>
           </div>
         );
@@ -478,82 +418,73 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
             ) : null
           }
         >
-          <div style={{ background: actionStyle.bg, border: `1.5px solid ${actionStyle.border}`, borderRadius: 8, padding: '8px 12px', marginBottom: 10 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: actionStyle.color }}>
-              {actionStyle.icon} {actionStyle.label}
-            </div>
-            <div style={{ fontSize: 11, color: actionStyle.color, opacity: 0.8, marginTop: 2 }}>
-              {lowConfidence && '12-15點低信心時段，號碼僅供參考'}
-              {!lowConfidence && action === '爆發出號' && !forcedSwitch && `四週期熱號，爆發第${burstNo}期`}
-              {!lowConfidence && action === '預備出號' && !forcedSwitch && `三週期持續醞釀，連續第${brewCount}期`}
-              {!lowConfidence && action === '參考出號' && !forcedSwitch && '兩週期觀察號碼，謹慎參考'}
-              {!lowConfidence && forcedSwitch && '爆發已過峰值，切換三週期號碼'}
-            </div>
-          </div>
-
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
-            <span style={S.badge(C.textSub, C.grayLight)}>
-              {isDone && detail.length > 0 ? `比對期號 ${fmt(detail[0]?.draw_no)}` : `預測期號 ${fmt(toNum(row?.source_draw_no, 0) + 1)}`}
-            </span>
-            <span style={S.badge(C.teal, C.greenBg)}>{groups.length} 組</span>
-          </div>
-
-          {/* ★ V0617-1：靈魂/策略判斷不要衝時，明確警示，不要讓號碼看起來像正常推薦 */}
-          {isAvoidNow && !isDone && (
-            <div style={{ background: '#FEE2E2', border: '1.5px solid #FCA5A5', borderRadius: 8, padding: '8px 12px', marginBottom: 10 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: '#B91C1C' }}>
-                🔴 系統判斷本期不建議進場，以下號碼僅供參考，請謹慎評估
+          {isAvoidNow && !isDone ? (
+            // ★ V0617-3：不推薦時完全不渲染號碼，只顯示期數和文字，現實使用上更斷然
+            <div style={{ textAlign: 'center', padding: '32px 12px' }}>
+              <div style={{ fontSize: 13, color: C.textSub, marginBottom: 8 }}>
+                預測期號 {fmt(toNum(row?.source_draw_no, 0) + 1)}
+              </div>
+              <div style={{ fontSize: 20, fontWeight: 900, color: '#DC2626' }}>
+                🔴 本期不推薦號碼
               </div>
             </div>
+          ) : (
+            <>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+                <span style={S.badge(C.textSub, C.grayLight)}>
+                  {isDone && detail.length > 0 ? `比對期號 ${fmt(detail[0]?.draw_no)}` : `預測期號 ${fmt(toNum(row?.source_draw_no, 0) + 1)}`}
+                </span>
+                <span style={S.badge(C.teal, C.greenBg)}>{groups.length} 組</span>
+              </div>
+
+              {groups.map((g, idx) => {
+                const nums = parseNums(g?.nums);
+                const key = String(g?.key || g?.meta?.strategy_key || idx);
+                const matchDetail = detail.find(d => String(d?.strategy_key) === key);
+                const hit = matchDetail ? toNum(matchDetail.hit, -1) : -1;
+                const is3 = hit >= 3;
+                const is2 = hit === 2;
+                return (
+                  <div key={key} style={{ background: is3 ? C.goldBg : C.grayLight, border: `2px solid ${is3 ? C.goldLight : C.border}`, borderRadius: 12, padding: '12px 14px', marginBottom: 10 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: C.textSub }}>第{idx + 1}組</div>
+                      {isDone && hit >= 0 && (
+                        <span style={{ fontSize: 16, fontWeight: 900, color: is3 ? C.gold : is2 ? C.orange : C.gray }}>
+                          {is3 ? `🏆 中${hit}` : is2 ? `中${hit}(仍虧)` : `中${hit}`}
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      {nums.map(n => {
+                        const isHit = isDone && drawNums.has(n);
+                        return <Ball key={n} n={n} hit={isDone ? (isHit ? true : false) : undefined} />;
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+
+              {isDone && (() => {
+                const totalCost = groups.length * 25;
+                const reward = bestHit >= 3 ? 500 : bestHit >= 2 ? 50 : 0;
+                const netPnl = reward - totalCost;
+                const bg = bestHit >= 3 ? C.goldBg : netPnl >= 0 ? C.grayLight : '#FEF3F2';
+                const label = bestHit >= 3 ? '🏆 恭喜中3！' : bestHit >= 2 ? '🔸 中2（仍虧本）' : '❌ 未中';
+                const labelColor = bestHit >= 3 ? hitColor : netPnl < 0 ? '#B91C1C' : C.textSub;
+                return (
+                  <div style={{ background: bg, borderRadius: 10, padding: '12px 14px', textAlign: 'center', marginTop: 4 }}>
+                    <div style={{ ...S.bigNum, color: labelColor }}>
+                      {label}
+                    </div>
+                    <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>
+                      本期淨損益：<span style={{ fontWeight: 800, color: netPnl >= 0 ? '#15803D' : '#B91C1C' }}>{netPnl >= 0 ? '+' : ''}{netPnl}元</span>
+                      　(獎金{reward}元－成本{totalCost}元)
+                    </div>
+                  </div>
+                );
+              })()}
+            </>
           )}
-
-          {groups.map((g, idx) => {
-            const nums = parseNums(g?.nums);
-            const key = String(g?.key || g?.meta?.strategy_key || idx);
-            const matchDetail = detail.find(d => String(d?.strategy_key) === key);
-            const hit = matchDetail ? toNum(matchDetail.hit, -1) : -1;
-            const is3 = hit >= 3;
-            const is2 = hit === 2;
-            const dimmed = isAvoidNow && !isDone;
-            return (
-              <div key={key} style={{ background: is3 ? C.goldBg : C.grayLight, border: `2px solid ${is3 ? C.goldLight : C.border}`, borderRadius: 12, padding: '12px 14px', marginBottom: 10, opacity: dimmed ? 0.55 : 1 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: C.textSub }}>第{idx + 1}組</div>
-                  {isDone && hit >= 0 && (
-                    <span style={{ fontSize: 16, fontWeight: 900, color: is3 ? C.gold : is2 ? C.orange : C.gray }}>
-                      {is3 ? `🏆 中${hit}` : is2 ? `中${hit}(仍虧)` : `中${hit}`}
-                    </span>
-                  )}
-                </div>
-                <div style={{ display: 'flex', gap: 8 }}>
-                  {nums.map(n => {
-                    const isHit = isDone && drawNums.has(n);
-                    return <Ball key={n} n={n} hit={isDone ? (isHit ? true : false) : undefined} />;
-                  })}
-                </div>
-              </div>
-            );
-          })}
-
-          {isDone && (() => {
-            const totalCost = groups.length * 25;
-            const reward = bestHit >= 3 ? 500 : bestHit >= 2 ? 50 : 0;
-            const netPnl = reward - totalCost;
-            const bg = bestHit >= 3 ? C.goldBg : netPnl >= 0 ? C.grayLight : '#FEF3F2';
-            const label = bestHit >= 3 ? '🏆 恭喜中3！' : bestHit >= 2 ? '🔸 中2（仍虧本）' : '❌ 未中';
-            const labelColor = bestHit >= 3 ? hitColor : netPnl < 0 ? '#B91C1C' : C.textSub;
-            return (
-              <div style={{ background: bg, borderRadius: 10, padding: '12px 14px', textAlign: 'center', marginTop: 4 }}>
-                <div style={{ ...S.bigNum, color: labelColor }}>
-                  {label}
-                </div>
-                <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>
-                  本期淨損益：<span style={{ fontWeight: 800, color: netPnl >= 0 ? '#15803D' : '#B91C1C' }}>{netPnl >= 0 ? '+' : ''}{netPnl}元</span>
-                  　(獎金{reward}元－成本{totalCost}元)
-                </div>
-              </div>
-            );
-          })()}
         </Card>
       )}
 
@@ -613,15 +544,13 @@ function HistoryPage({ historyRows }) {
                         borderRadius: 6, padding: '2px 8px', display: 'inline-block' }}>
                         {position === '爆發期' ? '🔥' : position === '醞釀期' ? '🌱' : '👁️'} {position}
                       </span>
-                      {/* 行動建議標籤(對應第一頁大框) */}
+                      {/* 行動建議標籤(對應第一頁，二元判斷) */}
                       {(() => {
                         const histMode = meta0?.active_mode || '';
-                        const histDeadHour = isDeadHourHist;
-                        const histIsAvoid = histDeadHour || histMode === 'skip';
-                        const histIsGo = !histIsAvoid && ['ultra','strong','spider'].includes(histMode);
-                        const label = histIsAvoid ? '🔴 不要衝' : histIsGo ? '🟢 可以進場' : '🟡 觀望';
-                        const bg = histIsAvoid ? '#FEE2E2' : histIsGo ? '#DCFCE7' : '#FEF9C3';
-                        const color = histIsAvoid ? '#DC2626' : histIsGo ? '#15803D' : '#92400E';
+                        const histIsAvoid = isSkipped || histMode === 'skip';
+                        const label = histIsAvoid ? '🔴 不推薦' : '🟢 可進場';
+                        const bg = histIsAvoid ? '#FEE2E2' : '#DCFCE7';
+                        const color = histIsAvoid ? '#DC2626' : '#15803D';
                         return (
                           <span style={{ fontSize: 11, fontWeight: 700, color, background: bg, borderRadius: 6, padding: '2px 8px', display: 'inline-block' }}>
                             {label}
@@ -1020,7 +949,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0617-1</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0617-3</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
