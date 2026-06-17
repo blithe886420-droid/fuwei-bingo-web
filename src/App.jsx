@@ -199,7 +199,7 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
     }
   }
 
-  const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.green : C.textSub;
+  const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.orange : C.textSub;
 
   const comparedDrawNumsArr = toArray(compareResult?.draw_nums);
   const drawNums = new Set(
@@ -223,6 +223,11 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
   const isHighHour = (nowHour >= 9 && nowHour <= 11) || (nowHour >= 16 && nowHour <= 18);
   const isDeadHour = nowHour >= 12 && nowHour <= 15;
   const position = groups[0]?.meta?.position || '';
+  // ★ V0617-1：isAvoidNow提升到元件最外層，讓「行動建議框」和「本期預測」卡片用同一套判斷標準
+  // 避免「不要衝」卻還顯示完整號碼列表的矛盾
+  const _prevDetailForAvoid = toArray(recentRows[0]?.compare_result_json?.detail);
+  const _prevHit3CountForAvoid = _prevDetailForAvoid.filter(d => toNum(d?.hit, 0) === 3).length;
+  const isAvoidNow = isDeadHour || _prevHit3CountForAvoid >= 2 || (groups[0]?.meta?.active_mode || 'standard') === 'skip';
   const spiderMode = '';  // V0615-1後端已移除此欄位
   const trueSignalCount = toNum(groups[0]?.meta?.total_signals, 0);  // 改讀新版total_signals
   const sigHighHour = groups[0]?.meta?.sig_high_hour === true;
@@ -333,8 +338,8 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
         const prevHit2Count = prevDetail.filter(d => toNum(d?.hit, 0) === 2).length;
         const prevHit3Count = prevDetail.filter(d => toNum(d?.hit, 0) === 3).length;
 
-        // 行動建議判斷
-        const isAvoid = isDeadHour || prevHit3Count >= 2 || activeMode === 'skip';
+        // 行動建議判斷(沿用元件最外層算好的isAvoidNow，確保跟本期預測卡片一致)
+        const isAvoid = isAvoidNow;
         const isGo = !isAvoid && (activeMode === 'ultra' || activeMode === 'strong' || activeMode === 'spider');
         const isWatch = !isAvoid && !isGo;
 
@@ -466,7 +471,7 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
           right={
             isDone ? (
               <span style={S.badge(hitColor, hitColor + '18')}>
-                {bestHit >= 3 ? `🏆 中${bestHit}！` : bestHit >= 2 ? `✅ 中${bestHit}` : `❌ 中${bestHit}`}
+                {bestHit >= 3 ? `🏆 中${bestHit}！` : bestHit >= 2 ? `🔸 中${bestHit}(仍虧)` : `❌ 未中`}
               </span>
             ) : row ? (
               <span style={S.badge(C.orange, C.orangeLight)}>等待開獎</span>
@@ -493,6 +498,15 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
             <span style={S.badge(C.teal, C.greenBg)}>{groups.length} 組</span>
           </div>
 
+          {/* ★ V0617-1：靈魂/策略判斷不要衝時，明確警示，不要讓號碼看起來像正常推薦 */}
+          {isAvoidNow && !isDone && (
+            <div style={{ background: '#FEE2E2', border: '1.5px solid #FCA5A5', borderRadius: 8, padding: '8px 12px', marginBottom: 10 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: '#B91C1C' }}>
+                🔴 系統判斷本期不建議進場，以下號碼僅供參考，請謹慎評估
+              </div>
+            </div>
+          )}
+
           {groups.map((g, idx) => {
             const nums = parseNums(g?.nums);
             const key = String(g?.key || g?.meta?.strategy_key || idx);
@@ -500,13 +514,14 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
             const hit = matchDetail ? toNum(matchDetail.hit, -1) : -1;
             const is3 = hit >= 3;
             const is2 = hit === 2;
+            const dimmed = isAvoidNow && !isDone;
             return (
-              <div key={key} style={{ background: is3 ? C.goldBg : C.grayLight, border: `2px solid ${is3 ? C.goldLight : C.border}`, borderRadius: 12, padding: '12px 14px', marginBottom: 10 }}>
+              <div key={key} style={{ background: is3 ? C.goldBg : C.grayLight, border: `2px solid ${is3 ? C.goldLight : C.border}`, borderRadius: 12, padding: '12px 14px', marginBottom: 10, opacity: dimmed ? 0.55 : 1 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                   <div style={{ fontSize: 12, fontWeight: 600, color: C.textSub }}>第{idx + 1}組</div>
                   {isDone && hit >= 0 && (
-                    <span style={{ fontSize: 16, fontWeight: 900, color: is3 ? C.gold : is2 ? C.green : C.gray }}>
-                      {is3 ? `🏆 中${hit}` : `中${hit}`}
+                    <span style={{ fontSize: 16, fontWeight: 900, color: is3 ? C.gold : is2 ? C.orange : C.gray }}>
+                      {is3 ? `🏆 中${hit}` : is2 ? `中${hit}(仍虧)` : `中${hit}`}
                     </span>
                   )}
                 </div>
@@ -520,16 +535,25 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
             );
           })}
 
-          {isDone && (
-            <div style={{ background: bestHit >= 2 ? C.goldBg : C.grayLight, borderRadius: 10, padding: '12px 14px', textAlign: 'center', marginTop: 4 }}>
-              <div style={{ ...S.bigNum, color: hitColor }}>
-                {bestHit >= 3 ? '🏆 恭喜中3！' : bestHit >= 2 ? '✅ 中2' : '❌ 未中'}
+          {isDone && (() => {
+            const totalCost = groups.length * 25;
+            const reward = bestHit >= 3 ? 500 : bestHit >= 2 ? 50 : 0;
+            const netPnl = reward - totalCost;
+            const bg = bestHit >= 3 ? C.goldBg : netPnl >= 0 ? C.grayLight : '#FEF3F2';
+            const label = bestHit >= 3 ? '🏆 恭喜中3！' : bestHit >= 2 ? '🔸 中2（仍虧本）' : '❌ 未中';
+            const labelColor = bestHit >= 3 ? hitColor : netPnl < 0 ? '#B91C1C' : C.textSub;
+            return (
+              <div style={{ background: bg, borderRadius: 10, padding: '12px 14px', textAlign: 'center', marginTop: 4 }}>
+                <div style={{ ...S.bigNum, color: labelColor }}>
+                  {label}
+                </div>
+                <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>
+                  本期淨損益：<span style={{ fontWeight: 800, color: netPnl >= 0 ? '#15803D' : '#B91C1C' }}>{netPnl >= 0 ? '+' : ''}{netPnl}元</span>
+                  　(獎金{reward}元－成本{totalCost}元)
+                </div>
               </div>
-              <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>
-                獎金：{bestHit >= 3 ? '+500元' : bestHit >= 2 ? '+50元' : '0元'} ｜ 成本：{groups.length * 25}元
-              </div>
-            </div>
-          )}
+            );
+          })()}
         </Card>
       )}
 
@@ -559,7 +583,7 @@ function HistoryPage({ historyRows }) {
           const lowConfidence = allGroups[0]?.meta?.low_confidence_hour === true;
           const actionStyle = getActionStyle(action, forcedSwitch, lowConfidence);
           const comparedDraw = toArray(compareResult?.detail)[0]?.draw_no;
-          const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.green : C.gray;
+          const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.orange : C.gray;
 
           // ★ 信心分數：改用 confidenceScore 已驗證公式（與快速頁一致）
           // 直接讀取後端輸出的 sig_* 欄位，而非重新用 meta 推算
@@ -616,7 +640,7 @@ function HistoryPage({ historyRows }) {
                   })()
                 ) : isDone ? (
                   <span style={{ fontSize: 15, fontWeight: 900, color: hitColor, whiteSpace: 'nowrap' }}>
-                    {bestHit >= 3 ? `🏆 中${bestHit}` : bestHit >= 2 ? `✅ 中${bestHit}` : `❌ 未中`}
+                    {bestHit >= 3 ? `🏆 中${bestHit}` : bestHit >= 2 ? `🔸 中${bestHit}(仍虧)` : `❌ 未中`}
                   </span>
                 ) : <span style={{ fontSize: 12, color: C.orange, whiteSpace: 'nowrap' }}>等待比對</span>}
               </div>
@@ -996,7 +1020,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0616-3</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0617-1</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
