@@ -502,11 +502,13 @@ function normalizeLeaderboardRow(row, poolRow = null) {
 }
 
 async function getLatestRowByMode(mode) {
+  // ★ V0617-5修正：移除.neq('status','skipped')過濾
+  // 舊邏輯永遠排除skip記錄，導致前端「本期預測」卡片卡在最後一次真正出手的那期，
+  // 即使後面連續skip多期，畫面也不會更新，造成「期數卡死」的嚴重bug
   const { data, error } = await supabase
     .from(PREDICTIONS_TABLE)
     .select('id, mode, status, source_draw_no, target_periods, created_at, compared_at, compare_status, verdict, hit_count, groups_json, compare_result_json, compare_result, compare_history_json, best_single_hit, confidence_score, market_phase, last_hit_level, recommend')  // ✅ 加入 recommend
     .eq('mode', mode)
-    .neq('status', 'skipped')
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();
