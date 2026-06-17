@@ -37,20 +37,7 @@ function isNight() {
 }
 function padNum(n) { return String(Number(n)).padStart(2, '0'); }
 
-function buildRandomGroups4() {
-  const pool = Array.from({ length: 80 }, (_, i) => i + 1);
-  for (let i = pool.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [pool[i], pool[j]] = [pool[j], pool[i]];
-  }
-  const selected = pool.slice(0, 12);
-  const groups = [];
-  for (let g = 0; g < 4; g++) {
-    const nums = selected.slice(g * 3, g * 3 + 3).sort((a, b) => a - b);
-    groups.push({ key: `rand_${g + 1}`, nums });
-  }
-  return groups;
-}
+// ★ V0617-4：buildRandomGroups4已不再使用(RandomGroupsCard改為不顯示任何號碼)，移除避免誤用
 
 async function apiFetch(path, options = {}) {
   const res = await fetch(`${RAILWAY_URL}${path}`, { cache: 'no-store', ...options });
@@ -118,7 +105,7 @@ function Card({ title, icon, children, right }) {
 }
 
 function Ball({ n, hit }) { return <div style={S.ball(hit)}>{padNum(n)}</div>; }
-function RandomBall({ n }) { return <div style={S.randomBall()}>{padNum(n)}</div>; }
+// ★ V0617-4：RandomBall已不再使用，移除避免誤用
 function StatRow({ label, value, valueColor }) {
   return (
     <div style={S.statRow}>
@@ -138,32 +125,17 @@ function Spinner() {
 }
 
 function RandomGroupsCard({ drawNo, skipMeta }) {
-  const [randomGroups] = useState(() => buildRandomGroups4());
-  const skipReason = skipMeta?.skip_reason || '';
-  const isSoulBlocked = skipReason === 'soul_blocked';
-  const confidenceLevel = skipMeta?.confidence_level || '';
-  const confidenceLabel = confidenceLevel === 'cautious' ? '冷靜期' : confidenceLevel === 'conservative' ? '保守期' : '';
-  const title = isSoulBlocked ? `🧠 靈魂判斷${confidenceLabel}，暫不出手` : '⏸️ 冷場期，AI暫停出號';
-  const subtitle = isSoulBlocked
-    ? `mode=${skipMeta?.active_mode || '-'}，靈魂評估近期表現後選擇保守，以下為純隨機號碼供參考`
-    : '當期號碼不足，以下為純隨機號碼供參考，不納入AI命中統計';
+  // ★ V0617-4：徹底移除隨機號碼產生，skip時只顯示期數和文字，現實使用上不該有任何號碼出現
   return (
-    <Card title="本期參考" icon="🎲" right={<span style={S.badge(C.purple, C.purpleBg)}>純隨機參考</span>}>
-      <div style={{ background: C.purpleBg, border: `1.5px solid ${C.purpleLight}`, borderRadius: 10, padding: '10px 14px', marginBottom: 12 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: C.purple }}>{title}</div>
-        <div style={{ fontSize: 11, color: C.purple, opacity: 0.8, marginTop: 3 }}>{subtitle}</div>
-      </div>
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
-        <span style={S.badge(C.textSub, C.grayLight)}>期號 {fmt(drawNo)}</span>
-        <span style={S.badge(C.purple, C.purpleBg)}>4 組</span>
-      </div>
-      {randomGroups.map((g, idx) => (
-        <div key={g.key} style={{ background: C.purpleBg, border: `2px solid ${C.purpleLight}`, borderRadius: 12, padding: '12px 14px', marginBottom: 10 }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: C.purple, marginBottom: 8 }}>第{idx + 1}組｜🎲 隨機</div>
-          <div style={{ display: 'flex', gap: 8 }}>{g.nums.map(n => <RandomBall key={n} n={n} />)}</div>
+    <Card title="本期預測" icon="⏸️">
+      <div style={{ textAlign: 'center', padding: '32px 12px' }}>
+        <div style={{ fontSize: 13, color: C.textSub, marginBottom: 8 }}>
+          預測期號 {fmt(drawNo)}
         </div>
-      ))}
-      <div style={{ fontSize: 11, color: C.textSub, textAlign: 'center', marginTop: 4 }}>⚠️ 隨機號碼僅供娛樂參考，不代表AI推薦</div>
+        <div style={{ fontSize: 20, fontWeight: 900, color: '#DC2626' }}>
+          🔴 本期不推薦號碼
+        </div>
+      </div>
     </Card>
   );
 }
@@ -418,7 +390,34 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
             ) : null
           }
         >
-          {isAvoidNow && !isDone ? (
+          {isDone ? (
+            // ★ V0617-4：已比對完成的歷史結果不在第一頁重複顯示，第二頁(近期)已經有完整紀錄
+            (() => {
+              const totalCost = groups.length * 25;
+              const reward = bestHit >= 3 ? 500 : bestHit >= 2 ? 50 : 0;
+              const netPnl = reward - totalCost;
+              const bg = bestHit >= 3 ? C.goldBg : netPnl >= 0 ? C.grayLight : '#FEF3F2';
+              const label = bestHit >= 3 ? '🏆 恭喜中3！' : bestHit >= 2 ? '🔸 中2（仍虧本）' : '❌ 未中';
+              const labelColor = bestHit >= 3 ? hitColor : netPnl < 0 ? '#B91C1C' : C.textSub;
+              return (
+                <div style={{ textAlign: 'center', padding: '20px 12px' }}>
+                  <div style={{ fontSize: 13, color: C.textSub, marginBottom: 8 }}>
+                    比對期號 {fmt(detail[0]?.draw_no)}
+                  </div>
+                  <div style={{ ...S.bigNum, color: labelColor }}>
+                    {label}
+                  </div>
+                  <div style={{ fontSize: 12, color: C.textSub, marginTop: 6 }}>
+                    本期淨損益：<span style={{ fontWeight: 800, color: netPnl >= 0 ? '#15803D' : '#B91C1C' }}>{netPnl >= 0 ? '+' : ''}{netPnl}元</span>
+                    　(獎金{reward}元－成本{totalCost}元)
+                  </div>
+                  <div style={{ fontSize: 11, color: C.textSub, marginTop: 10, opacity: 0.7 }}>
+                    完整號碼明細請見「近期」頁
+                  </div>
+                </div>
+              );
+            })()
+          ) : isAvoidNow ? (
             // ★ V0617-3：不推薦時完全不渲染號碼，只顯示期數和文字，現實使用上更斷然
             <div style={{ textAlign: 'center', padding: '32px 12px' }}>
               <div style={{ fontSize: 13, color: C.textSub, marginBottom: 8 }}>
@@ -463,26 +462,6 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
                   </div>
                 );
               })}
-
-              {isDone && (() => {
-                const totalCost = groups.length * 25;
-                const reward = bestHit >= 3 ? 500 : bestHit >= 2 ? 50 : 0;
-                const netPnl = reward - totalCost;
-                const bg = bestHit >= 3 ? C.goldBg : netPnl >= 0 ? C.grayLight : '#FEF3F2';
-                const label = bestHit >= 3 ? '🏆 恭喜中3！' : bestHit >= 2 ? '🔸 中2（仍虧本）' : '❌ 未中';
-                const labelColor = bestHit >= 3 ? hitColor : netPnl < 0 ? '#B91C1C' : C.textSub;
-                return (
-                  <div style={{ background: bg, borderRadius: 10, padding: '12px 14px', textAlign: 'center', marginTop: 4 }}>
-                    <div style={{ ...S.bigNum, color: labelColor }}>
-                      {label}
-                    </div>
-                    <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>
-                      本期淨損益：<span style={{ fontWeight: 800, color: netPnl >= 0 ? '#15803D' : '#B91C1C' }}>{netPnl >= 0 ? '+' : ''}{netPnl}元</span>
-                      　(獎金{reward}元－成本{totalCost}元)
-                    </div>
-                  </div>
-                );
-              })()}
             </>
           )}
         </Card>
@@ -949,7 +928,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0617-3</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0617-4</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
