@@ -596,6 +596,9 @@ function StatsPage({ historyRows }) {
   const [subTab, setSubTab] = useState('all');
   const [soulStatus, setSoulStatus] = useState(null);
   const [soulLoading, setSoulLoading] = useState(true);
+  const [healthStatus, setHealthStatus] = useState(null);
+  const [healthLoading, setHealthLoading] = useState(true);
+  const [healthExpanded, setHealthExpanded] = useState(false);
 
   // ★ V0616-1：靈魂戰況板改用獨立API直查資料庫，不受recent_3star_compared_rows的100筆視窗限制
   useEffect(() => {
@@ -604,6 +607,16 @@ function StatsPage({ historyRows }) {
       .then(res => { if (active) setSoulStatus(res); })
       .catch(() => { if (active) setSoulStatus(null); })
       .finally(() => { if (active) setSoulLoading(false); });
+    return () => { active = false; };
+  }, []);
+
+  // ★ V0618-5：三天視窗健康檢查，取代手動SQL貼貼來貼去
+  useEffect(() => {
+    let active = true;
+    apiFetch('/api/health-status')
+      .then(res => { if (active) setHealthStatus(res); })
+      .catch(() => { if (active) setHealthStatus(null); })
+      .finally(() => { if (active) setHealthLoading(false); });
     return () => { active = false; };
   }, []);
 
@@ -689,7 +702,93 @@ function StatsPage({ historyRows }) {
           </>
         )}
       </div>
+
+      {/* ★ V0618-5：三天視窗健康檢查(取代手動SQL貼貼來貼去) */}
+      <div style={{ background: C.card, borderRadius: 12, padding: '12px 14px', marginBottom: 14, boxShadow: C.shadow, border: `1px solid ${C.border}` }}>
+        <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>
+          📋 三天健康檢查
+        </div>
+        {healthLoading ? (
+          <div style={{ fontSize: 11, color: C.textSub }}>載入中...</div>
+        ) : !healthStatus?.ok ? (
+          <div style={{ fontSize: 11, color: C.textSub }}>暫無法取得健康檢查狀態</div>
+        ) : (() => {
+          const s = healthStatus.summary || {};
+          const levelColor = s.level === 'good' ? C.green : s.level === 'normal' ? C.orange : '#DC2626';
+          const levelBg = s.level === 'good' ? '#DCFCE7' : s.level === 'normal' ? '#FEF9C3' : '#FEE2E2';
+          const periods = toArray(healthStatus.periods);
+          return (
+            <>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6 }}>
+                <span style={{ fontSize: 24, fontWeight: 800, color: levelColor }}>
+                  {s.hit3_pct != null ? `${s.hit3_pct}%` : '--'}
+                </span>
+                <span style={{ fontSize: 11, padding: '2px 10px', borderRadius: 6, background: levelBg, color: levelColor, fontWeight: 700 }}>
+                  {s.level_label || '無資料'}
+                </span>
+              </div>
+              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 10 }}>
+                {fmt(s.compared_periods)}期已比對 ・ 出手率{s.output_rate_pct != null ? `${s.output_rate_pct}%` : '--'}
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+                <div style={{ flex: 1, background: C.grayLight, borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
+                  <div style={{ fontSize: 16, fontWeight: 800 }}>{fmt(s.hit3_periods)}</div>
+                  <div style={{ fontSize: 10, color: C.textSub }}>中3期數</div>
+                </div>
+                <div style={{ flex: 1, background: C.grayLight, borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
+                  <div style={{ fontSize: 16, fontWeight: 800 }}>{fmt(s.hit2plus_groups_total)}</div>
+                  <div style={{ fontSize: 10, color: C.textSub }}>中2以上組數</div>
+                </div>
+              </div>
+              <button
+                onClick={() => setHealthExpanded(v => !v)}
+                style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 10px', background: C.grayLight, borderRadius: 8, border: 'none', fontSize: 12, fontWeight: 700, color: C.text, cursor: 'pointer' }}
+              >
+                <span>逐期明細（{periods.length}期）</span>
+                <span>{healthExpanded ? '▲' : '▼'}</span>
+              </button>
+              {healthExpanded && (
+                <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 360, overflowY: 'auto' }}>
+                  {periods.slice().reverse().map((p, idx) => {
+                    const isSkipped = p.status === 'skipped';
+                    const isDone = p.compare_status === 'done' && !isSkipped;
+                    const hit3 = toNum(p.hit3_groups, 0);
+                    const hit2 = toNum(p.hit2_groups, 0);
+                    const timeStr = p.time ? new Date(p.time).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Taipei' }) : '--';
+                    return (
+                      <div key={p.draw_no || idx} style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, padding: '8px 10px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                          <span style={{ fontSize: 12, fontWeight: 700 }}>
+                            {timeStr} ・ {p.position || '-'} ・ {p.active_mode || '-'}
+                          </span>
+                          {isSkipped ? (
+                            <span style={{ fontSize: 11, color: C.textSub }}>跳過</span>
+                          ) : !isDone ? (
+                            <span style={{ fontSize: 11, color: C.orange }}>等待比對</span>
+                          ) : (
+                            <span style={{ fontSize: 12, fontWeight: 800, color: toNum(p.best_hit) >= 3 ? C.gold : C.textSub }}>
+                              中{fmt(p.best_hit)}
+                            </span>
+                          )}
+                        </div>
+                        {isDone && (
+                          <div style={{ display: 'flex', gap: 10, fontSize: 11, color: C.textSub }}>
+                            <span>中3組數 <b style={{ color: C.text }}>{hit3}</b></span>
+                            <span>中2組數 <b style={{ color: C.text }}>{hit2}</b></span>
+                            <span>訊號數 {fmt(p.total_signals)}</span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </>
+          );
+        })()}
+      </div>
       <div style={{ display: 'flex', gap: 6, marginBottom: 14, background: C.card, borderRadius: 12, padding: 8, boxShadow: C.shadow }}>
+
         {subTabs.map(t => (
           <button key={t.key} style={S.subTab(subTab === t.key)} onClick={() => setSubTab(t.key)}>
             {t.icon} {t.label}
