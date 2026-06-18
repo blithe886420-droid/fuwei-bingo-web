@@ -4,6 +4,18 @@ const RAILWAY_URL = 'https://fuwei-bingo-backend-production.up.railway.app';
 const REFRESH_INTERVAL_MS = 30000;
 const STATS_START_DATE = '2026-06-08T00:00:00.000Z';
 
+// ★ V0619-1：四種active_mode的中文對照，統一在「快速」「近期」「統計」三頁套用，
+// 避免英文模式字串(ultra/strong/standard/spider)直接顯示給用戶看
+const MODE_LABEL = {
+  standard: '標準',
+  strong: '強訊號',
+  ultra: '超強訊號',
+  spider: '蜘蛛感知',
+};
+function modeLabel(m) {
+  return MODE_LABEL[m] || m || '-';
+}
+
 function toNum(v, fallback = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
@@ -343,7 +355,7 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
                   )}
                   {isGo && (
                     <div style={{ fontSize: 10, fontWeight: 700, color: actionColor, background: actionBorder + '22', borderRadius: 6, padding: '3px 8px' }}>
-                      {activeMode}
+                      {modeLabel(activeMode)}
                     </div>
                   )}
                 </div>
@@ -561,7 +573,7 @@ function HistoryPage({ historyRows }) {
                 if (skipReason === 'soul_blocked') {
                   return (
                     <div style={{ fontSize: 11, color: '#92400E', background: '#FEF9C3', borderRadius: 6, padding: '4px 8px', display: 'inline-block' }}>
-                      🧠 靈魂封鎖（{skipConfidence === 'cautious' ? '冷靜期' : '保守期'}）：mode={skipMeta?.active_mode || '-'} 暫不出手
+                      🧠 靈魂封鎖（{skipConfidence === 'cautious' ? '冷靜期' : '保守期'}）：模式={modeLabel(skipMeta?.active_mode)} 暫不出手
                     </div>
                   );
                 }
@@ -691,7 +703,7 @@ function StatsPage({ historyRows }) {
                 const color = avg > 0 ? C.green : avg > -100 ? C.orange : '#DC2626';
                 return (
                   <div key={mode} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, padding: '2px 0' }}>
-                    <span style={{ color: C.text, fontWeight: 600 }}>{mode}</span>
+                    <span style={{ color: C.text, fontWeight: 600 }}>{modeLabel(mode)}</span>
                     <span style={{ color: C.textSub }}>{stat.count}期</span>
                     <span style={{ color, fontWeight: 700 }}>{avg > 0 ? '+' : ''}{avg}元/期</span>
                   </div>
@@ -761,7 +773,7 @@ function StatsPage({ historyRows }) {
                       <div key={p.draw_no || idx} style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, padding: '8px 10px' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
                           <span style={{ fontSize: 12, fontWeight: 700 }}>
-                            {timeStr} ・ {p.position || '-'} ・ {p.active_mode || '-'}
+                            {timeStr} ・ {p.position || '-'} ・ {modeLabel(p.active_mode)}
                           </span>
                           {isSkipped ? (
                             <span style={{ fontSize: 11, color: C.textSub }}>跳過</span>
@@ -1029,7 +1041,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0618-6</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0619-1</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
