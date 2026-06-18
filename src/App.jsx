@@ -487,6 +487,10 @@ function HistoryPage({ historyRows }) {
           const bestHit = toNum(row?.hit_count, 0);
           const isDone = row?.compare_status === 'done';
           const isSkipped = row?.status === 'skipped' || allGroups.length === 0;
+          // ★ V0618-6：histIsAvoid提升到此處，跟isSkipped同源，後面「行動建議標籤」與「是否渲染號碼」統一用這一個變數判斷，
+          // 避免標籤顯示「🔴不推薦」但下方仍渲染完整號碼組合的矛盾(active_mode='skip'但status未必是'skipped'的情況)
+          const histMode = allGroups[0]?.meta?.active_mode || '';
+          const histIsAvoid = isSkipped || histMode === 'skip';
           const action = allGroups[0]?.meta?.action || '';
           const position = allGroups[0]?.meta?.position || '';
           const forcedSwitch = false;  // V0615-1已移除
@@ -525,8 +529,6 @@ function HistoryPage({ historyRows }) {
                       </span>
                       {/* 行動建議標籤(對應第一頁，二元判斷) */}
                       {(() => {
-                        const histMode = meta0?.active_mode || '';
-                        const histIsAvoid = isSkipped || histMode === 'skip';
                         const label = histIsAvoid ? '🔴 不推薦' : '🟢 可進場';
                         const bg = histIsAvoid ? '#FEE2E2' : '#DCFCE7';
                         const color = histIsAvoid ? '#DC2626' : '#15803D';
@@ -552,7 +554,7 @@ function HistoryPage({ historyRows }) {
                   </span>
                 ) : <span style={{ fontSize: 12, color: C.orange, whiteSpace: 'nowrap' }}>等待比對</span>}
               </div>
-              {isSkipped ? (() => {
+              {histIsAvoid ? (() => {
                 const skipMeta = allGroups[0]?.meta || {};
                 const skipReason = skipMeta?.skip_reason || '';
                 const skipConfidence = skipMeta?.confidence_level || '';
@@ -576,9 +578,9 @@ function HistoryPage({ historyRows }) {
                     const matchDetail = detail.find(d => String(d?.strategy_key) === key);
                     const hit = matchDetail ? toNum(matchDetail.hit, 0) : 0;
                     return (
-                      <div key={key} style={{ background: hit >= 3 ? C.goldBg : hit >= 2 ? C.greenBg : C.grayLight, borderRadius: 8, padding: '4px 8px', fontSize: 12, border: `1px solid ${hit >= 3 ? C.goldLight : hit >= 2 ? '#86EFAC' : C.border}` }}>
+                      <div key={key} style={{ background: hit >= 3 ? C.goldBg : hit >= 2 ? C.orangeLight : C.grayLight, borderRadius: 8, padding: '4px 8px', fontSize: 12, border: `1px solid ${hit >= 3 ? C.goldLight : hit >= 2 ? C.orange : C.border}` }}>
                         {nums.map(n => padNum(n)).join(' ')}
-                        {isDone && <span style={{ marginLeft: 4, fontWeight: 700, color: hit >= 2 ? C.gold : C.gray }}>中{hit}</span>}
+                        {isDone && <span style={{ marginLeft: 4, fontWeight: 700, color: hit >= 3 ? C.gold : hit >= 2 ? C.orange : C.gray }}>中{hit}</span>}
                       </div>
                     );
                   })}
@@ -1027,7 +1029,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0617-4</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0618-6</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
