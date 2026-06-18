@@ -16,6 +16,30 @@ function modeLabel(m) {
   return MODE_LABEL[m] || m || '-';
 }
 
+// ★ V0619-2：根據meta物件反推s1/s5/s9/s12個別是否觸發，邏輯對齊buildBingoV1Strategies.js的rawS1/rawS5/rawS9/rawS12
+// s1：換手5+且醞釀期 | s5：上期槓龜(prev_hit_count=0)且換手5+ | s9：上一期&上兩期奇數尾都均衡(9-11顆) | s12：TQ25+且換手5+
+const SIGNAL_LABEL = { s1: 's1換手醞釀', s5: 's5槓龜換手', s9: 's9連2期均衡', s12: 's12高TQ換手' };
+function isBalancedTail(t) {
+  return t >= 9 && t <= 11;
+}
+function getFiredSignals(meta) {
+  if (!meta) return [];
+  const changedNums = toNum(meta.changed_nums, -1);
+  const position = meta.position || '';
+  const prevHitCount = toNum(meta.prev_hit_count, -1);
+  const totalQualified = toNum(meta.total_qualified, -1);
+  const prevOddTail = meta.prev_odd_tail != null ? toNum(meta.prev_odd_tail, -1) : null;
+  const prev2OddTail = meta.prev2_odd_tail != null ? toNum(meta.prev2_odd_tail, -1) : null;
+  const isFastBurst = changedNums >= 5;
+
+  const fired = [];
+  if (isFastBurst && position === '醞釀期') fired.push('s1');
+  if (prevHitCount === 0 && isFastBurst) fired.push('s5');
+  if (prevOddTail != null && prev2OddTail != null && isBalancedTail(prevOddTail) && isBalancedTail(prev2OddTail)) fired.push('s9');
+  if (totalQualified >= 25 && isFastBurst) fired.push('s12');
+  return fired;
+}
+
 function toNum(v, fallback = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
@@ -340,6 +364,8 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
           : confidenceLevel === 'learning' ? '🧠學習中'
           : confidenceLevel === 'normal' ? '🧠正常' : '';
 
+        const firedSignals = getFiredSignals(groups[0]?.meta);
+
         return (
           <div style={{ marginBottom: 12 }}>
             <div style={{ background: actionBg, border: `2px solid ${actionBorder}`, borderRadius: 12, padding: '10px 12px' }}>
@@ -363,6 +389,16 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
               {isGo && (
                 <div style={{ fontSize: 11, color: actionColor, marginTop: 4, opacity: 0.9 }}>
                   {mainReason}
+                </div>
+              )}
+              {/* ★ V0619-2：顯示本期實際觸發的訊號組合，方便對照s1+s12(或+s9)組合的實戰表現 */}
+              {isGo && firedSignals.length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 6 }}>
+                  {firedSignals.map(sig => (
+                    <span key={sig} style={{ fontSize: 10, fontWeight: 700, color: actionColor, background: '#FFF', border: `1px solid ${actionBorder}55`, borderRadius: 6, padding: '2px 6px' }}>
+                      {SIGNAL_LABEL[sig] || sig}
+                    </span>
+                  ))}
                 </div>
               )}
             </div>
@@ -552,6 +588,20 @@ function HistoryPage({ historyRows }) {
                       })()}
                     </div>
                   )}
+                  {/* ★ V0619-2：顯示該期實際觸發的訊號組合，方便回頭對照s1+s12(或+s9)組合表現 */}
+                  {!isSkipped && !histIsAvoid && (() => {
+                    const firedSignals = getFiredSignals(meta0);
+                    if (firedSignals.length === 0) return null;
+                    return (
+                      <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                        {firedSignals.map(sig => (
+                          <span key={sig} style={{ fontSize: 10, fontWeight: 700, color: C.textSub, background: C.grayLight, borderRadius: 6, padding: '2px 6px' }}>
+                            {SIGNAL_LABEL[sig] || sig}
+                          </span>
+                        ))}
+                      </div>
+                    );
+                  })()}
                 </div>
                 {isSkipped ? (
                   (() => {
@@ -1041,7 +1091,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0619-1</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0619-2</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
