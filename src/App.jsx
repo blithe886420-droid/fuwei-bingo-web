@@ -11,6 +11,7 @@ const MODE_LABEL = {
   strong: '強訊號',
   ultra: '超強訊號',
   spider: '蜘蛛感知',
+  trial: '試驗訊號', // ★ V0619-5新增：對應後端新增的醞釀期+TQ25試驗訊號
 };
 function modeLabel(m) {
   return MODE_LABEL[m] || m || '-';
@@ -1091,7 +1092,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0619-2</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0619-3</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
