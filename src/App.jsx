@@ -1,1129 +1,477 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+/**
+ * buildBingoV1Strategies.js - V0620-1
+ *
+ * ★ V0620-1更新(6/20)：試驗訊號擴充為兩組平行門檻。原本只測「醞釀期+TQ>=25」，
+ * 但觀察6/19晚間9小時資料發現，這個試驗池本身發生頻率很低(約2小時1次)，TQ達標
+ * 的更少，樣本累積太慢。既然反正都標成trial、不影響真錢，同時加開「醞釀期+
+ * TQ20-24」這組相鄰門檻平行測試，用trial_tier欄位('high'/'mid')區分兩組，
+ * 之後可直接用SQL比較兩個門檻哪個更值得扶正成正式條件。
+ *
+ * ★ V0619-6更新(6/19)：新增skip_detail欄位，精確拆分跳過原因為四種：
+ * no_signal(真正零訊號)、burst_override_had_signal(有訊號但被爆發期+換手5+規則覆蓋)、
+ * burst_override_no_signal(沒訊號且同時踩到爆發期規則)、bad_even_tail_override(永久停用保留)。
+ * 根因：原本auto-train.js寫入的skip_reason只有no_signal/soul_blocked二元判斷，
+ * no_signal標籤混雜了「真正零訊號」跟「其實有訊號(如s9)但被覆蓋」這兩種不同情況，
+ * 事後SQL分析"真正零訊號"期數時會被污染。不更動原有skip_reason欄位語意(App.jsx前端已依賴)，
+ * 純粹新增skip_detail供日後SQL精確篩選。
+ *
+ * ★ V0619-5更新(6/19)：新增試驗性訊號trial。富緯確認接下來兩天(端午連假剩餘時間)
+ * 不會實際下注，無真錢風險，趁機正式開放一個全新、完全未經回溯驗證的假設：
+ * 「醞釀期 + TQ>=25」單獨成立即可出手，不再要求isFastBurst(換手5+)這個前提
+ * (原本s12需要兩者同時成立)。目的是測試TQ這個已驗證的關鍵正向變數，拿掉換手
+ * 前提後是否依然有效，藉此探索能否安全提高出手率。用獨立的'trial'標籤跟其他
+ * 已驗證模式分開記錄，兩天後可直接用SQL評估這個假設成不成立，再決定要不要扶正、
+ * 調整門檻，或直接捨棄。
+ *
+ * ★ V0619-4更新(6/19)：移除skipFastBurstLowTQ裡的TQ<25守門條件。SQL驗證發現
+ * 爆發期+換手5+的組合，TQ達25-29時仍是0/15中3、平均-186.7元/期，TQ在此組合
+ * 完全沒有保護作用，原邏輯反而會在TQ>=25時放行這個已驗證的災難組合。改為
+ * 爆發期+換手5+一律跳過，不再限定低TQ。此修改會略為降低出手率，但直接服務
+ * 命中率，跟稍早「爆發期+白天29期掛零」的發現互相印證。
+ *
+ * ★ V0619-3更新(6/19)：active_mode分級邏輯改用s12觸發與否為核心依據，取代純訊號數計數。
+ * 根據6/18 12:30起126期乾淨樣本SQL驗證：s1+s5+s12全觸發(16期)中3率25.0%/+103.1元/期，
+ * 但s1或s5觸發、缺s12(37+15期)中3率僅5.4%/0%、平均-106.8/-186.7元/期，比完全無訊號的
+ * 基準(60期,-70.8)還差。新增s12Anchored/fastBurstNoS12變數，取代totalSignals門檻判斷
+ * top5集中度與active_mode分級；shouldSkip(出手與否)邏輯不變，出手率不受影響。
+ *
+ * ★ V0619-1更新(6/19)：meta物件補上prev2_odd_tail欄位。原本只寫了
+ * prev2_sum_val、prev2_high_zone，漏了prev2_odd_tail，導致s9(連2期均衡，
+ * 樣本最大230筆)無法從資料庫事後反推還原。這次補上後s9也能被完整追蹤分析。
+ *
+ * ★ V0617-2 重大重構：恢復V0612-3動態組合生成邏輯
+ * 背景：6/13~6/17現實命中率持續下滑(9.8%→3.1%)，SQL分段驗證證實斷層發生在
+ * V0615-1清除舊版邏輯之後。進一步比對spider_mode發現，舊版'normal'模式
+ * (141期樣本)中3率11.35%，是目前驗證過所有版本/分類裡表現最好的單一邏輯。
+ * 根因鎖定：V0615之後用的固定位置combos(如[1,5,8])假設每期候選池排序結構
+ * 相似，但實際上每期分布不同，固定位置時對時不對。改回動態算top5+動態
+ * C(7,3)篩選「含top5號碼最多」的組合，每期重新適應候選池實際結構。
+ * - 保留：11個訊號計數器(s1-s12)決定要不要出手、出手力度
+ * - 取代：8組生成方式，從固定位置索引改為動態C(7,3)篩選
+ *
+ * ★ V0615-1 重大修正：徹底清除舊版V0612-3殘留邏輯
+ * - 移除 bad_board/forced_switch/觀察期跳過/isBadBoard 等舊版干擾
+ * - 移除舊版 signals/trueSignalCount/top5/spiderMode 等舊版變數
+ * - 現在函數直接進入V0614-12的訊號計數器架構
+ * - 0個訊號=skip；1-2=standard；3=strong；4+=ultra
+ *
+ * 蜘蛛感知系統 + 六層觸發條件選號策略
+ *
+ * V0614-6 重大更新（2026/06/14）：
+ * 1. 六層觸發條件：換手5+醞釀(+186)/換手1+TQ22+(+23)/蜘蛛感知(+390)/
+ *    同尾5+後換手1(+96)/單期高號7+(+4.84)/標準G策略
+ * 2. 每個觸發條件各自有專屬最佳8組位置組合(SQL窮舉驗證)
+ * 3. 高號區改為「精確版」：只在「單期首次出現」觸發，連續2期反而-121
+ * 4. 新增上期最強尾數、上上期高號顆數的感知計算
+ * 5. hot_pool取7顆，pool覆蓋面更廣
+ *
+ * V0612-3 根據反向歸納SQL分析優化：
+ * 1. bad_board模式：SQL驗證52組樣本hit3=0%，直接不出手
+ * 2. forced_switch模式：SQL驗證140組樣本hit3=0%，直接不出手
+ * 3. 補上sig_slow_turnover欄位輸出（原為死代碼，App.jsx讀取但後端未輸出）
+ */
 
-const RAILWAY_URL = 'https://fuwei-bingo-backend-production.up.railway.app';
-const REFRESH_INTERVAL_MS = 30000;
-const STATS_START_DATE = '2026-06-08T00:00:00.000Z';
-
-// ★ V0619-1：四種active_mode的中文對照，統一在「快速」「近期」「統計」三頁套用，
-// 避免英文模式字串(ultra/strong/standard/spider)直接顯示給用戶看
-const MODE_LABEL = {
-  standard: '標準',
-  strong: '強訊號',
-  ultra: '超強訊號',
-  spider: '蜘蛛感知',
-  trial: '試驗訊號', // ★ V0619-5新增：對應後端新增的醞釀期+TQ25試驗訊號
-};
-function modeLabel(m) {
-  return MODE_LABEL[m] || m || '-';
+function parseNums(numbers) {
+  if (Array.isArray(numbers)) return numbers.map(Number).filter(n => n >= 1 && n <= 80);
+  return String(numbers || '').trim().split(/\s+/).map(Number).filter(n => n >= 1 && n <= 80);
 }
 
-// ★ V0619-2：根據meta物件反推s1/s5/s9/s12個別是否觸發，邏輯對齊buildBingoV1Strategies.js的rawS1/rawS5/rawS9/rawS12
-// s1：換手5+且醞釀期 | s5：上期槓龜(prev_hit_count=0)且換手5+ | s9：上一期&上兩期奇數尾都均衡(9-11顆) | s12：TQ25+且換手5+
-const SIGNAL_LABEL = { s1: 's1換手醞釀', s5: 's5槓龜換手', s9: 's9連2期均衡', s12: 's12高TQ換手' };
-function isBalancedTail(t) {
-  return t >= 9 && t <= 11;
-}
-function getFiredSignals(meta) {
-  if (!meta) return [];
-  const changedNums = toNum(meta.changed_nums, -1);
-  const position = meta.position || '';
-  const prevHitCount = toNum(meta.prev_hit_count, -1);
-  const totalQualified = toNum(meta.total_qualified, -1);
-  const prevOddTail = meta.prev_odd_tail != null ? toNum(meta.prev_odd_tail, -1) : null;
-  const prev2OddTail = meta.prev2_odd_tail != null ? toNum(meta.prev2_odd_tail, -1) : null;
-  const isFastBurst = changedNums >= 5;
-
-  const fired = [];
-  if (isFastBurst && position === '醞釀期') fired.push('s1');
-  if (prevHitCount === 0 && isFastBurst) fired.push('s5');
-  if (prevOddTail != null && prev2OddTail != null && isBalancedTail(prevOddTail) && isBalancedTail(prev2OddTail)) fired.push('s9');
-  if (totalQualified >= 25 && isFastBurst) fired.push('s12');
-  return fired;
+function countIn(draws, num) {
+  return draws.filter(d => parseNums(d.numbers).includes(num)).length;
 }
 
-function toNum(v, fallback = 0) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : fallback;
-}
-function toArray(v) { return Array.isArray(v) ? v : []; }
-function fmt(v, fallback = '--') {
-  if (v === null || v === undefined || v === '') return fallback;
-  return String(v);
-}
-function fmtPercent(v) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return '--';
-  return `${(n * 100).toFixed(1)}%`;
-}
-function parseNums(input) {
-  if (Array.isArray(input)) return input.map(Number).filter(Number.isFinite);
-  if (typeof input === 'string') {
-    return input.replace(/[{}[\]]/g, ' ').split(/[,\s|/]+/).map(n => Number(n.trim())).filter(Number.isFinite);
-  }
-  return [];
-}
-function safeJson(v, fallback = null) {
-  if (v == null) return fallback;
-  if (typeof v === 'object') return v;
-  try { return JSON.parse(v); } catch { return fallback; }
-}
-function isNight() {
-  const now = new Date();
-  const m = now.getHours() * 60 + now.getMinutes();
-  return m >= 0 && m < 7 * 60;
-}
-function padNum(n) { return String(Number(n)).padStart(2, '0'); }
+export function buildBingoGroups(recentDraws = [], latestDrawNo = 0, recentPredictions = [], signalEnabled = {}) {
+  if (recentDraws.length < 20) return [];
 
-// ★ V0617-4：buildRandomGroups4已不再使用(RandomGroupsCard改為不顯示任何號碼)，移除避免誤用
+  const w1draws = recentDraws.slice(0, 5);
+  const w2draws = recentDraws.slice(5, 10);
+  const w3draws = recentDraws.slice(10, 15);
+  const w4draws = recentDraws.slice(15, 20);
 
-async function apiFetch(path, options = {}) {
-  const res = await fetch(`${RAILWAY_URL}${path}`, { cache: 'no-store', ...options });
-  const text = await res.text();
-  try { return JSON.parse(text); } catch { return { raw: text }; }
-}
+  // ★ 時段感知
+  const taipeiHour = (new Date().getUTCHours() + 8) % 24;
+  const isHighHour = (taipeiHour >= 9 && taipeiHour <= 11) || (taipeiHour >= 16 && taipeiHour <= 18);
+  const isDeadHour = taipeiHour >= 12 && taipeiHour <= 15;
+  // ★ V0617-6新增：6/17徹查全部24小時實際命中率，取前4名(17/20/23/11點)重新定義最佳時段
+  // 取代舊版isHighHour的簡化二分假設(9-11/16-18)，17點(13.53%)和23點(10.40%)原本完全不在範圍內
+  const isGreatHour = [17, 20, 23, 11].includes(taipeiHour);
 
-function getActionStyle(action, forcedSwitch, lowConfidence) {
-  if (lowConfidence) return { icon: '👀', label: '觀察期（低信心時段）', color: '#0F766E', bg: '#F0FDFA', border: '#99F6E4' };
-  if (forcedSwitch) return { icon: '⚡', label: '醞釀期（爆發切換）', color: '#D97706', bg: '#FFFBEB', border: '#FDE68A' };
-  switch (action) {
-    case '爆發出號': return { icon: '🔥', label: '爆發期', color: '#C8860A', bg: '#FFF9EC', border: '#F5D78B' };
-    case '預備出號': return { icon: '⚡', label: '醞釀期', color: '#D97706', bg: '#FFFBEB', border: '#FDE68A' };
-    case '參考出號': return { icon: '👀', label: '觀察期', color: '#0F766E', bg: '#F0FDFA', border: '#99F6E4' };
-    default: return { icon: '🔥', label: '出號', color: '#C8860A', bg: '#FFF9EC', border: '#F5D78B' };
-  }
-}
-
-const C = {
-  bg: '#FFF8F0', card: '#FFFFFF', gold: '#C8860A', goldLight: '#F5D78B',
-  goldBg: '#FFF9EC', orange: '#E8722A', orangeLight: '#FDE8D8',
-  green: '#16A34A', greenBg: '#F0FDF4', teal: '#0F766E',
-  gray: '#6B7280', grayLight: '#F3F4F6', border: '#E5DDD0',
-  text: '#2C1810', textSub: '#7B6E5C',
-  purple: '#7C3AED', purpleBg: '#F5F3FF', purpleLight: '#DDD6FE',
-  shadow: '0 2px 12px rgba(200,134,10,0.10)',
-};
-
-const S = {
-  app: { minHeight: '100vh', background: C.bg, fontFamily: '"Segoe UI", "PingFang TC", "Noto Sans TC", sans-serif', color: C.text, paddingBottom: 70 },
-  header: { background: `linear-gradient(135deg, ${C.gold} 0%, ${C.orange} 100%)`, padding: '12px 14px 10px', boxShadow: '0 2px 16px rgba(200,134,10,0.25)' },
-  headerTitle: { fontSize: 17, fontWeight: 900, color: '#FFF', letterSpacing: 1, margin: 0 },
-  headerSub: { fontSize: 11, color: 'rgba(255,255,255,0.85)', marginTop: 2 },
-  tabs: { display: 'flex', background: C.card, borderBottom: `2px solid ${C.border}`, position: 'sticky', top: 0, zIndex: 100, boxShadow: '0 2px 8px rgba(200,134,10,0.08)' },
-  tab: (active) => ({ flex: 1, padding: '8px 2px 6px', border: 'none', background: 'transparent', cursor: 'pointer', fontSize: 10, fontWeight: active ? 700 : 400, color: active ? C.gold : C.gray, borderBottom: active ? `3px solid ${C.gold}` : '3px solid transparent', transition: 'all 0.2s' }),
-  subTab: (active) => ({ flex: 1, padding: '6px 4px', border: 'none', background: active ? C.goldBg : 'transparent', cursor: 'pointer', fontSize: 11, fontWeight: active ? 700 : 400, color: active ? C.gold : C.gray, borderRadius: 8, transition: 'all 0.2s' }),
-  page: { padding: '10px 10px', maxWidth: 600, margin: '0 auto' },
-  card: { background: C.card, borderRadius: 12, padding: '12px 12px 10px', marginBottom: 10, boxShadow: C.shadow, border: `1px solid ${C.border}` },
-  cardTitle: { fontSize: 13, fontWeight: 700, color: C.gold, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 },
-  badge: (color, bg) => ({ display: 'inline-block', fontSize: 10, padding: '2px 6px', borderRadius: 99, fontWeight: 600, color, background: bg }),
-  ball: (hit) => ({ width: 36, height: 36, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 800, background: hit === true ? C.gold : hit === false ? C.grayLight : C.goldBg, color: hit === true ? '#FFF' : hit === false ? C.gray : C.gold, border: `2px solid ${hit === true ? C.gold : hit === false ? C.border : C.goldLight}`, boxShadow: hit === true ? `0 2px 8px ${C.goldLight}` : 'none' }),
-  randomBall: () => ({ width: 36, height: 36, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 800, background: C.purpleBg, color: C.purple, border: `2px solid ${C.purpleLight}` }),
-  statRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderBottom: `1px solid ${C.border}` },
-  statLabel: { fontSize: 12, color: C.textSub },
-  statValue: { fontSize: 13, fontWeight: 700, color: C.text },
-  bigNum: { fontSize: 26, fontWeight: 900, color: C.gold },
-  btn: (disabled) => ({ background: disabled ? C.grayLight : `linear-gradient(135deg, ${C.gold}, ${C.orange})`, color: disabled ? C.gray : '#FFF', border: 'none', borderRadius: 10, padding: '9px 16px', fontSize: 13, fontWeight: 700, cursor: disabled ? 'not-allowed' : 'pointer', boxShadow: disabled ? 'none' : C.shadow, width: '100%', marginTop: 6 }),
-  divider: { height: 1, background: C.border, margin: '10px 0' },
-  empty: { color: C.textSub, fontSize: 13, padding: '12px 0', textAlign: 'center' },
-  recentBall: () => ({ width: 32, height: 32, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700, background: C.grayLight, color: C.textSub }),
-};
-
-function Card({ title, icon, children, right }) {
-  return (
-    <div style={S.card}>
-      {title && (
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-          <div style={S.cardTitle}>{icon && <span>{icon}</span>}{title}</div>
-          {right && <div>{right}</div>}
-        </div>
-      )}
-      {children}
-    </div>
-  );
-}
-
-function Ball({ n, hit }) { return <div style={S.ball(hit)}>{padNum(n)}</div>; }
-// ★ V0617-4：RandomBall已不再使用，移除避免誤用
-function StatRow({ label, value, valueColor }) {
-  return (
-    <div style={S.statRow}>
-      <span style={S.statLabel}>{label}</span>
-      <span style={{ ...S.statValue, color: valueColor || C.text }}>{value}</span>
-    </div>
-  );
-}
-
-function Spinner() {
-  return (
-    <div style={{ display: 'flex', justifyContent: 'center', padding: 30 }}>
-      <div style={{ width: 32, height: 32, borderRadius: '50%', border: `3px solid #F5D78B`, borderTopColor: C.gold, animation: 'spin 0.8s linear infinite' }} />
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-    </div>
-  );
-}
-
-function RandomGroupsCard({ drawNo, skipMeta }) {
-  // ★ V0617-4：徹底移除隨機號碼產生，skip時只顯示期數和文字，現實使用上不該有任何號碼出現
-  return (
-    <Card title="本期預測" icon="⏸️">
-      <div style={{ textAlign: 'center', padding: '32px 12px' }}>
-        <div style={{ fontSize: 13, color: C.textSub, marginBottom: 8 }}>
-          預測期號 {fmt(drawNo)}
-        </div>
-        <div style={{ fontSize: 20, fontWeight: 900, color: '#DC2626' }}>
-          🔴 本期不推薦號碼
-        </div>
-      </div>
-    </Card>
-  );
-}
-
-function QuickPage({ prediction, recent20, onRefresh, loading }) {
-  const row = prediction?.latest_3star_row;
-  const compareResult = safeJson(row?.compare_result_json) || safeJson(row?.compare_result);
-  const detail = toArray(compareResult?.detail);
-  const allGroups = toArray(row?.groups_json);
-  const groups = allGroups.slice(0, 8);
-  const isDone = row?.compare_status === 'done';
-  const bestHit = toNum(row?.hit_count, 0);
-  const latestDraw = toArray(recent20)[0];
-  const isSkipped = !row || row?.status === 'skipped' || allGroups.length === 0;
-  const action = groups[0]?.meta?.action || '出號';
-  const forcedSwitch = false;  // V0615-1後端已移除此欄位
-  // ★ 修正：用當前時間判斷低信心時段
-  const nowHour = new Date().getHours();
-  const lowConfidence = nowHour >= 12 && nowHour <= 15;
-  const consecutiveBurst = toNum(groups[0]?.meta?.consecutive_burst, 0);
-  const actionStyle = getActionStyle(action, forcedSwitch, lowConfidence);
-
-  // ★ 連續期數計算（用於醒目提示）
-  const burstNo = action === '爆發出號' && !forcedSwitch ? consecutiveBurst + 1 : 0;
-  const recentRows = toArray(prediction?.recent_3star_compared_rows) || [];
-  let brewCount = 0;
-  if (action === '預備出號') {
-    brewCount = 1;
-    for (const r of recentRows) {
-      const rPos = toArray(r?.groups_json)[0]?.meta?.position || '';
-      if (rPos === '醞釀期') brewCount++;
-      else break;
-    }
-  }
-
-  const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.orange : C.textSub;
-
-  const comparedDrawNumsArr = toArray(compareResult?.draw_nums);
-  const drawNums = new Set(
-    comparedDrawNumsArr.length > 0
-      ? comparedDrawNumsArr.map(Number)
-      : parseNums(latestDraw?.numbers)
-  );
-
-  const hit2Groups = detail.filter(d => toNum(d?.hit, 0) === 2).length;
-  const isWarning = hit2Groups >= 3;
-
-
-  // ★ 換手率計算
-  const prevPool = (recentRows[0]?.groups_json?.[0]?.meta?.hot_pool || '').split(',').filter(Boolean);
-  const curPool = (groups[0]?.meta?.hot_pool || '').split(',').filter(Boolean);
-  const changedCount = curPool.filter(n => !prevPool.includes(n)).length;
-  const isFastTurnover = prevPool.length > 0 && changedCount >= 4;
-  const isSlowTurnover = prevPool.length > 0 && changedCount <= 1;
-
-  // ★ 蜘蛛感知系統：從meta讀取後端計算的真信號
-  const isHighHour = (nowHour >= 9 && nowHour <= 11) || (nowHour >= 16 && nowHour <= 18);
-  const isDeadHour = nowHour >= 12 && nowHour <= 15;
-  const position = groups[0]?.meta?.position || '';
-  // ★ V0617-1：isAvoidNow提升到元件最外層，讓「行動建議框」和「本期預測」卡片用同一套判斷標準
-  // 避免「不要衝」卻還顯示完整號碼列表的矛盾
-  const _prevDetailForAvoid = toArray(recentRows[0]?.compare_result_json?.detail);
-  const _prevHit3CountForAvoid = _prevDetailForAvoid.filter(d => toNum(d?.hit, 0) === 3).length;
-  // ★ V0617-3：改用「是否skip」當唯一標準，不疊加isDeadHour/prevHit3Count等規則
-  // 避免「有出手卻被判定不要衝」這種曖昧狀態，現實使用上只要二元判斷：有出手=可進場，skip=不推薦
-  const _activeModeNow = groups[0]?.meta?.active_mode || 'standard';
-  const isAvoidNow = isSkipped || _activeModeNow === 'skip';
-  const spiderMode = '';  // V0615-1後端已移除此欄位
-  const trueSignalCount = toNum(groups[0]?.meta?.total_signals, 0);  // 改讀新版total_signals
-  const sigHighHour = groups[0]?.meta?.sig_high_hour === true;
-  const sigSlowTurnover = groups[0]?.meta?.sig_slow_turnover === true;
-  const sigHighZone = groups[0]?.meta?.sig_high_zone === true;
-  const sigBrew4Hour = groups[0]?.meta?.sig_brew4_hour === true;
-  const sigPrevHit = groups[0]?.meta?.sig_prev_hit === true;
-  const totalQualified = toNum(groups[0]?.meta?.total_qualified, 0);
-
-  // ★ 蜘蛛感知信心指數 V0611-3
-  const sigConcentrated = groups[0]?.meta?.sig_concentrated === true;
-  const isConcentrated = groups[0]?.meta?.is_concentrated === true;
-
-  let confidenceScore = 0;
-  let confidenceReasons = [];
-
-  // ★ V0612-3：sig_high_hour 反向歸納SQL驗證 true(1.04%) < false(1.59%)
-  // 方向與系統假設相反，原+50分暫時中立化為0分，待累積更多資料後再決定方向
-  if (sigHighHour) {
-    confidenceScore += 0;
-    confidenceReasons.push(`${nowHour}點高命中時段(中立化，待驗證)`);
-  }
-  // 號碼集中（SQL E：集中17.95% vs 分散12.11%）
-  if (sigConcentrated) {
-    confidenceScore += 20;
-    confidenceReasons.push(`號碼集中(+20)`);
-  }
-  // 換手穩定（命中率13-25%）
-  // ★ V0612-3：B.txt已補上sig_slow_turnover欄位輸出，此項目原為死代碼，現恢復生效
-  if (sigSlowTurnover) {
-    confidenceScore += 20;
-    confidenceReasons.push(`換手穩定(+20)`);
-  }
-  // ★ V0613-2：sig_high_zone(合格池61-80號碼數>=2)驗證後發現
-  // 在total_qualified>=15時幾乎恆為true(315筆裡313筆為true)，
-  // 門檻相對池子大小過低、幾乎無區分力，原+15分中立化為0分
-  if (sigHighZone) {
-    confidenceScore += 0;
-    confidenceReasons.push(`高號區61-80(中立化，待驗證)`);
-  }
-  // 醞釀4期+時段（命中率15.38%）
-  if (sigBrew4Hour) {
-    confidenceScore += 15;
-    confidenceReasons.push(`醞釀${brewCount}期+時段(+15)`);
-  }
-  // 前1期中2後（命中率12.78%）
-  if (sigPrevHit) {
-    confidenceScore += 10;
-    confidenceReasons.push(`前1期有中(+10)`);
-  }
-  // 號碼池太少
-  if (totalQualified < 8) {
-    confidenceScore -= 30;
-    confidenceReasons.push(`號碼池稀少(-30)`);
-  }
-  // 12-15點死亡時段
-  if (isDeadHour) {
-    confidenceScore -= 50;
-    confidenceReasons.push(`12-15點死亡時段(-50)`);
-  }
-  // 觀察期
-  if (position === '觀察期') {
-    confidenceScore -= 20;
-    confidenceReasons.push(`觀察期弱信號(-20)`);
-  }
-  // ★ V0613-3：爆發期+normal組合驗證後hit3率14.29%(56筆)，
-  // 是目前驗證樣本裡最高的單一組合，新增加分項
-  if (position === '爆發期') {
-    confidenceScore += 10;
-    confidenceReasons.push(`爆發期(+10)`);
-  }
-  // ★ V0613-3：is_brew_low_point 全歷史245筆樣本裡從未出現true，
-  // 確認為死代碼（此規則從未被觸發），原-40分規則已移除
-
-  // ★ V0612-3：信心等級門檻 50/20 → 60/30，對齊系統摘要文件規範
-  const confidenceLevel =
-    confidenceScore >= 80 ? { label: '🕷️ 真獵物！閃電出手', color: '#DC2626', bg: '#FEF2F2', border: '#FCA5A5' } :
-    confidenceScore >= 60 ? { label: '🎯 建議進場', color: '#15803D', bg: '#DCFCE7', border: '#86EFAC' } :
-    confidenceScore >= 30 ? { label: '👀 觀察等待', color: '#6B7280', bg: '#F3F4F6', border: '#E5E7EB' } :
-    { label: '⏸️ 葉子，不要衝', color: '#9CA3AF', bg: '#F9FAFB', border: '#E5E7EB' };
-
-  return (
-    <div style={S.page}>
-      {/* 最新開獎 */}
-      <Card title="最新開獎" icon="🎱">
-        {latestDraw ? (
-          <>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-              <span style={S.statLabel}>期號 {fmt(latestDraw?.draw_no)}</span>
-              <span style={S.statLabel}>{fmt(latestDraw?.draw_time)}</span>
-            </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
-              {parseNums(latestDraw?.numbers).sort((a, b) => a - b).map(n => (
-                <div key={n} style={S.recentBall()}>{padNum(n)}</div>
-              ))}
-            </div>
-          </>
-        ) : <div style={S.empty}>載入中...</div>}
-      </Card>
-
-      {/* ★ V0617-3：行動建議框改為二元判斷(可進場/不推薦)，不再有「觀望」這種曖昧狀態 */}
-      {!isSkipped && !isDone && (() => {
-        const activeMode = groups[0]?.meta?.active_mode || 'standard';
-        const totalSignals = toNum(groups[0]?.meta?.total_signals, 0);
-        const confidenceLevel = groups[0]?.meta?.confidence_level || '';
-
-        const isGo = !isAvoidNow;
-        const isTrial = activeMode === 'trial'; // ★ V0619-3：試驗訊號需要獨立視覺樣式，不能跟已驗證模式共用綠色「可進場」
-        const trialTier = groups[0]?.meta?.trial_tier || ''; // ★ V0620-1：區分TQ25+(high)與TQ20-24(mid)兩組平行試驗
-        const trialTierLabel = trialTier === 'high' ? 'TQ25+' : trialTier === 'mid' ? 'TQ20-24' : '';
-
-        const mainReason = activeMode === 'ultra' ? `${totalSignals}個訊號共鳴！歷史avg_pnl=+115元/期`
-          : activeMode === 'strong' ? `${totalSignals}個訊號共鳴，歷史avg_pnl=-31元/期`
-          : activeMode === 'spider' ? '蜘蛛感知(TQ22+連穩)，已擴展12顆候選池'
-          : isTrial ? `醞釀期+${trialTierLabel}試驗訊號，完全未經驗證，僅供收集資料`
-          : `${totalSignals}個訊號，標準模式`;
-
-        // ★ V0619-3：trial用紫色警示樣式，跟綠色(已驗證可進場)、紅色(不推薦)都不同，
-        // 一眼就能分辨「這是還在試驗、別當成真訊號相信」
-        const actionBg = isTrial ? '#F3E8FF' : isGo ? '#DCFCE7' : '#FEE2E2';
-        const actionBorder = isTrial ? '#9333EA' : isGo ? '#16A34A' : '#DC2626';
-        const actionColor = isTrial ? '#7E22CE' : isGo ? '#15803D' : '#DC2626';
-        const actionIcon = isTrial ? '🧪' : isGo ? '🟢' : '🔴';
-        const actionText = isTrial ? `本期試驗訊號（${trialTierLabel}，未驗證，謹慎參考）` : isGo ? '本期可進場' : '本期不推薦號碼';
-
-        const soulLabel = confidenceLevel === 'cautious' ? '🧠冷靜期'
-          : confidenceLevel === 'conservative' ? '🧠保守期'
-          : confidenceLevel === 'aggressive' ? '🧠積極期'
-          : confidenceLevel === 'learning' ? '🧠學習中'
-          : confidenceLevel === 'normal' ? '🧠正常' : '';
-
-        const firedSignals = getFiredSignals(groups[0]?.meta);
-
-        return (
-          <div style={{ marginBottom: 12 }}>
-            <div style={{ background: actionBg, border: `2px solid ${actionBorder}`, borderRadius: 12, padding: '10px 12px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div style={{ fontSize: 18, fontWeight: 900, color: actionColor }}>
-                  {actionIcon} {actionText}
-                </div>
-                <div style={{ display: 'flex', gap: 4 }}>
-                  {isGo && soulLabel && (
-                    <div style={{ fontSize: 10, fontWeight: 700, color: '#6D28D9', background: '#EDE9FE', borderRadius: 6, padding: '3px 8px' }}>
-                      {soulLabel}
-                    </div>
-                  )}
-                  {isGo && (
-                    <div style={{ fontSize: 10, fontWeight: 700, color: actionColor, background: actionBorder + '22', borderRadius: 6, padding: '3px 8px' }}>
-                      {modeLabel(activeMode)}
-                    </div>
-                  )}
-                </div>
-              </div>
-              {isGo && (
-                <div style={{ fontSize: 11, color: actionColor, marginTop: 4, opacity: 0.9 }}>
-                  {mainReason}
-                </div>
-              )}
-              {/* ★ V0619-2：顯示本期實際觸發的訊號組合，方便對照s1+s12(或+s9)組合的實戰表現 */}
-              {isGo && firedSignals.length > 0 && (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 6 }}>
-                  {firedSignals.map(sig => (
-                    <span key={sig} style={{ fontSize: 10, fontWeight: 700, color: actionColor, background: '#FFF', border: `1px solid ${actionBorder}55`, borderRadius: 6, padding: '2px 6px' }}>
-                      {SIGNAL_LABEL[sig] || sig}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        );
-      })()}
-
-      {/* ★ 多組中2預警 */}
-      {isWarning && (
-        <div style={{ background: '#FEF3C7', border: '2px solid #F59E0B', borderRadius: 12, padding: '10px 14px', marginBottom: 10 }}>
-          <div style={{ fontSize: 14, fontWeight: 800, color: '#D97706' }}>⚡ 多組中2，下期注意</div>
-          <div style={{ fontSize: 12, color: '#92400E', marginTop: 4 }}>本期有 {hit2Groups} 組中2，下期前1期中2命中率11.94%</div>
-        </div>
-      )}
-
-      {/* ★ 爆發切換提示 */}
-      {forcedSwitch && !lowConfidence && (
-        <div style={{ background: '#FFF7ED', border: '1.5px solid #FED7AA', borderRadius: 12, padding: '8px 12px', marginBottom: 10 }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: '#C2410C' }}>🔄 爆發期已連續{consecutiveBurst + 1}期，自動切換醞釀期號碼</div>
-        </div>
-      )}
-
-      {/* 本期預測 */}
-      {isSkipped ? (
-        <RandomGroupsCard drawNo={row?.source_draw_no || latestDraw?.draw_no} skipMeta={allGroups[0]?.meta} />
-      ) : (
-        <Card
-          title="本期預測"
-          icon={actionStyle.icon}
-          right={
-            isDone ? (
-              <span style={S.badge(hitColor, hitColor + '18')}>
-                {bestHit >= 3 ? `🏆 中${bestHit}！` : bestHit >= 2 ? `🔸 中${bestHit}(仍虧)` : `❌ 未中`}
-              </span>
-            ) : row ? (
-              <span style={S.badge(C.orange, C.orangeLight)}>等待開獎</span>
-            ) : null
-          }
-        >
-          {isDone ? (
-            // ★ V0617-4：已比對完成的歷史結果不在第一頁重複顯示，第二頁(近期)已經有完整紀錄
-            (() => {
-              const totalCost = groups.length * 25;
-              const reward = bestHit >= 3 ? 500 : bestHit >= 2 ? 50 : 0;
-              const netPnl = reward - totalCost;
-              const bg = bestHit >= 3 ? C.goldBg : netPnl >= 0 ? C.grayLight : '#FEF3F2';
-              const label = bestHit >= 3 ? '🏆 恭喜中3！' : bestHit >= 2 ? '🔸 中2（仍虧本）' : '❌ 未中';
-              const labelColor = bestHit >= 3 ? hitColor : netPnl < 0 ? '#B91C1C' : C.textSub;
-              return (
-                <div style={{ textAlign: 'center', padding: '20px 12px' }}>
-                  <div style={{ fontSize: 13, color: C.textSub, marginBottom: 8 }}>
-                    比對期號 {fmt(detail[0]?.draw_no)}
-                  </div>
-                  <div style={{ ...S.bigNum, color: labelColor }}>
-                    {label}
-                  </div>
-                  <div style={{ fontSize: 12, color: C.textSub, marginTop: 6 }}>
-                    本期淨損益：<span style={{ fontWeight: 800, color: netPnl >= 0 ? '#15803D' : '#B91C1C' }}>{netPnl >= 0 ? '+' : ''}{netPnl}元</span>
-                    　(獎金{reward}元－成本{totalCost}元)
-                  </div>
-                  <div style={{ fontSize: 11, color: C.textSub, marginTop: 10, opacity: 0.7 }}>
-                    完整號碼明細請見「近期」頁
-                  </div>
-                </div>
-              );
-            })()
-          ) : isAvoidNow ? (
-            // ★ V0617-3：不推薦時完全不渲染號碼，只顯示期數和文字，現實使用上更斷然
-            <div style={{ textAlign: 'center', padding: '32px 12px' }}>
-              <div style={{ fontSize: 13, color: C.textSub, marginBottom: 8 }}>
-                預測期號 {fmt(toNum(row?.source_draw_no, 0) + 1)}
-              </div>
-              <div style={{ fontSize: 20, fontWeight: 900, color: '#DC2626' }}>
-                🔴 本期不推薦號碼
-              </div>
-            </div>
-          ) : (
-            <>
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
-                <span style={S.badge(C.textSub, C.grayLight)}>
-                  {isDone && detail.length > 0 ? `比對期號 ${fmt(detail[0]?.draw_no)}` : `預測期號 ${fmt(toNum(row?.source_draw_no, 0) + 1)}`}
-                </span>
-                <span style={S.badge(C.teal, C.greenBg)}>{groups.length} 組</span>
-              </div>
-
-              {groups.map((g, idx) => {
-                const nums = parseNums(g?.nums);
-                const key = String(g?.key || g?.meta?.strategy_key || idx);
-                const matchDetail = detail.find(d => String(d?.strategy_key) === key);
-                const hit = matchDetail ? toNum(matchDetail.hit, -1) : -1;
-                const is3 = hit >= 3;
-                const is2 = hit === 2;
-                return (
-                  <div key={key} style={{ background: is3 ? C.goldBg : C.grayLight, border: `2px solid ${is3 ? C.goldLight : C.border}`, borderRadius: 12, padding: '12px 14px', marginBottom: 10 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                      <div style={{ fontSize: 12, fontWeight: 600, color: C.textSub }}>第{idx + 1}組</div>
-                      {isDone && hit >= 0 && (
-                        <span style={{ fontSize: 16, fontWeight: 900, color: is3 ? C.gold : is2 ? C.orange : C.gray }}>
-                          {is3 ? `🏆 中${hit}` : is2 ? `中${hit}(仍虧)` : `中${hit}`}
-                        </span>
-                      )}
-                    </div>
-                    <div style={{ display: 'flex', gap: 8 }}>
-                      {nums.map(n => {
-                        const isHit = isDone && drawNums.has(n);
-                        return <Ball key={n} n={n} hit={isDone ? (isHit ? true : false) : undefined} />;
-                      })}
-                    </div>
-                  </div>
-                );
-              })}
-            </>
-          )}
-        </Card>
-      )}
-
-      <button style={S.btn(loading)} onClick={onRefresh} disabled={loading}>
-        {loading ? '更新中...' : '🔄 刷新資料'}
-      </button>
-    </div>
-  );
-}
-
-function HistoryPage({ historyRows }) {
-  const rows = toArray(historyRows).slice(0, 20);
-  return (
-    <div style={S.page}>
-      <Card title="近期命中紀錄" icon="📋">
-        {!rows.length ? <div style={S.empty}>尚無比對紀錄</div> : rows.map((row, idx) => {
-          const compareResult = safeJson(row?.compare_result_json) || safeJson(row?.compare_result);
-          const detail = toArray(compareResult?.detail);
-          const allGroups = toArray(row?.groups_json);
-          const groups = allGroups.slice(0, 8);
-          const bestHit = toNum(row?.hit_count, 0);
-          const isDone = row?.compare_status === 'done';
-          const isSkipped = row?.status === 'skipped' || allGroups.length === 0;
-          // ★ V0618-6：histIsAvoid提升到此處，跟isSkipped同源，後面「行動建議標籤」與「是否渲染號碼」統一用這一個變數判斷，
-          // 避免標籤顯示「🔴不推薦」但下方仍渲染完整號碼組合的矛盾(active_mode='skip'但status未必是'skipped'的情況)
-          const histMode = allGroups[0]?.meta?.active_mode || '';
-          const histIsAvoid = isSkipped || histMode === 'skip';
-          const action = allGroups[0]?.meta?.action || '';
-          const position = allGroups[0]?.meta?.position || '';
-          const forcedSwitch = false;  // V0615-1已移除
-          const lowConfidence = allGroups[0]?.meta?.low_confidence_hour === true;
-          const actionStyle = getActionStyle(action, forcedSwitch, lowConfidence);
-          const comparedDraw = toArray(compareResult?.detail)[0]?.draw_no;
-          const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.orange : C.gray;
-
-          // ★ 信心分數：改用 confidenceScore 已驗證公式（與快速頁一致）
-          // 直接讀取後端輸出的 sig_* 欄位，而非重新用 meta 推算
-          const metaHour = row?.created_at ? (new Date(row.created_at).getUTCHours() + 8) % 24 : 0;
-          const meta0 = allGroups[0]?.meta || {};
-          const sigConcentrated = meta0?.sig_concentrated === true;
-          const sigSlowTurnover = meta0?.sig_slow_turnover === true;
-          const sigBrew4Hour = meta0?.sig_brew4_hour === true;
-          const sigPrevHit = meta0?.sig_prev_hit === true;
-          const totalQualified = toNum(meta0?.total_qualified, 0);
-          const isDeadHourHist = metaHour >= 12 && metaHour <= 15;
-          // ★ V0613-8：histScore/histLevel已移除，改為直接顯示sig_*盤面狀態標籤
-
-          return (
-            <div key={row?.id || idx} style={{ ...S.card, marginBottom: 10, padding: '12px 14px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                <div>
-                  <span style={{ fontSize: 13, fontWeight: 700, color: C.textSub }}>
-                    預測 {fmt(row?.source_draw_no)} → 比對 {fmt(comparedDraw || '')}
-                  </span>
-                  {!isSkipped && position && (
-                    <div style={{ marginTop: 3, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-                      {/* 週期標籤 */}
-                      <span style={{ fontSize: 11, fontWeight: 700,
-                        color: position === '爆發期' ? '#92400E' : position === '醞釀期' ? '#166534' : '#64748B',
-                        background: position === '爆發期' ? '#FEF9C3' : position === '醞釀期' ? '#DCFCE7' : '#F1F5F9',
-                        borderRadius: 6, padding: '2px 8px', display: 'inline-block' }}>
-                        {position === '爆發期' ? '🔥' : position === '醞釀期' ? '🌱' : '👁️'} {position}
-                      </span>
-                      {/* 行動建議標籤(對應第一頁，二元判斷，trial另外處理) */}
-                      {(() => {
-                        const isHistTrial = histMode === 'trial';
-                        const histTrialTier = meta0?.trial_tier || ''; // ★ V0620-1：區分TQ25+(high)與TQ20-24(mid)
-                        const histTrialTierLabel = histTrialTier === 'high' ? 'TQ25+' : histTrialTier === 'mid' ? 'TQ20-24' : '';
-                        const label = isHistTrial ? `🧪 試驗訊號(${histTrialTierLabel})` : histIsAvoid ? '🔴 不推薦' : '🟢 可進場';
-                        const bg = isHistTrial ? '#F3E8FF' : histIsAvoid ? '#FEE2E2' : '#DCFCE7';
-                        const color = isHistTrial ? '#7E22CE' : histIsAvoid ? '#DC2626' : '#15803D';
-                        return (
-                          <span style={{ fontSize: 11, fontWeight: 700, color, background: bg, borderRadius: 6, padding: '2px 8px', display: 'inline-block' }}>
-                            {label}
-                          </span>
-                        );
-                      })()}
-                    </div>
-                  )}
-                  {/* ★ V0619-2：顯示該期實際觸發的訊號組合，方便回頭對照s1+s12(或+s9)組合表現 */}
-                  {!isSkipped && !histIsAvoid && (() => {
-                    const firedSignals = getFiredSignals(meta0);
-                    if (firedSignals.length === 0) return null;
-                    return (
-                      <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                        {firedSignals.map(sig => (
-                          <span key={sig} style={{ fontSize: 10, fontWeight: 700, color: C.textSub, background: C.grayLight, borderRadius: 6, padding: '2px 6px' }}>
-                            {SIGNAL_LABEL[sig] || sig}
-                          </span>
-                        ))}
-                      </div>
-                    );
-                  })()}
-                </div>
-                {isSkipped ? (
-                  (() => {
-                    const skipReason = allGroups[0]?.meta?.skip_reason || '';
-                    return skipReason === 'soul_blocked'
-                      ? <span style={{ fontSize: 12, color: '#92400E', whiteSpace: 'nowrap' }}>🧠 靈魂封鎖</span>
-                      : <span style={{ fontSize: 12, color: C.purple, whiteSpace: 'nowrap' }}>⏸️ 隨機參考期</span>;
-                  })()
-                ) : isDone ? (
-                  <span style={{ fontSize: 15, fontWeight: 900, color: hitColor, whiteSpace: 'nowrap' }}>
-                    {bestHit >= 3 ? `🏆 中${bestHit}` : bestHit >= 2 ? `🔸 中${bestHit}(仍虧)` : `❌ 未中`}
-                  </span>
-                ) : <span style={{ fontSize: 12, color: C.orange, whiteSpace: 'nowrap' }}>等待比對</span>}
-              </div>
-              {histIsAvoid ? (() => {
-                const skipMeta = allGroups[0]?.meta || {};
-                const skipReason = skipMeta?.skip_reason || '';
-                const skipConfidence = skipMeta?.confidence_level || '';
-                if (skipReason === 'soul_blocked') {
-                  return (
-                    <div style={{ fontSize: 11, color: '#92400E', background: '#FEF9C3', borderRadius: 6, padding: '4px 8px', display: 'inline-block' }}>
-                      🧠 靈魂封鎖（{skipConfidence === 'cautious' ? '冷靜期' : '保守期'}）：模式={modeLabel(skipMeta?.active_mode)} 暫不出手
-                    </div>
-                  );
-                }
-                return (
-                  <div style={{ fontSize: 11, color: C.purple, background: C.purpleBg, borderRadius: 6, padding: '4px 8px', display: 'inline-block' }}>
-                    🎲 該期訊號不足，無命中統計
-                  </div>
-                );
-              })() : (
-                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                  {groups.map((g, gIdx) => {
-                    const key = String(g?.key || g?.meta?.strategy_key || gIdx);
-                    const nums = parseNums(g?.nums);
-                    const matchDetail = detail.find(d => String(d?.strategy_key) === key);
-                    const hit = matchDetail ? toNum(matchDetail.hit, 0) : 0;
-                    return (
-                      <div key={key} style={{ background: hit >= 3 ? C.goldBg : hit >= 2 ? C.orangeLight : C.grayLight, borderRadius: 8, padding: '4px 8px', fontSize: 12, border: `1px solid ${hit >= 3 ? C.goldLight : hit >= 2 ? C.orange : C.border}` }}>
-                        {nums.map(n => padNum(n)).join(' ')}
-                        {isDone && <span style={{ marginLeft: 4, fontWeight: 700, color: hit >= 3 ? C.gold : hit >= 2 ? C.orange : C.gray }}>中{hit}</span>}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </Card>
-    </div>
-  );
-}
-
-function StatsPage({ historyRows }) {
-  const [subTab, setSubTab] = useState('all');
-  const [soulStatus, setSoulStatus] = useState(null);
-  const [soulLoading, setSoulLoading] = useState(true);
-  const [healthStatus, setHealthStatus] = useState(null);
-  const [healthLoading, setHealthLoading] = useState(true);
-  const [healthExpanded, setHealthExpanded] = useState(false);
-
-  // ★ V0616-1：靈魂戰況板改用獨立API直查資料庫，不受recent_3star_compared_rows的100筆視窗限制
-  useEffect(() => {
-    let active = true;
-    apiFetch('/api/soul-status')
-      .then(res => { if (active) setSoulStatus(res); })
-      .catch(() => { if (active) setSoulStatus(null); })
-      .finally(() => { if (active) setSoulLoading(false); });
-    return () => { active = false; };
-  }, []);
-
-  // ★ V0618-5：三天視窗健康檢查，取代手動SQL貼貼來貼去
-  useEffect(() => {
-    let active = true;
-    apiFetch('/api/health-status')
-      .then(res => { if (active) setHealthStatus(res); })
-      .catch(() => { if (active) setHealthStatus(null); })
-      .finally(() => { if (active) setHealthLoading(false); });
-    return () => { active = false; };
-  }, []);
-
-  const allRows = toArray(historyRows).filter(row =>
-    row?.created_at >= STATS_START_DATE && row?.status === 'compared' && toArray(row?.groups_json).length > 0
-  );
-
-  const cleanCount = toNum(soulStatus?.clean_periods, 0);
-  const sealTarget = toNum(soulStatus?.seal_target, 400);
-  const sealPct = toNum(soulStatus?.seal_pct, 0);
-  const isSealBroken = soulStatus?.is_seal_broken === true;
-  const daysPassed = toNum(soulStatus?.days_passed, 0);
-  const modeMap = soulStatus?.mode_stats || {};
-
-  const filterByPosition = (pos) => {
-    if (pos === 'all') return allRows;
-    return allRows.filter(row => {
-      const p = toArray(row?.groups_json)[0]?.meta?.position || '';
-      return p === pos;
-    });
-  };
-
-  const calcStats = (rows) => {
-    const total = rows.length;
-    const hit3 = rows.filter(r => toNum(r?.hit_count) >= 3).length;
-    const hit2 = rows.filter(r => toNum(r?.hit_count) === 2).length;
-    const hit1 = rows.filter(r => toNum(r?.hit_count) === 1).length;
-    const hit0 = rows.filter(r => toNum(r?.hit_count) === 0).length;
-    const rate = total > 0 ? hit3 / total : 0;
-    return { total, hit3, hit2, hit1, hit0, rate };
-  };
-
-  const subTabs = [
-    { key: 'all', label: '全部', icon: '📊' },
-    { key: '爆發期', label: '爆發期', icon: '🔥' },
-    { key: '醞釀期', label: '醞釀期', icon: '⚡' },
-    { key: '觀察期', label: '觀察期', icon: '👀' },
-  ];
-
-  const currentRows = filterByPosition(subTab);
-  const stats = calcStats(currentRows);
-  const rateColor = stats.rate > 0.0375 ? C.green : C.orange;
-
-  return (
-    <div style={S.page}>
-      {/* ★ 靈魂戰況板(V0616-1：直查資料庫，不受前端視窗限制) */}
-      <div style={{ background: C.card, borderRadius: 12, padding: '12px 14px', marginBottom: 10, boxShadow: C.shadow, border: `1px solid ${C.border}` }}>
-        <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>
-          🧠 靈魂學習進度
-        </div>
-        {soulLoading ? (
-          <div style={{ fontSize: 11, color: C.textSub }}>載入中...</div>
-        ) : !soulStatus?.ok ? (
-          <div style={{ fontSize: 11, color: C.textSub }}>暫無法取得靈魂狀態</div>
-        ) : (
-          <>
-            {/* 進度條 */}
-            <div style={{ background: C.grayLight, borderRadius: 99, height: 8, marginBottom: 6 }}>
-              <div style={{ background: isSealBroken ? C.green : C.gold, borderRadius: 99, height: 8, width: `${sealPct}%`, transition: 'width 0.3s' }} />
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: C.textSub, marginBottom: 8 }}>
-              <span>{isSealBroken ? '✅ 封印已解除，靈魂啟動' : `🔒 封印學習期(${daysPassed}天)`}</span>
-              <span style={{ fontWeight: 700, color: isSealBroken ? C.green : C.gold }}>{cleanCount}/{sealTarget}期 ({sealPct}%)</span>
-            </div>
-            {/* 各mode表現 */}
-            <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 8 }}>
-              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>V0615版本各模式表現：</div>
-              {Object.entries(modeMap).sort((a,b) => b[1].count - a[1].count).map(([mode, stat]) => {
-                const avg = toNum(stat?.avg_pnl, 0);
-                const color = avg > 0 ? C.green : avg > -100 ? C.orange : '#DC2626';
-                return (
-                  <div key={mode} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, padding: '2px 0' }}>
-                    <span style={{ color: C.text, fontWeight: 600 }}>{modeLabel(mode)}</span>
-                    <span style={{ color: C.textSub }}>{stat.count}期</span>
-                    <span style={{ color, fontWeight: 700 }}>{avg > 0 ? '+' : ''}{avg}元/期</span>
-                  </div>
-                );
-              })}
-              {Object.keys(modeMap).length === 0 && (
-                <div style={{ fontSize: 11, color: C.textSub }}>尚無V0615資料</div>
-              )}
-            </div>
-          </>
-        )}
-      </div>
-
-      {/* ★ V0618-5：三天視窗健康檢查(取代手動SQL貼貼來貼去) */}
-      <div style={{ background: C.card, borderRadius: 12, padding: '12px 14px', marginBottom: 14, boxShadow: C.shadow, border: `1px solid ${C.border}` }}>
-        <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>
-          📋 三天健康檢查
-        </div>
-        {healthLoading ? (
-          <div style={{ fontSize: 11, color: C.textSub }}>載入中...</div>
-        ) : !healthStatus?.ok ? (
-          <div style={{ fontSize: 11, color: C.textSub }}>暫無法取得健康檢查狀態</div>
-        ) : (() => {
-          const s = healthStatus.summary || {};
-          const levelColor = s.level === 'good' ? C.green : s.level === 'normal' ? C.orange : '#DC2626';
-          const levelBg = s.level === 'good' ? '#DCFCE7' : s.level === 'normal' ? '#FEF9C3' : '#FEE2E2';
-          const periods = toArray(healthStatus.periods);
-          return (
-            <>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6 }}>
-                <span style={{ fontSize: 24, fontWeight: 800, color: levelColor }}>
-                  {s.hit3_pct != null ? `${s.hit3_pct}%` : '--'}
-                </span>
-                <span style={{ fontSize: 11, padding: '2px 10px', borderRadius: 6, background: levelBg, color: levelColor, fontWeight: 700 }}>
-                  {s.level_label || '無資料'}
-                </span>
-              </div>
-              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 10 }}>
-                {fmt(s.compared_periods)}期已比對 ・ 出手率{s.output_rate_pct != null ? `${s.output_rate_pct}%` : '--'}
-              </div>
-              <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
-                <div style={{ flex: 1, background: C.grayLight, borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
-                  <div style={{ fontSize: 16, fontWeight: 800 }}>{fmt(s.hit3_periods)}</div>
-                  <div style={{ fontSize: 10, color: C.textSub }}>中3期數</div>
-                </div>
-                <div style={{ flex: 1, background: C.grayLight, borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
-                  <div style={{ fontSize: 16, fontWeight: 800 }}>{fmt(s.hit2plus_groups_total)}</div>
-                  <div style={{ fontSize: 10, color: C.textSub }}>中2以上組數</div>
-                </div>
-              </div>
-              <button
-                onClick={() => setHealthExpanded(v => !v)}
-                style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 10px', background: C.grayLight, borderRadius: 8, border: 'none', fontSize: 12, fontWeight: 700, color: C.text, cursor: 'pointer' }}
-              >
-                <span>逐期明細（{periods.length}期）</span>
-                <span>{healthExpanded ? '▲' : '▼'}</span>
-              </button>
-              {healthExpanded && (
-                <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 360, overflowY: 'auto' }}>
-                  {periods.slice().reverse().map((p, idx) => {
-                    const isSkipped = p.status === 'skipped';
-                    const isDone = p.compare_status === 'done' && !isSkipped;
-                    const hit3 = toNum(p.hit3_groups, 0);
-                    const hit2 = toNum(p.hit2_groups, 0);
-                    const timeStr = p.time ? new Date(p.time).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Taipei' }) : '--';
-                    return (
-                      <div key={p.draw_no || idx} style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, padding: '8px 10px' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                          <span style={{ fontSize: 12, fontWeight: 700 }}>
-                            {timeStr} ・ {p.position || '-'} ・ {modeLabel(p.active_mode)}
-                          </span>
-                          {isSkipped ? (
-                            <span style={{ fontSize: 11, color: C.textSub }}>跳過</span>
-                          ) : !isDone ? (
-                            <span style={{ fontSize: 11, color: C.orange }}>等待比對</span>
-                          ) : (
-                            <span style={{ fontSize: 12, fontWeight: 800, color: toNum(p.best_hit) >= 3 ? C.gold : C.textSub }}>
-                              中{fmt(p.best_hit)}
-                            </span>
-                          )}
-                        </div>
-                        {isDone && (
-                          <div style={{ display: 'flex', gap: 10, fontSize: 11, color: C.textSub }}>
-                            <span>中3組數 <b style={{ color: C.text }}>{hit3}</b></span>
-                            <span>中2組數 <b style={{ color: C.text }}>{hit2}</b></span>
-                            <span>訊號數 {fmt(p.total_signals)}</span>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </>
-          );
-        })()}
-      </div>
-      <div style={{ display: 'flex', gap: 6, marginBottom: 14, background: C.card, borderRadius: 12, padding: 8, boxShadow: C.shadow }}>
-
-        {subTabs.map(t => (
-          <button key={t.key} style={S.subTab(subTab === t.key)} onClick={() => setSubTab(t.key)}>
-            {t.icon} {t.label}
-          </button>
-        ))}
-      </div>
-
-      <Card title={`${subTabs.find(t => t.key === subTab)?.icon} ${subTabs.find(t => t.key === subTab)?.label} 命中率`} icon="">
-        <div style={{ textAlign: 'center', padding: '10px 0' }}>
-          <div style={{ ...S.bigNum, color: rateColor }}>{fmtPercent(stats.rate)}</div>
-          <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>共 {stats.total} 期｜中3：{stats.hit3} 次</div>
-        </div>
-        <div style={S.divider} />
-        <StatRow label="理論值（隨機）" value="3.75%" valueColor={C.textSub} />
-        <StatRow label="中3命中率" value={fmtPercent(stats.rate)} valueColor={rateColor} />
-        <StatRow label="中3次數" value={`${stats.hit3} 次`} />
-        <StatRow label="中2次數" value={`${stats.hit2} 次`} />
-        <StatRow label="中1次數" value={`${stats.hit1} 次`} />
-        <StatRow label="未中次數" value={`${stats.hit0} 次`} />
-      </Card>
-      <div style={{ fontSize: 11, color: C.textSub, textAlign: 'center', padding: '4px 0' }}>
-        ※ 統計數據從 6/8 起算（v35新版）
-      </div>
-    </div>
-  );
-}
-
-function MarketPage({ recent20 }) {
-  const rows = toArray(recent20).slice(0, 20);
-  return (
-    <div style={S.page}>
-      <Card title="最近20期開獎" icon="🎯">
-        {!rows.length ? <div style={S.empty}>載入中...</div> : rows.map((row, idx) => {
-          const nums = parseNums(row?.numbers).sort((a, b) => a - b);
-          return (
-            <div key={row?.draw_no || idx} style={{ ...S.statRow, alignItems: 'flex-start', paddingTop: 10, paddingBottom: 10 }}>
-              <div style={{ minWidth: 80 }}>
-                <div style={{ fontSize: 13, fontWeight: 700 }}>#{fmt(row?.draw_no)}</div>
-                <div style={{ fontSize: 11, color: C.textSub }}>{fmt(row?.draw_time)?.slice(11, 16)}</div>
-              </div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, flex: 1 }}>
-                {nums.map(n => (
-                  <div key={n} style={{ ...S.recentBall(), width: 28, height: 28, fontSize: 11 }}>{padNum(n)}</div>
-                ))}
-              </div>
-            </div>
-          );
-        })}
-      </Card>
-    </div>
-  );
-}
-
-function HotPage({ recent20 }) {
-  const rows = toArray(recent20).slice(0, 20);
-
-  // ★ 連續開出期數：從最新一期(rows[0])往前算，這個號碼連續幾期都有開出
-  // 一旦遇到某期沒開出該號碼就停止計算
-  function consecutiveCount(num) {
-    let c = 0;
-    for (const row of rows) {
-      if (parseNums(row?.numbers).includes(num)) c++;
-      else break;
-    }
-    return c;
-  }
-
-  // 計算1-80每個號碼目前的連續開出期數
+  // ★ 號碼週期分析
   const numStats = [];
   for (let n = 1; n <= 80; n++) {
-    const consec = consecutiveCount(n);
-    if (consec >= 1) numStats.push({ n, consec });
+    const w1cnt = countIn(w1draws, n);
+    const inW2 = countIn(w2draws, n) >= 1;
+    const inW3 = countIn(w3draws, n) >= 1;
+    const inW4 = countIn(w4draws, n) >= 1;
+
+    let period = 0;
+    if (w1cnt >= 3 && inW2 && inW3 && inW4) period = 4;
+    else if (w1cnt >= 2 && inW2 && inW3) period = 3;
+    else if (w1cnt >= 2 && inW2) period = 2;
+
+    if (period > 0) numStats.push({ n, w1cnt, period });
   }
 
-  // 依連續期數分組：5/4/3/2/1
-  const groups = [5, 4, 3, 2, 1].map(level => ({
-    level,
-    data: numStats.filter(s => s.consec === level).sort((a, b) => a.n - b.n)
-  }));
+  const fourNums = numStats.filter(s => s.period === 4);
+  const threeNums = numStats.filter(s => s.period === 3);
+  const twoNums = numStats.filter(s => s.period === 2);
+  const fourCount = fourNums.length;
+  const threeCount = threeNums.length;
+  const twoCount = twoNums.length;
+  const totalQualified = numStats.length;
 
-  const levelInfo = {
-    5: { label: '連續5期（最熱）', color: '#DC2626', bg: '#FEF2F2', border: '#FCA5A5' },
-    4: { label: '連續4期', color: '#EA580C', bg: '#FFF7ED', border: '#FED7AA' },
-    3: { label: '連續3期', color: '#D97706', bg: '#FFFBEB', border: '#FDE68A' },
-    2: { label: '連續2期', color: '#0F766E', bg: '#F0FDFA', border: '#99F6E4' },
-    1: { label: '連續1期（剛開出）', color: '#6B7280', bg: '#F3F4F6', border: '#E5E7EB' },
-  };
+  // ★ V0613-7：蜘蛛感知第一層：號碼池夠不夠。
+  // 門檻由5提高為10，因8組現在依賴候選池前10名(hotPool10Ranked)，
+  // 不足10顆時finalCombos會是空陣列，提前在此判斷可避免重複計算。
+  if (totalQualified < 10) {
+    console.log(`[buildBingoGroups] 號碼池不足(${totalQualified}顆，需>=10)，不出手`);
+    return [];
+  }
 
-  return (
-    <div style={S.page}>
-      <Card title="連續熱號看盤" icon="🔥">
-        <div style={{ fontSize: 11, color: C.textSub, marginBottom: 12, lineHeight: 1.6 }}>
-          純粹看盤用：依「最近20期」資料，從最新一期往前算，列出每個號碼目前連續開出幾期。
-          此頁僅供參考，與AI選號邏輯（本期預測頁）無關、不互相影響。
-          想看AI本期實際選中的號碼池，請至「熱號池」頁。
-        </div>
-        {!rows.length ? <div style={S.empty}>載入中...</div> : groups.map(g => {
-          const info = levelInfo[g.level];
-          return (
-            <div key={g.level} style={{ marginBottom: 16 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                <span style={{ fontSize: 12, fontWeight: 700, color: info.color, background: info.bg, border: `1px solid ${info.border}`, borderRadius: 6, padding: '2px 8px' }}>
-                  {info.label}
-                </span>
-                <span style={{ fontSize: 11, color: C.textSub }}>{g.data.length} 顆</span>
-              </div>
-              {g.data.length === 0 ? (
-                <div style={{ fontSize: 12, color: C.textSub, padding: '4px 0' }}>目前無號碼符合此等級</div>
-              ) : (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                  {g.data.map(({ n }) => (
-                    <div key={n} style={{
-                      width: 32, height: 32, borderRadius: '50%',
-                      background: info.bg,
-                      border: `2px solid ${info.border}`,
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      fontSize: 14, fontWeight: 800,
-                      color: info.color,
-                    }}>
-                      {padNum(n)}
-                    </div>
-                  ))}
-                </div>
-              )}
-              <div style={S.divider} />
-            </div>
-          );
-        })}
-      </Card>
-    </div>
-  );
-}
+  // ★ 必要變數(新版訊號計數器需要)
+  const prevHitCount = recentPredictions[0]?.hit_count || 0;
+  const prevHotPool = recentPredictions[0]?.hot_pool || '';
+  const prevPoolNums = prevHotPool.split(',').map(Number).filter(Boolean);
+  const allCandidates = [...numStats].sort((a, b) => b.w1cnt - a.w1cnt || b.period - a.period);
+  const changedNums = allCandidates.slice(0,5).map(s=>s.n).filter(n => !prevPoolNums.includes(n)).length;
 
-function HotPoolPage({ prediction }) {
-  const row = prediction?.latest_3star_row;
-  const groups = toArray(row?.groups_json);
-  const meta0 = groups[0]?.meta || {};
-  const hotPool = (meta0?.hot_pool || '').split(',').map(Number).filter(Boolean);
-  const action = meta0?.action || '';
-  const position = meta0?.position || '';
-  const spiderMode = '';  // V0615-1已移除
-  const forcedSwitch = false;  // V0615-1已移除
-  const nowHour = new Date().getHours();
-  const lowConfidence = nowHour >= 12 && nowHour <= 15;
-  const actionStyle = getActionStyle(action, forcedSwitch, lowConfidence);
-  const isSkipped = !row || row?.status === 'skipped' || groups.length === 0;
+  // 週期判斷
+  const prev5 = recentPredictions.slice(0, 5);
+  let consecutiveBurst = 0;
+  for (const p of recentPredictions) {
+    if (p.position === '爆發期' || p.action === '爆發出號') consecutiveBurst++;
+    else break;
+  }
+  let consecutiveZero = 0;
+  for (const p of recentPredictions) {
+    if (p.hit_count === 0) consecutiveZero++;
+    else break;
+  }
 
-  return (
-    <div style={S.page}>
-      <Card title="本期AI熱號池" icon="🕷️">
-        <div style={{ fontSize: 11, color: C.textSub, marginBottom: 12, lineHeight: 1.6 }}>
-          這裡顯示的號碼池，與「本期預測」（快速頁）使用完全同一份資料，
-          是 buildBingoGroups 本期實際選出、用來組成3星預測的熱號池（最多7顆）。
-          V0613-4曾改為24顆不重疊分組，但實測63期淨利惡化(-40.43→-111.11/期，
-          因為失去多組同時中2的機會)，已於V0613-5回滾為7顆池重疊組合，V0613-6固定取8種最佳位置組合(-75.88)，V0613-7改用候選池前10名+G策略8組，3000期驗證avg_pnl=-84.22(優於V0613-6的-90.52，約6元/期)。
-        </div>
-        {isSkipped ? (
-          <div style={S.empty}>本期AI暫停出號（冷場期），無熱號池資料</div>
-        ) : (
-          <>
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
-              <span style={{ fontSize: 12, fontWeight: 700, color: actionStyle.color, background: actionStyle.bg, border: `1px solid ${actionStyle.border}`, borderRadius: 6, padding: '2px 8px' }}>
-                {actionStyle.icon} {actionStyle.label}
-              </span>
-              {spiderMode && <span style={S.badge(C.textSub, C.grayLight)}>模式：{spiderMode}</span>}
-              <span style={S.badge(C.textSub, C.grayLight)}>期號 {fmt(row?.source_draw_no)}</span>
-            </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-              {hotPool.map(n => (
-                <div key={n} style={{
-                  width: 36, height: 36, borderRadius: '50%',
-                  background: C.goldBg,
-                  border: `2px solid ${C.goldLight}`,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: 15, fontWeight: 800,
-                  color: C.gold,
-                }}>
-                  {padNum(n)}
-                </div>
-              ))}
-            </div>
-            <div style={{ fontSize: 11, color: C.textSub, marginTop: 12 }}>
-              共 {hotPool.length} 顆；AI會優先從這個池子裡組合出8組(C(7,3)取前8組，含top5≥2顆優先)。
-            </div>
-          </>
-        )}
-      </Card>
-    </div>
-  );
-}
+  let position = '冷場期';
+  let action = '跳過';
+  if (fourCount >= 4) { position = '爆發期'; action = '爆發出號'; }
+  else if (threeCount >= 3 || (fourCount + threeCount) >= 3) { position = '醞釀期'; action = '預備出號'; }
+  else if (twoCount >= 3 || (fourCount + threeCount + twoCount) >= 3) { position = '觀察期'; action = '參考出號'; }
 
-export default function App() {
-  const [tab, setTab] = useState('quick');
-  const [loading, setLoading] = useState(false);
-  const [prediction, setPrediction] = useState(null);
-  const [recent20, setRecent20] = useState([]);
-  const [historyRows, setHistoryRows] = useState([]);
-  const [loopStatus, setLoopStatus] = useState('初始化中...');
-  const timerRef = useRef(null);
-
-  const loadData = useCallback(async () => {
-    setLoading(true);
-    try {
-      const [predRes, recentRes] = await Promise.all([
-        apiFetch('/api/prediction-latest').catch(() => ({})),
-        apiFetch('/api/recent20').catch(() => ({})),
-      ]);
-      setPrediction(predRes);
-      setHistoryRows(predRes?.recent_3star_compared_rows || predRes?.recent_compared_rows || []);
-      setRecent20(recentRes?.recent20 || recentRes?.data || []);
-      setLoopStatus(isNight() ? '夜間停止（00:00-07:00）' : `已更新 ${new Date().toLocaleTimeString('zh-TW', { hour12: false })}`);
-    } catch {
-      setLoopStatus('載入失敗，稍後重試');
-    } finally {
-      setLoading(false);
+  let brewCount = 0;
+  if (position === '醞釀期') {
+    brewCount = 1;
+    for (const p of recentPredictions) {
+      if (p.position === '醞釀期') brewCount++;
+      else break;
     }
-  }, []);
+  }
 
-  useEffect(() => {
-    loadData();
-    timerRef.current = setInterval(loadData, REFRESH_INTERVAL_MS);
-    return () => clearInterval(timerRef.current);
-  }, [loadData]);
+  const isFastBurst = changedNums >= 5;
+  const isSlowTurnover1 = changedNums === 1;
 
-  const TABS = [
-    { key: 'quick', label: '快速', icon: '⚡' },
-    { key: 'history', label: '近期', icon: '📋' },
-    { key: 'stats', label: '統計', icon: '📊' },
-    { key: 'market', label: '開獎', icon: '🎱' },
-    { key: 'hot', label: '熱號', icon: '🔥' },
-    { key: 'hotpool', label: '熱號池', icon: '🕷️' },
-  ];
+  const prevPoolNums2 = (recentPredictions[1]?.hot_pool || '').split(',').map(Number).filter(Boolean);
+  const prevChangedNums = prevPoolNums.length > 0 && prevPoolNums2.length > 0
+    ? prevPoolNums.filter(n => !prevPoolNums2.includes(n)).length : null;
+  const prevIsSlowTurnover = prevChangedNums !== null && prevChangedNums <= 1;
 
-  return (
-    <div style={S.app}>
-      <div style={S.header}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-          <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0620-1</div>
-            <div style={S.headerSub}>{loopStatus}</div>
-          </div>
-          <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
-            {new Date().toLocaleString('zh-TW', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
-          </div>
-        </div>
-      </div>
-      <div style={S.tabs}>
-        {TABS.map(t => (
-          <button key={t.key} style={S.tab(tab === t.key)} onClick={() => setTab(t.key)}>
-            <div>{t.icon}</div>
-            <div>{t.label}</div>
-          </button>
-        ))}
-      </div>
-      {loading && tab === 'quick' && <Spinner />}
-      {tab === 'quick' && <QuickPage prediction={prediction} recent20={recent20} onRefresh={loadData} loading={loading} />}
-      {tab === 'history' && <HistoryPage historyRows={historyRows} />}
-      {tab === 'stats' && <StatsPage historyRows={historyRows} />}
-      {tab === 'market' && <MarketPage recent20={recent20} />}
-      {tab === 'hot' && <HotPage recent20={recent20} />}
-      {tab === 'hotpool' && <HotPoolPage prediction={prediction} />}
-    </div>
+  // 上期和上上期開獎號碼
+  const prevDrawNums = parseNums(recentDraws[0]?.numbers || '');
+  const prevHighZoneCount = prevDrawNums.filter(n => n >= 61 && n <= 80).length;
+  const prev2DrawNums = parseNums(recentDraws[1]?.numbers || '');
+  const prev2HighZoneCount = prev2DrawNums.filter(n => n >= 61 && n <= 80).length;
+
+  // 上期最強尾數顆數
+  const prevMaxTail = Math.max(...Array.from({length:10}, (_,t) =>
+    prevDrawNums.filter(n => n % 10 === t).length
+  ));
+
+  // 上期和值、上上期和值
+  const prevSumVal = prevDrawNums.reduce((acc, n) => acc + n, 0);
+  const prev2SumVal = prev2DrawNums.reduce((acc, n) => acc + n, 0);
+
+  // 上期連號數(相鄰號碼差=1的組數)
+  const prevDrawSorted = [...prevDrawNums].sort((a,b) => a-b);
+  const prevConsecCount = prevDrawSorted.reduce((acc, n, i) =>
+    i > 0 && n - prevDrawSorted[i-1] === 1 ? acc + 1 : acc, 0
   );
+
+  // 上期和上上期奇偶尾分布
+  const prevOddTail = prevDrawNums.filter(n => [1,3,5,7,9].includes(n % 10)).length;
+  const prevEvenTail = prevDrawNums.filter(n => [0,2,4,6,8].includes(n % 10)).length;
+  const prev2OddTail = prev2DrawNums.filter(n => [1,3,5,7,9].includes(n % 10)).length;
+  const isBalanced = (t) => t >= 9 && t <= 11;  // 奇數尾9-11顆=均衡
+  const prevIsBalanced = isBalanced(prevOddTail);
+  const prev2IsBalanced = isBalanced(prev2OddTail);
+
+  // 上上上期和值(奇奇X需要連續2期奇數)
+  const prev3DrawNums = parseNums(recentDraws[2]?.numbers || '');
+  const prev3SumVal = prev3DrawNums.reduce((acc, n) => acc + n, 0);
+
+  // 上期是否完全槓龜(-200)：用prevHitCount===0近似
+  const prevFullLoss = prevHitCount === 0;
+
+  // ★ V0615-2：修正訊號計數器，加入skip條件
+  // 關鍵發現(今日SQL驗證)：
+  // - 換手5++醞釀期：+93.18(44筆) ← 正確，s1維持
+  // - 換手5++爆發期：-84.04(47筆) ← 應該跳過！
+  // - TQ25++換手5+：+207.69(26筆) ← 新強訊號
+  // - TQ20-24+換手5+：-121.00(50筆) ← 最差，應跳過
+
+  // ★ skip條件(最優先，直接不出手)
+  // 只跳過「換手5++爆發期+TQ<25」這個確認最差的組合(-121,50筆)
+  // 注意：換手5++醞釀期(s1,+93)和TQ25++換手5+(s12,+207)不能被跳過
+  // ★ V0619-4修正：移除TQ<25這個無效守門條件。6/19 SQL驗證(6/18 12:30起)發現，
+  // 爆發期+換手5+的組合，即使TQ達到25-29(高於原本的25門檻)，15期裡仍是0次中3、
+  // 平均-186.7元/期，是目前驗證過最差的組合之一，證實TQ在這個組合裡完全沒有保護作用。
+  // 原邏輯只在TQ<25時跳過，TQ>=25反而照常出手，等於放行了一個已驗證的災難組合。
+  // 改為「爆發期+換手5+」一律跳過，不再用TQ當守門條件。變數名稱保留(歷史延續性)，
+  // 但語意已更新為「爆發期快速換手一律跳過」，不再限定低TQ。
+  const skipFastBurstLowTQ = isFastBurst && position === '爆發期';
+
+  // 11個訊號定義(原始觸發值，不管是否被signal_weights停用)
+  // ★ V0616-4：每個訊號乘上對應的啟用開關，停用的訊號就不計入totalSignals
+  // signalEnabled格式：{ s1: true, s2: false, ... }，預設全部true(向下相容，未傳入時等同舊行為)
+  const enabled = (key) => signalEnabled[key] !== false; // 只有明確傳false才停用
+
+  // ★★★ V0618-4：訊號系統大整頓 ★★★
+  // 背景：逐字重讀6/14~6/18完整對話記錄，發現多個訊號當初的驗證樣本極小
+  // (s3=10筆/s4=16筆/s8=16-20筆/s11=9筆)，且assistant當時自己都承認"樣本不足以做決策"，
+  // 卻仍被放進正式系統。今天(6/18)用短期(1天)/中期(7天)/長期(全部)三段累積窗口
+  // 重新驗證，結果證實s8/s11三段一致持續變差(很可能從一開始就是小樣本噪音，
+  // 不是後來才drift)，s14/s15三段都明顯為負(早上的驗證方向錯誤或樣本不足)，
+  // ultra模式(4+訊號)的理論基礎本身也只有19+5筆樣本。
+  //
+  // 保留(有相對紮實證據)：s1(三段方向大致一致)、s9(樣本最大230筆)、
+  //   s12(三段一致正向，目前唯一三段都站得住的訊號)、s5(中度可信，降權觀察)
+  // 砍除(樣本過小或三段驗證持續轉差)：s2(已被signal_weights停用)、
+  //   s3(10筆)、s4(16筆)、s6/s7(複合條件樣本更小)、s8(三段持續變差)、
+  //   s10(樣本小邏輯複雜)、s11(三段持續變差)、s13(9筆樣本)、
+  //   s14(三段皆負)、s15(三段皆明顯負)
+  const rawS1 = isFastBurst && position === '醞釀期' ? 1 : 0;           // 換手5+醞釀：三段方向大致一致，保留
+  const rawS5 = prevFullLoss && isFastBurst ? 1 : 0;                    // 槓龜換手5：中度可信，降權觀察
+  const rawS9 = prevIsBalanced && prev2IsBalanced ? 1 : 0;              // 連2期均衡：樣本最大(230筆)，保留觀察
+  const rawS12 = totalQualified >= 25 && isFastBurst ? 1 : 0;           // TQ25++換手5+：三段一致正向，目前最可信
+
+  const s1 = enabled('s1') ? rawS1 : 0;
+  const s5 = enabled('s5') ? rawS5 : 0;
+  const s9 = enabled('s9') ? rawS9 : 0;
+  const s12 = enabled('s12') ? rawS12 : 0;
+  // s2/s3/s4/s6/s7/s8/s10/s11/s13/s14/s15：全部移除，不再計入totalSignals
+  const s2 = 0, s3 = 0, s4 = 0, s6 = 0, s7 = 0, s8 = 0, s10 = 0, s11 = 0, s13 = 0, s14 = 0, s15 = 0;
+
+  const totalSignals = s1+s2+s3+s4+s5+s6+s7+s8+s9+s10+s11+s12+s13+s14+s15;
+
+  const skipBadEvenTail = false; // 保留變數供console.log/meta相容，已確認永久停用(V0617-8)
+
+  // 候選池
+  const hotPool10Ranked = allCandidates.slice(0, 10).map(s => s.n);
+  const hotPool12Ranked = allCandidates.slice(0, 12).map(s => s.n);
+  const hotPool7 = [...hotPool10Ranked.slice(0, 7)].sort((a, b) => a - b);
+  // ★ V0618-4：spiderSenseActive(舊版，依賴已砍除的s3)已移除，改用下方spiderSenseActiveV2
+
+  // ★ V0617-2重大重構：恢復V0612-3的「動態top5 + 動態C(7,3)篩選」邏輯，
+  // 取代V0615之後的固定位置combos系統(combos_standard/strong/ultra等)。
+  //
+  // 根因(6/17 SQL驗證)：固定位置索引(如[1,5,8])假設每期候選池排序結構相似，
+  // 但實際上每期numStats分布都不同，固定位置可能對到熱號也可能完全錯位。
+  // 舊版V0612-3用「動態算出C(7,3)=35種組合、優先選含top5號碼最多」的方式，
+  // 每期都重新檢視候選池實際結構，spider_mode='normal'驗證141期中3率達11.35%，
+  // 是目前驗證過所有版本/分類裡表現最好的單一邏輯。
+  //
+  // 保留：11個訊號計數器(totalSignals)決定要不要出手、出手力度(用哪個top5定義)
+  // 取代：8組生成方式，改為動態C(7,3)篩選，不用固定位置編號
+
+  function makeCombos(nums) {
+    const combos = [];
+    for (let i = 0; i < nums.length; i++)
+      for (let j = i + 1; j < nums.length; j++)
+        for (let k = j + 1; k < nums.length; k++)
+          combos.push([nums[i], nums[j], nums[k]]);
+    return combos;
+  }
+
+  // ★ V0618-4：重新校準分級門檻，配合訊號數從15個精簡到4個(s1/s5/s9/s12)的新現實
+  // 原本"4+訊號=ultra"在15個訊號的世界裡代表"多種強訊號共鳴"，但現在只剩4個候選訊號，
+  // "4個全部觸發"變成"唯一還能達到的最高值"，跟以前的設計意義不同，但保留同樣的相對分級邏輯：
+  // 4個全觸發=ultra(最強)，2-3個=strong，1個=standard，0個=skip
+  // top5定義：訊號越強，越敢用更集中/更前面的號碼
+  //
+  // ★ V0619-3修正：6/19用6/18 12:30起126期乾淨樣本SQL驗證，發現「訊號數量」本身
+  // 不能準確反映訊號品質，s12是否觸發才是核心關鍵變數：
+  //   s1+s5+s12全觸發(16期)：中3率25.0%，平均+103.1元/期 ← 目前驗證過最佳組合
+  //   s1+s5觸發但無s12(37期)：中3率5.4%，平均-106.8元/期 ← 比完全無訊號的基準(60期,-70.8)還差
+  //   s5+s12觸發但無s1(15期)：中3率0.0%，平均-186.7元/期 ← 目前驗證過最差組合
+  // 結論：isFastBurst觸發(s1或s5=1)若缺少s12，過去被計為"strong"等同高信心，
+  // 但實測表現劣於基準，不該被當成強訊號；s12在場時(無論搭配與否)才是真正的強訊號訊號。
+  // 改用s12Anchored/fastBurstNoS12取代純totalSignals計數，作為top5集中度與active_mode分級依據。
+  // 此修改不影響shouldSkip(出手與否的判斷)，只改變「信心分級」與「選號集中度」，不會降低出手率。
+  const s12Anchored = s12 === 1;
+  const fastBurstNoS12 = (s1 === 1 || s5 === 1) && s12 === 0;
+
+  // ★ V0619-5新增、V0620-1擴充：試驗性訊號(trial)。6/19查證發現「totalSignals=0」這個跳過空窗裡，
+  // 91期裡全部是爆發期(已知黑洞，不該動)，其餘position在這個空窗完全沒有歷史資料可比對，
+  // 是真正未測試過的領域。趁富緯這幾天不會實際下注(無真錢風險)，開放全新假設：
+  // 拿掉s12原本要求的isFastBurst(換手5+)前提，單獨測試「醞釀期+TQ高」這個條件本身夠不夠力，
+  // 不管換手快不快。完全沒有回溯資料驗證，純粹是觀察期的試驗，用獨立的'trial'標籤跟其他
+  // 已驗證模式分開，方便日後直接用SQL拉出來看這個全新假設成不成立。
+  // ★ V0620-1：原本只測TQ>=25一組門檻，但6/19晚間觀察發現「醞釀期+完全無訊號」這個
+  // 試驗池本身就很罕見(約2小時才1次)，TQ>=25達標的更是少之又少，樣本累積太慢。
+  // 既然反正都標成trial、不影響真錢，乾脆同時平行測試TQ20-24這組相鄰門檻，
+  // 用trial_tier欄位('high'=TQ25+／'mid'=TQ20-24)區分，兩組各自獨立累積樣本，
+  // 之後可以直接用SQL比較兩個門檻哪個更值得扶正成正式門檻。
+  const trialTQHigh = totalSignals === 0 && position === '醞釀期' && totalQualified >= 25;
+  const trialTQMid = totalSignals === 0 && position === '醞釀期' && totalQualified >= 20 && totalQualified < 25;
+  const trialSignal = trialTQHigh || trialTQMid;
+  const trialTier = trialTQHigh ? 'high' : trialTQMid ? 'mid' : null;
+
+  let top5;
+  if (s12Anchored && (s1 === 1 || s5 === 1)) {
+    // 已驗證最佳組合：s12+至少一個(s1/s5)同時觸發，用最集中的top5
+    top5 = [allCandidates[0]?.n, ...allCandidates.slice(1, 4).map(s => s.n)].filter(Boolean).sort((a, b) => a - b);
+  } else if (s12Anchored) {
+    // s12單獨觸發(尚無足夠樣本驗證，先給予次集中信心)
+    top5 = [allCandidates[0]?.n, ...allCandidates.slice(2, 6).map(s => s.n)].filter(Boolean).sort((a, b) => a - b);
+  } else if (fastBurstNoS12) {
+    // ★ 已驗證的劣質組合：不集中下注，用最寬鬆的top5，降低押錯方向時的損失
+    top5 = allCandidates.slice(0, 5).map(s => s.n).sort((a, b) => a - b);
+  } else if (trialSignal) {
+    // ★ V0619-5/V0620-1試驗訊號：完全未驗證，用最寬鬆的top5，不集中冒險
+    top5 = allCandidates.slice(0, 5).map(s => s.n).sort((a, b) => a - b);
+  } else if (totalSignals >= 2) {
+    top5 = [allCandidates[0]?.n, ...allCandidates.slice(2, 6).map(s => s.n)].filter(Boolean).sort((a, b) => a - b);
+  } else {
+    top5 = allCandidates.slice(0, 5).map(s => s.n).sort((a, b) => a - b);
+  }
+
+  // ★ V0618-4：spiderSenseActive依賴的s3已被移除，蜘蛛模式邏輯失去輸入來源，
+  // 改用totalQualified>=22(原s3定義裡的TQ門檻部分)獨立判斷，不再依賴已砍除的s3
+  const spiderSenseActiveV2 = totalQualified >= 22 && changedNums <= 1;
+
+  // 動態C(7,3)篩選：蜘蛛模式用12顆池取前7名，否則用10顆池取前7名
+  const activePool = spiderSenseActiveV2 && totalSignals < 2 ? hotPool12Ranked : hotPool10Ranked;
+  const comboPool7 = [...activePool.slice(0, 7)].sort((a, b) => a - b);
+  const requiredSize = spiderSenseActiveV2 && totalSignals < 2 ? 12 : 10;
+
+  // 訊號=0 或 觸發skip條件 → 不出手（★ V0619-5：trialSignal成立時例外放行，不算在totalSignals===0的跳過範圍內）
+  const shouldSkip = (totalSignals === 0 && !trialSignal) || skipFastBurstLowTQ || skipBadEvenTail;
+
+  const allCombos = makeCombos(comboPool7);
+  const top5Set = new Set(top5);
+  const priorityCombos = allCombos.filter(c => c.filter(n => top5Set.has(n)).length >= 2);
+  const otherCombos = allCombos.filter(c => c.filter(n => top5Set.has(n)).length < 2);
+  const finalCombos = shouldSkip ? []
+    : activePool.length >= requiredSize
+      ? [...priorityCombos, ...otherCombos].slice(0, 8)
+      : [];
+
+  // ★ V0619-3：active_mode改用s12Anchored/fastBurstNoS12為主要分級依據，
+  // totalSignals>=4/>=2分支保留作為其他組合(如s9+s12等未單獨驗證的情況)的備援，理論上多數情況
+  // 會被前兩個分支(s12Anchored/fastBurstNoS12)先攔截，因為totalSignals>=2必然包含s1/s5/s12其中之一。
+  // ★ V0619-5：trial分支獨立標記，不跟standard混在一起，方便事後單獨用SQL評估這個新假設。
+  const activeMode = shouldSkip ? 'skip'
+    : (s12Anchored && (s1 === 1 || s5 === 1)) ? 'ultra'
+    : s12Anchored ? 'strong'
+    : fastBurstNoS12 ? 'standard'
+    : trialSignal ? 'trial'
+    : totalSignals >= 4 ? 'ultra'
+    : totalSignals >= 2 ? 'strong'
+    : spiderSenseActiveV2 ? 'spider'
+    : totalSignals > 0 ? 'standard'
+    : 'skip';
+  console.log(`[buildBingoGroups] mode=${activeMode} signals=${totalSignals}(s1=${s1},s5=${s5},s9=${s9},s12=${s12}) s12Anchored=${s12Anchored} fastBurstNoS12=${fastBurstNoS12} trialSignal=${trialSignal} skip=${shouldSkip}(fastBurstLowTQ=${skipFastBurstLowTQ}) TQ=${totalQualified} pos=${position} ch=${changedNums} top5=${top5.join(',')} 組數=${finalCombos.length}`);
+
+  const resultGroups = finalCombos.map(combo => {
+    const key = `h${combo[0]}_${combo[1]}_${combo[2]}`;
+    return {
+      key, label: key, nums: combo,
+      meta: {
+        strategy_key: key, strategy_name: key, type: 'hot',
+        action, position,
+        hot_pool: hotPool7.join(','),
+        hot_pool_size: hotPool7.length,
+        spider_sense_active: totalSignals >= 2 || spiderSenseActiveV2,
+        active_mode: activeMode,
+        total_signals: totalSignals,
+        s12_anchored: s12Anchored, // ★ V0619-3新增：s12是否觸發，新分級邏輯核心依據，方便日後SQL直接驗證
+        fast_burst_no_s12: fastBurstNoS12, // ★ V0619-3新增：已驗證劣質組合(isFastBurst觸發但缺s12)標記
+        trial_signal: trialSignal, // ★ V0619-5新增：試驗訊號(醞釀期+TQ高，不要求換手5+)，完全未驗證，方便事後SQL單獨評估
+        trial_tier: trialTier, // ★ V0620-1新增：'high'=TQ25+ / 'mid'=TQ20-24，區分兩組平行測試的門檻
+        top5_snapshot: top5.join(','),
+        signal_enabled_snapshot: signalEnabled,
+        prev_high_zone: prevHighZoneCount,
+        prev_sum_val: prevSumVal,
+        prev2_sum_val: prev2SumVal,
+        prev3_sum_val: prev3SumVal,
+        prev2_high_zone: prev2HighZoneCount,
+        prev_max_tail: prevMaxTail,
+        is_slow_turnover1: isSlowTurnover1,
+        prev_is_slow_turnover: prevIsSlowTurnover,
+        prev_consec_count: prevConsecCount,
+        prev_odd_tail: prevOddTail,
+        prev2_odd_tail: prev2OddTail, // ★ V0619-1新增：原本缺這個欄位，s9(連2期均衡)無法被完整反推追蹤，6/19補上
+        prev_even_tail: prevEvenTail,
+        total_qualified: totalQualified,
+        consecutive_burst: consecutiveBurst,
+        brew_count: brewCount,
+        consecutive_zero: consecutiveZero,
+        prev_hit_count: prevHitCount,
+        prev_hot_pool: prevHotPool,
+        changed_nums: changedNums,
+        is_high_hour: isHighHour,
+        is_dead_hour: isDeadHour,
+        is_great_hour: isGreatHour,
+        taipei_hour: taipeiHour,
+        burst_no: consecutiveBurst,
+      }
+    };
+  });
+
+  // ★ V0617-7修正：即使shouldSkip導致finalCombos為空，也要把完整診斷資訊掛在陣列上，
+  // 讓auto-train.js寫入skip記錄時能存下changed_nums/position/prev_even_tail等完整盤面狀態，
+  // 不再只能記錄active_mode/total_signals/skip_reason這4個欄位。
+  // 用非enumerable屬性掛載，不影響.length和.map()等陣列正常行為。
+  //
+  // ★ V0619-6新增：skip_detail欄位。原本auto-train.js寫入的skip_reason只有
+  // 'no_signal'/'soul_blocked'二元判斷，'no_signal'這個標籤其實混雜了兩種完全不同的情況：
+  // 真正零訊號(totalSignals=0)，跟「其實有訊號(如s9)、但被爆發期+換手5+規則覆蓋」這種情況，
+  // 後者過去會被誤標成no_signal，事後用SQL分析「真正零訊號」期數時會混進這些有訊號但被覆蓋的期，
+  // 造成判斷失準。這裡新增skip_detail精確拆分四種原因，不更動原有skip_reason(App.jsx前端
+  // 已依賴這個欄位的'soul_blocked'/其他二元判斷，不能更動其既有兩種值的語意)。
+  let skipDetail;
+  if (skipFastBurstLowTQ) {
+    skipDetail = totalSignals > 0 ? 'burst_override_had_signal' : 'burst_override_no_signal';
+  } else if (skipBadEvenTail) {
+    skipDetail = 'bad_even_tail_override'; // 目前永久停用(V0617-8)，保留以防未來重新啟用
+  } else if (totalSignals === 0) {
+    skipDetail = 'no_signal'; // 真正零訊號，且試驗訊號條件也沒達標
+  } else {
+    skipDetail = 'other'; // 防呆：理論上不該到達此分支
+  }
+
+  if (shouldSkip) {
+    Object.defineProperty(resultGroups, '__skipDiagnostics', {
+      value: {
+        active_mode: activeMode,
+        total_signals: totalSignals,
+        s12_anchored: s12Anchored,
+        fast_burst_no_s12: fastBurstNoS12,
+        trial_signal: trialSignal,
+        trial_tier: trialTier,
+        skip_detail: skipDetail,
+        position, changed_nums: changedNums,
+        total_qualified: totalQualified,
+        prev_even_tail: prevEvenTail,
+        prev_consec_count: prevConsecCount,
+        prev_odd_tail: prevOddTail,
+        prev_hit_count: prevHitCount,
+        is_great_hour: isGreatHour,
+        taipei_hour: taipeiHour,
+        skip_fast_burst_low_tq: skipFastBurstLowTQ,
+        skip_bad_even_tail: skipBadEvenTail,
+      },
+      enumerable: false,
+      configurable: true,
+    });
+  }
+
+  return resultGroups;
 }
+
+export function getZoneStrategyKeys() { return []; }
