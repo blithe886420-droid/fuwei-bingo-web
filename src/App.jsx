@@ -347,17 +347,21 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
         const confidenceLevel = groups[0]?.meta?.confidence_level || '';
 
         const isGo = !isAvoidNow;
+        const isTrial = activeMode === 'trial'; // ★ V0619-3：試驗訊號需要獨立視覺樣式，不能跟已驗證模式共用綠色「可進場」
 
         const mainReason = activeMode === 'ultra' ? `${totalSignals}個訊號共鳴！歷史avg_pnl=+115元/期`
           : activeMode === 'strong' ? `${totalSignals}個訊號共鳴，歷史avg_pnl=-31元/期`
           : activeMode === 'spider' ? '蜘蛛感知(TQ22+連穩)，已擴展12顆候選池'
+          : isTrial ? '醞釀期+TQ25+試驗訊號，完全未經驗證，僅供收集資料'
           : `${totalSignals}個訊號，標準模式`;
 
-        const actionBg = isGo ? '#DCFCE7' : '#FEE2E2';
-        const actionBorder = isGo ? '#16A34A' : '#DC2626';
-        const actionColor = isGo ? '#15803D' : '#DC2626';
-        const actionIcon = isGo ? '🟢' : '🔴';
-        const actionText = isGo ? '本期可進場' : '本期不推薦號碼';
+        // ★ V0619-3：trial用紫色警示樣式，跟綠色(已驗證可進場)、紅色(不推薦)都不同，
+        // 一眼就能分辨「這是還在試驗、別當成真訊號相信」
+        const actionBg = isTrial ? '#F3E8FF' : isGo ? '#DCFCE7' : '#FEE2E2';
+        const actionBorder = isTrial ? '#9333EA' : isGo ? '#16A34A' : '#DC2626';
+        const actionColor = isTrial ? '#7E22CE' : isGo ? '#15803D' : '#DC2626';
+        const actionIcon = isTrial ? '🧪' : isGo ? '🟢' : '🔴';
+        const actionText = isTrial ? '本期試驗訊號（未驗證，謹慎參考）' : isGo ? '本期可進場' : '本期不推薦號碼';
 
         const soulLabel = confidenceLevel === 'cautious' ? '🧠冷靜期'
           : confidenceLevel === 'conservative' ? '🧠保守期'
@@ -576,11 +580,12 @@ function HistoryPage({ historyRows }) {
                         borderRadius: 6, padding: '2px 8px', display: 'inline-block' }}>
                         {position === '爆發期' ? '🔥' : position === '醞釀期' ? '🌱' : '👁️'} {position}
                       </span>
-                      {/* 行動建議標籤(對應第一頁，二元判斷) */}
+                      {/* 行動建議標籤(對應第一頁，二元判斷，trial另外處理) */}
                       {(() => {
-                        const label = histIsAvoid ? '🔴 不推薦' : '🟢 可進場';
-                        const bg = histIsAvoid ? '#FEE2E2' : '#DCFCE7';
-                        const color = histIsAvoid ? '#DC2626' : '#15803D';
+                        const isHistTrial = histMode === 'trial';
+                        const label = isHistTrial ? '🧪 試驗訊號' : histIsAvoid ? '🔴 不推薦' : '🟢 可進場';
+                        const bg = isHistTrial ? '#F3E8FF' : histIsAvoid ? '#FEE2E2' : '#DCFCE7';
+                        const color = isHistTrial ? '#7E22CE' : histIsAvoid ? '#DC2626' : '#15803D';
                         return (
                           <span style={{ fontSize: 11, fontWeight: 700, color, background: bg, borderRadius: 6, padding: '2px 8px', display: 'inline-block' }}>
                             {label}
