@@ -348,11 +348,13 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
 
         const isGo = !isAvoidNow;
         const isTrial = activeMode === 'trial'; // ★ V0619-3：試驗訊號需要獨立視覺樣式，不能跟已驗證模式共用綠色「可進場」
+        const trialTier = groups[0]?.meta?.trial_tier || ''; // ★ V0620-1：區分TQ25+(high)與TQ20-24(mid)兩組平行試驗
+        const trialTierLabel = trialTier === 'high' ? 'TQ25+' : trialTier === 'mid' ? 'TQ20-24' : '';
 
         const mainReason = activeMode === 'ultra' ? `${totalSignals}個訊號共鳴！歷史avg_pnl=+115元/期`
           : activeMode === 'strong' ? `${totalSignals}個訊號共鳴，歷史avg_pnl=-31元/期`
           : activeMode === 'spider' ? '蜘蛛感知(TQ22+連穩)，已擴展12顆候選池'
-          : isTrial ? '醞釀期+TQ25+試驗訊號，完全未經驗證，僅供收集資料'
+          : isTrial ? `醞釀期+${trialTierLabel}試驗訊號，完全未經驗證，僅供收集資料`
           : `${totalSignals}個訊號，標準模式`;
 
         // ★ V0619-3：trial用紫色警示樣式，跟綠色(已驗證可進場)、紅色(不推薦)都不同，
@@ -361,7 +363,7 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
         const actionBorder = isTrial ? '#9333EA' : isGo ? '#16A34A' : '#DC2626';
         const actionColor = isTrial ? '#7E22CE' : isGo ? '#15803D' : '#DC2626';
         const actionIcon = isTrial ? '🧪' : isGo ? '🟢' : '🔴';
-        const actionText = isTrial ? '本期試驗訊號（未驗證，謹慎參考）' : isGo ? '本期可進場' : '本期不推薦號碼';
+        const actionText = isTrial ? `本期試驗訊號（${trialTierLabel}，未驗證，謹慎參考）` : isGo ? '本期可進場' : '本期不推薦號碼';
 
         const soulLabel = confidenceLevel === 'cautious' ? '🧠冷靜期'
           : confidenceLevel === 'conservative' ? '🧠保守期'
@@ -583,7 +585,9 @@ function HistoryPage({ historyRows }) {
                       {/* 行動建議標籤(對應第一頁，二元判斷，trial另外處理) */}
                       {(() => {
                         const isHistTrial = histMode === 'trial';
-                        const label = isHistTrial ? '🧪 試驗訊號' : histIsAvoid ? '🔴 不推薦' : '🟢 可進場';
+                        const histTrialTier = meta0?.trial_tier || ''; // ★ V0620-1：區分TQ25+(high)與TQ20-24(mid)
+                        const histTrialTierLabel = histTrialTier === 'high' ? 'TQ25+' : histTrialTier === 'mid' ? 'TQ20-24' : '';
+                        const label = isHistTrial ? `🧪 試驗訊號(${histTrialTierLabel})` : histIsAvoid ? '🔴 不推薦' : '🟢 可進場';
                         const bg = isHistTrial ? '#F3E8FF' : histIsAvoid ? '#FEE2E2' : '#DCFCE7';
                         const color = isHistTrial ? '#7E22CE' : histIsAvoid ? '#DC2626' : '#15803D';
                         return (
@@ -1097,7 +1101,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0619-3</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0620-1</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
