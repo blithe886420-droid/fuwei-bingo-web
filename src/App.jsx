@@ -20,6 +20,19 @@ function modeLabel(m) {
 // ★ V0619-2：根據meta物件反推s1/s5/s9/s12個別是否觸發，邏輯對齊buildBingoV1Strategies.js的rawS1/rawS5/rawS9/rawS12
 // s1：換手5+且醞釀期 | s5：上期槓龜(prev_hit_count=0)且換手5+ | s9：上一期&上兩期奇數尾都均衡(9-11顆) | s12：TQ25+且換手5+
 const SIGNAL_LABEL = { s1: 's1換手醞釀', s5: 's5槓龜換手', s9: 's9連2期均衡', s12: 's12高TQ換手' };
+
+// ★ V0620-3新增：5種互斥盤面狀態的中文對照與顏色，對應後端board_state欄位
+// B(蜘蛛靜默)已驗證穩定獲利→綠色；D(爆發危險區)已驗證穩定虧損→紅色；其餘中性灰
+const BOARD_STATE_LABEL = {
+  A_golden: { text: '黃金共振', color: '#B45309', bg: '#FEF3C7' },
+  B_spider_calm: { text: '蜘蛛靜默', color: '#15803D', bg: '#DCFCE7' },
+  D_burst_danger: { text: '爆發危險區', color: '#DC2626', bg: '#FEE2E2' },
+  E_false_momentum: { text: '假動能', color: '#9333EA', bg: '#F3E8FF' },
+  F_quiet: { text: '平淡期', color: '#6B7280', bg: '#F3F4F6' },
+};
+function boardStateInfo(s) {
+  return BOARD_STATE_LABEL[s] || null;
+}
 function isBalancedTail(t) {
   return t >= 9 && t <= 11;
 }
@@ -372,6 +385,7 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
           : confidenceLevel === 'normal' ? '🧠正常' : '';
 
         const firedSignals = getFiredSignals(groups[0]?.meta);
+        const bsInfo = boardStateInfo(groups[0]?.meta?.board_state); // ★ V0620-3：盤面狀態標籤
 
         return (
           <div style={{ marginBottom: 12 }}>
@@ -384,6 +398,11 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
                   {isGo && soulLabel && (
                     <div style={{ fontSize: 10, fontWeight: 700, color: '#6D28D9', background: '#EDE9FE', borderRadius: 6, padding: '3px 8px' }}>
                       {soulLabel}
+                    </div>
+                  )}
+                  {isGo && bsInfo && (
+                    <div style={{ fontSize: 10, fontWeight: 700, color: bsInfo.color, background: bsInfo.bg, borderRadius: 6, padding: '3px 8px' }}>
+                      {bsInfo.text}
                     </div>
                   )}
                   {isGo && (
@@ -598,6 +617,18 @@ function HistoryPage({ historyRows }) {
                       })()}
                     </div>
                   )}
+                  {/* ★ V0620-3：盤面狀態標籤，獨立於isSkipped之外顯示(跳過的期數也能看出是不是D_burst_danger造成跳過) */}
+                  {(() => {
+                    const bsInfo = boardStateInfo(meta0?.board_state);
+                    if (!bsInfo) return null;
+                    return (
+                      <div style={{ marginTop: 3 }}>
+                        <span style={{ fontSize: 11, fontWeight: 700, color: bsInfo.color, background: bsInfo.bg, borderRadius: 6, padding: '2px 8px', display: 'inline-block' }}>
+                          {bsInfo.text}
+                        </span>
+                      </div>
+                    );
+                  })()}
                   {/* ★ V0619-2：顯示該期實際觸發的訊號組合，方便回頭對照s1+s12(或+s9)組合表現 */}
                   {!isSkipped && !histIsAvoid && (() => {
                     const firedSignals = getFiredSignals(meta0);
@@ -1134,7 +1165,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0620-2</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0620-3</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
