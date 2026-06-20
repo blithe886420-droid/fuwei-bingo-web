@@ -33,6 +33,15 @@ const BOARD_STATE_LABEL = {
 function boardStateInfo(s) {
   return BOARD_STATE_LABEL[s] || null;
 }
+
+// ★ V0620-4新增：謹慎旗標標籤，sum_surge(總和暴漲)與odd_imbalance(奇偶失衡)任一觸發時顯示
+function getCautionLabels(meta) {
+  if (!meta) return [];
+  const labels = [];
+  if (meta.sum_surge) labels.push('總和暴漲');
+  if (meta.odd_imbalance) labels.push('奇偶失衡');
+  return labels;
+}
 function isBalancedTail(t) {
   return t >= 9 && t <= 11;
 }
@@ -427,6 +436,16 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
                   ))}
                 </div>
               )}
+              {/* ★ V0620-4：謹慎旗標標籤(總和暴漲/奇偶失衡)，用橘色警示，跟訊號標籤分開一行 */}
+              {isGo && getCautionLabels(groups[0]?.meta).length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
+                  {getCautionLabels(groups[0]?.meta).map(label => (
+                    <span key={label} style={{ fontSize: 10, fontWeight: 700, color: '#C2410C', background: '#FFEDD5', borderRadius: 6, padding: '2px 6px' }}>
+                      ⚠️ {label}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         );
@@ -643,6 +662,16 @@ function HistoryPage({ historyRows }) {
                       </div>
                     );
                   })()}
+                  {/* ★ V0620-4：謹慎旗標標籤，獨立顯示(跳過的期數也能看出是不是caution flag影響的) */}
+                  {getCautionLabels(meta0).length > 0 && (
+                    <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                      {getCautionLabels(meta0).map(label => (
+                        <span key={label} style={{ fontSize: 10, fontWeight: 700, color: '#C2410C', background: '#FFEDD5', borderRadius: 6, padding: '2px 6px' }}>
+                          ⚠️ {label}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 {isSkipped ? (
                   (() => {
@@ -1165,7 +1194,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0620-3</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0620-4</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
