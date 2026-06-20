@@ -39,6 +39,7 @@ function getCautionLabels(meta) {
   const labels = [];
   if (meta.sum_surge) labels.push('總和暴漲');
   if (meta.odd_imbalance) labels.push('奇偶失衡');
+  if (meta.tq_plunge) labels.push('TQ急跌'); // ★ V0621-2新增
   return labels;
 }
 function isBalancedTail(t) {
@@ -1151,7 +1152,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0621-1</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0621-2</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
