@@ -11,7 +11,6 @@ const MODE_LABEL = {
   strong: '強訊號',
   ultra: '超強訊號',
   spider: '蜘蛛感知',
-  trial: '試驗訊號', // ★ V0619-5新增：對應後端新增的醞釀期+TQ25試驗訊號
 };
 function modeLabel(m) {
   return MODE_LABEL[m] || m || '-';
@@ -369,23 +368,17 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
         const confidenceLevel = groups[0]?.meta?.confidence_level || '';
 
         const isGo = !isAvoidNow;
-        const isTrial = activeMode === 'trial'; // ★ V0619-3：試驗訊號需要獨立視覺樣式，不能跟已驗證模式共用綠色「可進場」
-        const trialTier = groups[0]?.meta?.trial_tier || ''; // ★ V0620-1：區分TQ25+(high)與TQ20-24(mid)兩組平行試驗
-        const trialTierLabel = trialTier === 'high' ? 'TQ25+' : trialTier === 'mid' ? 'TQ20-24' : '';
 
         const mainReason = activeMode === 'ultra' ? `${totalSignals}個訊號共鳴！歷史avg_pnl=+115元/期`
           : activeMode === 'strong' ? `${totalSignals}個訊號共鳴，歷史avg_pnl=-31元/期`
           : activeMode === 'spider' ? '蜘蛛感知(TQ22+連穩)，已擴展12顆候選池'
-          : isTrial ? `醞釀期+${trialTierLabel}試驗訊號，完全未經驗證，僅供收集資料`
           : `${totalSignals}個訊號，標準模式`;
 
-        // ★ V0619-3：trial用紫色警示樣式，跟綠色(已驗證可進場)、紅色(不推薦)都不同，
-        // 一眼就能分辨「這是還在試驗、別當成真訊號相信」
-        const actionBg = isTrial ? '#F3E8FF' : isGo ? '#DCFCE7' : '#FEE2E2';
-        const actionBorder = isTrial ? '#9333EA' : isGo ? '#16A34A' : '#DC2626';
-        const actionColor = isTrial ? '#7E22CE' : isGo ? '#15803D' : '#DC2626';
-        const actionIcon = isTrial ? '🧪' : isGo ? '🟢' : '🔴';
-        const actionText = isTrial ? `本期試驗訊號（${trialTierLabel}，未驗證，謹慎參考）` : isGo ? '本期可進場' : '本期不推薦號碼';
+        const actionBg = isGo ? '#DCFCE7' : '#FEE2E2';
+        const actionBorder = isGo ? '#16A34A' : '#DC2626';
+        const actionColor = isGo ? '#15803D' : '#DC2626';
+        const actionIcon = isGo ? '🟢' : '🔴';
+        const actionText = isGo ? '本期可進場' : '本期不推薦號碼';
 
         const soulLabel = confidenceLevel === 'cautious' ? '🧠冷靜期'
           : confidenceLevel === 'conservative' ? '🧠保守期'
@@ -620,14 +613,11 @@ function HistoryPage({ historyRows }) {
                         borderRadius: 6, padding: '2px 8px', display: 'inline-block' }}>
                         {position === '爆發期' ? '🔥' : position === '醞釀期' ? '🌱' : '👁️'} {position}
                       </span>
-                      {/* 行動建議標籤(對應第一頁，二元判斷，trial另外處理) */}
+                      {/* 行動建議標籤(對應第一頁，二元判斷) */}
                       {(() => {
-                        const isHistTrial = histMode === 'trial';
-                        const histTrialTier = meta0?.trial_tier || ''; // ★ V0620-1：區分TQ25+(high)與TQ20-24(mid)
-                        const histTrialTierLabel = histTrialTier === 'high' ? 'TQ25+' : histTrialTier === 'mid' ? 'TQ20-24' : '';
-                        const label = isHistTrial ? `🧪 試驗訊號(${histTrialTierLabel})` : histIsAvoid ? '🔴 不推薦' : '🟢 可進場';
-                        const bg = isHistTrial ? '#F3E8FF' : histIsAvoid ? '#FEE2E2' : '#DCFCE7';
-                        const color = isHistTrial ? '#7E22CE' : histIsAvoid ? '#DC2626' : '#15803D';
+                        const label = histIsAvoid ? '🔴 不推薦' : '🟢 可進場';
+                        const bg = histIsAvoid ? '#FEE2E2' : '#DCFCE7';
+                        const color = histIsAvoid ? '#DC2626' : '#15803D';
                         return (
                           <span style={{ fontSize: 11, fontWeight: 700, color, background: bg, borderRadius: 6, padding: '2px 8px', display: 'inline-block' }}>
                             {label}
@@ -874,39 +864,6 @@ function StatsPage({ historyRows }) {
                   <div style={{ fontSize: 10, color: C.textSub }}>中2以上組數</div>
                 </div>
               </div>
-              {/* ★ V0620-1新增：試驗訊號獨立顯示區塊，跟主統計分開，避免混淆已驗證/未驗證表現 */}
-              {(() => {
-                const trial = healthStatus.trial || {};
-                const tiers = trial.tiers || {};
-                const high = tiers.high || {};
-                const mid = tiers.mid || {};
-                if (!trial.total_periods) return null; // 還沒累積任何試驗訊號資料，不顯示這個區塊
-                const renderTier = (tierData, label, tqLabel) => {
-                  const hasData = tierData.periods > 0;
-                  return (
-                    <div style={{ flex: 1, background: '#F3E8FF', borderRadius: 8, padding: '8px 10px' }}>
-                      <div style={{ fontSize: 11, fontWeight: 700, color: '#7E22CE', marginBottom: 4 }}>🧪 {label}（{tqLabel}）</div>
-                      {hasData ? (
-                        <>
-                          <div style={{ fontSize: 11, color: '#7E22CE' }}>{tierData.periods}期已比對 ・ 中3率{tierData.hit3_pct != null ? `${tierData.hit3_pct}%` : '--'}</div>
-                          <div style={{ fontSize: 11, color: '#7E22CE' }}>平均{tierData.avg_pnl != null ? `${tierData.avg_pnl}元/期` : '--'}</div>
-                        </>
-                      ) : (
-                        <div style={{ fontSize: 11, color: '#9333EA' }}>尚無樣本</div>
-                      )}
-                    </div>
-                  );
-                };
-                return (
-                  <div style={{ marginBottom: 10 }}>
-                    <div style={{ fontSize: 11, color: C.textSub, marginBottom: 6 }}>試驗訊號表現（未驗證，僅供觀察，不計入上方主統計）</div>
-                    <div style={{ display: 'flex', gap: 8 }}>
-                      {renderTier(high, '高門檻', 'TQ25+')}
-                      {renderTier(mid, '中門檻', 'TQ20-24')}
-                    </div>
-                  </div>
-                );
-              })()}
               <button
                 onClick={() => setHealthExpanded(v => !v)}
                 style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 10px', background: C.grayLight, borderRadius: 8, border: 'none', fontSize: 12, fontWeight: 700, color: C.text, cursor: 'pointer' }}
@@ -1194,7 +1151,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0620-4</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0621-1</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
