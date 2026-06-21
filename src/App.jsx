@@ -73,6 +73,13 @@ function getFiredSignals(meta) {
   return fired;
 }
 
+// ★ V0621-5新增：出手門檻已改用four_count(取代s1/s5/s9/s12)，這種情況下firedSignals會是空陣列，
+// 但期數確實有出手，需要明確標示「這是靠新門檻出手，不是靠已驗證訊號」，避免看起來像沒原因卻出號碼
+function isFiredByFourCountOnly(meta) {
+  if (!meta) return false;
+  return meta.four_burst_fire === true && toNum(meta.total_signals, -1) === 0;
+}
+
 function toNum(v, fallback = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
@@ -440,6 +447,14 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
                   ))}
                 </div>
               )}
+              {/* ★ V0621-5新增：靠新的four_count門檻出手、沒有任何s1-s12訊號背書時，明確標示原因 */}
+              {isGo && isFiredByFourCountOnly(groups[0]?.meta) && (
+                <div style={{ marginTop: 6 }}>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: '#0F766E', background: '#CCFBF1', borderRadius: 6, padding: '2px 6px' }}>
+                    📊 候選池門檻出手(four_count={fmt(groups[0]?.meta?.four_count)})
+                  </span>
+                </div>
+              )}
               {/* ★ V0620-4：謹慎旗標標籤(總和暴漲/奇偶失衡)，用橘色警示，跟訊號標籤分開一行 */}
               {isGo && getCautionLabels(groups[0]?.meta).length > 0 && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
@@ -671,6 +686,14 @@ function HistoryPage({ historyRows }) {
                       </div>
                     );
                   })()}
+                  {/* ★ V0621-5新增：靠new four_count門檻出手、沒有任何s1-s12訊號背書時，明確標示原因 */}
+                  {!isSkipped && !histIsAvoid && isFiredByFourCountOnly(meta0) && (
+                    <div style={{ marginTop: 4 }}>
+                      <span style={{ fontSize: 10, fontWeight: 700, color: '#0F766E', background: '#CCFBF1', borderRadius: 6, padding: '2px 6px' }}>
+                        📊 候選池門檻出手(four_count={fmt(meta0?.four_count)})
+                      </span>
+                    </div>
+                  )}
                   {/* ★ V0620-4：謹慎旗標標籤，獨立顯示(跳過的期數也能看出是不是caution flag影響的) */}
                   {getCautionLabels(meta0).length > 0 && (
                     <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
@@ -1211,7 +1234,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0621-3</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0621-5</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
