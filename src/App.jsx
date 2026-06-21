@@ -33,6 +33,16 @@ function boardStateInfo(s) {
   return BOARD_STATE_LABEL[s] || null;
 }
 
+// ★ V0621-3新增：超級組合標籤(蜘蛛靜默/黃金共振疊加奇數微升)，樣本量還小(10-12期)，
+// 用「觀察中」字眼明確標示未驗證，避免被誤認成已驗證的高信心訊號
+const SUPER_COMBO_LABEL = {
+  spider_odd_up: { text: '蜘蛛靜默+奇數微升(觀察中)', color: '#0E7490', bg: '#CFFAFE' },
+  golden_odd_up: { text: '黃金共振+奇數微升(觀察中)', color: '#0E7490', bg: '#CFFAFE' },
+};
+function superComboInfo(s) {
+  return SUPER_COMBO_LABEL[s] || null;
+}
+
 // ★ V0620-4新增：謹慎旗標標籤，sum_surge(總和暴漲)與odd_imbalance(奇偶失衡)任一觸發時顯示
 function getCautionLabels(meta) {
   if (!meta) return [];
@@ -440,6 +450,14 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
                   ))}
                 </div>
               )}
+              {/* ★ V0621-3：超級組合觀察標籤，樣本量小(10-12期)，明確標示「觀察中」避免誤判成已驗證 */}
+              {isGo && superComboInfo(groups[0]?.meta?.super_combo) && (
+                <div style={{ marginTop: 4 }}>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: superComboInfo(groups[0]?.meta?.super_combo).color, background: superComboInfo(groups[0]?.meta?.super_combo).bg, borderRadius: 6, padding: '2px 6px' }}>
+                    🔬 {superComboInfo(groups[0]?.meta?.super_combo).text}
+                  </span>
+                </div>
+              )}
             </div>
           </div>
         );
@@ -663,6 +681,14 @@ function HistoryPage({ historyRows }) {
                       ))}
                     </div>
                   )}
+                  {/* ★ V0621-3：超級組合觀察標籤 */}
+                  {superComboInfo(meta0?.super_combo) && (
+                    <div style={{ marginTop: 4 }}>
+                      <span style={{ fontSize: 10, fontWeight: 700, color: superComboInfo(meta0?.super_combo).color, background: superComboInfo(meta0?.super_combo).bg, borderRadius: 6, padding: '2px 6px' }}>
+                        🔬 {superComboInfo(meta0?.super_combo).text}
+                      </span>
+                    </div>
+                  )}
                 </div>
                 {isSkipped ? (
                   (() => {
@@ -865,6 +891,39 @@ function StatsPage({ historyRows }) {
                   <div style={{ fontSize: 10, color: C.textSub }}>中2以上組數</div>
                 </div>
               </div>
+              {/* ★ V0621-3新增：超級組合(蜘蛛靜默/黃金共振疊加奇數微升)獨立追蹤，跟主統計分開，
+                  避免混淆已驗證/觀察中表現。樣本量還小，不計入上方主統計 */}
+              {(() => {
+                const sc = healthStatus.super_combo || {};
+                const spiderOddUp = sc.spider_odd_up || {};
+                const goldenOddUp = sc.golden_odd_up || {};
+                if (!spiderOddUp.periods && !goldenOddUp.periods) return null; // 還沒累積任何資料，不顯示
+                const renderCombo = (data, label) => {
+                  const hasData = data.periods > 0;
+                  return (
+                    <div style={{ flex: 1, background: '#CFFAFE', borderRadius: 8, padding: '8px 10px' }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: '#0E7490', marginBottom: 4 }}>🔬 {label}</div>
+                      {hasData ? (
+                        <>
+                          <div style={{ fontSize: 11, color: '#0E7490' }}>{data.periods}期已比對 ・ 中3率{data.hit3_pct != null ? `${data.hit3_pct}%` : '--'}</div>
+                          <div style={{ fontSize: 11, color: '#0E7490' }}>平均{data.avg_pnl != null ? `${data.avg_pnl}元/期` : '--'}</div>
+                        </>
+                      ) : (
+                        <div style={{ fontSize: 11, color: '#0E7490' }}>尚無樣本</div>
+                      )}
+                    </div>
+                  );
+                };
+                return (
+                  <div style={{ marginBottom: 10 }}>
+                    <div style={{ fontSize: 11, color: C.textSub, marginBottom: 6 }}>超級組合表現（觀察中，樣本量小，不計入上方主統計）</div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      {renderCombo(spiderOddUp, '蜘蛛靜默+奇數微升')}
+                      {renderCombo(goldenOddUp, '黃金共振+奇數微升')}
+                    </div>
+                  </div>
+                );
+              })()}
               <button
                 onClick={() => setHealthExpanded(v => !v)}
                 style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 10px', background: C.grayLight, borderRadius: 8, border: 'none', fontSize: 12, fontWeight: 700, color: C.text, cursor: 'pointer' }}
@@ -1152,7 +1211,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0621-2</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0621-3</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
