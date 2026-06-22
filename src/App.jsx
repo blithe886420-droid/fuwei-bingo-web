@@ -805,11 +805,19 @@ function StatsPage({ historyRows }) {
   const daysPassed = toNum(soulStatus?.days_passed, 0);
   const modeMap = soulStatus?.mode_stats || {};
 
-  const filterByPosition = (pos) => {
-    if (pos === 'all') return allRows;
+  // ★ V0623-2：統計頁改為依盤面狀態(board_state)分類，取代舊版position(爆發期/醞釀期)分類
+  // 同時加入選號策略(core_outer/spider_mid)篩選，對應V0623-2的盤面動態選號邏輯
+  const filterByBoardState = (key) => {
+    if (key === 'all') return allRows;
+    if (key === 'core_outer' || key === 'spider_mid') {
+      return allRows.filter(row => {
+        const s = toArray(row?.groups_json)[0]?.meta?.selection_strategy || '';
+        return s === key;
+      });
+    }
     return allRows.filter(row => {
-      const p = toArray(row?.groups_json)[0]?.meta?.position || '';
-      return p === pos;
+      const bs = toArray(row?.groups_json)[0]?.meta?.board_state || '';
+      return bs === key;
     });
   };
 
@@ -823,14 +831,18 @@ function StatsPage({ historyRows }) {
     return { total, hit3, hit2, hit1, hit0, rate };
   };
 
+  // ★ V0623-2：子頁籤改為盤面狀態+選號策略，取代舊版爆發期/醞釀期/觀察期
   const subTabs = [
-    { key: 'all', label: '全部', icon: '📊' },
-    { key: '爆發期', label: '爆發期', icon: '🔥' },
-    { key: '醞釀期', label: '醞釀期', icon: '⚡' },
-    { key: '觀察期', label: '觀察期', icon: '👀' },
+    { key: 'all',              label: '全部',     icon: '📊' },
+    { key: 'A_golden',         label: '黃金共振', icon: '✨' },
+    { key: 'B_spider_calm',    label: '蜘蛛靜默', icon: '🕷️' },
+    { key: 'E_false_momentum', label: '假動能',   icon: '⚡' },
+    { key: 'F_quiet',          label: '平淡期',   icon: '😶' },
+    { key: 'core_outer',       label: '核心外圍', icon: '🎯' },
+    { key: 'spider_mid',       label: '次熱號',   icon: '🔬' },
   ];
 
-  const currentRows = filterByPosition(subTab);
+  const currentRows = filterByBoardState(subTab);
   const stats = calcStats(currentRows);
   const rateColor = stats.rate > 0.0375 ? C.green : C.orange;
 
@@ -943,6 +955,45 @@ function StatsPage({ historyRows }) {
                     <div style={{ display: 'flex', gap: 8 }}>
                       {renderCombo(spiderOddUp, '蜘蛛靜默+奇數微升')}
                       {renderCombo(goldenOddUp, '黃金共振+奇數微升')}
+                    </div>
+                  </div>
+                );
+              })()}
+              {/* ★ V0623-2新增：選號策略分別統計(core_outer/spider_mid)，對應盤面動態選號邏輯 */}
+              {(() => {
+                const periods = toArray(healthStatus.periods).filter(p => p.status !== 'skipped' && p.hit_count != null);
+                const coreRows = periods.filter(p => p.selection_strategy === 'core_outer');
+                const spiderRows = periods.filter(p => p.selection_strategy === 'spider_mid');
+                if (!coreRows.length && !spiderRows.length) return null;
+                const calcStrategyStats = (rows) => {
+                  const total = rows.length;
+                  const hit3 = rows.filter(r => toNum(r.hit_count) >= 3).length;
+                  const pnlList = rows.map(r => toNum(r.pnl, -200));
+                  const avgPnl = total > 0 ? Math.round(pnlList.reduce((a, b) => a + b, 0) / total) : null;
+                  const rate = total > 0 ? Math.round(100 * hit3 / total * 10) / 10 : null;
+                  return { total, hit3, rate, avgPnl };
+                };
+                const cs = calcStrategyStats(coreRows);
+                const ss = calcStrategyStats(spiderRows);
+                const renderStrategy = (data, label, icon) => (
+                  <div style={{ flex: 1, background: C.grayLight, borderRadius: 8, padding: '8px 10px' }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: C.text, marginBottom: 4 }}>{icon} {label}</div>
+                    {data.total > 0 ? (
+                      <>
+                        <div style={{ fontSize: 11, color: C.textSub }}>{data.total}期 ・ 中3率{data.rate != null ? `${data.rate}%` : '--'}</div>
+                        <div style={{ fontSize: 11, color: data.avgPnl >= 0 ? C.green : C.orange }}>平均{data.avgPnl != null ? `${data.avgPnl}元/期` : '--'}</div>
+                      </>
+                    ) : (
+                      <div style={{ fontSize: 11, color: C.textSub }}>尚無樣本</div>
+                    )}
+                  </div>
+                );
+                return (
+                  <div style={{ marginBottom: 10 }}>
+                    <div style={{ fontSize: 11, color: C.textSub, marginBottom: 6 }}>選號策略表現（V0623-2起）</div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      {renderStrategy(cs, '核心外圍', '🎯')}
+                      {renderStrategy(ss, '次熱號優先', '🔬')}
                     </div>
                   </div>
                 );
@@ -1234,7 +1285,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0621-5</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0623-2</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
