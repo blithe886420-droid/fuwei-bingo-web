@@ -869,7 +869,7 @@ function StatsPage({ historyRows }) {
             </div>
             {/* 各mode表現 */}
             <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 8 }}>
-              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>V0615版本各模式表現：</div>
+              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>V0623-2版本各模式表現：</div>
               {Object.entries(modeMap).sort((a,b) => b[1].count - a[1].count).map(([mode, stat]) => {
                 const avg = toNum(stat?.avg_pnl, 0);
                 const color = avg > 0 ? C.green : avg > -100 ? C.orange : '#DC2626';
