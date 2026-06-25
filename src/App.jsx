@@ -178,43 +178,6 @@ function Spinner() {
 }
 
 // ★ 標籤列：盤面+訊號+謹慎旗標+回饋迴路+動態組數，統一元件供第一頁和第二頁使用
-function MetaTags({ meta, isSkipped }) {
-  if (!meta || isSkipped) return null;
-  const bsInfo = boardStateInfo(meta.board_state);
-  const fbInfo = feedbackInfo(meta.feedback_mode);
-  const ssInfo = selectionStrategyInfo(meta.selection_strategy);
-  const cautionLabels = getCautionLabels(meta);
-  const firedSignals = getFiredSignals(meta);
-  const fourCountOnly = isFiredByFourCountOnly(meta);
-  const dynamicMax = meta.dynamic_max_combos;
-  const isHitCooldown = meta.is_hit_cooldown;
-  const isWeakCombo = meta.is_weak_combo;
-  return (
-    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
-      {bsInfo && <span style={{ fontSize: 10, fontWeight: 700, color: bsInfo.color, background: bsInfo.bg, borderRadius: 6, padding: '2px 6px' }}>{bsInfo.text}</span>}
-      {ssInfo && <span style={{ fontSize: 10, fontWeight: 700, color: ssInfo.color, background: ssInfo.bg, borderRadius: 6, padding: '2px 6px' }}>{ssInfo.text}</span>}
-      {/* ★ V0625-1：動態組數標籤，讓使用者看到自主學習的結果 */}
-      {dynamicMax != null && dynamicMax < 8 && (
-        <span style={{ fontSize: 10, fontWeight: 700, color: '#7C3AED', background: '#F5F3FF', borderRadius: 6, padding: '2px 6px' }}>
-          {dynamicMax === 0 ? '🚫 自學暫停' : `📉 自學縮手${dynamicMax}組`}
-        </span>
-      )}
-      {isHitCooldown && <span style={{ fontSize: 10, fontWeight: 700, color: '#D97706', background: '#FEF9C3', borderRadius: 6, padding: '2px 6px' }}>❄️ 中3冷靜期</span>}
-      {isWeakCombo && !isHitCooldown && <span style={{ fontSize: 10, fontWeight: 700, color: '#6B7280', background: '#F3F4F6', borderRadius: 6, padding: '2px 6px' }}>📊 弱組合↓4組</span>}
-      {fbInfo && <span style={{ fontSize: 10, fontWeight: 700, color: fbInfo.color, background: fbInfo.bg, borderRadius: 6, padding: '2px 6px' }}>{fbInfo.text}</span>}
-      {firedSignals.map(sig => (
-        <span key={sig} style={{ fontSize: 10, fontWeight: 700, color: C.teal, background: '#CCFBF1', borderRadius: 6, padding: '2px 6px' }}>{SIGNAL_LABEL[sig] || sig}</span>
-      ))}
-      {fourCountOnly && (
-        <span style={{ fontSize: 10, fontWeight: 700, color: C.teal, background: '#CCFBF1', borderRadius: 6, padding: '2px 6px' }}>📊 候選池門檻(four_count={fmt(meta.four_count)})</span>
-      )}
-      {cautionLabels.map(label => (
-        <span key={label} style={{ fontSize: 10, fontWeight: 700, color: '#C2410C', background: '#FFEDD5', borderRadius: 6, padding: '2px 6px' }}>⚠️ {label}</span>
-      ))}
-    </div>
-  );
-}
-
 function QuickPage({ prediction, recent20, onRefresh, loading }) {
   const row = prediction?.latest_3star_row;
   const compareResult = safeJson(row?.compare_result_json) || safeJson(row?.compare_result);
@@ -473,7 +436,36 @@ function HistoryPage({ historyRows }) {
   );
 }
 
-// ★ V0625-1：自主學習狀態卡片——顯示board_combo_weights各組合的當前動態出手組數
+// ★ V0625-1精簡版：MetaTags只保留實戰最重要的三個資訊
+// 盤面狀態、回饋模式、謹慎旗標——其他s1/s5/s9/s12訊號標籤對實戰無直接意義，移除
+function MetaTags({ meta, isSkipped }) {
+  if (!meta || isSkipped) return null;
+  const bsInfo = boardStateInfo(meta.board_state);
+  const fbInfo = feedbackInfo(meta.feedback_mode);
+  const cautionLabels = getCautionLabels(meta);
+  const isHitCooldown = meta.is_hit_cooldown;
+  const dynamicMax = meta.dynamic_max_combos;
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
+      {/* 盤面狀態 — 最重要 */}
+      {bsInfo && <span style={{ fontSize: 10, fontWeight: 700, color: bsInfo.color, background: bsInfo.bg, borderRadius: 6, padding: '2px 6px' }}>{bsInfo.text}</span>}
+      {/* 回饋模式 */}
+      {fbInfo && <span style={{ fontSize: 10, fontWeight: 700, color: fbInfo.color, background: fbInfo.bg, borderRadius: 6, padding: '2px 6px' }}>{fbInfo.text}</span>}
+      {/* 自主學習縮手 */}
+      {dynamicMax != null && dynamicMax < 8 && (
+        <span style={{ fontSize: 10, fontWeight: 700, color: '#7C3AED', background: '#F5F3FF', borderRadius: 6, padding: '2px 6px' }}>
+          {dynamicMax === 0 ? '🚫 暫停' : `📉 縮手${dynamicMax}組`}
+        </span>
+      )}
+      {/* 中3冷靜期 */}
+      {isHitCooldown && <span style={{ fontSize: 10, fontWeight: 700, color: '#D97706', background: '#FEF9C3', borderRadius: 6, padding: '2px 6px' }}>❄️ 冷靜期</span>}
+      {/* 謹慎旗標 — 警告最重要 */}
+      {cautionLabels.map(label => (
+        <span key={label} style={{ fontSize: 10, fontWeight: 700, color: '#C2410C', background: '#FFEDD5', borderRadius: 6, padding: '2px 6px' }}>⚠️ {label}</span>
+      ))}
+    </div>
+  );
+}
 function ComboWeightsCard() {
   const [weights, setWeights] = useState(null);
   const [loading, setLoading] = useState(true);
