@@ -177,7 +177,7 @@ function Spinner() {
   );
 }
 
-// ★ 標籤列：盤面+訊號+謹慎旗標+回饋迴路，統一元件供第一頁和第二頁使用
+// ★ 標籤列：盤面+訊號+謹慎旗標+回饋迴路+動態組數，統一元件供第一頁和第二頁使用
 function MetaTags({ meta, isSkipped }) {
   if (!meta || isSkipped) return null;
   const bsInfo = boardStateInfo(meta.board_state);
@@ -186,10 +186,21 @@ function MetaTags({ meta, isSkipped }) {
   const cautionLabels = getCautionLabels(meta);
   const firedSignals = getFiredSignals(meta);
   const fourCountOnly = isFiredByFourCountOnly(meta);
+  const dynamicMax = meta.dynamic_max_combos;
+  const isHitCooldown = meta.is_hit_cooldown;
+  const isWeakCombo = meta.is_weak_combo;
   return (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
       {bsInfo && <span style={{ fontSize: 10, fontWeight: 700, color: bsInfo.color, background: bsInfo.bg, borderRadius: 6, padding: '2px 6px' }}>{bsInfo.text}</span>}
       {ssInfo && <span style={{ fontSize: 10, fontWeight: 700, color: ssInfo.color, background: ssInfo.bg, borderRadius: 6, padding: '2px 6px' }}>{ssInfo.text}</span>}
+      {/* ★ V0625-1：動態組數標籤，讓使用者看到自主學習的結果 */}
+      {dynamicMax != null && dynamicMax < 8 && (
+        <span style={{ fontSize: 10, fontWeight: 700, color: '#7C3AED', background: '#F5F3FF', borderRadius: 6, padding: '2px 6px' }}>
+          {dynamicMax === 0 ? '🚫 自學暫停' : `📉 自學縮手${dynamicMax}組`}
+        </span>
+      )}
+      {isHitCooldown && <span style={{ fontSize: 10, fontWeight: 700, color: '#D97706', background: '#FEF9C3', borderRadius: 6, padding: '2px 6px' }}>❄️ 中3冷靜期</span>}
+      {isWeakCombo && !isHitCooldown && <span style={{ fontSize: 10, fontWeight: 700, color: '#6B7280', background: '#F3F4F6', borderRadius: 6, padding: '2px 6px' }}>📊 弱組合↓4組</span>}
       {fbInfo && <span style={{ fontSize: 10, fontWeight: 700, color: fbInfo.color, background: fbInfo.bg, borderRadius: 6, padding: '2px 6px' }}>{fbInfo.text}</span>}
       {firedSignals.map(sig => (
         <span key={sig} style={{ fontSize: 10, fontWeight: 700, color: C.teal, background: '#CCFBF1', borderRadius: 6, padding: '2px 6px' }}>{SIGNAL_LABEL[sig] || sig}</span>
@@ -437,6 +448,69 @@ function HistoryPage({ historyRows }) {
           );
         })}
       </Card>
+    </div>
+  );
+}
+
+// ★ V0625-1：自主學習狀態卡片——顯示board_combo_weights各組合的當前動態出手組數
+function ComboWeightsCard() {
+  const [weights, setWeights] = useState(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let active = true;
+    apiFetch('/api/board-combo-revalidate', { method: 'POST' })
+      .then(res => { if (active) setWeights(res); })
+      .catch(() => { if (active) setWeights(null); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, []);
+
+  const BOARD_LABEL = {
+    A_golden: '✨黃金', B_spider_calm: '🕷️蜘蛛',
+    E_false_momentum: '⚡假動', F_quiet: '😶平淡',
+  };
+  const comboColor = (maxCombos) =>
+    maxCombos === 8 ? C.green : maxCombos === 4 ? C.orange : '#DC2626';
+
+  return (
+    <div style={S.card}>
+      <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>🤖 自主學習狀態</div>
+      <div style={{ fontSize: 11, color: C.textSub, marginBottom: 10 }}>每小時自動更新，根據近24小時命中率動態調整出手組數</div>
+      {loading ? (
+        <div style={{ fontSize: 11, color: C.textSub }}>載入中...</div>
+      ) : !weights?.ok ? (
+        <div style={{ fontSize: 11, color: C.textSub }}>尚無學習資料</div>
+      ) : (
+        <>
+          <div style={{ fontSize: 11, color: C.textSub, marginBottom: 8 }}>
+            基準損益：{weights.baseline_avg_pnl != null ? `${weights.baseline_avg_pnl}元/期` : '--'} ・
+            基準中3率：{weights.baseline_hit3_rate != null ? `${weights.baseline_hit3_rate}%` : '--'} ・
+            樣本：{weights.total_sample || 0}期
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {toArray(weights.combos).sort((a, b) => a.combo_key.localeCompare(b.combo_key)).map(c => {
+              const boardLabel = BOARD_LABEL[c.combo_key.split('_').slice(0, -1).join('_')] || c.combo_key;
+              const color = comboColor(c.max_combos);
+              return (
+                <div key={c.combo_key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: C.grayLight, borderRadius: 8, padding: '7px 10px' }}>
+                  <div>
+                    <span style={{ fontSize: 12, fontWeight: 700 }}>{boardLabel} fc={c.combo_key.split('_').pop()}</span>
+                    <div style={{ fontSize: 10, color: C.textSub, marginTop: 2 }}>
+                      {c.sample}期 ・ 中3率{c.hit3_rate != null ? `${c.hit3_rate}%` : '--'} ・ 優勢{c.relative_edge != null ? `${c.relative_edge}元` : '--'}
+                    </div>
+                  </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ fontSize: 14, fontWeight: 900, color }}>
+                      {c.max_combos === 0 ? '🚫暫停' : `${c.max_combos}組`}
+                    </div>
+                    <div style={{ fontSize: 9, color: C.textSub }}>出手組數</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -705,7 +779,7 @@ function StatsPage({ historyRows }) {
         ))}
       </div>
 
-      <Card title={`${subTabs.find(t => t.key === subTab)?.icon} ${subTabs.find(t => t.key === subTab)?.label} 命中率`} icon="">
+      <Card title="📊 全部 命中率" icon="">
         <div style={{ textAlign: 'center', padding: '10px 0' }}>
           <div style={{ ...S.bigNum, color: rateColor }}>{fmtPercent(stats.rate)}</div>
           <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>共 {stats.total} 期｜中3：{stats.hit3} 次</div>
@@ -718,6 +792,10 @@ function StatsPage({ historyRows }) {
         <StatRow label="中1次數" value={`${stats.hit1} 次`} />
         <StatRow label="未中次數" value={`${stats.hit0} 次`} />
       </Card>
+
+      {/* ★ V0625-1新增：自主學習狀態卡片，顯示board_combo_weights當前設定 */}
+      <ComboWeightsCard />
+
       <div style={{ fontSize: 11, color: C.textSub, textAlign: 'center', padding: '4px 0' }}>※ 統計數據從 6/8 起算</div>
     </div>
   );
@@ -894,7 +972,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0623-2</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0625-1</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
