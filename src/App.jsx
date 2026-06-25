@@ -20,10 +20,12 @@ const BOARD_STATE_LABEL = {
 };
 function boardStateInfo(s) { return BOARD_STATE_LABEL[s] || null; }
 
-// V0623-2：選號策略中文對照
+// V0623-2：選號策略中文對照，V0625-2加入wide_spread和gradient
 const SELECTION_STRATEGY_LABEL = {
-  core_outer: { text: '🎯 核心外圍', color: '#B45309', bg: '#FEF3C7' },
-  spider_mid: { text: '🔬 次熱號優先', color: '#0E7490', bg: '#CFFAFE' },
+  core_outer:  { text: '🎯 核心外圍', color: '#B45309', bg: '#FEF3C7' },
+  spider_mid:  { text: '🔬 次熱號優先', color: '#0E7490', bg: '#CFFAFE' },
+  wide_spread: { text: '🌐 寬幅分散', color: '#7C3AED', bg: '#F5F3FF' },
+  gradient:    { text: '📐 梯度遞減', color: '#059669', bg: '#ECFDF5' },
 };
 function selectionStrategyInfo(s) { return SELECTION_STRATEGY_LABEL[s] || null; }
 
@@ -590,13 +592,15 @@ function StatsPage({ historyRows }) {
     return { total, hit3, hit2, hit1, hit0, rate };
   };
 
-  // V0623-2：子頁籤（盤面+選號策略）
+  // V0623-2：子頁籤（盤面+選號策略），V0625-2加入wide_spread和gradient
   const subTabs = [
     { key: 'all',               label: '全部',     icon: '📊' },
     { key: 'A_golden',          label: '黃金共振', icon: '✨' },
     { key: 'B_spider_calm',     label: '蜘蛛靜默', icon: '🕷️' },
     { key: 'E_false_momentum',  label: '假動能',   icon: '⚡' },
     { key: 'F_quiet',           label: '平淡期',   icon: '😶' },
+    { key: 'wide_spread',       label: '寬幅分散', icon: '🌐' },
+    { key: 'gradient',          label: '梯度遞減', icon: '📐' },
     { key: 'core_outer',        label: '核心外圍', icon: '🎯' },
     { key: 'spider_mid',        label: '次熱號',   icon: '🔬' },
   ];
@@ -914,7 +918,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0625-1</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0625-2</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
