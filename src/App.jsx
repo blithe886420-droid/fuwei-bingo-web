@@ -869,19 +869,26 @@ export default function App() {
   const [recent20, setRecent20] = useState([]);
   const [historyRows, setHistoryRows] = useState([]);
   const [loopStatus, setLoopStatus] = useState('初始化中...');
+  const [emergencyAlert, setEmergencyAlert] = useState(null); // ★ V0626-3：緊急警告
   const timerRef = useRef(null);
 
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [predRes, recentRes] = await Promise.all([
+      const [predRes, recentRes, healthRes] = await Promise.all([
         apiFetch('/api/prediction-latest').catch(() => ({})),
         apiFetch('/api/recent20').catch(() => ({})),
+        apiFetch('/api/health-status').catch(() => ({})), // ★ V0626-3：取得連續虧損數
       ]);
       setPrediction(predRes);
       setHistoryRows(predRes?.recent_3star_compared_rows || predRes?.recent_compared_rows || []);
       setRecent20(recentRes?.recent20 || recentRes?.data || []);
       setLoopStatus(isNight() ? '夜間停止（00:00-07:00）' : `已更新 ${new Date().toLocaleTimeString('zh-TW', { hour12: false })}`);
+      // ★ V0626-3：計算連續虧損警告
+      const consecutiveLoss = toNum(healthRes?.summary?.consecutive_loss, 0);
+      setEmergencyAlert(consecutiveLoss >= 18
+        ? `⚠️ 緊急警告：已連續虧損${consecutiveLoss}期，請人工檢查系統狀態`
+        : null);
     } catch {
       setLoopStatus('載入失敗，稍後重試');
     } finally {
@@ -906,6 +913,12 @@ export default function App() {
 
   return (
     <div style={S.app}>
+      {/* ★ V0626-3：緊急警告橫幅，連續虧損18期以上才顯示 */}
+      {emergencyAlert && (
+        <div style={{ background: '#DC2626', color: '#fff', fontSize: 13, fontWeight: 800, textAlign: 'center', padding: '8px 16px', letterSpacing: 0.5 }}>
+          {emergencyAlert}
+        </div>
+      )}
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
