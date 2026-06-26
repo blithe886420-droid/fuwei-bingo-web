@@ -561,10 +561,7 @@ function StatsPage({ historyRows }) {
   );
 
   const cleanCount = toNum(soulStatus?.clean_periods, 0);
-  const sealTarget = toNum(soulStatus?.seal_target, 400);
-  const sealPct = toNum(soulStatus?.seal_pct, 0);
-  const isSealBroken = soulStatus?.is_seal_broken === true;
-  const daysPassed = toNum(soulStatus?.days_passed, 0);
+  // ★ V0626-3：封印相關變數(sealTarget/sealPct/isSealBroken/daysPassed)已移除
   const modeMap = soulStatus?.mode_stats || {};
 
   // V0623-2：依盤面狀態或選號策略篩選
