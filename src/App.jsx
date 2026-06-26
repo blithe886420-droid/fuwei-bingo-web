@@ -620,15 +620,8 @@ function StatsPage({ historyRows }) {
           <div style={{ fontSize: 11, color: C.textSub }}>暫無法取得靈魂狀態</div>
         ) : (
           <>
-            <div style={{ background: C.grayLight, borderRadius: 99, height: 8, marginBottom: 6 }}>
-              <div style={{ background: isSealBroken ? C.green : C.gold, borderRadius: 99, height: 8, width: `${sealPct}%`, transition: 'width 0.3s' }} />
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: C.textSub, marginBottom: 8 }}>
-              <span>{isSealBroken ? '✅ 封印已解除，靈魂啟動' : `🔒 封印學習期(${daysPassed}天)`}</span>
-              <span style={{ fontWeight: 700, color: isSealBroken ? C.green : C.gold }}>{cleanCount}/{sealTarget}期 ({sealPct}%)</span>
-            </div>
-            <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 8 }}>
-              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>V0623-2版本各模式表現：</div>
+            <div style={{ borderBottom: `1px solid ${C.border}`, paddingBottom: 8, marginBottom: 8 }}>
+              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>V0626-3版本各模式表現：</div>
               {Object.entries(modeMap).sort((a, b) => b[1].count - a[1].count).map(([mode, stat]) => {
                 const avg = toNum(stat?.avg_pnl, 0);
                 const color = avg > 0 ? C.green : avg > -100 ? C.orange : '#DC2626';
@@ -642,6 +635,7 @@ function StatsPage({ historyRows }) {
               })}
               {Object.keys(modeMap).length === 0 && <div style={{ fontSize: 11, color: C.textSub }}>尚無資料</div>}
             </div>
+            <div style={{ fontSize: 11, color: C.textSub }}>共 {cleanCount} 期乾淨資料</div>
           </>
         )}
       </div>
@@ -918,7 +912,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0625-2</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0626-3</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
