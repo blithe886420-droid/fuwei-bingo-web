@@ -370,7 +370,7 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
   );
 }
 
-function HistoryPage({ historyRows }) {
+function HistoryPage({ historyRows, streakRows }) {
   const rows = toArray(historyRows).slice(0, 20);
   return (
     <div style={S.page}>
@@ -395,9 +395,46 @@ function HistoryPage({ historyRows }) {
                   <span style={{ fontSize: 12, fontWeight: 700, color: C.textSub }}>
                     預測 {fmt(row?.source_draw_no)} → 比對 {fmt(comparedDraw || '--')}
                   </span>
-                  {/* 空窗期簡單顯示 */}
+                  {/* 空窗期顯示熱號錨點 */}
                   {isSkipped ? (
-                    <div style={{ fontSize: 10, color: C.purple, marginTop: 3 }}>⏸️ 本期訊號不足，無出手</div>
+                    (() => {
+                      const streakRow = streakRows?.find(s => String(s?.source_draw_no) === String(row?.source_draw_no));
+                      const streakGroups = streakRow ? toArray(streakRow?.groups_json) : [];
+                      const streakDetail = streakRow?.compare_result_json?.detail || [];
+                      const streakBestHit = streakDetail.reduce((m, e) => Math.max(m, toNum(e?.hit, 0)), 0);
+                      const anchorNums = streakGroups[0]?.meta?.anchor_nums || [];
+                      const isDoneStreak = streakRow?.compare_status === 'done';
+                      return streakGroups.length > 0 ? (
+                        <div style={{ marginTop: 3 }}>
+                          <div style={{ fontSize: 10, color: '#D97706', marginBottom: 3 }}>
+                            🔥 熱號錨點策略｜錨點：{anchorNums.map(n => String(n).padStart(2,'0')).join(' ')}
+                          </div>
+                          {isDoneStreak && (
+                            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                              {streakGroups.map((g, gi) => {
+                                const nums = parseNums(g?.nums);
+                                const sd = streakDetail[gi];
+                                const hit = toNum(sd?.hit, 0);
+                                return (
+                                  <div key={gi} style={{ background: hit >= 3 ? C.goldBg : hit >= 2 ? C.orangeLight : C.grayLight, borderRadius: 6, padding: '2px 6px', fontSize: 10, border: `1px solid ${hit >= 3 ? C.goldLight : hit >= 2 ? C.orange : C.border}` }}>
+                                    {nums.map(n => padNum(n)).join(' ')}
+                                    <span style={{ marginLeft: 3, fontWeight: 700, color: hit >= 3 ? C.gold : hit >= 2 ? C.orange : C.gray }}>中{hit}</span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                          {!isDoneStreak && <div style={{ fontSize: 10, color: C.textSub }}>等待比對中...</div>}
+                          {isDoneStreak && streakBestHit > 0 && (
+                            <div style={{ fontSize: 11, fontWeight: 700, color: streakBestHit >= 3 ? C.gold : C.orange, marginTop: 2 }}>
+                              🔥 錨點策略 {streakBestHit >= 3 ? `中${streakBestHit}` : `中${streakBestHit}`}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div style={{ fontSize: 10, color: C.purple, marginTop: 3 }}>⏸️ 本期訊號不足，無出手</div>
+                      );
+                    })()
                   ) : (
                     <div style={{ marginTop: 3, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                       <span style={{ fontSize: 11, fontWeight: 700, color: histIsAvoid ? '#DC2626' : '#15803D', background: histIsAvoid ? '#FEE2E2' : '#DCFCE7', borderRadius: 6, padding: '2px 8px' }}>
@@ -530,7 +567,7 @@ function ComboWeightsCard() {
   );
 }
 
-function StatsPage({ historyRows }) {
+function StatsPage({ historyRows, streakRows }) {
   const [subTab, setSubTab] = useState('all');
   const [soulStatus, setSoulStatus] = useState(null);
   const [soulLoading, setSoulLoading] = useState(true);
@@ -730,7 +767,36 @@ function StatsPage({ historyRows }) {
         <StatRow label="未中次數" value={`${stats.hit0} 次`} />
       </Card>
 
-      {/* ★ V0625-1新增：自主學習狀態卡片，顯示board_combo_weights當前設定 */}
+      {/* ★ V0628-1：熱號錨點策略獨立統計 */}
+      {(() => {
+        const sRows = toArray(streakRows).filter(r => r?.compare_status === 'done');
+        if (sRows.length === 0) return (
+          <Card title="🔥 熱號錨點策略統計" icon="">
+            <div style={{ fontSize: 12, color: C.textSub, textAlign: 'center', padding: 8 }}>資料累積中，尚無比對記錄</div>
+          </Card>
+        );
+        const sHit3 = sRows.filter(r => toNum(r?.hit_count, 0) >= 3).length;
+        const sHit2 = sRows.filter(r => toNum(r?.hit_count, 0) >= 2).length;
+        const sRate = sRows.length > 0 ? (sHit3 / sRows.length * 100).toFixed(1) : '0.0';
+        const sRateColor = Number(sRate) >= 10 ? C.green : Number(sRate) >= 5 ? C.orange : '#DC2626';
+        return (
+          <Card title="🔥 熱號錨點策略統計" icon="">
+            <div style={{ textAlign: 'center', padding: '10px 0' }}>
+              <div style={{ ...S.bigNum, color: sRateColor }}>{sRate}%</div>
+              <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>共 {sRows.length} 期｜中3：{sHit3} 次</div>
+            </div>
+            <div style={S.divider} />
+            <StatRow label="中3命中率" value={`${sRate}%`} valueColor={sRateColor} />
+            <StatRow label="中3次數" value={`${sHit3} 次`} />
+            <StatRow label="中2以上次數" value={`${sHit2} 次`} />
+            <StatRow label="出手期數" value={`${sRows.length} 期`} />
+            <div style={{ fontSize: 10, color: C.textSub, marginTop: 6, textAlign: 'center' }}>
+              ※ 此策略專用於主系統空窗期，與主策略統計完全分開
+            </div>
+          </Card>
+        );
+      })()}
+
       <ComboWeightsCard />
 
       <div style={{ fontSize: 11, color: C.textSub, textAlign: 'center', padding: '4px 0' }}>※ 統計數據從 6/8 起算</div>
@@ -868,23 +934,25 @@ export default function App() {
   const [prediction, setPrediction] = useState(null);
   const [recent20, setRecent20] = useState([]);
   const [historyRows, setHistoryRows] = useState([]);
+  const [streakRows, setStreakRows] = useState([]); // ★ V0628-1：熱號錨點策略記錄
   const [loopStatus, setLoopStatus] = useState('初始化中...');
-  const [emergencyAlert, setEmergencyAlert] = useState(null); // ★ V0626-3：緊急警告
+  const [emergencyAlert, setEmergencyAlert] = useState(null);
   const timerRef = useRef(null);
 
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [predRes, recentRes, healthRes] = await Promise.all([
+      const [predRes, recentRes, healthRes, streakRes] = await Promise.all([
         apiFetch('/api/prediction-latest').catch(() => ({})),
         apiFetch('/api/recent20').catch(() => ({})),
-        apiFetch('/api/health-status').catch(() => ({})), // ★ V0626-3：取得連續虧損數
+        apiFetch('/api/health-status').catch(() => ({})),
+        apiFetch('/api/streak-anchor-latest').catch(() => ({})), // ★ V0628-1：熱號錨點最新記錄
       ]);
       setPrediction(predRes);
       setHistoryRows(predRes?.recent_3star_compared_rows || predRes?.recent_compared_rows || []);
+      setStreakRows(streakRes?.rows || []);
       setRecent20(recentRes?.recent20 || recentRes?.data || []);
       setLoopStatus(isNight() ? '夜間停止（00:00-07:00）' : `已更新 ${new Date().toLocaleTimeString('zh-TW', { hour12: false })}`);
-      // ★ V0626-3：計算連續虧損警告
       const consecutiveLoss = toNum(healthRes?.summary?.consecutive_loss, 0);
       setEmergencyAlert(consecutiveLoss >= 18
         ? `⚠️ 緊急警告：已連續虧損${consecutiveLoss}期，請人工檢查系統狀態`
@@ -922,7 +990,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0627-1</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0628-1</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
@@ -940,8 +1008,8 @@ export default function App() {
       </div>
       {loading && tab === 'quick' && <Spinner />}
       {tab === 'quick'   && <QuickPage   prediction={prediction} recent20={recent20} onRefresh={loadData} loading={loading} />}
-      {tab === 'history' && <HistoryPage historyRows={historyRows} />}
-      {tab === 'stats'   && <StatsPage   historyRows={historyRows} />}
+      {tab === 'history' && <HistoryPage historyRows={historyRows} streakRows={streakRows} />}
+      {tab === 'stats'   && <StatsPage   historyRows={historyRows} streakRows={streakRows} />}
       {tab === 'market'  && <MarketPage  recent20={recent20} />}
       {tab === 'hot'     && <HotPage     recent20={recent20} />}
       {tab === 'hotpool' && <HotPoolPage prediction={prediction} />}
