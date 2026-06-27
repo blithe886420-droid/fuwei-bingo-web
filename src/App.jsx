@@ -33,7 +33,7 @@ function selectionStrategyInfo(s) { return SELECTION_STRATEGY_LABEL[s] || null; 
 const FEEDBACK_LABEL = {
   hot:        { text: '回饋:發燙🔥', color: '#15803D', bg: '#DCFCE7' },
   normal:     { text: '回饋:正常',   color: '#6B7280', bg: '#F3F4F6' },
-  cold:       { text: '回饋:冷場↓4組', color: '#DC2626', bg: '#FEE2E2' },
+  cold:       { text: '回饋:冷場觀察', color: '#DC2626', bg: '#FEE2E2' },
   regression: { text: '回饋:均值回歸↓4組', color: '#D97706', bg: '#FEF9C3' },
 };
 function feedbackInfo(f) { return FEEDBACK_LABEL[f] || null; }
@@ -618,7 +618,7 @@ function StatsPage({ historyRows }) {
         ) : (
           <>
             <div style={{ borderBottom: `1px solid ${C.border}`, paddingBottom: 8, marginBottom: 8 }}>
-              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>V0626-3版本各模式表現：</div>
+              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>V0627-1版本各模式表現：</div>
               {Object.entries(modeMap).sort((a, b) => b[1].count - a[1].count).map(([mode, stat]) => {
                 const avg = toNum(stat?.avg_pnl, 0);
                 const color = avg > 0 ? C.green : avg > -100 ? C.orange : '#DC2626';
@@ -922,7 +922,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0626-3</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0627-1</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
