@@ -1,3 +1,26 @@
+/**
+ * App.jsx - V0628-3
+ *
+ * ★ V0628-3更新(6/28)：
+ * 1. MetaTags新增盤面結構資訊顯示（zone_bias_type、zm_bias_type、Z前/後方向、M級別）
+ * 2. 新增 zone_pattern_bias 策略標籤（🎯 區間盤面）
+ * 3. 統計頁新增「區間盤面」篩選頁籤
+ * 4. 統計頁新增盤面策略命中率對比卡（zone_bias vs zone_pattern_bias vs gradient）
+ * 5. filterByBoardState 支援 zone_pattern_bias 篩選
+ * 版本對應：buildBingoV1Strategies V0628-3（Z+M四區間複合盤面策略）
+ *
+ * ★ V0628-2更新(6/28)：
+ * 1. 新增 zone_bias 策略標籤（🗺️ 結構偏向）
+ * 2. 統計頁新增「結構偏向」篩選頁籤
+ * 3. filterByBoardState 支援 zone_bias/gradient/wide_spread 用 selection_strategy 篩選
+ * 版本對應：buildBingoV1Strategies V0628-2（S+H盤面策略）
+ *
+ * ★ V0628-1更新(6/28)：
+ * 1. 封印顯示改為各模式損益
+ * 2. 第一頁和第二頁顯示熱號錨點策略
+ * 3. 第三頁獨立錨點統計區塊
+ */
+
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 const RAILWAY_URL = 'https://fuwei-bingo-backend-production.up.railway.app';
@@ -27,6 +50,7 @@ const SELECTION_STRATEGY_LABEL = {
   wide_spread: { text: '🌐 寬幅分散', color: '#7C3AED', bg: '#F5F3FF' },
   gradient:    { text: '📐 梯度遞減', color: '#059669', bg: '#ECFDF5' },
   zone_bias:   { text: '🗺️ 結構偏向', color: '#0369A1', bg: '#E0F2FE' },
+  zone_pattern_bias: { text: '🎯 區間盤面', color: '#DC2626', bg: '#FEE2E2' },
 };
 function selectionStrategyInfo(s) { return SELECTION_STRATEGY_LABEL[s] || null; }
 
@@ -503,8 +527,7 @@ function HistoryPage({ historyRows, streakRows }) {
   );
 }
 
-// ★ V0625-1精簡版：MetaTags只保留實戰最重要的三個資訊
-// 盤面狀態、回饋模式、謹慎旗標——其他s1/s5/s9/s12訊號標籤對實戰無直接意義，移除
+// ★ V0628-3：MetaTags新增盤面結構資訊（zone_bias、zone_pattern_bias）
 function MetaTags({ meta, isSkipped }) {
   if (!meta || isSkipped) return null;
   const bsInfo = boardStateInfo(meta.board_state);
@@ -512,10 +535,42 @@ function MetaTags({ meta, isSkipped }) {
   const cautionLabels = getCautionLabels(meta);
   const isHitCooldown = meta.is_hit_cooldown;
   const dynamicMax = meta.dynamic_max_combos;
+
+  // ★ V0628-2：S+H盤面結構標籤
+  const zoneBiasLabel = {
+    strong_front:  { text: '⬆️ 強偏前段', color: '#0369A1', bg: '#E0F2FE' },
+    slight_front:  { text: '↑ 略偏前段', color: '#0369A1', bg: '#F0F9FF' },
+    neutral:       { text: '⇔ 均衡',    color: '#6B7280', bg: '#F3F4F6' },
+    slight_back:   { text: '↓ 略偏後段', color: '#7C3AED', bg: '#F5F3FF' },
+    strong_back:   { text: '⬇️ 強偏後段', color: '#7C3AED', bg: '#EDE9FE' },
+    extreme_back:  { text: '⬇️⬇️ 極強後段', color: '#DC2626', bg: '#FEE2E2' },
+  }[meta.zone_bias_type] || null;
+
+  // ★ V0628-3：Z+M複合盤面結構標籤
+  const zmLabel = {
+    zf_strong_front:  { text: `Z前強+${meta.prev_m_band||''}`, color: '#0369A1', bg: '#E0F2FE' },
+    zf_slight_front:  { text: `Z前略+${meta.prev_m_band||''}`, color: '#0369A1', bg: '#F0F9FF' },
+    zf_neutral:       { text: `Z前均+${meta.prev_m_band||''}`, color: '#6B7280', bg: '#F3F4F6' },
+    zb_strong_back:   { text: `Z後強+${meta.prev_m_band||''}`, color: '#7C3AED', bg: '#EDE9FE' },
+    zb_extreme_back:  { text: `Z後極+${meta.prev_m_band||''}`, color: '#DC2626', bg: '#FEE2E2' },
+  }[meta.zm_bias_type] || null;
+
+  // 上期四區間分布（v0628-3新增）
+  const z1 = meta.prev_z1, z2 = meta.prev_z2, z3 = meta.prev_z3, z4 = meta.prev_z4;
+  const hasZoneData = z1 != null && z2 != null && z3 != null && z4 != null;
+
   return (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
       {/* 盤面狀態 — 最重要 */}
       {bsInfo && <span style={{ fontSize: 10, fontWeight: 700, color: bsInfo.color, background: bsInfo.bg, borderRadius: 6, padding: '2px 6px' }}>{bsInfo.text}</span>}
+      {/* ★ V0628-3：Z+M複合盤面 */}
+      {zmLabel && <span style={{ fontSize: 10, fontWeight: 700, color: zmLabel.color, background: zmLabel.bg, borderRadius: 6, padding: '2px 6px' }}>🗂️ {zmLabel.text}</span>}
+      {/* ★ V0628-2：S+H盤面偏向 */}
+      {zoneBiasLabel && <span style={{ fontSize: 10, fontWeight: 700, color: zoneBiasLabel.color, background: zoneBiasLabel.bg, borderRadius: 6, padding: '2px 6px' }}>{zoneBiasLabel.text}</span>}
+      {/* 上期四區間分布 */}
+      {hasZoneData && <span style={{ fontSize: 10, color: C.textSub, background: C.grayLight, borderRadius: 6, padding: '2px 6px' }}>上期區間 {z1}/{z2}/{z3}/{z4}</span>}
+      {/* 上期最小號 */}
+      {meta.prev_min_num != null && <span style={{ fontSize: 10, color: C.textSub, background: C.grayLight, borderRadius: 6, padding: '2px 6px' }}>最小號{meta.prev_min_num}</span>}
       {/* 回饋模式 */}
       {fbInfo && <span style={{ fontSize: 10, fontWeight: 700, color: fbInfo.color, background: fbInfo.bg, borderRadius: 6, padding: '2px 6px' }}>{fbInfo.text}</span>}
       {/* 自主學習縮手 */}
@@ -632,7 +687,7 @@ function StatsPage({ historyRows, streakRows }) {
   // V0623-2：依盤面狀態或選號策略篩選
   const filterByBoardState = (key) => {
     if (key === 'all') return allRows;
-    if (key === 'core_outer' || key === 'spider_mid' || key === 'zone_bias' || key === 'gradient' || key === 'wide_spread') {
+    if (key === 'core_outer' || key === 'spider_mid' || key === 'zone_bias' || key === 'zone_pattern_bias' || key === 'gradient' || key === 'wide_spread') {
       return allRows.filter(row => {
         const s = toArray(row?.groups_json)[0]?.meta?.selection_strategy || '';
         return s === key;
@@ -664,6 +719,7 @@ function StatsPage({ historyRows, streakRows }) {
     { key: 'wide_spread',       label: '寬幅分散', icon: '🌐' },
     { key: 'gradient',          label: '梯度遞減', icon: '📐' },
     { key: 'zone_bias',          label: '結構偏向', icon: '🗺️' },
+    { key: 'zone_pattern_bias',  label: '區間盤面', icon: '🎯' },
     { key: 'core_outer',        label: '核心外圍', icon: '🎯' },
     { key: 'spider_mid',        label: '次熱號',   icon: '🔬' },
   ];
@@ -684,7 +740,7 @@ function StatsPage({ historyRows, streakRows }) {
         ) : (
           <>
             <div style={{ borderBottom: `1px solid ${C.border}`, paddingBottom: 8, marginBottom: 8 }}>
-              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>V0627-1版本各模式表現：</div>
+              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>V0628-3版本各模式表現：</div>
               {Object.entries(modeMap).sort((a, b) => b[1].count - a[1].count).map(([mode, stat]) => {
                 const avg = toNum(stat?.avg_pnl, 0);
                 const color = avg > 0 ? C.green : avg > -100 ? C.orange : '#DC2626';
@@ -769,6 +825,43 @@ function StatsPage({ historyRows, streakRows }) {
               )}
                           ) : !isDone ? (
             </>
+          );
+        })()}
+      </div>
+
+      {/* ★ V0628-3：盤面策略命中率對比卡 */}
+      <div style={S.card}>
+        <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>📊 盤面策略命中率對比</div>
+        <div style={{ fontSize: 11, color: C.textSub, marginBottom: 10 }}>今日新增的盤面策略 vs 舊策略實戰對比（依選號策略分類）</div>
+        {(() => {
+          const strategies = [
+            { key: 'zone_pattern_bias', label: '🗂️ 區間盤面(Z+M)', color: '#DC2626', bg: '#FEE2E2' },
+            { key: 'zone_bias',         label: '🗺️ 結構偏向(S+H)', color: '#0369A1', bg: '#E0F2FE' },
+            { key: 'gradient',          label: '📐 梯度遞減',       color: '#059669', bg: '#ECFDF5' },
+            { key: 'wide_spread',       label: '🌐 寬幅分散',       color: '#7C3AED', bg: '#F5F3FF' },
+            { key: 'core_outer',        label: '🎯 核心外圍',       color: '#B45309', bg: '#FEF3C7' },
+          ];
+          return (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {strategies.map(st => {
+                const rows = filterByBoardState(st.key);
+                const s = calcStats(rows);
+                const rateC = s.rate > 0.0375 ? C.green : s.rate > 0.02 ? C.orange : C.gray;
+                return (
+                  <div key={st.key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: st.bg, borderRadius: 8, padding: '7px 10px', border: `1px solid ${st.color}22` }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: st.color }}>{st.label}</span>
+                    {s.total === 0 ? (
+                      <span style={{ fontSize: 10, color: C.textSub }}>尚無資料</span>
+                    ) : (
+                      <div style={{ textAlign: 'right' }}>
+                        <span style={{ fontSize: 13, fontWeight: 900, color: rateC }}>{(s.rate * 100).toFixed(1)}%</span>
+                        <span style={{ fontSize: 10, color: C.textSub, marginLeft: 4 }}>{s.hit3}/{s.total}期</span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           );
         })()}
       </div>
@@ -1019,7 +1112,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0628-2</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0628-3</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
