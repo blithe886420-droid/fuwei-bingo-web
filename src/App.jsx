@@ -26,6 +26,7 @@ const SELECTION_STRATEGY_LABEL = {
   spider_mid:  { text: '🔬 次熱號優先', color: '#0E7490', bg: '#CFFAFE' },
   wide_spread: { text: '🌐 寬幅分散', color: '#7C3AED', bg: '#F5F3FF' },
   gradient:    { text: '📐 梯度遞減', color: '#059669', bg: '#ECFDF5' },
+  zone_bias:   { text: '🗺️ 結構偏向', color: '#0369A1', bg: '#E0F2FE' },
 };
 function selectionStrategyInfo(s) { return SELECTION_STRATEGY_LABEL[s] || null; }
 
@@ -631,7 +632,7 @@ function StatsPage({ historyRows, streakRows }) {
   // V0623-2：依盤面狀態或選號策略篩選
   const filterByBoardState = (key) => {
     if (key === 'all') return allRows;
-    if (key === 'core_outer' || key === 'spider_mid') {
+    if (key === 'core_outer' || key === 'spider_mid' || key === 'zone_bias' || key === 'gradient' || key === 'wide_spread') {
       return allRows.filter(row => {
         const s = toArray(row?.groups_json)[0]?.meta?.selection_strategy || '';
         return s === key;
@@ -662,6 +663,7 @@ function StatsPage({ historyRows, streakRows }) {
     { key: 'F_quiet',           label: '平淡期',   icon: '😶' },
     { key: 'wide_spread',       label: '寬幅分散', icon: '🌐' },
     { key: 'gradient',          label: '梯度遞減', icon: '📐' },
+    { key: 'zone_bias',          label: '結構偏向', icon: '🗺️' },
     { key: 'core_outer',        label: '核心外圍', icon: '🎯' },
     { key: 'spider_mid',        label: '次熱號',   icon: '🔬' },
   ];
@@ -1017,7 +1019,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0628-1</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0628-2</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
