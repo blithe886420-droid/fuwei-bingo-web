@@ -180,7 +180,7 @@ function Spinner() {
 }
 
 // ★ 標籤列：盤面+訊號+謹慎旗標+回饋迴路+動態組數，統一元件供第一頁和第二頁使用
-function QuickPage({ prediction, recent20, onRefresh, loading }) {
+function QuickPage({ prediction, recent20, onRefresh, loading, streakRows }) {
   const row = prediction?.latest_3star_row;
   const compareResult = safeJson(row?.compare_result_json) || safeJson(row?.compare_result);
   const detail = toArray(compareResult?.detail);
@@ -261,9 +261,36 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
       {/* 本期預測 */}
       {isSkipped ? (
         <Card title="本期預測" icon="⏸️">
-          <div style={{ textAlign: 'center', padding: '32px 12px' }}>
+          <div style={{ textAlign: 'center', padding: '20px 12px' }}>
             <div style={{ fontSize: 13, color: C.textSub, marginBottom: 8 }}>預測期號 {fmt(row?.source_draw_no || latestDraw?.draw_no)}</div>
-            <div style={{ fontSize: 20, fontWeight: 900, color: '#DC2626' }}>🔴 本期不推薦號碼</div>
+            <div style={{ fontSize: 16, fontWeight: 900, color: '#DC2626', marginBottom: 12 }}>🔴 主系統本期不推薦</div>
+            {/* ★ V0628-1：顯示熱號錨點策略 */}
+            {(() => {
+              const srcNo = String(row?.source_draw_no || latestDraw?.draw_no || '');
+              const streakRow = toArray(streakRows).find(s => String(s?.source_draw_no) === srcNo);
+              const streakGroups = streakRow ? toArray(streakRow?.groups_json) : [];
+              const anchorNums = streakGroups[0]?.meta?.anchor_nums || [];
+              if (streakGroups.length === 0) return (
+                <div style={{ fontSize: 12, color: C.textSub }}>熱號錨點策略計算中...</div>
+              );
+              return (
+                <div>
+                  <div style={{ fontSize: 12, color: '#D97706', fontWeight: 700, marginBottom: 8 }}>
+                    🔥 熱號錨點策略出手｜錨點：{anchorNums.map(n => String(n).padStart(2,'0')).join(' ')}
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'center' }}>
+                    {streakGroups.map((g, gi) => {
+                      const nums = toArray(g?.nums);
+                      return (
+                        <div key={gi} style={{ background: C.orangeLight, borderRadius: 8, padding: '4px 10px', fontSize: 12, border: `1px solid ${C.orange}`, fontWeight: 600 }}>
+                          {nums.map(n => String(n).padStart(2,'0')).join(' ')}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         </Card>
       ) : (
@@ -1007,7 +1034,7 @@ export default function App() {
         ))}
       </div>
       {loading && tab === 'quick' && <Spinner />}
-      {tab === 'quick'   && <QuickPage   prediction={prediction} recent20={recent20} onRefresh={loadData} loading={loading} />}
+      {tab === 'quick'   && <QuickPage   prediction={prediction} recent20={recent20} onRefresh={loadData} loading={loading} streakRows={streakRows} />}
       {tab === 'history' && <HistoryPage historyRows={historyRows} streakRows={streakRows} />}
       {tab === 'stats'   && <StatsPage   historyRows={historyRows} streakRows={streakRows} />}
       {tab === 'market'  && <MarketPage  recent20={recent20} />}
