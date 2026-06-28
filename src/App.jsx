@@ -1,5 +1,8 @@
 /**
- * App.jsx - V0628-3
+ * App.jsx - V0628-4
+ *
+ * ★ V0628-4更新(6/28)：
+ * 版本對應buildBingoV1Strategies V0628-4（zone_pattern_bias正式當主力）
  *
  * ★ V0628-3更新(6/28)：
  * 1. MetaTags新增盤面結構資訊顯示（zone_bias_type、zm_bias_type、Z前/後方向、M級別）
@@ -1112,7 +1115,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0628-3</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0628-4</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
