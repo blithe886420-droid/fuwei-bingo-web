@@ -1,5 +1,8 @@
 /**
- * App.jsx - V0629-1
+ * App.jsx - V0629-2
+ *
+ * ★ V0629-2更新(6/29)：
+ * 版本對應V0629-2（策略競爭公平化+增加出手率+提高命中率）
  *
  * ★ V0629-1更新(6/29)：
  * 版本對應buildBingoV1Strategies V0629-1（增加出手率+提高命中率）
@@ -1119,7 +1122,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0629-1</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0629-2</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
