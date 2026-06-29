@@ -1,535 +1,317 @@
 /**
- * App.jsx - V0629-3
+ * App.jsx - V0629-4
  *
- * ★ V0629-3更新(6/29)：
- * 版本對應V0629-3（三項智慧升級：近期加權+ZM盤面匹配+連勝連敗動態組數）
- *
- * ★ V0629-2更新(6/29)：
- * 版本對應V0629-2（策略競爭公平化+增加出手率+提高命中率）
- *
- * ★ V0629-1更新(6/29)：
- * 版本對應buildBingoV1Strategies V0629-1（增加出手率+提高命中率）
- * F_quiet加訊號豁免、fourBurstFire門檻降到>=2、F_quiet caution只縮手不跳過
- *
- * ★ V0628-4更新(6/28)：
- * 版本對應buildBingoV1Strategies V0628-4（zone_pattern_bias正式當主力）
- *
- * ★ V0628-3更新(6/28)：
- * 1. MetaTags新增盤面結構資訊顯示（zone_bias_type、zm_bias_type、Z前/後方向、M級別）
- * 2. 新增 zone_pattern_bias 策略標籤（🎯 區間盤面）
- * 3. 統計頁新增「區間盤面」篩選頁籤
- * 4. 統計頁新增盤面策略命中率對比卡（zone_bias vs zone_pattern_bias vs gradient）
- * 5. filterByBoardState 支援 zone_pattern_bias 篩選
- * 版本對應：buildBingoV1Strategies V0628-3（Z+M四區間複合盤面策略）
- *
- * ★ V0628-2更新(6/28)：
- * 1. 新增 zone_bias 策略標籤（🗺️ 結構偏向）
- * 2. 統計頁新增「結構偏向」篩選頁籤
- * 3. filterByBoardState 支援 zone_bias/gradient/wide_spread 用 selection_strategy 篩選
- * 版本對應：buildBingoV1Strategies V0628-2（S+H盤面策略）
- *
- * ★ V0628-1更新(6/28)：
- * 1. 封印顯示改為各模式損益
- * 2. 第一頁和第二頁顯示熱號錨點策略
- * 3. 第三頁獨立錨點統計區塊
+ * ★ V0629-4：全新系統UI（六分頁架構保留，內容換新）
+ * 配合buildBingoV1Strategies V0629-4（Z+M盤面 + 錨點黃金條件）
+ * 六個分頁：快速/近期/統計/開獎/熱號/錨點
+ * 廢棄：舊盤面標籤（A_golden等）、訊號系統、TQ/four_count
+ * 新增：Z+M盤面卡、錨點品質標籤、黃金條件顯示
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 const RAILWAY_URL = 'https://fuwei-bingo-backend-production.up.railway.app';
 const REFRESH_INTERVAL_MS = 30000;
-const STATS_START_DATE = '2026-06-08T00:00:00.000Z';
+const STATS_START_DATE = '2026-06-29T00:00:00.000Z';
 
-// V0623-2：四種active_mode中文對照
-const MODE_LABEL = {
-  standard: '標準', strong: '強訊號', ultra: '超強訊號', spider: '蜘蛛感知',
-};
-function modeLabel(m) { return MODE_LABEL[m] || m || '-'; }
-
-// V0620-3：五種盤面狀態中文對照
-const BOARD_STATE_LABEL = {
-  A_golden:        { text: '黃金共振', color: '#B45309', bg: '#FEF3C7' },
-  B_spider_calm:   { text: '蜘蛛靜默', color: '#15803D', bg: '#DCFCE7' },
-  D_burst_danger:  { text: '爆發危險區', color: '#DC2626', bg: '#FEE2E2' },
-  E_false_momentum:{ text: '假動能',   color: '#9333EA', bg: '#F3E8FF' },
-  F_quiet:         { text: '平淡期',   color: '#6B7280', bg: '#F3F4F6' },
-};
-function boardStateInfo(s) { return BOARD_STATE_LABEL[s] || null; }
-
-// V0623-2：選號策略中文對照，V0625-2加入wide_spread和gradient
-const SELECTION_STRATEGY_LABEL = {
-  core_outer:  { text: '🎯 核心外圍', color: '#B45309', bg: '#FEF3C7' },
-  spider_mid:  { text: '🔬 次熱號優先', color: '#0E7490', bg: '#CFFAFE' },
-  wide_spread: { text: '🌐 寬幅分散', color: '#7C3AED', bg: '#F5F3FF' },
-  gradient:    { text: '📐 梯度遞減', color: '#059669', bg: '#ECFDF5' },
-  zone_bias:   { text: '🗺️ 結構偏向', color: '#0369A1', bg: '#E0F2FE' },
-  zone_pattern_bias: { text: '🎯 區間盤面', color: '#DC2626', bg: '#FEE2E2' },
-};
-function selectionStrategyInfo(s) { return SELECTION_STRATEGY_LABEL[s] || null; }
-
-// V0623-2：回饋迴路信心等級
-const FEEDBACK_LABEL = {
-  hot:        { text: '回饋:發燙🔥', color: '#15803D', bg: '#DCFCE7' },
-  normal:     { text: '回饋:正常',   color: '#6B7280', bg: '#F3F4F6' },
-  cold:       { text: '回饋:冷場觀察', color: '#DC2626', bg: '#FEE2E2' },
-  regression: { text: '回饋:均值回歸↓4組', color: '#D97706', bg: '#FEF9C3' },
-};
-function feedbackInfo(f) { return FEEDBACK_LABEL[f] || null; }
-
-// V0620-4：謹慎旗標
-function getCautionLabels(meta) {
-  if (!meta) return [];
-  const labels = [];
-  if (meta.sum_surge) labels.push('總和暴漲');
-  if (meta.odd_imbalance) labels.push('奇偶失衡');
-  if (meta.tq_plunge) labels.push('TQ急跌');
-  return labels;
-}
-
-// V0619-2：s1/s5/s9/s12訊號判斷
-const SIGNAL_LABEL = { s1: 's1換手醞釀', s5: 's5槓龜換手', s9: 's9連2期均衡', s12: 's12高TQ換手' };
-function isBalancedTail(t) { return t >= 9 && t <= 11; }
-function getFiredSignals(meta) {
-  if (!meta) return [];
-  const changedNums = toNum(meta.changed_nums, -1);
-  const position = meta.position || '';
-  const prevHitCount = toNum(meta.prev_hit_count, -1);
-  const totalQualified = toNum(meta.total_qualified, -1);
-  const prevOddTail = meta.prev_odd_tail != null ? toNum(meta.prev_odd_tail, -1) : null;
-  const prev2OddTail = meta.prev2_odd_tail != null ? toNum(meta.prev2_odd_tail, -1) : null;
-  const isFastBurst = changedNums >= 5;
-  const fired = [];
-  if (isFastBurst && position === '醞釀期') fired.push('s1');
-  if (prevHitCount === 0 && isFastBurst) fired.push('s5');
-  if (prevOddTail != null && prev2OddTail != null && isBalancedTail(prevOddTail) && isBalancedTail(prev2OddTail)) fired.push('s9');
-  if (totalQualified >= 25 && isFastBurst) fired.push('s12');
-  return fired;
-}
-
-// V0621-5：four_count門檻出手判斷
-function isFiredByFourCountOnly(meta) {
-  if (!meta) return false;
-  return meta.four_burst_fire === true && toNum(meta.total_signals, -1) === 0;
-}
-
-function toNum(v, fallback = 0) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : fallback;
-}
+function toNum(v, fallback = 0) { const n = Number(v); return Number.isFinite(n) ? n : fallback; }
 function toArray(v) { return Array.isArray(v) ? v : []; }
-function fmt(v, fallback = '--') {
-  if (v === null || v === undefined || v === '') return fallback;
-  return String(v);
+function fmt(v, fallback = '-') { const n = Number(v); return Number.isFinite(n) ? String(n) : fallback; }
+function fmtPercent(rate) { if (rate == null || !Number.isFinite(rate)) return '--%'; return (rate * 100).toFixed(1) + '%'; }
+function padNum(n) { return String(n).padStart(2, '0'); }
+function parseNums(v) {
+  if (Array.isArray(v)) return v.map(Number).filter(n => n >= 1 && n <= 80);
+  return String(v || '').trim().split(/\s+/).map(Number).filter(n => n >= 1 && n <= 80);
 }
-function fmtPercent(v) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return '--';
-  return `${(n * 100).toFixed(1)}%`;
-}
-function parseNums(input) {
-  if (Array.isArray(input)) return input.map(Number).filter(Number.isFinite);
-  if (typeof input === 'string') {
-    return input.replace(/[{}[\]]/g, ' ').split(/[,\s|/]+/).map(n => Number(n.trim())).filter(Number.isFinite);
-  }
-  return [];
-}
-function safeJson(v, fallback = null) {
-  if (v == null) return fallback;
-  if (typeof v === 'object') return v;
-  try { return JSON.parse(v); } catch { return fallback; }
-}
-function isNight() {
-  const now = new Date();
-  const m = now.getHours() * 60 + now.getMinutes();
-  return m >= 0 && m < 7 * 60;
-}
-function padNum(n) { return String(Number(n)).padStart(2, '0'); }
+function isNight() { const h = (new Date().getUTCHours() + 8) % 24; return h >= 0 && h < 7; }
 
-async function apiFetch(path, options = {}) {
-  const res = await fetch(`${RAILWAY_URL}${path}`, { cache: 'no-store', ...options });
-  const text = await res.text();
-  try { return JSON.parse(text); } catch { return { raw: text }; }
-}
-
+// ===== 顏色系統 =====
 const C = {
-  bg: '#FFF8F0', card: '#FFFFFF', gold: '#C8860A', goldLight: '#F5D78B',
-  goldBg: '#FFF9EC', orange: '#E8722A', orangeLight: '#FDE8D8',
-  green: '#16A34A', greenBg: '#F0FDF4', teal: '#0F766E',
-  gray: '#6B7280', grayLight: '#F3F4F6', border: '#E5DDD0',
-  text: '#2C1810', textSub: '#7B6E5C',
-  purple: '#7C3AED', purpleBg: '#F5F3FF', purpleLight: '#DDD6FE',
-  shadow: '0 2px 12px rgba(200,134,10,0.10)',
+  gold: '#B45309', green: '#15803D', orange: '#D97706',
+  red: '#DC2626', blue: '#0369A1', purple: '#7C3AED',
+  text: '#1F2937', textSub: '#6B7280', border: '#E5E7EB',
+  bg: '#FFFFFF', card: '#FFFFFF', grayLight: '#F9FAFB',
+  shadow: '0 1px 4px rgba(0,0,0,0.08)',
+  headerBg: 'linear-gradient(135deg, #1E3A5F 0%, #2D5986 100%)',
 };
 
+// ===== Z+M盤面標籤 =====
+const ZM_LABEL = {
+  'Z_front_M1': { text: 'Z前M1', desc: '前段強+極小號', color: '#0369A1', bg: '#DBEAFE' },
+  'Z_front_M2': { text: 'Z前M2', desc: '前段強+小號',   color: '#0369A1', bg: '#EFF6FF' },
+  'Z_front_M3': { text: 'Z前M3', desc: '前段強+中號',   color: '#0284C7', bg: '#F0F9FF' },
+  'Z_front_M4': { text: 'Z前M4', desc: '前段強+大號',   color: '#0284C7', bg: '#F0F9FF' },
+  'Z_back_M1':  { text: 'Z後M1', desc: '後段強+極小號', color: '#7C3AED', bg: '#EDE9FE' },
+  'Z_back_M2':  { text: 'Z後M2', desc: '後段強+小號',   color: '#7C3AED', bg: '#F5F3FF' },
+  'Z_back_M3':  { text: 'Z後M3', desc: '後段強+中號',   color: '#9333EA', bg: '#FAF5FF' },
+  'Z_back_M4':  { text: 'Z後M4', desc: '後段強+大號',   color: '#DC2626', bg: '#FEE2E2' },
+};
+function zmLabel(key) { return ZM_LABEL[key] || { text: key || '未知', desc: '', color: C.textSub, bg: C.grayLight }; }
+
+// ===== 錨點品質標籤 =====
+const QUALITY_LABEL = {
+  golden_plus: { text: '🥇 黃金+', color: '#B45309', bg: '#FEF3C7' },
+  golden:      { text: '🥇 黃金',  color: '#B45309', bg: '#FEF9C3' },
+  silver:      { text: '🥈 銀級',  color: '#6B7280', bg: '#F3F4F6' },
+  bronze:      { text: '🥉 銅級',  color: '#92400E', bg: '#FEF3C7' },
+  weak:        { text: '⚠️ 弱',   color: '#DC2626', bg: '#FEE2E2' },
+  none:        { text: '❌ 無錨點', color: '#DC2626', bg: '#FEE2E2' },
+};
+function qualityLabel(q) { return QUALITY_LABEL[q] || QUALITY_LABEL['none']; }
+
+// ===== 樣式 =====
 const S = {
-  app: { minHeight: '100vh', background: C.bg, fontFamily: '"Segoe UI", "PingFang TC", "Noto Sans TC", sans-serif', color: C.text, paddingBottom: 70 },
-  header: { background: `linear-gradient(135deg, ${C.gold} 0%, ${C.orange} 100%)`, padding: '12px 14px 10px', boxShadow: '0 2px 16px rgba(200,134,10,0.25)' },
-  headerTitle: { fontSize: 17, fontWeight: 900, color: '#FFF', letterSpacing: 1, margin: 0 },
-  headerSub: { fontSize: 11, color: 'rgba(255,255,255,0.85)', marginTop: 2 },
-  tabs: { display: 'flex', background: C.card, borderBottom: `2px solid ${C.border}`, position: 'sticky', top: 0, zIndex: 100, boxShadow: '0 2px 8px rgba(200,134,10,0.08)' },
-  tab: (active) => ({ flex: 1, padding: '8px 2px 6px', border: 'none', background: 'transparent', cursor: 'pointer', fontSize: 10, fontWeight: active ? 700 : 400, color: active ? C.gold : C.gray, borderBottom: active ? `3px solid ${C.gold}` : '3px solid transparent', transition: 'all 0.2s' }),
-  subTab: (active) => ({ flex: 1, padding: '6px 4px', border: 'none', background: active ? C.goldBg : 'transparent', cursor: 'pointer', fontSize: 11, fontWeight: active ? 700 : 400, color: active ? C.gold : C.gray, borderRadius: 8, transition: 'all 0.2s' }),
-  page: { padding: '10px 10px', maxWidth: 600, margin: '0 auto' },
-  card: { background: C.card, borderRadius: 12, padding: '12px 12px 10px', marginBottom: 10, boxShadow: C.shadow, border: `1px solid ${C.border}` },
-  cardTitle: { fontSize: 13, fontWeight: 700, color: C.gold, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 },
-  badge: (color, bg) => ({ display: 'inline-block', fontSize: 10, padding: '2px 6px', borderRadius: 99, fontWeight: 600, color, background: bg }),
-  ball: (hit) => ({ width: 36, height: 36, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 800, background: hit === true ? C.gold : hit === false ? C.grayLight : C.goldBg, color: hit === true ? '#FFF' : hit === false ? C.gray : C.gold, border: `2px solid ${hit === true ? C.gold : hit === false ? C.border : C.goldLight}`, boxShadow: hit === true ? `0 2px 8px ${C.goldLight}` : 'none' }),
+  app: { fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif', background: '#F3F4F6', minHeight: '100vh' },
+  header: { background: C.headerBg, color: '#fff', padding: '14px 16px 10px' },
+  headerTitle: { fontSize: 16, fontWeight: 900, letterSpacing: 0.5 },
+  headerSub: { fontSize: 11, opacity: 0.75, marginTop: 2 },
+  tabs: { display: 'flex', background: '#fff', borderBottom: `1px solid ${C.border}`, overflowX: 'auto' },
+  tab: (active) => ({
+    flex: 1, minWidth: 52, padding: '8px 4px 6px', border: 'none',
+    borderBottom: active ? `3px solid ${C.gold}` : '3px solid transparent',
+    background: 'transparent', color: active ? C.gold : C.textSub,
+    fontWeight: active ? 800 : 500, fontSize: 11, cursor: 'pointer',
+    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
+  }),
+  page: { padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 500, margin: '0 auto' },
+  card: { background: C.card, borderRadius: 14, padding: '14px 16px', boxShadow: C.shadow, border: `1px solid ${C.border}` },
   statRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderBottom: `1px solid ${C.border}` },
-  statLabel: { fontSize: 12, color: C.textSub },
-  statValue: { fontSize: 13, fontWeight: 700, color: C.text },
-  bigNum: { fontSize: 26, fontWeight: 900, color: C.gold },
-  btn: (disabled) => ({ background: disabled ? C.grayLight : `linear-gradient(135deg, ${C.gold}, ${C.orange})`, color: disabled ? C.gray : '#FFF', border: 'none', borderRadius: 10, padding: '9px 16px', fontSize: 13, fontWeight: 700, cursor: disabled ? 'not-allowed' : 'pointer', boxShadow: disabled ? 'none' : C.shadow, width: '100%', marginTop: 6 }),
-  divider: { height: 1, background: C.border, margin: '10px 0' },
-  empty: { color: C.textSub, fontSize: 13, padding: '12px 0', textAlign: 'center' },
-  recentBall: () => ({ width: 32, height: 32, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700, background: C.grayLight, color: C.textSub }),
+  divider: { height: 1, background: C.border, margin: '8px 0' },
+  bigNum: { fontSize: 32, fontWeight: 900, letterSpacing: -1 },
+  empty: { textAlign: 'center', color: C.textSub, fontSize: 12, padding: '20px 0' },
+  badge: (color, bg) => ({ fontSize: 10, fontWeight: 700, color, background: bg, borderRadius: 6, padding: '2px 6px' }),
+  numBadge: (hit) => ({
+    display: 'inline-flex', alignItems: 'center', gap: 4, padding: '3px 8px', borderRadius: 12,
+    fontSize: 11, fontWeight: 700,
+    background: hit >= 3 ? '#FEF3C7' : hit >= 2 ? '#DCFCE7' : '#F3F4F6',
+    color: hit >= 3 ? C.gold : hit >= 2 ? C.green : C.textSub,
+    border: `1px solid ${hit >= 3 ? C.gold : hit >= 2 ? C.green : C.border}`,
+  }),
+  recentBall: () => ({
+    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+    width: 28, height: 28, borderRadius: '50%', fontSize: 11, fontWeight: 700,
+    background: '#F3F4F6', color: C.text, border: `1px solid ${C.border}`,
+  }),
+  subTab: (active) => ({
+    padding: '6px 10px', border: 'none', borderRadius: 8,
+    background: active ? '#1F2937' : 'transparent',
+    color: active ? '#fff' : C.textSub,
+    fontWeight: active ? 700 : 500, fontSize: 11, cursor: 'pointer',
+  }),
 };
 
-function Card({ title, icon, children, right }) {
+function Card({ title, children, icon }) {
   return (
     <div style={S.card}>
-      {title && (
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-          <div style={S.cardTitle}>{icon && <span>{icon}</span>}{title}</div>
-          {right && <div>{right}</div>}
-        </div>
-      )}
+      {title && <div style={{ fontSize: 13, fontWeight: 800, color: C.text, marginBottom: 10 }}>{icon} {title}</div>}
       {children}
     </div>
   );
 }
-
-function Ball({ n, hit }) { return <div style={S.ball(hit)}>{padNum(n)}</div>; }
 function StatRow({ label, value, valueColor }) {
   return (
     <div style={S.statRow}>
-      <span style={S.statLabel}>{label}</span>
-      <span style={{ ...S.statValue, color: valueColor || C.text }}>{value}</span>
+      <span style={{ fontSize: 12, color: C.textSub }}>{label}</span>
+      <span style={{ fontSize: 12, fontWeight: 700, color: valueColor || C.text }}>{value}</span>
     </div>
   );
 }
-
 function Spinner() {
+  return <div style={{ textAlign: 'center', padding: 24, color: C.textSub, fontSize: 13 }}>⏳ 載入中...</div>;
+}
+
+// ===== MetaTags（新系統版）=====
+function MetaTags({ meta, isSkipped }) {
+  if (!meta || isSkipped) return null;
+  const zm = zmLabel(meta.zm_key);
+  const quality = qualityLabel(meta.anchor_quality);
   return (
-    <div style={{ display: 'flex', justifyContent: 'center', padding: 30 }}>
-      <div style={{ width: 32, height: 32, borderRadius: '50%', border: `3px solid #F5D78B`, borderTopColor: C.gold, animation: 'spin 0.8s linear infinite' }} />
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
+      {meta.zm_key && <span style={{ ...S.badge(zm.color, zm.bg) }}>{zm.text}</span>}
+      {meta.anchor_quality && <span style={{ ...S.badge(quality.color, quality.bg) }}>{quality.text}</span>}
+      {meta.anchor_count != null && <span style={S.badge(C.textSub, C.grayLight)}>錨點{meta.anchor_count}顆</span>}
+      {meta.anchor_span != null && <span style={S.badge(C.textSub, C.grayLight)}>跨度{meta.anchor_span}</span>}
+      {meta.z_momentum === 'same' && <span style={S.badge(C.green, '#DCFCE7')}>↻ Z慣性</span>}
+      {meta.is_golden && <span style={S.badge(C.gold, '#FEF9C3')}>⭐ 黃金條件</span>}
+      {meta.has_both_ends && <span style={S.badge(C.green, '#DCFCE7')}>首尾都有</span>}
+      {meta.has_large_anchor && <span style={S.badge(C.purple, '#EDE9FE')}>含75-80</span>}
+      {meta.max_combos != null && meta.max_combos < 8 && <span style={S.badge(C.purple, '#F5F3FF')}>📉 縮手{meta.max_combos}組</span>}
     </div>
   );
 }
 
-// ★ 標籤列：盤面+訊號+謹慎旗標+回饋迴路+動態組數，統一元件供第一頁和第二頁使用
-function QuickPage({ prediction, recent20, onRefresh, loading, streakRows }) {
-  const row = prediction?.latest_3star_row;
-  const compareResult = safeJson(row?.compare_result_json) || safeJson(row?.compare_result);
-  const detail = toArray(compareResult?.detail);
-  const allGroups = toArray(row?.groups_json);
-  const groups = allGroups.slice(0, 8);
-  const isDone = row?.compare_status === 'done';
-  const bestHit = toNum(row?.hit_count, 0);
-  const latestDraw = toArray(recent20)[0];
-  const isSkipped = !row || row?.status === 'skipped' || allGroups.length === 0;
-  const meta0 = groups[0]?.meta || {};
-  const activeMode = meta0.active_mode || 'standard';
-  const isAvoidNow = isSkipped || activeMode === 'skip';
-  const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.orange : C.textSub;
-  const hit2Groups = detail.filter(d => toNum(d?.hit, 0) === 2).length;
-  const isWarning = hit2Groups >= 3;
+// ===== 盤面分析卡 =====
+function BoardCard({ meta }) {
+  if (!meta || !meta.zm_key) return null;
+  const zm = zmLabel(meta.zm_key);
+  const quality = qualityLabel(meta.anchor_quality);
+  const anchors = toArray(meta.anchor_nums);
 
-  const comparedDrawNumsArr = toArray(compareResult?.draw_nums);
-  const drawNums = new Set(
-    comparedDrawNumsArr.length > 0
-      ? comparedDrawNumsArr.map(Number)
-      : parseNums(latestDraw?.numbers)
+  return (
+    <div style={S.card}>
+      <div style={{ fontSize: 13, fontWeight: 800, color: C.text, marginBottom: 10 }}>🗺️ 當期盤面分析</div>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+        <div style={{ flex: 1, background: zm.bg, borderRadius: 10, padding: '10px 12px', border: `1px solid ${zm.color}33` }}>
+          <div style={{ fontSize: 11, color: zm.color, fontWeight: 700 }}>Z+M盤面</div>
+          <div style={{ fontSize: 20, fontWeight: 900, color: zm.color }}>{zm.text}</div>
+          <div style={{ fontSize: 10, color: zm.color, opacity: 0.8 }}>{zm.desc}</div>
+        </div>
+        <div style={{ flex: 1, background: quality.bg, borderRadius: 10, padding: '10px 12px', border: `1px solid ${quality.color}33` }}>
+          <div style={{ fontSize: 11, color: quality.color, fontWeight: 700 }}>錨點品質</div>
+          <div style={{ fontSize: 20, fontWeight: 900, color: quality.color }}>{quality.text}</div>
+          <div style={{ fontSize: 10, color: quality.color, opacity: 0.8 }}>錨點{meta.anchor_count}顆 跨度{meta.anchor_span}</div>
+        </div>
+      </div>
+      {/* 四區間 */}
+      <div style={{ background: C.grayLight, borderRadius: 8, padding: '8px 10px', marginBottom: 8 }}>
+        <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>上期四區間分布</div>
+        <div style={{ display: 'flex', gap: 4 }}>
+          {[['1-20', meta.prev_z1, C.blue], ['21-40', meta.prev_z2, C.green], ['41-60', meta.prev_z3, C.orange], ['61-80', meta.prev_z4, C.purple]].map(([label, count, color]) => (
+            <div key={label} style={{ flex: 1, textAlign: 'center', background: '#fff', borderRadius: 6, padding: '4px 0', border: `1px solid ${C.border}` }}>
+              <div style={{ fontSize: 16, fontWeight: 900, color }}>{count ?? '-'}</div>
+              <div style={{ fontSize: 9, color: C.textSub }}>{label}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+      {/* 錨點號碼 */}
+      {anchors.length > 0 && (
+        <div>
+          <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>錨點號碼（連續2期出現）</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+            {anchors.map(n => (
+              <span key={n} style={{
+                fontSize: 12, fontWeight: 700, padding: '2px 8px', borderRadius: 10,
+                background: n >= 61 ? '#EDE9FE' : n <= 20 ? '#DBEAFE' : '#F3F4F6',
+                color: n >= 61 ? C.purple : n <= 20 ? C.blue : C.text,
+                border: `1px solid ${n >= 61 ? '#C4B5FD' : n <= 20 ? '#93C5FD' : C.border}`,
+              }}>{padNum(n)}</span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
   );
+}
+
+// ===== 第一頁：快速 =====
+function QuickPage({ prediction, recent20, onRefresh, loading }) {
+  const row = prediction?.latest_3star_row;
+  const groups = toArray(row?.groups_json);
+  const meta0 = groups[0]?.meta || {};
+  const isSkipped = !row || row?.status === 'skipped' || groups.filter(g => g.key !== 'skip_meta').length === 0;
+  const realGroups = groups.filter(g => g.key !== 'skip_meta');
+  const compareResult = row?.compare_result_json;
+  const detail = toArray(compareResult?.detail);
+  const bestHit = toNum(row?.hit_count, 0);
+  const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.green : C.textSub;
+  const [expanded, setExpanded] = useState(true);
 
   return (
     <div style={S.page}>
-      {/* 最新開獎 */}
-      <Card title="最新開獎" icon="🎱">
-        {latestDraw ? (
-          <>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-              <span style={S.statLabel}>期號 {fmt(latestDraw?.draw_no)}</span>
-              <span style={S.statLabel}>{fmt(latestDraw?.draw_time)}</span>
-            </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
-              {parseNums(latestDraw?.numbers).sort((a, b) => a - b).map(n => (
-                <div key={n} style={S.recentBall()}>{padNum(n)}</div>
-              ))}
-            </div>
-          </>
-        ) : <div style={S.empty}>載入中...</div>}
-      </Card>
+      {/* 盤面分析 */}
+      {meta0.zm_key && <BoardCard meta={meta0} />}
 
-      {/* 行動建議框（V0623-2清理版：移除confidenceScore/brewCount/forcedSwitch等舊邏輯） */}
-      {!isSkipped && !isDone && (() => {
-        const isGo = !isAvoidNow;
-        const actionBg = isGo ? '#DCFCE7' : '#FEE2E2';
-        const actionBorder = isGo ? '#16A34A' : '#DC2626';
-        const actionColor = isGo ? '#15803D' : '#DC2626';
-        const actionIcon = isGo ? '🟢' : '🔴';
-        const actionText = isGo ? '本期可進場' : '本期不推薦號碼';
-        const totalSignals = toNum(meta0.total_signals, 0);
-        const mainReason = activeMode === 'ultra' ? `${totalSignals}個訊號共鳴`
-          : activeMode === 'strong' ? `${totalSignals}個訊號共鳴`
-          : activeMode === 'spider' ? '蜘蛛感知(TQ22+連穩)'
-          : `標準模式`;
-        return (
-          <div style={{ marginBottom: 12 }}>
-            <div style={{ background: actionBg, border: `2px solid ${actionBorder}`, borderRadius: 12, padding: '10px 12px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div style={{ fontSize: 18, fontWeight: 900, color: actionColor }}>{actionIcon} {actionText}</div>
-                <span style={{ fontSize: 10, fontWeight: 700, color: actionColor, background: actionBorder + '22', borderRadius: 6, padding: '3px 8px' }}>{modeLabel(activeMode)}</span>
-              </div>
-              {isGo && <div style={{ fontSize: 11, color: actionColor, marginTop: 4, opacity: 0.9 }}>{mainReason}</div>}
-              {isGo && <MetaTags meta={meta0} isSkipped={false} />}
-            </div>
-          </div>
-        );
-      })()}
-
-      {/* 多組中2預警 */}
-      {isWarning && (
-        <div style={{ background: '#FEF3C7', border: '2px solid #F59E0B', borderRadius: 12, padding: '10px 14px', marginBottom: 10 }}>
-          <div style={{ fontSize: 14, fontWeight: 800, color: '#D97706' }}>⚡ 多組中2，下期注意</div>
-          <div style={{ fontSize: 12, color: '#92400E', marginTop: 4 }}>本期有 {hit2Groups} 組中2</div>
-        </div>
-      )}
-
-      {/* 本期預測 */}
-      {isSkipped ? (
-        <Card title="本期預測" icon="⏸️">
-          <div style={{ textAlign: 'center', padding: '20px 12px' }}>
-            <div style={{ fontSize: 13, color: C.textSub, marginBottom: 8 }}>預測期號 {fmt(row?.source_draw_no || latestDraw?.draw_no)}</div>
-            <div style={{ fontSize: 16, fontWeight: 900, color: '#DC2626', marginBottom: 12 }}>🔴 主系統本期不推薦</div>
-            {/* ★ V0628-1：顯示熱號錨點策略 */}
-            {(() => {
-              const srcNo = String(row?.source_draw_no || latestDraw?.draw_no || '');
-              const streakRow = toArray(streakRows).find(s => String(s?.source_draw_no) === srcNo);
-              const streakGroups = streakRow ? toArray(streakRow?.groups_json) : [];
-              const anchorNums = streakGroups[0]?.meta?.anchor_nums || [];
-              if (streakGroups.length === 0) return (
-                <div style={{ fontSize: 12, color: C.textSub }}>熱號錨點策略計算中...</div>
-              );
-              return (
-                <div>
-                  <div style={{ fontSize: 12, color: '#D97706', fontWeight: 700, marginBottom: 8 }}>
-                    🔥 熱號錨點策略出手｜錨點：{anchorNums.map(n => String(n).padStart(2,'0')).join(' ')}
-                  </div>
-                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'center' }}>
-                    {streakGroups.map((g, gi) => {
-                      const nums = toArray(g?.nums);
-                      return (
-                        <div key={gi} style={{ background: C.orangeLight, borderRadius: 8, padding: '4px 10px', fontSize: 12, border: `1px solid ${C.orange}`, fontWeight: 600 }}>
-                          {nums.map(n => String(n).padStart(2,'0')).join(' ')}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              );
-            })()}
-          </div>
-        </Card>
-      ) : (
-        <Card
-          title="本期預測"
-          icon="🔥"
-          right={
-            isDone ? (
-              <span style={S.badge(hitColor, hitColor + '18')}>
-                {bestHit >= 3 ? `🏆 中${bestHit}！` : bestHit >= 2 ? `🔸 中${bestHit}(仍虧)` : `❌ 未中`}
-              </span>
-            ) : row ? <span style={S.badge(C.orange, C.orangeLight)}>等待開獎</span> : null
-          }
-        >
-          {isDone ? (
-            (() => {
-              const totalCost = groups.length * 25;
-              const reward = bestHit >= 3 ? 500 : bestHit >= 2 ? 50 : 0;
-              const netPnl = reward - totalCost;
-              const labelColor = bestHit >= 3 ? hitColor : netPnl < 0 ? '#B91C1C' : C.textSub;
-              const label = bestHit >= 3 ? '🏆 恭喜中3！' : bestHit >= 2 ? '🔸 中2（仍虧本）' : '❌ 未中';
-              return (
-                <>
-                  <div style={{ textAlign: 'center', padding: '12px 0 10px' }}>
-                    <div style={{ fontSize: 13, color: C.textSub, marginBottom: 6 }}>比對期號 {fmt(detail[0]?.draw_no)}</div>
-                    <div style={{ ...S.bigNum, color: labelColor }}>{label}</div>
-                    <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>
-                      本期淨損益：<span style={{ fontWeight: 800, color: netPnl >= 0 ? '#15803D' : '#B91C1C' }}>{netPnl >= 0 ? '+' : ''}{netPnl}元</span>（獎金{reward}元－成本{totalCost}元）
-                    </div>
-                  </div>
-                  <div style={S.divider} />
-                  {groups.map((g, idx) => {
-                    const nums = parseNums(g?.nums);
-                    const key = String(g?.key || g?.meta?.strategy_key || idx);
-                    const matchDetail = detail.find(d => String(d?.strategy_key) === key);
-                    const hit = matchDetail ? toNum(matchDetail.hit, -1) : -1;
-                    const is3 = hit >= 3;
-                    const is2 = hit === 2;
-                    return (
-                      <div key={key} style={{ background: is3 ? C.goldBg : C.grayLight, border: `2px solid ${is3 ? C.goldLight : C.border}`, borderRadius: 10, padding: '8px 12px', marginBottom: 8 }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                          <div style={{ fontSize: 11, fontWeight: 600, color: C.textSub }}>第{idx + 1}組</div>
-                          {hit >= 0 && <span style={{ fontSize: 14, fontWeight: 900, color: is3 ? C.gold : is2 ? C.orange : C.gray }}>{is3 ? `🏆 中${hit}` : is2 ? `中${hit}(仍虧)` : `中${hit}`}</span>}
-                        </div>
-                        <div style={{ display: 'flex', gap: 6 }}>
-                          {nums.map(n => {
-                            const isHit = drawNums.has(n);
-                            return <Ball key={n} n={n} hit={isHit ? true : false} />;
-                          })}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </>
-              );
-            })()
-          ) : isAvoidNow ? (
-            <div style={{ textAlign: 'center', padding: '32px 12px' }}>
-              <div style={{ fontSize: 13, color: C.textSub, marginBottom: 8 }}>預測期號 {fmt(toNum(row?.source_draw_no, 0) + 1)}</div>
-              <div style={{ fontSize: 20, fontWeight: 900, color: '#DC2626' }}>🔴 本期不推薦號碼</div>
-            </div>
-          ) : (
-            <>
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
-                <span style={S.badge(C.textSub, C.grayLight)}>
-                  {isDone && detail.length > 0 ? `比對期號 ${fmt(detail[0]?.draw_no)}` : `預測期號 ${fmt(toNum(row?.source_draw_no, 0) + 1)}`}
-                </span>
-                <span style={S.badge(C.teal, C.greenBg)}>{groups.length} 組</span>
-              </div>
-              {groups.map((g, idx) => {
-                const nums = parseNums(g?.nums);
-                const key = String(g?.key || g?.meta?.strategy_key || idx);
-                const matchDetail = detail.find(d => String(d?.strategy_key) === key);
-                const hit = matchDetail ? toNum(matchDetail.hit, -1) : -1;
-                const is3 = hit >= 3;
-                const is2 = hit === 2;
-                return (
-                  <div key={key} style={{ background: is3 ? C.goldBg : C.grayLight, border: `2px solid ${is3 ? C.goldLight : C.border}`, borderRadius: 12, padding: '12px 14px', marginBottom: 10 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                      <div style={{ fontSize: 12, fontWeight: 600, color: C.textSub }}>第{idx + 1}組</div>
-                      {isDone && hit >= 0 && (
-                        <span style={{ fontSize: 16, fontWeight: 900, color: is3 ? C.gold : is2 ? C.orange : C.gray }}>
-                          {is3 ? `🏆 中${hit}` : is2 ? `中${hit}(仍虧)` : `中${hit}`}
-                        </span>
-                      )}
-                    </div>
-                    <div style={{ display: 'flex', gap: 8 }}>
-                      {nums.map(n => {
-                        const isHit = isDone && drawNums.has(n);
-                        return <Ball key={n} n={n} hit={isDone ? (isHit ? true : false) : undefined} />;
-                      })}
-                    </div>
-                  </div>
-                );
-              })}
-            </>
+      {/* 預測組合 */}
+      <div style={S.card}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <div style={{ fontSize: 13, fontWeight: 800 }}>🎯 預測 {row?.source_draw_no || '--'}</div>
+          {!isSkipped && row?.compare_status === 'done' && (
+            <span style={S.numBadge(bestHit)}>中{bestHit}</span>
           )}
-        </Card>
-      )}
-      <button style={S.btn(loading)} onClick={onRefresh} disabled={loading}>
-        {loading ? '更新中...' : '🔄 刷新資料'}
+        </div>
+
+        <MetaTags meta={meta0} isSkipped={isSkipped} />
+
+        {isSkipped ? (
+          <div style={{ marginTop: 10, fontSize: 12, color: C.textSub }}>
+            ⏸️ 本期空窗 —— {meta0.skip_reason === 'no_anchor' ? '無錨點號碼'
+              : meta0.anchor_count != null ? `錨點${meta0.anchor_count}顆（品質${meta0.anchor_quality || '弱'}）`
+              : '條件不符合'}
+          </div>
+        ) : (
+          <>
+            <button onClick={() => setExpanded(v => !v)} style={{ width: '100%', display: 'flex', justifyContent: 'space-between', background: C.grayLight, borderRadius: 8, padding: '7px 10px', border: 'none', fontSize: 12, fontWeight: 700, cursor: 'pointer', color: C.text, marginTop: 8 }}>
+              <span>出手 {realGroups.length} 組</span>
+              <span>{expanded ? '▲' : '▼'}</span>
+            </button>
+            {expanded && (
+              <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {realGroups.map((g, idx) => {
+                  const d = detail.find(x => x?.key === g.key);
+                  const hit = d ? toNum(d?.hit, 0) : -1;
+                  return (
+                    <div key={g.key || idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '5px 8px', background: hit >= 3 ? '#FEF9C3' : hit >= 2 ? '#DCFCE7' : '#F9FAFB', borderRadius: 8 }}>
+                      <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: 1 }}>
+                        {toArray(g.nums).map(n => padNum(n)).join(' · ')}
+                      </span>
+                      {hit >= 0 && <span style={S.numBadge(hit)}>中{hit}</span>}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* 刷新按鈕 */}
+      <button onClick={onRefresh} style={{ padding: '10px', border: `1px solid ${C.border}`, borderRadius: 10, background: '#fff', fontSize: 12, fontWeight: 600, color: C.textSub, cursor: 'pointer' }}>
+        {loading ? '⏳ 更新中...' : '🔄 手動更新'}
       </button>
     </div>
   );
 }
 
-function HistoryPage({ historyRows, streakRows }) {
-  const rows = toArray(historyRows).slice(0, 20);
+// ===== 第二頁：近期 =====
+function HistoryPage({ historyRows }) {
+  const rows = toArray(historyRows).slice(0, 50);
   return (
     <div style={S.page}>
       <Card title="近期命中紀錄" icon="📋">
-        {!rows.length ? <div style={S.empty}>尚無比對紀錄</div> : rows.map((row, idx) => {
-          const compareResult = safeJson(row?.compare_result_json) || safeJson(row?.compare_result);
+        {!rows.length ? <Spinner /> : rows.map((row, idx) => {
+          const isSkipped = row?.status === 'skipped';
+          const isDone = row?.compare_status === 'done' && !isSkipped;
+          const groups = toArray(row?.groups_json);
+          const meta = groups.find(g => g.key !== 'skip_meta')?.meta || groups[0]?.meta || {};
+          const compareResult = row?.compare_result_json;
           const detail = toArray(compareResult?.detail);
-          const allGroups = toArray(row?.groups_json);
-          const groups = allGroups.slice(0, 8);
           const bestHit = toNum(row?.hit_count, 0);
-          const isDone = row?.compare_status === 'done';
-          const isSkipped = row?.status === 'skipped' || allGroups.length === 0;
-          const histMode = allGroups[0]?.meta?.active_mode || '';
-          const histIsAvoid = isSkipped || histMode === 'skip';
-          const meta0 = allGroups[0]?.meta || {};
-          const comparedDraw = toArray(compareResult?.detail)[0]?.draw_no;
-          const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.orange : C.gray;
+          const timeStr = row?.created_at
+            ? new Date(row.created_at).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Taipei' })
+            : '--';
+          const zm = zmLabel(meta?.zm_key);
+          const quality = qualityLabel(meta?.anchor_quality);
+
           return (
-            <div key={row?.id || idx} style={{ ...S.card, marginBottom: 8, padding: '10px 12px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                <div>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: C.textSub }}>
-                    預測 {fmt(row?.source_draw_no)} → 比對 {fmt(comparedDraw || '--')}
-                  </span>
-                  {/* 空窗期顯示熱號錨點 */}
-                  {isSkipped ? (
-                    (() => {
-                      const streakRow = streakRows?.find(s => String(s?.source_draw_no) === String(row?.source_draw_no));
-                      const streakGroups = streakRow ? toArray(streakRow?.groups_json) : [];
-                      const streakDetail = streakRow?.compare_result_json?.detail || [];
-                      const streakBestHit = streakDetail.reduce((m, e) => Math.max(m, toNum(e?.hit, 0)), 0);
-                      const anchorNums = streakGroups[0]?.meta?.anchor_nums || [];
-                      const isDoneStreak = streakRow?.compare_status === 'done';
-                      return streakGroups.length > 0 ? (
-                        <div style={{ marginTop: 3 }}>
-                          <div style={{ fontSize: 10, color: '#D97706', marginBottom: 3 }}>
-                            🔥 熱號錨點策略｜錨點：{anchorNums.map(n => String(n).padStart(2,'0')).join(' ')}
-                          </div>
-                          {isDoneStreak && (
-                            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                              {streakGroups.map((g, gi) => {
-                                const nums = parseNums(g?.nums);
-                                const sd = streakDetail[gi];
-                                const hit = toNum(sd?.hit, 0);
-                                return (
-                                  <div key={gi} style={{ background: hit >= 3 ? C.goldBg : hit >= 2 ? C.orangeLight : C.grayLight, borderRadius: 6, padding: '2px 6px', fontSize: 10, border: `1px solid ${hit >= 3 ? C.goldLight : hit >= 2 ? C.orange : C.border}` }}>
-                                    {nums.map(n => padNum(n)).join(' ')}
-                                    <span style={{ marginLeft: 3, fontWeight: 700, color: hit >= 3 ? C.gold : hit >= 2 ? C.orange : C.gray }}>中{hit}</span>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-                          {!isDoneStreak && <div style={{ fontSize: 10, color: C.textSub }}>等待比對中...</div>}
-                          {isDoneStreak && streakBestHit > 0 && (
-                            <div style={{ fontSize: 11, fontWeight: 700, color: streakBestHit >= 3 ? C.gold : C.orange, marginTop: 2 }}>
-                              🔥 錨點策略 {streakBestHit >= 3 ? `中${streakBestHit}` : `中${streakBestHit}`}
-                            </div>
-                          )}
-                        </div>
-                      ) : (
-                        <div style={{ fontSize: 10, color: C.purple, marginTop: 3 }}>⏸️ 本期訊號不足，無出手</div>
-                      );
-                    })()
-                  ) : (
-                    <div style={{ marginTop: 3, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-                      <span style={{ fontSize: 11, fontWeight: 700, color: histIsAvoid ? '#DC2626' : '#15803D', background: histIsAvoid ? '#FEE2E2' : '#DCFCE7', borderRadius: 6, padding: '2px 8px' }}>
-                        {histIsAvoid ? '🔴 不推薦' : '🟢 可進場'}
-                      </span>
-                    </div>
-                  )}
-                  {!isSkipped && <MetaTags meta={meta0} isSkipped={isSkipped} />}
-                </div>
-                {isSkipped ? null : isDone ? (
-                  <span style={{ fontSize: 14, fontWeight: 900, color: hitColor, whiteSpace: 'nowrap' }}>
-                    {bestHit >= 3 ? `🏆 中${bestHit}` : bestHit >= 2 ? `🔸 中${bestHit}` : `❌ 未中`}
-                  </span>
-                ) : <span style={{ fontSize: 11, color: C.orange, whiteSpace: 'nowrap' }}>等待比對</span>}
+            <div key={row?.source_draw_no || idx} style={{ borderBottom: `1px solid ${C.border}`, paddingBottom: 10, marginBottom: 10 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                <span style={{ fontSize: 12, fontWeight: 700 }}>預測 {row?.source_draw_no}</span>
+                <span style={{ fontSize: 10, color: C.textSub }}>{timeStr}</span>
               </div>
-              {/* 空窗期不顯示號碼，有出手的才顯示 */}
-              {!isSkipped && !histIsAvoid && isDone && (
-                <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginTop: 4 }}>
-                  {groups.map((g, gIdx) => {
-                    const key = String(g?.key || g?.meta?.strategy_key || gIdx);
-                    const nums = parseNums(g?.nums);
-                    const matchDetail = detail.find(d => String(d?.strategy_key) === key);
-                    const hit = matchDetail ? toNum(matchDetail.hit, 0) : 0;
-                    return (
-                      <div key={key} style={{ background: hit >= 3 ? C.goldBg : hit >= 2 ? C.orangeLight : C.grayLight, borderRadius: 6, padding: '3px 7px', fontSize: 11, border: `1px solid ${hit >= 3 ? C.goldLight : hit >= 2 ? C.orange : C.border}` }}>
-                        {nums.map(n => padNum(n)).join(' ')}
-                        <span style={{ marginLeft: 4, fontWeight: 700, color: hit >= 3 ? C.gold : hit >= 2 ? C.orange : C.gray }}>中{hit}</span>
-                      </div>
-                    );
-                  })}
+              {/* MetaTags */}
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 6 }}>
+                {meta.zm_key && <span style={S.badge(zm.color, zm.bg)}>{zm.text}</span>}
+                {meta.anchor_quality && <span style={S.badge(quality.color, quality.bg)}>{quality.text}</span>}
+                {meta.anchor_count != null && <span style={S.badge(C.textSub, C.grayLight)}>錨點{meta.anchor_count}顆 跨度{meta.anchor_span}</span>}
+                {meta.prev_z1 != null && <span style={S.badge(C.textSub, C.grayLight)}>上期區間 {meta.prev_z1}/{meta.prev_z2}/{meta.prev_z3}/{meta.prev_z4}</span>}
+                {meta.is_golden && <span style={S.badge(C.gold, '#FEF9C3')}>⭐ 黃金</span>}
+                {meta.has_both_ends && <span style={S.badge(C.green, '#DCFCE7')}>首尾都有</span>}
+                {meta.has_large_anchor && <span style={S.badge(C.purple, '#EDE9FE')}>含75-80</span>}
+              </div>
+              {/* 結果 */}
+              {isSkipped ? (
+                <div style={{ fontSize: 11, color: C.textSub }}>⏸️ 空窗</div>
+              ) : !isDone ? (
+                <div style={{ fontSize: 11, color: C.orange }}>等待比對...</div>
+              ) : (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                  {detail.filter(d => d?.hit >= 2).map((d, i) => (
+                    <span key={i} style={S.numBadge(toNum(d?.hit, 0))}>
+                      {toArray(d?.nums).map(n => padNum(n)).join(' ')} 中{d?.hit}
+                    </span>
+                  ))}
+                  <span style={{ ...S.numBadge(bestHit), fontWeight: 900 }}>最高中{bestHit}</span>
                 </div>
               )}
             </div>
@@ -540,347 +322,55 @@ function HistoryPage({ historyRows, streakRows }) {
   );
 }
 
-// ★ V0628-3：MetaTags新增盤面結構資訊（zone_bias、zone_pattern_bias）
-function MetaTags({ meta, isSkipped }) {
-  if (!meta || isSkipped) return null;
-  const bsInfo = boardStateInfo(meta.board_state);
-  const fbInfo = feedbackInfo(meta.feedback_mode);
-  const cautionLabels = getCautionLabels(meta);
-  const isHitCooldown = meta.is_hit_cooldown;
-  const dynamicMax = meta.dynamic_max_combos;
-
-  // ★ V0628-2：S+H盤面結構標籤
-  const zoneBiasLabel = {
-    strong_front:  { text: '⬆️ 強偏前段', color: '#0369A1', bg: '#E0F2FE' },
-    slight_front:  { text: '↑ 略偏前段', color: '#0369A1', bg: '#F0F9FF' },
-    neutral:       { text: '⇔ 均衡',    color: '#6B7280', bg: '#F3F4F6' },
-    slight_back:   { text: '↓ 略偏後段', color: '#7C3AED', bg: '#F5F3FF' },
-    strong_back:   { text: '⬇️ 強偏後段', color: '#7C3AED', bg: '#EDE9FE' },
-    extreme_back:  { text: '⬇️⬇️ 極強後段', color: '#DC2626', bg: '#FEE2E2' },
-  }[meta.zone_bias_type] || null;
-
-  // ★ V0628-3：Z+M複合盤面結構標籤
-  const zmLabel = {
-    zf_strong_front:  { text: `Z前強+${meta.prev_m_band||''}`, color: '#0369A1', bg: '#E0F2FE' },
-    zf_slight_front:  { text: `Z前略+${meta.prev_m_band||''}`, color: '#0369A1', bg: '#F0F9FF' },
-    zf_neutral:       { text: `Z前均+${meta.prev_m_band||''}`, color: '#6B7280', bg: '#F3F4F6' },
-    zb_strong_back:   { text: `Z後強+${meta.prev_m_band||''}`, color: '#7C3AED', bg: '#EDE9FE' },
-    zb_extreme_back:  { text: `Z後極+${meta.prev_m_band||''}`, color: '#DC2626', bg: '#FEE2E2' },
-  }[meta.zm_bias_type] || null;
-
-  // 上期四區間分布（v0628-3新增）
-  const z1 = meta.prev_z1, z2 = meta.prev_z2, z3 = meta.prev_z3, z4 = meta.prev_z4;
-  const hasZoneData = z1 != null && z2 != null && z3 != null && z4 != null;
-
-  return (
-    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
-      {/* 盤面狀態 — 最重要 */}
-      {bsInfo && <span style={{ fontSize: 10, fontWeight: 700, color: bsInfo.color, background: bsInfo.bg, borderRadius: 6, padding: '2px 6px' }}>{bsInfo.text}</span>}
-      {/* ★ V0628-3：Z+M複合盤面 */}
-      {zmLabel && <span style={{ fontSize: 10, fontWeight: 700, color: zmLabel.color, background: zmLabel.bg, borderRadius: 6, padding: '2px 6px' }}>🗂️ {zmLabel.text}</span>}
-      {/* ★ V0628-2：S+H盤面偏向 */}
-      {zoneBiasLabel && <span style={{ fontSize: 10, fontWeight: 700, color: zoneBiasLabel.color, background: zoneBiasLabel.bg, borderRadius: 6, padding: '2px 6px' }}>{zoneBiasLabel.text}</span>}
-      {/* 上期四區間分布 */}
-      {hasZoneData && <span style={{ fontSize: 10, color: C.textSub, background: C.grayLight, borderRadius: 6, padding: '2px 6px' }}>上期區間 {z1}/{z2}/{z3}/{z4}</span>}
-      {/* 上期最小號 */}
-      {meta.prev_min_num != null && <span style={{ fontSize: 10, color: C.textSub, background: C.grayLight, borderRadius: 6, padding: '2px 6px' }}>最小號{meta.prev_min_num}</span>}
-      {/* 回饋模式 */}
-      {fbInfo && <span style={{ fontSize: 10, fontWeight: 700, color: fbInfo.color, background: fbInfo.bg, borderRadius: 6, padding: '2px 6px' }}>{fbInfo.text}</span>}
-      {/* 自主學習縮手 */}
-      {dynamicMax != null && dynamicMax < 8 && (
-        <span style={{ fontSize: 10, fontWeight: 700, color: '#7C3AED', background: '#F5F3FF', borderRadius: 6, padding: '2px 6px' }}>
-          {dynamicMax === 0 ? '🚫 暫停' : `📉 縮手${dynamicMax}組`}
-        </span>
-      )}
-      {/* 中3冷靜期 */}
-      {isHitCooldown && <span style={{ fontSize: 10, fontWeight: 700, color: '#D97706', background: '#FEF9C3', borderRadius: 6, padding: '2px 6px' }}>❄️ 冷靜期</span>}
-      {/* 謹慎旗標 — 警告最重要 */}
-      {cautionLabels.map(label => (
-        <span key={label} style={{ fontSize: 10, fontWeight: 700, color: '#C2410C', background: '#FFEDD5', borderRadius: 6, padding: '2px 6px' }}>⚠️ {label}</span>
-      ))}
-    </div>
-  );
-}
-function ComboWeightsCard() {
-  const [weights, setWeights] = useState(null);
-  const [loading, setLoading] = useState(true);
-  useEffect(() => {
-    let active = true;
-    apiFetch('/api/board-combo-revalidate', { method: 'POST' })
-      .then(res => { if (active) setWeights(res); })
-      .catch(() => { if (active) setWeights(null); })
-      .finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
-  }, []);
-
-  const BOARD_LABEL = {
-    A_golden: '✨黃金', B_spider_calm: '🕷️蜘蛛',
-    E_false_momentum: '⚡假動', F_quiet: '😶平淡',
-  };
-  const comboColor = (maxCombos) =>
-    maxCombos === 8 ? C.green : maxCombos === 4 ? C.orange : '#DC2626';
-
-  return (
-    <div style={S.card}>
-      <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>🤖 自主學習狀態</div>
-      <div style={{ fontSize: 11, color: C.textSub, marginBottom: 10 }}>每小時自動更新，根據近24小時命中率動態調整出手組數</div>
-      {loading ? (
-        <div style={{ fontSize: 11, color: C.textSub }}>載入中...</div>
-      ) : !weights?.ok ? (
-        <div style={{ fontSize: 11, color: C.textSub }}>尚無學習資料</div>
-      ) : (
-        <>
-          <div style={{ fontSize: 11, color: C.textSub, marginBottom: 8 }}>
-            基準損益：{weights.baseline_avg_pnl != null ? `${weights.baseline_avg_pnl}元/期` : '--'} ・
-            基準中3率：{weights.baseline_hit3_rate != null ? `${weights.baseline_hit3_rate}%` : '--'} ・
-            樣本：{weights.total_sample || 0}期
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {toArray(weights.combos).sort((a, b) => a.combo_key.localeCompare(b.combo_key)).map(c => {
-              const boardLabel = BOARD_LABEL[c.combo_key.split('_').slice(0, -1).join('_')] || c.combo_key;
-              const color = comboColor(c.max_combos);
-              return (
-                <div key={c.combo_key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: C.grayLight, borderRadius: 8, padding: '7px 10px' }}>
-                  <div>
-                    <span style={{ fontSize: 12, fontWeight: 700 }}>{boardLabel} fc={c.combo_key.split('_').pop()}</span>
-                    <div style={{ fontSize: 10, color: C.textSub, marginTop: 2 }}>
-                      {c.sample}期 ・ 中3率{c.hit3_rate != null ? `${c.hit3_rate}%` : '--'} ・ 優勢{c.relative_edge != null ? `${c.relative_edge}元` : '--'}
-                    </div>
-                  </div>
-                  <div style={{ textAlign: 'right' }}>
-                    <div style={{ fontSize: 14, fontWeight: 900, color }}>
-                      {c.max_combos === 0 ? '🚫暫停' : `${c.max_combos}組`}
-                    </div>
-                    <div style={{ fontSize: 9, color: C.textSub }}>出手組數</div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-function StatsPage({ historyRows, streakRows }) {
+// ===== 第三頁：統計 =====
+function StatsPage({ historyRows }) {
   const [subTab, setSubTab] = useState('all');
-  const [soulStatus, setSoulStatus] = useState(null);
-  const [soulLoading, setSoulLoading] = useState(true);
-  const [healthStatus, setHealthStatus] = useState(null);
-  const [healthLoading, setHealthLoading] = useState(true);
-  const [healthExpanded, setHealthExpanded] = useState(false);
+  const rows = toArray(historyRows)
+    .filter(r => r?.created_at >= STATS_START_DATE)
+    .filter(r => r?.compare_status === 'done' && r?.status !== 'skipped');
 
-  useEffect(() => {
-    let active = true;
-    apiFetch('/api/soul-status')
-      .then(res => { if (active) setSoulStatus(res); })
-      .catch(() => { if (active) setSoulStatus(null); })
-      .finally(() => { if (active) setSoulLoading(false); });
-    return () => { active = false; };
-  }, []);
+  function calcStats(filtered) {
+    const total = filtered.length;
+    const hit3 = filtered.filter(r => toNum(r?.hit_count) >= 3).length;
+    const hit2 = filtered.filter(r => toNum(r?.hit_count) === 2).length;
+    const hit1 = filtered.filter(r => toNum(r?.hit_count) === 1).length;
+    const hit0 = filtered.filter(r => toNum(r?.hit_count) === 0).length;
+    return { total, hit3, hit2, hit1, hit0, rate: total > 0 ? hit3 / total : 0 };
+  }
+  function filterByZM(zmKey) {
+    return rows.filter(r => toArray(r?.groups_json).find(g => g.key !== 'skip_meta')?.meta?.zm_key === zmKey);
+  }
+  function filterByQuality(q) {
+    return rows.filter(r => toArray(r?.groups_json).find(g => g.key !== 'skip_meta')?.meta?.anchor_quality === q);
+  }
 
-  useEffect(() => {
-    let active = true;
-    apiFetch('/api/health-status')
-      .then(res => { if (active) setHealthStatus(res); })
-      .catch(() => { if (active) setHealthStatus(null); })
-      .finally(() => { if (active) setHealthLoading(false); });
-    return () => { active = false; };
-  }, []);
-
-  const allRows = toArray(historyRows).filter(row =>
-    row?.created_at >= STATS_START_DATE && row?.status === 'compared' && toArray(row?.groups_json).length > 0
-  );
-
-  const cleanCount = toNum(soulStatus?.clean_periods, 0);
-  // ★ V0626-3：封印相關變數(sealTarget/sealPct/isSealBroken/daysPassed)已移除
-  const modeMap = soulStatus?.mode_stats || {};
-
-  // V0623-2：依盤面狀態或選號策略篩選
-  const filterByBoardState = (key) => {
-    if (key === 'all') return allRows;
-    if (key === 'core_outer' || key === 'spider_mid' || key === 'zone_bias' || key === 'zone_pattern_bias' || key === 'gradient' || key === 'wide_spread') {
-      return allRows.filter(row => {
-        const s = toArray(row?.groups_json)[0]?.meta?.selection_strategy || '';
-        return s === key;
-      });
-    }
-    return allRows.filter(row => {
-      const bs = toArray(row?.groups_json)[0]?.meta?.board_state || '';
-      return bs === key;
-    });
-  };
-
-  const calcStats = (rows) => {
-    const total = rows.length;
-    const hit3 = rows.filter(r => toNum(r?.hit_count) >= 3).length;
-    const hit2 = rows.filter(r => toNum(r?.hit_count) === 2).length;
-    const hit1 = rows.filter(r => toNum(r?.hit_count) === 1).length;
-    const hit0 = rows.filter(r => toNum(r?.hit_count) === 0).length;
-    const rate = total > 0 ? hit3 / total : 0;
-    return { total, hit3, hit2, hit1, hit0, rate };
-  };
-
-  // V0623-2：子頁籤（盤面+選號策略），V0625-2加入wide_spread和gradient
+  const allStats = calcStats(rows);
+  const rateColor = allStats.rate >= 0.15 ? C.green : allStats.rate >= 0.08 ? C.orange : C.red;
   const subTabs = [
-    { key: 'all',               label: '全部',     icon: '📊' },
-    { key: 'A_golden',          label: '黃金共振', icon: '✨' },
-    { key: 'B_spider_calm',     label: '蜘蛛靜默', icon: '🕷️' },
-    { key: 'E_false_momentum',  label: '假動能',   icon: '⚡' },
-    { key: 'F_quiet',           label: '平淡期',   icon: '😶' },
-    { key: 'wide_spread',       label: '寬幅分散', icon: '🌐' },
-    { key: 'gradient',          label: '梯度遞減', icon: '📐' },
-    { key: 'zone_bias',          label: '結構偏向', icon: '🗺️' },
-    { key: 'zone_pattern_bias',  label: '區間盤面', icon: '🎯' },
-    { key: 'core_outer',        label: '核心外圍', icon: '🎯' },
-    { key: 'spider_mid',        label: '次熱號',   icon: '🔬' },
+    { key: 'all', label: '全部', icon: '📊' },
+    { key: 'zm', label: 'Z+M盤面', icon: '🗺️' },
+    { key: 'quality', label: '錨點品質', icon: '⚓' },
+    { key: 'golden', label: '黃金條件', icon: '🥇' },
   ];
-
-  const currentRows = filterByBoardState(subTab);
-  const stats = calcStats(currentRows);
-  const rateColor = stats.rate > 0.0375 ? C.green : C.orange;
 
   return (
     <div style={S.page}>
-      {/* 靈魂戰況板 */}
-      <div style={S.card}>
-        <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>🧠 靈魂學習進度</div>
-        {soulLoading ? (
-          <div style={{ fontSize: 11, color: C.textSub }}>載入中...</div>
-        ) : !soulStatus?.ok ? (
-          <div style={{ fontSize: 11, color: C.textSub }}>暫無法取得靈魂狀態</div>
-        ) : (
-          <>
-            <div style={{ borderBottom: `1px solid ${C.border}`, paddingBottom: 8, marginBottom: 8 }}>
-              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>V0628-3版本各模式表現：</div>
-              {Object.entries(modeMap).sort((a, b) => b[1].count - a[1].count).map(([mode, stat]) => {
-                const avg = toNum(stat?.avg_pnl, 0);
-                const color = avg > 0 ? C.green : avg > -100 ? C.orange : '#DC2626';
-                return (
-                  <div key={mode} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, padding: '2px 0' }}>
-                    <span style={{ color: C.text, fontWeight: 600 }}>{modeLabel(mode)}</span>
-                    <span style={{ color: C.textSub }}>{stat.count}期</span>
-                    <span style={{ color, fontWeight: 700 }}>{avg > 0 ? '+' : ''}{avg}元/期</span>
-                  </div>
-                );
-              })}
-              {Object.keys(modeMap).length === 0 && <div style={{ fontSize: 11, color: C.textSub }}>尚無資料</div>}
-            </div>
-            <div style={{ fontSize: 11, color: C.textSub }}>共 {cleanCount} 期乾淨資料</div>
-          </>
-        )}
-      </div>
+      <Card title="整體命中率" icon="📊">
+        <div style={{ textAlign: 'center', padding: '10px 0' }}>
+          <div style={{ ...S.bigNum, color: rateColor }}>{fmtPercent(allStats.rate)}</div>
+          <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>共 {allStats.total} 期｜中3：{allStats.hit3} 次</div>
+        </div>
+        <div style={S.divider} />
+        <StatRow label="理論值（隨機）" value="8.3%" valueColor={C.textSub} />
+        <StatRow label="黃金條件目標" value="20.8%" valueColor={C.gold} />
+        <StatRow label="中3命中率" value={fmtPercent(allStats.rate)} valueColor={rateColor} />
+        <StatRow label="中3次數" value={`${allStats.hit3} 次`} />
+        <StatRow label="中2次數" value={`${allStats.hit2} 次`} />
+        <StatRow label="中1次數" value={`${allStats.hit1} 次`} />
+        <StatRow label="未中次數" value={`${allStats.hit0} 次`} />
+      </Card>
 
-      {/* 三天健康檢查 */}
-      <div style={S.card}>
-        <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>📋 三天健康檢查</div>
-        {healthLoading ? (
-          <div style={{ fontSize: 11, color: C.textSub }}>載入中...</div>
-        ) : !healthStatus?.ok ? (
-          <div style={{ fontSize: 11, color: C.textSub }}>暫無法取得健康檢查狀態</div>
-        ) : (() => {
-          const s = healthStatus.summary || {};
-          const levelColor = s.level === 'good' ? C.green : s.level === 'normal' ? C.orange : '#DC2626';
-          const levelBg = s.level === 'good' ? '#DCFCE7' : s.level === 'normal' ? '#FEF9C3' : '#FEE2E2';
-          const periods = toArray(healthStatus.periods);
-          return (
-            <>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6 }}>
-                <span style={{ fontSize: 24, fontWeight: 800, color: levelColor }}>{s.hit3_pct != null ? `${s.hit3_pct}%` : '--'}</span>
-                <span style={{ fontSize: 11, padding: '2px 10px', borderRadius: 6, background: levelBg, color: levelColor, fontWeight: 700 }}>{s.level_label || '無資料'}</span>
-              </div>
-              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 10 }}>
-                {fmt(s.compared_periods)}期已比對 ・ 出手率{s.output_rate_pct != null ? `${s.output_rate_pct}%` : '--'}
-              </div>
-              <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
-                <div style={{ flex: 1, background: C.grayLight, borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
-                  <div style={{ fontSize: 16, fontWeight: 800 }}>{fmt(s.hit3_periods)}</div>
-                  <div style={{ fontSize: 10, color: C.textSub }}>中3期數</div>
-                </div>
-                <div style={{ flex: 1, background: C.grayLight, borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
-                  <div style={{ fontSize: 16, fontWeight: 800 }}>{fmt(s.hit2plus_groups_total)}</div>
-                  <div style={{ fontSize: 10, color: C.textSub }}>中2以上組數</div>
-                </div>
-              </div>
-              {/* 精簡版：移除超級組合和選號策略的大塊，只保留逐期明細收合 */}
-              <button
-                onClick={() => setHealthExpanded(v => !v)}
-                style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 10px', background: C.grayLight, borderRadius: 8, border: 'none', fontSize: 12, fontWeight: 700, color: C.text, cursor: 'pointer' }}
-              >
-                <span>逐期明細（{periods.length}期）</span>
-                <span>{healthExpanded ? '▲' : '▼'}</span>
-              </button>
-              {healthExpanded && (
-                <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 320, overflowY: 'auto' }}>
-                  {periods.slice().reverse().map((p, idx) => {
-                    const isSkipped = p.status === 'skipped';
-                    const isDone = p.compare_status === 'done' && !isSkipped;
-                    const timeStr = p.time ? new Date(p.time).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Taipei' }) : '--';
-                    const bsInfo = boardStateInfo(p.board_state);
-                    const hitColor = toNum(p.best_hit) >= 3 ? C.gold : C.textSub;
-                    return (
-                      <div key={p.draw_no || idx} style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: 6, padding: '6px 8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ fontSize: 11, color: C.text }}>
-                          {timeStr} ・ {bsInfo ? bsInfo.text : '跳過'} ・ {isSkipped ? '空窗' : modeLabel(p.active_mode)}
-                        </span>
-                        {isSkipped ? (
-                          <span style={{ fontSize: 10, color: C.textSub }}>⏸️</span>
-                        ) : !isDone ? (
-                          <span style={{ fontSize: 10, color: C.orange }}>等待</span>
-                        ) : (
-                          <span style={{ fontSize: 11, fontWeight: 800, color: hitColor }}>中{fmt(p.best_hit)}</span>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-                          ) : !isDone ? (
-            </>
-          );
-        })()}
-      </div>
-
-      {/* ★ V0628-3：盤面策略命中率對比卡 */}
-      <div style={S.card}>
-        <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>📊 盤面策略命中率對比</div>
-        <div style={{ fontSize: 11, color: C.textSub, marginBottom: 10 }}>今日新增的盤面策略 vs 舊策略實戰對比（依選號策略分類）</div>
-        {(() => {
-          const strategies = [
-            { key: 'zone_pattern_bias', label: '🗂️ 區間盤面(Z+M)', color: '#DC2626', bg: '#FEE2E2' },
-            { key: 'zone_bias',         label: '🗺️ 結構偏向(S+H)', color: '#0369A1', bg: '#E0F2FE' },
-            { key: 'gradient',          label: '📐 梯度遞減',       color: '#059669', bg: '#ECFDF5' },
-            { key: 'wide_spread',       label: '🌐 寬幅分散',       color: '#7C3AED', bg: '#F5F3FF' },
-            { key: 'core_outer',        label: '🎯 核心外圍',       color: '#B45309', bg: '#FEF3C7' },
-          ];
-          return (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {strategies.map(st => {
-                const rows = filterByBoardState(st.key);
-                const s = calcStats(rows);
-                const rateC = s.rate > 0.0375 ? C.green : s.rate > 0.02 ? C.orange : C.gray;
-                return (
-                  <div key={st.key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: st.bg, borderRadius: 8, padding: '7px 10px', border: `1px solid ${st.color}22` }}>
-                    <span style={{ fontSize: 11, fontWeight: 700, color: st.color }}>{st.label}</span>
-                    {s.total === 0 ? (
-                      <span style={{ fontSize: 10, color: C.textSub }}>尚無資料</span>
-                    ) : (
-                      <div style={{ textAlign: 'right' }}>
-                        <span style={{ fontSize: 13, fontWeight: 900, color: rateC }}>{(s.rate * 100).toFixed(1)}%</span>
-                        <span style={{ fontSize: 10, color: C.textSub, marginLeft: 4 }}>{s.hit3}/{s.total}期</span>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          );
-        })()}
-      </div>
-
-      {/* 統計子頁籤 */}
-      <div style={{ display: 'flex', gap: 6, marginBottom: 14, background: C.card, borderRadius: 12, padding: 8, boxShadow: C.shadow, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: 6, background: C.card, borderRadius: 12, padding: 8, boxShadow: C.shadow, flexWrap: 'wrap' }}>
         {subTabs.map(t => (
           <button key={t.key} style={S.subTab(subTab === t.key)} onClick={() => setSubTab(t.key)}>
             {t.icon} {t.label}
@@ -888,69 +378,108 @@ function StatsPage({ historyRows, streakRows }) {
         ))}
       </div>
 
-      <Card title="📊 全部 命中率" icon="">
-        <div style={{ textAlign: 'center', padding: '10px 0' }}>
-          <div style={{ ...S.bigNum, color: rateColor }}>{fmtPercent(stats.rate)}</div>
-          <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>共 {stats.total} 期｜中3：{stats.hit3} 次</div>
-        </div>
-        <div style={S.divider} />
-        <StatRow label="理論值（隨機）" value="3.75%" valueColor={C.textSub} />
-        <StatRow label="中3命中率" value={fmtPercent(stats.rate)} valueColor={rateColor} />
-        <StatRow label="中3次數" value={`${stats.hit3} 次`} />
-        <StatRow label="中2次數" value={`${stats.hit2} 次`} />
-        <StatRow label="中1次數" value={`${stats.hit1} 次`} />
-        <StatRow label="未中次數" value={`${stats.hit0} 次`} />
-      </Card>
+      {subTab === 'zm' && (
+        <Card title="Z+M盤面命中率" icon="🗺️">
+          {Object.keys(ZM_LABEL).map(zmKey => {
+            const filtered = filterByZM(zmKey);
+            const s = calcStats(filtered);
+            const zm = zmLabel(zmKey);
+            const rc = s.rate >= 0.15 ? C.green : s.rate >= 0.08 ? C.orange : C.red;
+            return (
+              <div key={zmKey} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: zm.bg, borderRadius: 8, padding: '7px 10px', marginBottom: 4, border: `1px solid ${zm.color}22` }}>
+                <div>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: zm.color }}>{zm.text}</span>
+                  <span style={{ fontSize: 10, color: C.textSub, marginLeft: 6 }}>{zm.desc}</span>
+                </div>
+                {s.total === 0 ? <span style={{ fontSize: 10, color: C.textSub }}>無資料</span> : (
+                  <div style={{ textAlign: 'right' }}>
+                    <span style={{ fontSize: 13, fontWeight: 900, color: rc }}>{fmtPercent(s.rate)}</span>
+                    <span style={{ fontSize: 10, color: C.textSub, marginLeft: 4 }}>{s.hit3}/{s.total}</span>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </Card>
+      )}
 
-      {/* ★ V0628-1：熱號錨點策略獨立統計 */}
-      {(() => {
-        const sRows = toArray(streakRows).filter(r => r?.compare_status === 'done');
-        if (sRows.length === 0) return (
-          <Card title="🔥 熱號錨點策略統計" icon="">
-            <div style={{ fontSize: 12, color: C.textSub, textAlign: 'center', padding: 8 }}>資料累積中，尚無比對記錄</div>
-          </Card>
-        );
-        const sHit3 = sRows.filter(r => toNum(r?.hit_count, 0) >= 3).length;
-        const sHit2 = sRows.filter(r => toNum(r?.hit_count, 0) >= 2).length;
-        const sRate = sRows.length > 0 ? (sHit3 / sRows.length * 100).toFixed(1) : '0.0';
-        const sRateColor = Number(sRate) >= 10 ? C.green : Number(sRate) >= 5 ? C.orange : '#DC2626';
-        return (
-          <Card title="🔥 熱號錨點策略統計" icon="">
-            <div style={{ textAlign: 'center', padding: '10px 0' }}>
-              <div style={{ ...S.bigNum, color: sRateColor }}>{sRate}%</div>
-              <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>共 {sRows.length} 期｜中3：{sHit3} 次</div>
-            </div>
-            <div style={S.divider} />
-            <StatRow label="中3命中率" value={`${sRate}%`} valueColor={sRateColor} />
-            <StatRow label="中3次數" value={`${sHit3} 次`} />
-            <StatRow label="中2以上次數" value={`${sHit2} 次`} />
-            <StatRow label="出手期數" value={`${sRows.length} 期`} />
-            <div style={{ fontSize: 10, color: C.textSub, marginTop: 6, textAlign: 'center' }}>
-              ※ 此策略專用於主系統空窗期，與主策略統計完全分開
-            </div>
-          </Card>
-        );
-      })()}
+      {subTab === 'quality' && (
+        <Card title="錨點品質命中率" icon="⚓">
+          {['golden_plus', 'golden', 'silver', 'bronze'].map(q => {
+            const s = calcStats(filterByQuality(q));
+            const ql = qualityLabel(q);
+            const rc = s.rate >= 0.15 ? C.green : s.rate >= 0.08 ? C.orange : C.red;
+            return (
+              <div key={q} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: ql.bg, borderRadius: 8, padding: '7px 10px', marginBottom: 4 }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: ql.color }}>{ql.text}</span>
+                {s.total === 0 ? <span style={{ fontSize: 10, color: C.textSub }}>無資料</span> : (
+                  <div style={{ textAlign: 'right' }}>
+                    <span style={{ fontSize: 13, fontWeight: 900, color: rc }}>{fmtPercent(s.rate)}</span>
+                    <span style={{ fontSize: 10, color: C.textSub, marginLeft: 4 }}>{s.hit3}/{s.total}</span>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </Card>
+      )}
 
-      <ComboWeightsCard />
+      {subTab === 'golden' && (
+        <Card title="黃金條件命中率" icon="🥇">
+          {(() => {
+            const goldenRows = rows.filter(r => toArray(r?.groups_json).find(g => g.key !== 'skip_meta')?.meta?.is_golden);
+            const otherRows = rows.filter(r => !toArray(r?.groups_json).find(g => g.key !== 'skip_meta')?.meta?.is_golden);
+            const gs = calcStats(goldenRows);
+            const os = calcStats(otherRows);
+            const gc = gs.rate >= 0.15 ? C.green : gs.rate >= 0.08 ? C.orange : C.red;
+            const oc = os.rate >= 0.08 ? C.orange : C.red;
+            return (<>
+              <div style={{ background: '#FEF9C3', borderRadius: 8, padding: '10px 12px', marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: C.gold }}>🥇 黃金條件</div>
+                  <div style={{ fontSize: 10, color: C.textSub }}>錨點≥6 + 跨度＞60 + z4≥2</div>
+                </div>
+                {gs.total === 0 ? <span style={{ fontSize: 10, color: C.textSub }}>無資料</span> : (
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ fontSize: 22, fontWeight: 900, color: gc }}>{fmtPercent(gs.rate)}</div>
+                    <div style={{ fontSize: 10, color: C.textSub }}>{gs.hit3}/{gs.total}期</div>
+                  </div>
+                )}
+              </div>
+              <div style={{ background: C.grayLight, borderRadius: 8, padding: '10px 12px', marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: C.textSub }}>非黃金條件</div>
+                {os.total === 0 ? <span style={{ fontSize: 10, color: C.textSub }}>無資料</span> : (
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ fontSize: 22, fontWeight: 900, color: oc }}>{fmtPercent(os.rate)}</div>
+                    <div style={{ fontSize: 10, color: C.textSub }}>{os.hit3}/{os.total}期</div>
+                  </div>
+                )}
+              </div>
+              <div style={{ fontSize: 11, color: C.textSub, textAlign: 'center' }}>SQL驗證：黃金條件 20.8% vs 隨機 8.3%</div>
+            </>);
+          })()}
+        </Card>
+      )}
 
-      <div style={{ fontSize: 11, color: C.textSub, textAlign: 'center', padding: '4px 0' }}>※ 統計數據從 6/8 起算</div>
+      <div style={{ fontSize: 11, color: C.textSub, textAlign: 'center' }}>※ 統計從 V0629-4 上線起算</div>
     </div>
   );
 }
 
+// ===== 第四頁：開獎 =====
 function MarketPage({ recent20 }) {
   const rows = toArray(recent20).slice(0, 20);
   return (
     <div style={S.page}>
-      <Card title="最近20期開獎" icon="🎯">
-        {!rows.length ? <div style={S.empty}>載入中...</div> : rows.map((row, idx) => {
+      <Card title="最近20期開獎" icon="🎱">
+        {!rows.length ? <Spinner /> : rows.map((row, idx) => {
           const nums = parseNums(row?.numbers).sort((a, b) => a - b);
+          const timeStr = row?.draw_time ? String(row.draw_time).slice(11, 16) : '--';
           return (
             <div key={row?.draw_no || idx} style={{ ...S.statRow, alignItems: 'flex-start', paddingTop: 10, paddingBottom: 10 }}>
               <div style={{ minWidth: 80 }}>
                 <div style={{ fontSize: 13, fontWeight: 700 }}>#{fmt(row?.draw_no)}</div>
-                <div style={{ fontSize: 11, color: C.textSub }}>{fmt(row?.draw_time)?.slice(11, 16)}</div>
+                <div style={{ fontSize: 11, color: C.textSub }}>{timeStr}</div>
               </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, flex: 1 }}>
                 {nums.map(n => (
@@ -965,6 +494,7 @@ function MarketPage({ recent20 }) {
   );
 }
 
+// ===== 第五頁：熱號 =====
 function HotPage({ recent20 }) {
   const rows = toArray(recent20).slice(0, 20);
   function consecutiveCount(num) {
@@ -981,8 +511,7 @@ function HotPage({ recent20 }) {
     if (consec >= 1) numStats.push({ n, consec });
   }
   const groups = [5, 4, 3, 2, 1].map(level => ({
-    level,
-    data: numStats.filter(s => s.consec === level).sort((a, b) => a.n - b.n)
+    level, data: numStats.filter(s => s.consec === level).sort((a, b) => a.n - b.n)
   }));
   const levelInfo = {
     5: { label: '連續5期（最熱）', color: '#DC2626', bg: '#FEF2F2', border: '#FCA5A5' },
@@ -995,9 +524,9 @@ function HotPage({ recent20 }) {
     <div style={S.page}>
       <Card title="連續熱號看盤" icon="🔥">
         <div style={{ fontSize: 11, color: C.textSub, marginBottom: 12, lineHeight: 1.6 }}>
-          純粹看盤用：依「最近20期」資料，從最新一期往前算，列出每個號碼目前連續開出幾期。此頁僅供參考，與AI選號邏輯無關。
+          純粹看盤用：依「最近20期」資料，從最新一期往前算，列出每個號碼目前連續開出幾期。
         </div>
-        {!rows.length ? <div style={S.empty}>載入中...</div> : groups.map(g => {
+        {!rows.length ? <Spinner /> : groups.map(g => {
           const info = levelInfo[g.level];
           return (
             <div key={g.level} style={{ marginBottom: 16 }}>
@@ -1006,7 +535,7 @@ function HotPage({ recent20 }) {
                 <span style={{ fontSize: 11, color: C.textSub }}>{g.data.length} 顆</span>
               </div>
               {g.data.length === 0 ? (
-                <div style={{ fontSize: 12, color: C.textSub, padding: '4px 0' }}>目前無號碼符合此等級</div>
+                <div style={{ fontSize: 12, color: C.textSub }}>目前無號碼符合此等級</div>
               ) : (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                   {g.data.map(({ n }) => (
@@ -1025,73 +554,131 @@ function HotPage({ recent20 }) {
   );
 }
 
-function HotPoolPage({ prediction }) {
+// ===== 第六頁：錨點（原熱號池，換成錨點分析）=====
+function AnchorPage({ prediction }) {
   const row = prediction?.latest_3star_row;
   const groups = toArray(row?.groups_json);
-  const meta0 = groups[0]?.meta || {};
-  const hotPool = (meta0?.hot_pool || '').split(',').map(Number).filter(Boolean);
-  const isSkipped = !row || row?.status === 'skipped' || groups.length === 0;
-  const bsInfo = boardStateInfo(meta0?.board_state);
-  const ssInfo = selectionStrategyInfo(meta0?.selection_strategy);
+  const meta = groups.find(g => g.key !== 'skip_meta')?.meta || groups[0]?.meta || {};
+  const anchors = toArray(meta.anchor_nums);
+  const isSkipped = !row || row?.status === 'skipped';
+  const zm = zmLabel(meta.zm_key);
+  const quality = qualityLabel(meta.anchor_quality);
+
   return (
     <div style={S.page}>
-      <Card title="本期AI熱號池" icon="🕷️">
+      <Card title="本期錨點分析" icon="⚓">
         <div style={{ fontSize: 11, color: C.textSub, marginBottom: 12, lineHeight: 1.6 }}>
-          這裡顯示的號碼池，與「本期預測」使用完全同一份資料，是本期實際選出、用來組成3星預測的熱號池。
+          錨點 = 連續兩期都出現的號碼。黃金條件：錨點≥6顆 + 跨度＞60 + 61-80區有2顆以上，SQL驗證命中率20.8%。
         </div>
+
         {isSkipped ? (
-          <div style={S.empty}>本期AI暫停出號，無熱號池資料</div>
-        ) : (
-          <>
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
-              {bsInfo && <span style={{ fontSize: 12, fontWeight: 700, color: bsInfo.color, background: bsInfo.bg, borderRadius: 6, padding: '2px 8px' }}>{bsInfo.text}</span>}
-              {ssInfo && <span style={{ fontSize: 12, fontWeight: 700, color: ssInfo.color, background: ssInfo.bg, borderRadius: 6, padding: '2px 8px' }}>{ssInfo.text}</span>}
-              <span style={S.badge(C.textSub, C.grayLight)}>期號 {fmt(row?.source_draw_no)}</span>
+          <div style={S.empty}>本期空窗，無錨點資料</div>
+        ) : (<>
+          {/* 盤面+品質 */}
+          <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+            <div style={{ flex: 1, background: zm.bg, borderRadius: 10, padding: '10px 12px' }}>
+              <div style={{ fontSize: 11, color: zm.color, fontWeight: 700 }}>Z+M盤面</div>
+              <div style={{ fontSize: 18, fontWeight: 900, color: zm.color }}>{zm.text}</div>
+              <div style={{ fontSize: 10, color: zm.color, opacity: 0.8 }}>{zm.desc}</div>
             </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-              {hotPool.map(n => (
-                <div key={n} style={{ width: 36, height: 36, borderRadius: '50%', background: C.goldBg, border: `2px solid ${C.goldLight}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15, fontWeight: 800, color: C.gold }}>
-                  {padNum(n)}
-                </div>
-              ))}
+            <div style={{ flex: 1, background: quality.bg, borderRadius: 10, padding: '10px 12px' }}>
+              <div style={{ fontSize: 11, color: quality.color, fontWeight: 700 }}>錨點品質</div>
+              <div style={{ fontSize: 18, fontWeight: 900, color: quality.color }}>{quality.text}</div>
+              <div style={{ fontSize: 10, color: quality.color, opacity: 0.8 }}>錨點{meta.anchor_count}顆</div>
             </div>
-            <div style={{ fontSize: 11, color: C.textSub, marginTop: 12 }}>共 {hotPool.length} 顆</div>
-          </>
-        )}
+          </div>
+
+          {/* 黃金條件檢查 */}
+          <div style={{ background: meta.is_golden ? '#FEF9C3' : C.grayLight, borderRadius: 10, padding: '10px 12px', marginBottom: 12, border: `1px solid ${meta.is_golden ? C.gold : C.border}` }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: meta.is_golden ? C.gold : C.textSub, marginBottom: 6 }}>
+              {meta.is_golden ? '✅ 黃金條件達成！' : '❌ 黃金條件未達'}
+            </div>
+            {[
+              { label: '錨點≥6顆', value: meta.anchor_count, pass: meta.anchor_count >= 6 },
+              { label: '跨度＞60', value: meta.anchor_span, pass: meta.anchor_span > 60 },
+              { label: '61-80區≥2顆', value: meta.anchor_z4, pass: meta.anchor_z4 >= 2 },
+            ].map(item => (
+              <div key={item.label} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 3 }}>
+                <span style={{ color: item.pass ? C.green : C.red }}>{item.pass ? '✅' : '❌'} {item.label}</span>
+                <span style={{ fontWeight: 700, color: item.pass ? C.green : C.red }}>{item.value ?? '-'}</span>
+              </div>
+            ))}
+            {/* 加分條件 */}
+            <div style={S.divider} />
+            {[
+              { label: '首尾都有（1-20≥2且61-80≥2）', pass: meta.has_both_ends, value: '' },
+              { label: '含75-80號碼', pass: meta.has_large_anchor, value: '' },
+            ].map(item => (
+              <div key={item.label} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 3 }}>
+                <span style={{ color: item.pass ? C.green : C.textSub }}>{item.pass ? '⭐' : '○'} {item.label}（加分）</span>
+              </div>
+            ))}
+          </div>
+
+          {/* 錨點號碼 */}
+          {anchors.length > 0 && (
+            <div>
+              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 6 }}>錨點號碼（{anchors.length}顆）</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {anchors.map(n => (
+                  <div key={n} style={{
+                    width: 36, height: 36, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 13, fontWeight: 800,
+                    background: n >= 61 ? '#EDE9FE' : n <= 20 ? '#DBEAFE' : '#F3F4F6',
+                    color: n >= 61 ? C.purple : n <= 20 ? C.blue : C.text,
+                    border: `2px solid ${n >= 61 ? '#C4B5FD' : n <= 20 ? '#93C5FD' : C.border}`,
+                  }}>{padNum(n)}</div>
+                ))}
+              </div>
+              <div style={{ fontSize: 10, color: C.textSub, marginTop: 6 }}>
+                🔵 1-20區（{meta.anchor_z1}顆）｜⬜ 21-60區｜🟣 61-80區（{meta.anchor_z4}顆）
+              </div>
+            </div>
+          )}
+
+          {/* 母球池 */}
+          {toArray(meta.pool7).length > 0 && (
+            <div style={{ marginTop: 12 }}>
+              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 6 }}>母球池（7顆）→ C(7,3) 生成組合</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {toArray(meta.pool7).map(n => (
+                  <div key={n} style={{ width: 36, height: 36, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 800, background: C.gold, color: '#fff', border: `2px solid ${C.gold}` }}>
+                    {padNum(n)}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>)}
       </Card>
     </div>
   );
 }
 
+// ===== 主應用 =====
 export default function App() {
   const [tab, setTab] = useState('quick');
-  const [loading, setLoading] = useState(false);
   const [prediction, setPrediction] = useState(null);
-  const [recent20, setRecent20] = useState([]);
   const [historyRows, setHistoryRows] = useState([]);
-  const [streakRows, setStreakRows] = useState([]); // ★ V0628-1：熱號錨點策略記錄
-  const [loopStatus, setLoopStatus] = useState('初始化中...');
+  const [recent20, setRecent20] = useState([]);
+  const [loopStatus, setLoopStatus] = useState('載入中...');
   const [emergencyAlert, setEmergencyAlert] = useState(null);
+  const [loading, setLoading] = useState(true);
   const timerRef = useRef(null);
 
+  const apiFetch = (path) => fetch(`${RAILWAY_URL}${path}`).then(r => r.json());
+
   const loadData = useCallback(async () => {
-    setLoading(true);
     try {
-      const [predRes, recentRes, healthRes, streakRes] = await Promise.all([
+      const [predRes, recentRes] = await Promise.all([
         apiFetch('/api/prediction-latest').catch(() => ({})),
         apiFetch('/api/recent20').catch(() => ({})),
-        apiFetch('/api/health-status').catch(() => ({})),
-        apiFetch('/api/streak-anchor-latest').catch(() => ({})), // ★ V0628-1：熱號錨點最新記錄
       ]);
       setPrediction(predRes);
       setHistoryRows(predRes?.recent_3star_compared_rows || predRes?.recent_compared_rows || []);
-      setStreakRows(streakRes?.rows || []);
       setRecent20(recentRes?.recent20 || recentRes?.data || []);
       setLoopStatus(isNight() ? '夜間停止（00:00-07:00）' : `已更新 ${new Date().toLocaleTimeString('zh-TW', { hour12: false })}`);
-      const consecutiveLoss = toNum(healthRes?.summary?.consecutive_loss, 0);
-      setEmergencyAlert(consecutiveLoss >= 18
-        ? `⚠️ 緊急警告：已連續虧損${consecutiveLoss}期，請人工檢查系統狀態`
-        : null);
+      setEmergencyAlert(predRes?.emergency_alert || null);
     } catch {
       setLoopStatus('載入失敗，稍後重試');
     } finally {
@@ -1111,21 +698,20 @@ export default function App() {
     { key: 'stats',   label: '統計', icon: '📊' },
     { key: 'market',  label: '開獎', icon: '🎱' },
     { key: 'hot',     label: '熱號', icon: '🔥' },
-    { key: 'hotpool', label: '熱號池', icon: '🕷️' },
+    { key: 'anchor',  label: '錨點', icon: '⚓' },
   ];
 
   return (
     <div style={S.app}>
-      {/* ★ V0626-3：緊急警告橫幅，連續虧損18期以上才顯示 */}
       {emergencyAlert && (
-        <div style={{ background: '#DC2626', color: '#fff', fontSize: 13, fontWeight: 800, textAlign: 'center', padding: '8px 16px', letterSpacing: 0.5 }}>
+        <div style={{ background: '#DC2626', color: '#fff', fontSize: 13, fontWeight: 800, textAlign: 'center', padding: '8px 16px' }}>
           {emergencyAlert}
         </div>
       )}
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0629-3</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0629-4</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
@@ -1142,12 +728,12 @@ export default function App() {
         ))}
       </div>
       {loading && tab === 'quick' && <Spinner />}
-      {tab === 'quick'   && <QuickPage   prediction={prediction} recent20={recent20} onRefresh={loadData} loading={loading} streakRows={streakRows} />}
-      {tab === 'history' && <HistoryPage historyRows={historyRows} streakRows={streakRows} />}
-      {tab === 'stats'   && <StatsPage   historyRows={historyRows} streakRows={streakRows} />}
+      {tab === 'quick'   && <QuickPage   prediction={prediction} recent20={recent20} onRefresh={loadData} loading={loading} />}
+      {tab === 'history' && <HistoryPage historyRows={historyRows} />}
+      {tab === 'stats'   && <StatsPage   historyRows={historyRows} />}
       {tab === 'market'  && <MarketPage  recent20={recent20} />}
       {tab === 'hot'     && <HotPage     recent20={recent20} />}
-      {tab === 'hotpool' && <HotPoolPage prediction={prediction} />}
+      {tab === 'anchor'  && <AnchorPage  prediction={prediction} />}
     </div>
   );
 }
