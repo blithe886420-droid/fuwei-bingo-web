@@ -1,580 +1,1153 @@
 /**
- * auto-train.js - V0629-3
+ * App.jsx - V0629-3
  *
- * ★ V0629-3更新(6/29)：配合board-combo-revalidate V0629-3三項智慧升級
- * 1. fetchComboWeights補讀best_zm_strategy（ZM盤面匹配最佳策略）
- *    方向三連勝連敗動態組數已直接存入max_combos，不需要額外改動
- * 2. fetchRecentPredictions補讀zm_bias_type，供方向二ZM盤面匹配使用
+ * ★ V0629-3更新(6/29)：
+ * 版本對應V0629-3（三項智慧升級：近期加權+ZM盤面匹配+連勝連敗動態組數）
+ *
+ * ★ V0629-2更新(6/29)：
+ * 版本對應V0629-2（策略競爭公平化+增加出手率+提高命中率）
+ *
+ * ★ V0629-1更新(6/29)：
+ * 版本對應buildBingoV1Strategies V0629-1（增加出手率+提高命中率）
+ * F_quiet加訊號豁免、fourBurstFire門檻降到>=2、F_quiet caution只縮手不跳過
+ *
+ * ★ V0628-4更新(6/28)：
+ * 版本對應buildBingoV1Strategies V0628-4（zone_pattern_bias正式當主力）
+ *
+ * ★ V0628-3更新(6/28)：
+ * 1. MetaTags新增盤面結構資訊顯示（zone_bias_type、zm_bias_type、Z前/後方向、M級別）
+ * 2. 新增 zone_pattern_bias 策略標籤（🎯 區間盤面）
+ * 3. 統計頁新增「區間盤面」篩選頁籤
+ * 4. 統計頁新增盤面策略命中率對比卡（zone_bias vs zone_pattern_bias vs gradient）
+ * 5. filterByBoardState 支援 zone_pattern_bias 篩選
+ * 版本對應：buildBingoV1Strategies V0628-3（Z+M四區間複合盤面策略）
+ *
+ * ★ V0628-2更新(6/28)：
+ * 1. 新增 zone_bias 策略標籤（🗺️ 結構偏向）
+ * 2. 統計頁新增「結構偏向」篩選頁籤
+ * 3. filterByBoardState 支援 zone_bias/gradient/wide_spread 用 selection_strategy 篩選
+ * 版本對應：buildBingoV1Strategies V0628-2（S+H盤面策略）
  *
  * ★ V0628-1更新(6/28)：
- * 1. 加入熱號錨點策略（streak_anchor）——空窗期改用連續2期以上熱號組合出手
- * 2. comparePending加入streak_anchor的比對
- * 原本空窗期完全不出手，現在用錨點策略填補空窗，累積真實命中率資料
- * 原本15筆在E_false_momentum連續霸佔時，同盤面命中率計算樣本太少，容易誤判冷場
- * 30筆讓回饋迴路有更穩定的記憶，不被短期冷場誤判
- * 封印機制已完全拆除（V0626-3），靈魂異常警示改為緊急警告（V0626-3）
- * emergency_alert在連續虧損18期以上時觸發，回傳給前端顯示紅色橫幅
- *
- * ★ V0623-2更新(6/23)：fetchRecentPredictions新增board_state和selection_strategy欄位，
- * limit從5提升到10。目的：供buildBingoV1Strategies.js的回饋迴路使用，讓系統能計算
- * 「近期同一盤面的命中率」，實現有記憶的動態出手調整（冷場盤面自動降為4組觀望）。
- *
- * ★ V0621-2更新(6/21)：fetchRecentPredictions新增total_qualified欄位，供
- * buildBingoV1Strategies.js計算「TQ急跌」軌跡訊號使用(比較這期TQ跟上一期TQ，
- * 急跌超過4視為偏差警訊，6/21用SQL驗證前後兩段穩定性測試通過)。groups_json
- * 本來就有被查詢進來、裡面包著meta.total_qualified，這次只是把它從.map()裡
- * 額外取出來，不需要更動SELECT查詢語句，風險低。
- *
- * ★ V0615-3 重大升級：加入「近期表現感知」自動微調靈魂
- *
- * 靈魂機制：
- * 1. 每次觸發時，先讀取最近30期的實際結果
- * 2. 計算各mode(ultra/strong/standard)的近期avg_pnl
- * 3. 根據近期表現動態調整信心等級：
- *    - 近30期avg_pnl > 0 → 正常出手
- *    - 近30期avg_pnl < -150 → 保守模式(只出ultra/strong)
- *    - 近10期連續虧損 → 冷靜期(skip 2期再恢復)
- * 4. 把感知結果傳給buildBingoGroups，讓選號邏輯知道當前狀態
+ * 1. 封印顯示改為各模式損益
+ * 2. 第一頁和第二頁顯示熱號錨點策略
+ * 3. 第三頁獨立錨點統計區塊
  */
 
-import { createClient } from '@supabase/supabase-js';
-import { buildBingoGroups, buildStreakAnchorGroups } from '../lib/buildBingoV1Strategies.js';
-import { buildComparePayload } from '../lib/buildComparePayload.js';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 
-const PREDICTIONS_TABLE = 'bingo_predictions';
-const DRAWS_TABLE = 'bingo_draws';
-const MODE = 'formal_3star';
-const COST_PER_GROUP = 25;
+const RAILWAY_URL = 'https://fuwei-bingo-backend-production.up.railway.app';
+const REFRESH_INTERVAL_MS = 30000;
+const STATS_START_DATE = '2026-06-08T00:00:00.000Z';
 
-function getSupabase() {
-  const url = process.env.SUPABASE_URL;
-  const key =
-    process.env.SUPABASE_SERVICE_ROLE_KEY ||
-    process.env.SUPABASE_SECRET_KEY ||
-    process.env.SUPABASE_KEY;
-  if (!url || !key) throw new Error('Missing SUPABASE env');
-  return createClient(url, key, { auth: { persistSession: false } });
+// V0623-2：四種active_mode中文對照
+const MODE_LABEL = {
+  standard: '標準', strong: '強訊號', ultra: '超強訊號', spider: '蜘蛛感知',
+};
+function modeLabel(m) { return MODE_LABEL[m] || m || '-'; }
+
+// V0620-3：五種盤面狀態中文對照
+const BOARD_STATE_LABEL = {
+  A_golden:        { text: '黃金共振', color: '#B45309', bg: '#FEF3C7' },
+  B_spider_calm:   { text: '蜘蛛靜默', color: '#15803D', bg: '#DCFCE7' },
+  D_burst_danger:  { text: '爆發危險區', color: '#DC2626', bg: '#FEE2E2' },
+  E_false_momentum:{ text: '假動能',   color: '#9333EA', bg: '#F3E8FF' },
+  F_quiet:         { text: '平淡期',   color: '#6B7280', bg: '#F3F4F6' },
+};
+function boardStateInfo(s) { return BOARD_STATE_LABEL[s] || null; }
+
+// V0623-2：選號策略中文對照，V0625-2加入wide_spread和gradient
+const SELECTION_STRATEGY_LABEL = {
+  core_outer:  { text: '🎯 核心外圍', color: '#B45309', bg: '#FEF3C7' },
+  spider_mid:  { text: '🔬 次熱號優先', color: '#0E7490', bg: '#CFFAFE' },
+  wide_spread: { text: '🌐 寬幅分散', color: '#7C3AED', bg: '#F5F3FF' },
+  gradient:    { text: '📐 梯度遞減', color: '#059669', bg: '#ECFDF5' },
+  zone_bias:   { text: '🗺️ 結構偏向', color: '#0369A1', bg: '#E0F2FE' },
+  zone_pattern_bias: { text: '🎯 區間盤面', color: '#DC2626', bg: '#FEE2E2' },
+};
+function selectionStrategyInfo(s) { return SELECTION_STRATEGY_LABEL[s] || null; }
+
+// V0623-2：回饋迴路信心等級
+const FEEDBACK_LABEL = {
+  hot:        { text: '回饋:發燙🔥', color: '#15803D', bg: '#DCFCE7' },
+  normal:     { text: '回饋:正常',   color: '#6B7280', bg: '#F3F4F6' },
+  cold:       { text: '回饋:冷場觀察', color: '#DC2626', bg: '#FEE2E2' },
+  regression: { text: '回饋:均值回歸↓4組', color: '#D97706', bg: '#FEF9C3' },
+};
+function feedbackInfo(f) { return FEEDBACK_LABEL[f] || null; }
+
+// V0620-4：謹慎旗標
+function getCautionLabels(meta) {
+  if (!meta) return [];
+  const labels = [];
+  if (meta.sum_surge) labels.push('總和暴漲');
+  if (meta.odd_imbalance) labels.push('奇偶失衡');
+  if (meta.tq_plunge) labels.push('TQ急跌');
+  return labels;
+}
+
+// V0619-2：s1/s5/s9/s12訊號判斷
+const SIGNAL_LABEL = { s1: 's1換手醞釀', s5: 's5槓龜換手', s9: 's9連2期均衡', s12: 's12高TQ換手' };
+function isBalancedTail(t) { return t >= 9 && t <= 11; }
+function getFiredSignals(meta) {
+  if (!meta) return [];
+  const changedNums = toNum(meta.changed_nums, -1);
+  const position = meta.position || '';
+  const prevHitCount = toNum(meta.prev_hit_count, -1);
+  const totalQualified = toNum(meta.total_qualified, -1);
+  const prevOddTail = meta.prev_odd_tail != null ? toNum(meta.prev_odd_tail, -1) : null;
+  const prev2OddTail = meta.prev2_odd_tail != null ? toNum(meta.prev2_odd_tail, -1) : null;
+  const isFastBurst = changedNums >= 5;
+  const fired = [];
+  if (isFastBurst && position === '醞釀期') fired.push('s1');
+  if (prevHitCount === 0 && isFastBurst) fired.push('s5');
+  if (prevOddTail != null && prev2OddTail != null && isBalancedTail(prevOddTail) && isBalancedTail(prev2OddTail)) fired.push('s9');
+  if (totalQualified >= 25 && isFastBurst) fired.push('s12');
+  return fired;
+}
+
+// V0621-5：four_count門檻出手判斷
+function isFiredByFourCountOnly(meta) {
+  if (!meta) return false;
+  return meta.four_burst_fire === true && toNum(meta.total_signals, -1) === 0;
 }
 
 function toNum(v, fallback = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
 }
+function toArray(v) { return Array.isArray(v) ? v : []; }
+function fmt(v, fallback = '--') {
+  if (v === null || v === undefined || v === '') return fallback;
+  return String(v);
+}
+function fmtPercent(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '--';
+  return `${(n * 100).toFixed(1)}%`;
+}
+function parseNums(input) {
+  if (Array.isArray(input)) return input.map(Number).filter(Number.isFinite);
+  if (typeof input === 'string') {
+    return input.replace(/[{}[\]]/g, ' ').split(/[,\s|/]+/).map(n => Number(n.trim())).filter(Number.isFinite);
+  }
+  return [];
+}
+function safeJson(v, fallback = null) {
+  if (v == null) return fallback;
+  if (typeof v === 'object') return v;
+  try { return JSON.parse(v); } catch { return fallback; }
+}
+function isNight() {
+  const now = new Date();
+  const m = now.getHours() * 60 + now.getMinutes();
+  return m >= 0 && m < 7 * 60;
+}
+function padNum(n) { return String(Number(n)).padStart(2, '0'); }
 
-async function fetchLatestDraw(db) {
-  const { data, error } = await db
-    .from(DRAWS_TABLE)
-    .select('draw_no, draw_time, numbers')
-    .order('draw_no', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (error) throw error;
-  return data;
+async function apiFetch(path, options = {}) {
+  const res = await fetch(`${RAILWAY_URL}${path}`, { cache: 'no-store', ...options });
+  const text = await res.text();
+  try { return JSON.parse(text); } catch { return { raw: text }; }
 }
 
-async function fetchRecent30Draws(db) {
-  const { data, error } = await db
-    .from(DRAWS_TABLE)
-    .select('draw_no, numbers')
-    .order('draw_no', { ascending: false })
-    .limit(30);
-  if (error) throw error;
-  return data || [];
+const C = {
+  bg: '#FFF8F0', card: '#FFFFFF', gold: '#C8860A', goldLight: '#F5D78B',
+  goldBg: '#FFF9EC', orange: '#E8722A', orangeLight: '#FDE8D8',
+  green: '#16A34A', greenBg: '#F0FDF4', teal: '#0F766E',
+  gray: '#6B7280', grayLight: '#F3F4F6', border: '#E5DDD0',
+  text: '#2C1810', textSub: '#7B6E5C',
+  purple: '#7C3AED', purpleBg: '#F5F3FF', purpleLight: '#DDD6FE',
+  shadow: '0 2px 12px rgba(200,134,10,0.10)',
+};
+
+const S = {
+  app: { minHeight: '100vh', background: C.bg, fontFamily: '"Segoe UI", "PingFang TC", "Noto Sans TC", sans-serif', color: C.text, paddingBottom: 70 },
+  header: { background: `linear-gradient(135deg, ${C.gold} 0%, ${C.orange} 100%)`, padding: '12px 14px 10px', boxShadow: '0 2px 16px rgba(200,134,10,0.25)' },
+  headerTitle: { fontSize: 17, fontWeight: 900, color: '#FFF', letterSpacing: 1, margin: 0 },
+  headerSub: { fontSize: 11, color: 'rgba(255,255,255,0.85)', marginTop: 2 },
+  tabs: { display: 'flex', background: C.card, borderBottom: `2px solid ${C.border}`, position: 'sticky', top: 0, zIndex: 100, boxShadow: '0 2px 8px rgba(200,134,10,0.08)' },
+  tab: (active) => ({ flex: 1, padding: '8px 2px 6px', border: 'none', background: 'transparent', cursor: 'pointer', fontSize: 10, fontWeight: active ? 700 : 400, color: active ? C.gold : C.gray, borderBottom: active ? `3px solid ${C.gold}` : '3px solid transparent', transition: 'all 0.2s' }),
+  subTab: (active) => ({ flex: 1, padding: '6px 4px', border: 'none', background: active ? C.goldBg : 'transparent', cursor: 'pointer', fontSize: 11, fontWeight: active ? 700 : 400, color: active ? C.gold : C.gray, borderRadius: 8, transition: 'all 0.2s' }),
+  page: { padding: '10px 10px', maxWidth: 600, margin: '0 auto' },
+  card: { background: C.card, borderRadius: 12, padding: '12px 12px 10px', marginBottom: 10, boxShadow: C.shadow, border: `1px solid ${C.border}` },
+  cardTitle: { fontSize: 13, fontWeight: 700, color: C.gold, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 },
+  badge: (color, bg) => ({ display: 'inline-block', fontSize: 10, padding: '2px 6px', borderRadius: 99, fontWeight: 600, color, background: bg }),
+  ball: (hit) => ({ width: 36, height: 36, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 800, background: hit === true ? C.gold : hit === false ? C.grayLight : C.goldBg, color: hit === true ? '#FFF' : hit === false ? C.gray : C.gold, border: `2px solid ${hit === true ? C.gold : hit === false ? C.border : C.goldLight}`, boxShadow: hit === true ? `0 2px 8px ${C.goldLight}` : 'none' }),
+  statRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderBottom: `1px solid ${C.border}` },
+  statLabel: { fontSize: 12, color: C.textSub },
+  statValue: { fontSize: 13, fontWeight: 700, color: C.text },
+  bigNum: { fontSize: 26, fontWeight: 900, color: C.gold },
+  btn: (disabled) => ({ background: disabled ? C.grayLight : `linear-gradient(135deg, ${C.gold}, ${C.orange})`, color: disabled ? C.gray : '#FFF', border: 'none', borderRadius: 10, padding: '9px 16px', fontSize: 13, fontWeight: 700, cursor: disabled ? 'not-allowed' : 'pointer', boxShadow: disabled ? 'none' : C.shadow, width: '100%', marginTop: 6 }),
+  divider: { height: 1, background: C.border, margin: '10px 0' },
+  empty: { color: C.textSub, fontSize: 13, padding: '12px 0', textAlign: 'center' },
+  recentBall: () => ({ width: 32, height: 32, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700, background: C.grayLight, color: C.textSub }),
+};
+
+function Card({ title, icon, children, right }) {
+  return (
+    <div style={S.card}>
+      {title && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+          <div style={S.cardTitle}>{icon && <span>{icon}</span>}{title}</div>
+          {right && <div>{right}</div>}
+        </div>
+      )}
+      {children}
+    </div>
+  );
 }
 
-async function fetchRecentPredictions(db, limit = 30) { // ★ V0627-1：limit從15提升到30，讓回饋迴路有更長記憶，不被短期冷場誤判
-  const { data, error } = await db
-    .from(PREDICTIONS_TABLE)
-    .select('status, hit_count, groups_json, compare_result_json')
-    .eq('mode', MODE)
-    .order('created_at', { ascending: false })
-    .limit(limit);
-  if (error) throw error;
-  return (data || []).map(p => ({
-    status: p.status,
-    hit_count: p.hit_count || 0,
-    groups_count: Array.isArray(p.groups_json) ? p.groups_json.length : 0,
-    position: p.groups_json?.[0]?.meta?.position || '',
-    action: p.groups_json?.[0]?.meta?.action || '',
-    hot_pool: p.groups_json?.[0]?.meta?.hot_pool || '',
-    hit2_groups: Array.isArray(p.compare_result_json?.detail)
-      ? p.compare_result_json.detail.filter(d => d?.hit === 2).length
-      : 0,
-    total_qualified: p.groups_json?.[0]?.meta?.total_qualified ?? null,
-    board_state: p.groups_json?.[0]?.meta?.board_state || '', // ★ V0623-2新增：供回饋迴路計算近期盤面成績
-    selection_strategy: p.groups_json?.[0]?.meta?.selection_strategy || '', // ★ V0623-2新增：供回饋迴路追蹤各策略近期表現
-    zm_bias_type: p.groups_json?.[0]?.meta?.zm_bias_type || '', // ★ V0629-3：供ZM盤面匹配感知使用
+function Ball({ n, hit }) { return <div style={S.ball(hit)}>{padNum(n)}</div>; }
+function StatRow({ label, value, valueColor }) {
+  return (
+    <div style={S.statRow}>
+      <span style={S.statLabel}>{label}</span>
+      <span style={{ ...S.statValue, color: valueColor || C.text }}>{value}</span>
+    </div>
+  );
+}
+
+function Spinner() {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'center', padding: 30 }}>
+      <div style={{ width: 32, height: 32, borderRadius: '50%', border: `3px solid #F5D78B`, borderTopColor: C.gold, animation: 'spin 0.8s linear infinite' }} />
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+    </div>
+  );
+}
+
+// ★ 標籤列：盤面+訊號+謹慎旗標+回饋迴路+動態組數，統一元件供第一頁和第二頁使用
+function QuickPage({ prediction, recent20, onRefresh, loading, streakRows }) {
+  const row = prediction?.latest_3star_row;
+  const compareResult = safeJson(row?.compare_result_json) || safeJson(row?.compare_result);
+  const detail = toArray(compareResult?.detail);
+  const allGroups = toArray(row?.groups_json);
+  const groups = allGroups.slice(0, 8);
+  const isDone = row?.compare_status === 'done';
+  const bestHit = toNum(row?.hit_count, 0);
+  const latestDraw = toArray(recent20)[0];
+  const isSkipped = !row || row?.status === 'skipped' || allGroups.length === 0;
+  const meta0 = groups[0]?.meta || {};
+  const activeMode = meta0.active_mode || 'standard';
+  const isAvoidNow = isSkipped || activeMode === 'skip';
+  const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.orange : C.textSub;
+  const hit2Groups = detail.filter(d => toNum(d?.hit, 0) === 2).length;
+  const isWarning = hit2Groups >= 3;
+
+  const comparedDrawNumsArr = toArray(compareResult?.draw_nums);
+  const drawNums = new Set(
+    comparedDrawNumsArr.length > 0
+      ? comparedDrawNumsArr.map(Number)
+      : parseNums(latestDraw?.numbers)
+  );
+
+  return (
+    <div style={S.page}>
+      {/* 最新開獎 */}
+      <Card title="最新開獎" icon="🎱">
+        {latestDraw ? (
+          <>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+              <span style={S.statLabel}>期號 {fmt(latestDraw?.draw_no)}</span>
+              <span style={S.statLabel}>{fmt(latestDraw?.draw_time)}</span>
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+              {parseNums(latestDraw?.numbers).sort((a, b) => a - b).map(n => (
+                <div key={n} style={S.recentBall()}>{padNum(n)}</div>
+              ))}
+            </div>
+          </>
+        ) : <div style={S.empty}>載入中...</div>}
+      </Card>
+
+      {/* 行動建議框（V0623-2清理版：移除confidenceScore/brewCount/forcedSwitch等舊邏輯） */}
+      {!isSkipped && !isDone && (() => {
+        const isGo = !isAvoidNow;
+        const actionBg = isGo ? '#DCFCE7' : '#FEE2E2';
+        const actionBorder = isGo ? '#16A34A' : '#DC2626';
+        const actionColor = isGo ? '#15803D' : '#DC2626';
+        const actionIcon = isGo ? '🟢' : '🔴';
+        const actionText = isGo ? '本期可進場' : '本期不推薦號碼';
+        const totalSignals = toNum(meta0.total_signals, 0);
+        const mainReason = activeMode === 'ultra' ? `${totalSignals}個訊號共鳴`
+          : activeMode === 'strong' ? `${totalSignals}個訊號共鳴`
+          : activeMode === 'spider' ? '蜘蛛感知(TQ22+連穩)'
+          : `標準模式`;
+        return (
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ background: actionBg, border: `2px solid ${actionBorder}`, borderRadius: 12, padding: '10px 12px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ fontSize: 18, fontWeight: 900, color: actionColor }}>{actionIcon} {actionText}</div>
+                <span style={{ fontSize: 10, fontWeight: 700, color: actionColor, background: actionBorder + '22', borderRadius: 6, padding: '3px 8px' }}>{modeLabel(activeMode)}</span>
+              </div>
+              {isGo && <div style={{ fontSize: 11, color: actionColor, marginTop: 4, opacity: 0.9 }}>{mainReason}</div>}
+              {isGo && <MetaTags meta={meta0} isSkipped={false} />}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* 多組中2預警 */}
+      {isWarning && (
+        <div style={{ background: '#FEF3C7', border: '2px solid #F59E0B', borderRadius: 12, padding: '10px 14px', marginBottom: 10 }}>
+          <div style={{ fontSize: 14, fontWeight: 800, color: '#D97706' }}>⚡ 多組中2，下期注意</div>
+          <div style={{ fontSize: 12, color: '#92400E', marginTop: 4 }}>本期有 {hit2Groups} 組中2</div>
+        </div>
+      )}
+
+      {/* 本期預測 */}
+      {isSkipped ? (
+        <Card title="本期預測" icon="⏸️">
+          <div style={{ textAlign: 'center', padding: '20px 12px' }}>
+            <div style={{ fontSize: 13, color: C.textSub, marginBottom: 8 }}>預測期號 {fmt(row?.source_draw_no || latestDraw?.draw_no)}</div>
+            <div style={{ fontSize: 16, fontWeight: 900, color: '#DC2626', marginBottom: 12 }}>🔴 主系統本期不推薦</div>
+            {/* ★ V0628-1：顯示熱號錨點策略 */}
+            {(() => {
+              const srcNo = String(row?.source_draw_no || latestDraw?.draw_no || '');
+              const streakRow = toArray(streakRows).find(s => String(s?.source_draw_no) === srcNo);
+              const streakGroups = streakRow ? toArray(streakRow?.groups_json) : [];
+              const anchorNums = streakGroups[0]?.meta?.anchor_nums || [];
+              if (streakGroups.length === 0) return (
+                <div style={{ fontSize: 12, color: C.textSub }}>熱號錨點策略計算中...</div>
+              );
+              return (
+                <div>
+                  <div style={{ fontSize: 12, color: '#D97706', fontWeight: 700, marginBottom: 8 }}>
+                    🔥 熱號錨點策略出手｜錨點：{anchorNums.map(n => String(n).padStart(2,'0')).join(' ')}
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'center' }}>
+                    {streakGroups.map((g, gi) => {
+                      const nums = toArray(g?.nums);
+                      return (
+                        <div key={gi} style={{ background: C.orangeLight, borderRadius: 8, padding: '4px 10px', fontSize: 12, border: `1px solid ${C.orange}`, fontWeight: 600 }}>
+                          {nums.map(n => String(n).padStart(2,'0')).join(' ')}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        </Card>
+      ) : (
+        <Card
+          title="本期預測"
+          icon="🔥"
+          right={
+            isDone ? (
+              <span style={S.badge(hitColor, hitColor + '18')}>
+                {bestHit >= 3 ? `🏆 中${bestHit}！` : bestHit >= 2 ? `🔸 中${bestHit}(仍虧)` : `❌ 未中`}
+              </span>
+            ) : row ? <span style={S.badge(C.orange, C.orangeLight)}>等待開獎</span> : null
+          }
+        >
+          {isDone ? (
+            (() => {
+              const totalCost = groups.length * 25;
+              const reward = bestHit >= 3 ? 500 : bestHit >= 2 ? 50 : 0;
+              const netPnl = reward - totalCost;
+              const labelColor = bestHit >= 3 ? hitColor : netPnl < 0 ? '#B91C1C' : C.textSub;
+              const label = bestHit >= 3 ? '🏆 恭喜中3！' : bestHit >= 2 ? '🔸 中2（仍虧本）' : '❌ 未中';
+              return (
+                <>
+                  <div style={{ textAlign: 'center', padding: '12px 0 10px' }}>
+                    <div style={{ fontSize: 13, color: C.textSub, marginBottom: 6 }}>比對期號 {fmt(detail[0]?.draw_no)}</div>
+                    <div style={{ ...S.bigNum, color: labelColor }}>{label}</div>
+                    <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>
+                      本期淨損益：<span style={{ fontWeight: 800, color: netPnl >= 0 ? '#15803D' : '#B91C1C' }}>{netPnl >= 0 ? '+' : ''}{netPnl}元</span>（獎金{reward}元－成本{totalCost}元）
+                    </div>
+                  </div>
+                  <div style={S.divider} />
+                  {groups.map((g, idx) => {
+                    const nums = parseNums(g?.nums);
+                    const key = String(g?.key || g?.meta?.strategy_key || idx);
+                    const matchDetail = detail.find(d => String(d?.strategy_key) === key);
+                    const hit = matchDetail ? toNum(matchDetail.hit, -1) : -1;
+                    const is3 = hit >= 3;
+                    const is2 = hit === 2;
+                    return (
+                      <div key={key} style={{ background: is3 ? C.goldBg : C.grayLight, border: `2px solid ${is3 ? C.goldLight : C.border}`, borderRadius: 10, padding: '8px 12px', marginBottom: 8 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                          <div style={{ fontSize: 11, fontWeight: 600, color: C.textSub }}>第{idx + 1}組</div>
+                          {hit >= 0 && <span style={{ fontSize: 14, fontWeight: 900, color: is3 ? C.gold : is2 ? C.orange : C.gray }}>{is3 ? `🏆 中${hit}` : is2 ? `中${hit}(仍虧)` : `中${hit}`}</span>}
+                        </div>
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          {nums.map(n => {
+                            const isHit = drawNums.has(n);
+                            return <Ball key={n} n={n} hit={isHit ? true : false} />;
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </>
+              );
+            })()
+          ) : isAvoidNow ? (
+            <div style={{ textAlign: 'center', padding: '32px 12px' }}>
+              <div style={{ fontSize: 13, color: C.textSub, marginBottom: 8 }}>預測期號 {fmt(toNum(row?.source_draw_no, 0) + 1)}</div>
+              <div style={{ fontSize: 20, fontWeight: 900, color: '#DC2626' }}>🔴 本期不推薦號碼</div>
+            </div>
+          ) : (
+            <>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+                <span style={S.badge(C.textSub, C.grayLight)}>
+                  {isDone && detail.length > 0 ? `比對期號 ${fmt(detail[0]?.draw_no)}` : `預測期號 ${fmt(toNum(row?.source_draw_no, 0) + 1)}`}
+                </span>
+                <span style={S.badge(C.teal, C.greenBg)}>{groups.length} 組</span>
+              </div>
+              {groups.map((g, idx) => {
+                const nums = parseNums(g?.nums);
+                const key = String(g?.key || g?.meta?.strategy_key || idx);
+                const matchDetail = detail.find(d => String(d?.strategy_key) === key);
+                const hit = matchDetail ? toNum(matchDetail.hit, -1) : -1;
+                const is3 = hit >= 3;
+                const is2 = hit === 2;
+                return (
+                  <div key={key} style={{ background: is3 ? C.goldBg : C.grayLight, border: `2px solid ${is3 ? C.goldLight : C.border}`, borderRadius: 12, padding: '12px 14px', marginBottom: 10 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: C.textSub }}>第{idx + 1}組</div>
+                      {isDone && hit >= 0 && (
+                        <span style={{ fontSize: 16, fontWeight: 900, color: is3 ? C.gold : is2 ? C.orange : C.gray }}>
+                          {is3 ? `🏆 中${hit}` : is2 ? `中${hit}(仍虧)` : `中${hit}`}
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      {nums.map(n => {
+                        const isHit = isDone && drawNums.has(n);
+                        return <Ball key={n} n={n} hit={isDone ? (isHit ? true : false) : undefined} />;
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </>
+          )}
+        </Card>
+      )}
+      <button style={S.btn(loading)} onClick={onRefresh} disabled={loading}>
+        {loading ? '更新中...' : '🔄 刷新資料'}
+      </button>
+    </div>
+  );
+}
+
+function HistoryPage({ historyRows, streakRows }) {
+  const rows = toArray(historyRows).slice(0, 20);
+  return (
+    <div style={S.page}>
+      <Card title="近期命中紀錄" icon="📋">
+        {!rows.length ? <div style={S.empty}>尚無比對紀錄</div> : rows.map((row, idx) => {
+          const compareResult = safeJson(row?.compare_result_json) || safeJson(row?.compare_result);
+          const detail = toArray(compareResult?.detail);
+          const allGroups = toArray(row?.groups_json);
+          const groups = allGroups.slice(0, 8);
+          const bestHit = toNum(row?.hit_count, 0);
+          const isDone = row?.compare_status === 'done';
+          const isSkipped = row?.status === 'skipped' || allGroups.length === 0;
+          const histMode = allGroups[0]?.meta?.active_mode || '';
+          const histIsAvoid = isSkipped || histMode === 'skip';
+          const meta0 = allGroups[0]?.meta || {};
+          const comparedDraw = toArray(compareResult?.detail)[0]?.draw_no;
+          const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.orange : C.gray;
+          return (
+            <div key={row?.id || idx} style={{ ...S.card, marginBottom: 8, padding: '10px 12px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                <div>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: C.textSub }}>
+                    預測 {fmt(row?.source_draw_no)} → 比對 {fmt(comparedDraw || '--')}
+                  </span>
+                  {/* 空窗期顯示熱號錨點 */}
+                  {isSkipped ? (
+                    (() => {
+                      const streakRow = streakRows?.find(s => String(s?.source_draw_no) === String(row?.source_draw_no));
+                      const streakGroups = streakRow ? toArray(streakRow?.groups_json) : [];
+                      const streakDetail = streakRow?.compare_result_json?.detail || [];
+                      const streakBestHit = streakDetail.reduce((m, e) => Math.max(m, toNum(e?.hit, 0)), 0);
+                      const anchorNums = streakGroups[0]?.meta?.anchor_nums || [];
+                      const isDoneStreak = streakRow?.compare_status === 'done';
+                      return streakGroups.length > 0 ? (
+                        <div style={{ marginTop: 3 }}>
+                          <div style={{ fontSize: 10, color: '#D97706', marginBottom: 3 }}>
+                            🔥 熱號錨點策略｜錨點：{anchorNums.map(n => String(n).padStart(2,'0')).join(' ')}
+                          </div>
+                          {isDoneStreak && (
+                            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                              {streakGroups.map((g, gi) => {
+                                const nums = parseNums(g?.nums);
+                                const sd = streakDetail[gi];
+                                const hit = toNum(sd?.hit, 0);
+                                return (
+                                  <div key={gi} style={{ background: hit >= 3 ? C.goldBg : hit >= 2 ? C.orangeLight : C.grayLight, borderRadius: 6, padding: '2px 6px', fontSize: 10, border: `1px solid ${hit >= 3 ? C.goldLight : hit >= 2 ? C.orange : C.border}` }}>
+                                    {nums.map(n => padNum(n)).join(' ')}
+                                    <span style={{ marginLeft: 3, fontWeight: 700, color: hit >= 3 ? C.gold : hit >= 2 ? C.orange : C.gray }}>中{hit}</span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                          {!isDoneStreak && <div style={{ fontSize: 10, color: C.textSub }}>等待比對中...</div>}
+                          {isDoneStreak && streakBestHit > 0 && (
+                            <div style={{ fontSize: 11, fontWeight: 700, color: streakBestHit >= 3 ? C.gold : C.orange, marginTop: 2 }}>
+                              🔥 錨點策略 {streakBestHit >= 3 ? `中${streakBestHit}` : `中${streakBestHit}`}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div style={{ fontSize: 10, color: C.purple, marginTop: 3 }}>⏸️ 本期訊號不足，無出手</div>
+                      );
+                    })()
+                  ) : (
+                    <div style={{ marginTop: 3, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: histIsAvoid ? '#DC2626' : '#15803D', background: histIsAvoid ? '#FEE2E2' : '#DCFCE7', borderRadius: 6, padding: '2px 8px' }}>
+                        {histIsAvoid ? '🔴 不推薦' : '🟢 可進場'}
+                      </span>
+                    </div>
+                  )}
+                  {!isSkipped && <MetaTags meta={meta0} isSkipped={isSkipped} />}
+                </div>
+                {isSkipped ? null : isDone ? (
+                  <span style={{ fontSize: 14, fontWeight: 900, color: hitColor, whiteSpace: 'nowrap' }}>
+                    {bestHit >= 3 ? `🏆 中${bestHit}` : bestHit >= 2 ? `🔸 中${bestHit}` : `❌ 未中`}
+                  </span>
+                ) : <span style={{ fontSize: 11, color: C.orange, whiteSpace: 'nowrap' }}>等待比對</span>}
+              </div>
+              {/* 空窗期不顯示號碼，有出手的才顯示 */}
+              {!isSkipped && !histIsAvoid && isDone && (
+                <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginTop: 4 }}>
+                  {groups.map((g, gIdx) => {
+                    const key = String(g?.key || g?.meta?.strategy_key || gIdx);
+                    const nums = parseNums(g?.nums);
+                    const matchDetail = detail.find(d => String(d?.strategy_key) === key);
+                    const hit = matchDetail ? toNum(matchDetail.hit, 0) : 0;
+                    return (
+                      <div key={key} style={{ background: hit >= 3 ? C.goldBg : hit >= 2 ? C.orangeLight : C.grayLight, borderRadius: 6, padding: '3px 7px', fontSize: 11, border: `1px solid ${hit >= 3 ? C.goldLight : hit >= 2 ? C.orange : C.border}` }}>
+                        {nums.map(n => padNum(n)).join(' ')}
+                        <span style={{ marginLeft: 4, fontWeight: 700, color: hit >= 3 ? C.gold : hit >= 2 ? C.orange : C.gray }}>中{hit}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </Card>
+    </div>
+  );
+}
+
+// ★ V0628-3：MetaTags新增盤面結構資訊（zone_bias、zone_pattern_bias）
+function MetaTags({ meta, isSkipped }) {
+  if (!meta || isSkipped) return null;
+  const bsInfo = boardStateInfo(meta.board_state);
+  const fbInfo = feedbackInfo(meta.feedback_mode);
+  const cautionLabels = getCautionLabels(meta);
+  const isHitCooldown = meta.is_hit_cooldown;
+  const dynamicMax = meta.dynamic_max_combos;
+
+  // ★ V0628-2：S+H盤面結構標籤
+  const zoneBiasLabel = {
+    strong_front:  { text: '⬆️ 強偏前段', color: '#0369A1', bg: '#E0F2FE' },
+    slight_front:  { text: '↑ 略偏前段', color: '#0369A1', bg: '#F0F9FF' },
+    neutral:       { text: '⇔ 均衡',    color: '#6B7280', bg: '#F3F4F6' },
+    slight_back:   { text: '↓ 略偏後段', color: '#7C3AED', bg: '#F5F3FF' },
+    strong_back:   { text: '⬇️ 強偏後段', color: '#7C3AED', bg: '#EDE9FE' },
+    extreme_back:  { text: '⬇️⬇️ 極強後段', color: '#DC2626', bg: '#FEE2E2' },
+  }[meta.zone_bias_type] || null;
+
+  // ★ V0628-3：Z+M複合盤面結構標籤
+  const zmLabel = {
+    zf_strong_front:  { text: `Z前強+${meta.prev_m_band||''}`, color: '#0369A1', bg: '#E0F2FE' },
+    zf_slight_front:  { text: `Z前略+${meta.prev_m_band||''}`, color: '#0369A1', bg: '#F0F9FF' },
+    zf_neutral:       { text: `Z前均+${meta.prev_m_band||''}`, color: '#6B7280', bg: '#F3F4F6' },
+    zb_strong_back:   { text: `Z後強+${meta.prev_m_band||''}`, color: '#7C3AED', bg: '#EDE9FE' },
+    zb_extreme_back:  { text: `Z後極+${meta.prev_m_band||''}`, color: '#DC2626', bg: '#FEE2E2' },
+  }[meta.zm_bias_type] || null;
+
+  // 上期四區間分布（v0628-3新增）
+  const z1 = meta.prev_z1, z2 = meta.prev_z2, z3 = meta.prev_z3, z4 = meta.prev_z4;
+  const hasZoneData = z1 != null && z2 != null && z3 != null && z4 != null;
+
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
+      {/* 盤面狀態 — 最重要 */}
+      {bsInfo && <span style={{ fontSize: 10, fontWeight: 700, color: bsInfo.color, background: bsInfo.bg, borderRadius: 6, padding: '2px 6px' }}>{bsInfo.text}</span>}
+      {/* ★ V0628-3：Z+M複合盤面 */}
+      {zmLabel && <span style={{ fontSize: 10, fontWeight: 700, color: zmLabel.color, background: zmLabel.bg, borderRadius: 6, padding: '2px 6px' }}>🗂️ {zmLabel.text}</span>}
+      {/* ★ V0628-2：S+H盤面偏向 */}
+      {zoneBiasLabel && <span style={{ fontSize: 10, fontWeight: 700, color: zoneBiasLabel.color, background: zoneBiasLabel.bg, borderRadius: 6, padding: '2px 6px' }}>{zoneBiasLabel.text}</span>}
+      {/* 上期四區間分布 */}
+      {hasZoneData && <span style={{ fontSize: 10, color: C.textSub, background: C.grayLight, borderRadius: 6, padding: '2px 6px' }}>上期區間 {z1}/{z2}/{z3}/{z4}</span>}
+      {/* 上期最小號 */}
+      {meta.prev_min_num != null && <span style={{ fontSize: 10, color: C.textSub, background: C.grayLight, borderRadius: 6, padding: '2px 6px' }}>最小號{meta.prev_min_num}</span>}
+      {/* 回饋模式 */}
+      {fbInfo && <span style={{ fontSize: 10, fontWeight: 700, color: fbInfo.color, background: fbInfo.bg, borderRadius: 6, padding: '2px 6px' }}>{fbInfo.text}</span>}
+      {/* 自主學習縮手 */}
+      {dynamicMax != null && dynamicMax < 8 && (
+        <span style={{ fontSize: 10, fontWeight: 700, color: '#7C3AED', background: '#F5F3FF', borderRadius: 6, padding: '2px 6px' }}>
+          {dynamicMax === 0 ? '🚫 暫停' : `📉 縮手${dynamicMax}組`}
+        </span>
+      )}
+      {/* 中3冷靜期 */}
+      {isHitCooldown && <span style={{ fontSize: 10, fontWeight: 700, color: '#D97706', background: '#FEF9C3', borderRadius: 6, padding: '2px 6px' }}>❄️ 冷靜期</span>}
+      {/* 謹慎旗標 — 警告最重要 */}
+      {cautionLabels.map(label => (
+        <span key={label} style={{ fontSize: 10, fontWeight: 700, color: '#C2410C', background: '#FFEDD5', borderRadius: 6, padding: '2px 6px' }}>⚠️ {label}</span>
+      ))}
+    </div>
+  );
+}
+function ComboWeightsCard() {
+  const [weights, setWeights] = useState(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let active = true;
+    apiFetch('/api/board-combo-revalidate', { method: 'POST' })
+      .then(res => { if (active) setWeights(res); })
+      .catch(() => { if (active) setWeights(null); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, []);
+
+  const BOARD_LABEL = {
+    A_golden: '✨黃金', B_spider_calm: '🕷️蜘蛛',
+    E_false_momentum: '⚡假動', F_quiet: '😶平淡',
+  };
+  const comboColor = (maxCombos) =>
+    maxCombos === 8 ? C.green : maxCombos === 4 ? C.orange : '#DC2626';
+
+  return (
+    <div style={S.card}>
+      <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>🤖 自主學習狀態</div>
+      <div style={{ fontSize: 11, color: C.textSub, marginBottom: 10 }}>每小時自動更新，根據近24小時命中率動態調整出手組數</div>
+      {loading ? (
+        <div style={{ fontSize: 11, color: C.textSub }}>載入中...</div>
+      ) : !weights?.ok ? (
+        <div style={{ fontSize: 11, color: C.textSub }}>尚無學習資料</div>
+      ) : (
+        <>
+          <div style={{ fontSize: 11, color: C.textSub, marginBottom: 8 }}>
+            基準損益：{weights.baseline_avg_pnl != null ? `${weights.baseline_avg_pnl}元/期` : '--'} ・
+            基準中3率：{weights.baseline_hit3_rate != null ? `${weights.baseline_hit3_rate}%` : '--'} ・
+            樣本：{weights.total_sample || 0}期
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {toArray(weights.combos).sort((a, b) => a.combo_key.localeCompare(b.combo_key)).map(c => {
+              const boardLabel = BOARD_LABEL[c.combo_key.split('_').slice(0, -1).join('_')] || c.combo_key;
+              const color = comboColor(c.max_combos);
+              return (
+                <div key={c.combo_key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: C.grayLight, borderRadius: 8, padding: '7px 10px' }}>
+                  <div>
+                    <span style={{ fontSize: 12, fontWeight: 700 }}>{boardLabel} fc={c.combo_key.split('_').pop()}</span>
+                    <div style={{ fontSize: 10, color: C.textSub, marginTop: 2 }}>
+                      {c.sample}期 ・ 中3率{c.hit3_rate != null ? `${c.hit3_rate}%` : '--'} ・ 優勢{c.relative_edge != null ? `${c.relative_edge}元` : '--'}
+                    </div>
+                  </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ fontSize: 14, fontWeight: 900, color }}>
+                      {c.max_combos === 0 ? '🚫暫停' : `${c.max_combos}組`}
+                    </div>
+                    <div style={{ fontSize: 9, color: C.textSub }}>出手組數</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function StatsPage({ historyRows, streakRows }) {
+  const [subTab, setSubTab] = useState('all');
+  const [soulStatus, setSoulStatus] = useState(null);
+  const [soulLoading, setSoulLoading] = useState(true);
+  const [healthStatus, setHealthStatus] = useState(null);
+  const [healthLoading, setHealthLoading] = useState(true);
+  const [healthExpanded, setHealthExpanded] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    apiFetch('/api/soul-status')
+      .then(res => { if (active) setSoulStatus(res); })
+      .catch(() => { if (active) setSoulStatus(null); })
+      .finally(() => { if (active) setSoulLoading(false); });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    apiFetch('/api/health-status')
+      .then(res => { if (active) setHealthStatus(res); })
+      .catch(() => { if (active) setHealthStatus(null); })
+      .finally(() => { if (active) setHealthLoading(false); });
+    return () => { active = false; };
+  }, []);
+
+  const allRows = toArray(historyRows).filter(row =>
+    row?.created_at >= STATS_START_DATE && row?.status === 'compared' && toArray(row?.groups_json).length > 0
+  );
+
+  const cleanCount = toNum(soulStatus?.clean_periods, 0);
+  // ★ V0626-3：封印相關變數(sealTarget/sealPct/isSealBroken/daysPassed)已移除
+  const modeMap = soulStatus?.mode_stats || {};
+
+  // V0623-2：依盤面狀態或選號策略篩選
+  const filterByBoardState = (key) => {
+    if (key === 'all') return allRows;
+    if (key === 'core_outer' || key === 'spider_mid' || key === 'zone_bias' || key === 'zone_pattern_bias' || key === 'gradient' || key === 'wide_spread') {
+      return allRows.filter(row => {
+        const s = toArray(row?.groups_json)[0]?.meta?.selection_strategy || '';
+        return s === key;
+      });
+    }
+    return allRows.filter(row => {
+      const bs = toArray(row?.groups_json)[0]?.meta?.board_state || '';
+      return bs === key;
+    });
+  };
+
+  const calcStats = (rows) => {
+    const total = rows.length;
+    const hit3 = rows.filter(r => toNum(r?.hit_count) >= 3).length;
+    const hit2 = rows.filter(r => toNum(r?.hit_count) === 2).length;
+    const hit1 = rows.filter(r => toNum(r?.hit_count) === 1).length;
+    const hit0 = rows.filter(r => toNum(r?.hit_count) === 0).length;
+    const rate = total > 0 ? hit3 / total : 0;
+    return { total, hit3, hit2, hit1, hit0, rate };
+  };
+
+  // V0623-2：子頁籤（盤面+選號策略），V0625-2加入wide_spread和gradient
+  const subTabs = [
+    { key: 'all',               label: '全部',     icon: '📊' },
+    { key: 'A_golden',          label: '黃金共振', icon: '✨' },
+    { key: 'B_spider_calm',     label: '蜘蛛靜默', icon: '🕷️' },
+    { key: 'E_false_momentum',  label: '假動能',   icon: '⚡' },
+    { key: 'F_quiet',           label: '平淡期',   icon: '😶' },
+    { key: 'wide_spread',       label: '寬幅分散', icon: '🌐' },
+    { key: 'gradient',          label: '梯度遞減', icon: '📐' },
+    { key: 'zone_bias',          label: '結構偏向', icon: '🗺️' },
+    { key: 'zone_pattern_bias',  label: '區間盤面', icon: '🎯' },
+    { key: 'core_outer',        label: '核心外圍', icon: '🎯' },
+    { key: 'spider_mid',        label: '次熱號',   icon: '🔬' },
+  ];
+
+  const currentRows = filterByBoardState(subTab);
+  const stats = calcStats(currentRows);
+  const rateColor = stats.rate > 0.0375 ? C.green : C.orange;
+
+  return (
+    <div style={S.page}>
+      {/* 靈魂戰況板 */}
+      <div style={S.card}>
+        <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>🧠 靈魂學習進度</div>
+        {soulLoading ? (
+          <div style={{ fontSize: 11, color: C.textSub }}>載入中...</div>
+        ) : !soulStatus?.ok ? (
+          <div style={{ fontSize: 11, color: C.textSub }}>暫無法取得靈魂狀態</div>
+        ) : (
+          <>
+            <div style={{ borderBottom: `1px solid ${C.border}`, paddingBottom: 8, marginBottom: 8 }}>
+              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>V0628-3版本各模式表現：</div>
+              {Object.entries(modeMap).sort((a, b) => b[1].count - a[1].count).map(([mode, stat]) => {
+                const avg = toNum(stat?.avg_pnl, 0);
+                const color = avg > 0 ? C.green : avg > -100 ? C.orange : '#DC2626';
+                return (
+                  <div key={mode} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, padding: '2px 0' }}>
+                    <span style={{ color: C.text, fontWeight: 600 }}>{modeLabel(mode)}</span>
+                    <span style={{ color: C.textSub }}>{stat.count}期</span>
+                    <span style={{ color, fontWeight: 700 }}>{avg > 0 ? '+' : ''}{avg}元/期</span>
+                  </div>
+                );
+              })}
+              {Object.keys(modeMap).length === 0 && <div style={{ fontSize: 11, color: C.textSub }}>尚無資料</div>}
+            </div>
+            <div style={{ fontSize: 11, color: C.textSub }}>共 {cleanCount} 期乾淨資料</div>
+          </>
+        )}
+      </div>
+
+      {/* 三天健康檢查 */}
+      <div style={S.card}>
+        <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>📋 三天健康檢查</div>
+        {healthLoading ? (
+          <div style={{ fontSize: 11, color: C.textSub }}>載入中...</div>
+        ) : !healthStatus?.ok ? (
+          <div style={{ fontSize: 11, color: C.textSub }}>暫無法取得健康檢查狀態</div>
+        ) : (() => {
+          const s = healthStatus.summary || {};
+          const levelColor = s.level === 'good' ? C.green : s.level === 'normal' ? C.orange : '#DC2626';
+          const levelBg = s.level === 'good' ? '#DCFCE7' : s.level === 'normal' ? '#FEF9C3' : '#FEE2E2';
+          const periods = toArray(healthStatus.periods);
+          return (
+            <>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6 }}>
+                <span style={{ fontSize: 24, fontWeight: 800, color: levelColor }}>{s.hit3_pct != null ? `${s.hit3_pct}%` : '--'}</span>
+                <span style={{ fontSize: 11, padding: '2px 10px', borderRadius: 6, background: levelBg, color: levelColor, fontWeight: 700 }}>{s.level_label || '無資料'}</span>
+              </div>
+              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 10 }}>
+                {fmt(s.compared_periods)}期已比對 ・ 出手率{s.output_rate_pct != null ? `${s.output_rate_pct}%` : '--'}
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+                <div style={{ flex: 1, background: C.grayLight, borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
+                  <div style={{ fontSize: 16, fontWeight: 800 }}>{fmt(s.hit3_periods)}</div>
+                  <div style={{ fontSize: 10, color: C.textSub }}>中3期數</div>
+                </div>
+                <div style={{ flex: 1, background: C.grayLight, borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
+                  <div style={{ fontSize: 16, fontWeight: 800 }}>{fmt(s.hit2plus_groups_total)}</div>
+                  <div style={{ fontSize: 10, color: C.textSub }}>中2以上組數</div>
+                </div>
+              </div>
+              {/* 精簡版：移除超級組合和選號策略的大塊，只保留逐期明細收合 */}
+              <button
+                onClick={() => setHealthExpanded(v => !v)}
+                style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 10px', background: C.grayLight, borderRadius: 8, border: 'none', fontSize: 12, fontWeight: 700, color: C.text, cursor: 'pointer' }}
+              >
+                <span>逐期明細（{periods.length}期）</span>
+                <span>{healthExpanded ? '▲' : '▼'}</span>
+              </button>
+              {healthExpanded && (
+                <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 320, overflowY: 'auto' }}>
+                  {periods.slice().reverse().map((p, idx) => {
+                    const isSkipped = p.status === 'skipped';
+                    const isDone = p.compare_status === 'done' && !isSkipped;
+                    const timeStr = p.time ? new Date(p.time).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Taipei' }) : '--';
+                    const bsInfo = boardStateInfo(p.board_state);
+                    const hitColor = toNum(p.best_hit) >= 3 ? C.gold : C.textSub;
+                    return (
+                      <div key={p.draw_no || idx} style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: 6, padding: '6px 8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ fontSize: 11, color: C.text }}>
+                          {timeStr} ・ {bsInfo ? bsInfo.text : '跳過'} ・ {isSkipped ? '空窗' : modeLabel(p.active_mode)}
+                        </span>
+                        {isSkipped ? (
+                          <span style={{ fontSize: 10, color: C.textSub }}>⏸️</span>
+                        ) : !isDone ? (
+                          <span style={{ fontSize: 10, color: C.orange }}>等待</span>
+                        ) : (
+                          <span style={{ fontSize: 11, fontWeight: 800, color: hitColor }}>中{fmt(p.best_hit)}</span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+                          ) : !isDone ? (
+            </>
+          );
+        })()}
+      </div>
+
+      {/* ★ V0628-3：盤面策略命中率對比卡 */}
+      <div style={S.card}>
+        <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>📊 盤面策略命中率對比</div>
+        <div style={{ fontSize: 11, color: C.textSub, marginBottom: 10 }}>今日新增的盤面策略 vs 舊策略實戰對比（依選號策略分類）</div>
+        {(() => {
+          const strategies = [
+            { key: 'zone_pattern_bias', label: '🗂️ 區間盤面(Z+M)', color: '#DC2626', bg: '#FEE2E2' },
+            { key: 'zone_bias',         label: '🗺️ 結構偏向(S+H)', color: '#0369A1', bg: '#E0F2FE' },
+            { key: 'gradient',          label: '📐 梯度遞減',       color: '#059669', bg: '#ECFDF5' },
+            { key: 'wide_spread',       label: '🌐 寬幅分散',       color: '#7C3AED', bg: '#F5F3FF' },
+            { key: 'core_outer',        label: '🎯 核心外圍',       color: '#B45309', bg: '#FEF3C7' },
+          ];
+          return (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {strategies.map(st => {
+                const rows = filterByBoardState(st.key);
+                const s = calcStats(rows);
+                const rateC = s.rate > 0.0375 ? C.green : s.rate > 0.02 ? C.orange : C.gray;
+                return (
+                  <div key={st.key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: st.bg, borderRadius: 8, padding: '7px 10px', border: `1px solid ${st.color}22` }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: st.color }}>{st.label}</span>
+                    {s.total === 0 ? (
+                      <span style={{ fontSize: 10, color: C.textSub }}>尚無資料</span>
+                    ) : (
+                      <div style={{ textAlign: 'right' }}>
+                        <span style={{ fontSize: 13, fontWeight: 900, color: rateC }}>{(s.rate * 100).toFixed(1)}%</span>
+                        <span style={{ fontSize: 10, color: C.textSub, marginLeft: 4 }}>{s.hit3}/{s.total}期</span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })()}
+      </div>
+
+      {/* 統計子頁籤 */}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 14, background: C.card, borderRadius: 12, padding: 8, boxShadow: C.shadow, flexWrap: 'wrap' }}>
+        {subTabs.map(t => (
+          <button key={t.key} style={S.subTab(subTab === t.key)} onClick={() => setSubTab(t.key)}>
+            {t.icon} {t.label}
+          </button>
+        ))}
+      </div>
+
+      <Card title="📊 全部 命中率" icon="">
+        <div style={{ textAlign: 'center', padding: '10px 0' }}>
+          <div style={{ ...S.bigNum, color: rateColor }}>{fmtPercent(stats.rate)}</div>
+          <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>共 {stats.total} 期｜中3：{stats.hit3} 次</div>
+        </div>
+        <div style={S.divider} />
+        <StatRow label="理論值（隨機）" value="3.75%" valueColor={C.textSub} />
+        <StatRow label="中3命中率" value={fmtPercent(stats.rate)} valueColor={rateColor} />
+        <StatRow label="中3次數" value={`${stats.hit3} 次`} />
+        <StatRow label="中2次數" value={`${stats.hit2} 次`} />
+        <StatRow label="中1次數" value={`${stats.hit1} 次`} />
+        <StatRow label="未中次數" value={`${stats.hit0} 次`} />
+      </Card>
+
+      {/* ★ V0628-1：熱號錨點策略獨立統計 */}
+      {(() => {
+        const sRows = toArray(streakRows).filter(r => r?.compare_status === 'done');
+        if (sRows.length === 0) return (
+          <Card title="🔥 熱號錨點策略統計" icon="">
+            <div style={{ fontSize: 12, color: C.textSub, textAlign: 'center', padding: 8 }}>資料累積中，尚無比對記錄</div>
+          </Card>
+        );
+        const sHit3 = sRows.filter(r => toNum(r?.hit_count, 0) >= 3).length;
+        const sHit2 = sRows.filter(r => toNum(r?.hit_count, 0) >= 2).length;
+        const sRate = sRows.length > 0 ? (sHit3 / sRows.length * 100).toFixed(1) : '0.0';
+        const sRateColor = Number(sRate) >= 10 ? C.green : Number(sRate) >= 5 ? C.orange : '#DC2626';
+        return (
+          <Card title="🔥 熱號錨點策略統計" icon="">
+            <div style={{ textAlign: 'center', padding: '10px 0' }}>
+              <div style={{ ...S.bigNum, color: sRateColor }}>{sRate}%</div>
+              <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>共 {sRows.length} 期｜中3：{sHit3} 次</div>
+            </div>
+            <div style={S.divider} />
+            <StatRow label="中3命中率" value={`${sRate}%`} valueColor={sRateColor} />
+            <StatRow label="中3次數" value={`${sHit3} 次`} />
+            <StatRow label="中2以上次數" value={`${sHit2} 次`} />
+            <StatRow label="出手期數" value={`${sRows.length} 期`} />
+            <div style={{ fontSize: 10, color: C.textSub, marginTop: 6, textAlign: 'center' }}>
+              ※ 此策略專用於主系統空窗期，與主策略統計完全分開
+            </div>
+          </Card>
+        );
+      })()}
+
+      <ComboWeightsCard />
+
+      <div style={{ fontSize: 11, color: C.textSub, textAlign: 'center', padding: '4px 0' }}>※ 統計數據從 6/8 起算</div>
+    </div>
+  );
+}
+
+function MarketPage({ recent20 }) {
+  const rows = toArray(recent20).slice(0, 20);
+  return (
+    <div style={S.page}>
+      <Card title="最近20期開獎" icon="🎯">
+        {!rows.length ? <div style={S.empty}>載入中...</div> : rows.map((row, idx) => {
+          const nums = parseNums(row?.numbers).sort((a, b) => a - b);
+          return (
+            <div key={row?.draw_no || idx} style={{ ...S.statRow, alignItems: 'flex-start', paddingTop: 10, paddingBottom: 10 }}>
+              <div style={{ minWidth: 80 }}>
+                <div style={{ fontSize: 13, fontWeight: 700 }}>#{fmt(row?.draw_no)}</div>
+                <div style={{ fontSize: 11, color: C.textSub }}>{fmt(row?.draw_time)?.slice(11, 16)}</div>
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, flex: 1 }}>
+                {nums.map(n => (
+                  <div key={n} style={{ ...S.recentBall(), width: 28, height: 28, fontSize: 11 }}>{padNum(n)}</div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </Card>
+    </div>
+  );
+}
+
+function HotPage({ recent20 }) {
+  const rows = toArray(recent20).slice(0, 20);
+  function consecutiveCount(num) {
+    let c = 0;
+    for (const row of rows) {
+      if (parseNums(row?.numbers).includes(num)) c++;
+      else break;
+    }
+    return c;
+  }
+  const numStats = [];
+  for (let n = 1; n <= 80; n++) {
+    const consec = consecutiveCount(n);
+    if (consec >= 1) numStats.push({ n, consec });
+  }
+  const groups = [5, 4, 3, 2, 1].map(level => ({
+    level,
+    data: numStats.filter(s => s.consec === level).sort((a, b) => a.n - b.n)
   }));
+  const levelInfo = {
+    5: { label: '連續5期（最熱）', color: '#DC2626', bg: '#FEF2F2', border: '#FCA5A5' },
+    4: { label: '連續4期', color: '#EA580C', bg: '#FFF7ED', border: '#FED7AA' },
+    3: { label: '連續3期', color: '#D97706', bg: '#FFFBEB', border: '#FDE68A' },
+    2: { label: '連續2期', color: '#0F766E', bg: '#F0FDFA', border: '#99F6E4' },
+    1: { label: '連續1期（剛開出）', color: '#6B7280', bg: '#F3F4F6', border: '#E5E7EB' },
+  };
+  return (
+    <div style={S.page}>
+      <Card title="連續熱號看盤" icon="🔥">
+        <div style={{ fontSize: 11, color: C.textSub, marginBottom: 12, lineHeight: 1.6 }}>
+          純粹看盤用：依「最近20期」資料，從最新一期往前算，列出每個號碼目前連續開出幾期。此頁僅供參考，與AI選號邏輯無關。
+        </div>
+        {!rows.length ? <div style={S.empty}>載入中...</div> : groups.map(g => {
+          const info = levelInfo[g.level];
+          return (
+            <div key={g.level} style={{ marginBottom: 16 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: info.color, background: info.bg, border: `1px solid ${info.border}`, borderRadius: 6, padding: '2px 8px' }}>{info.label}</span>
+                <span style={{ fontSize: 11, color: C.textSub }}>{g.data.length} 顆</span>
+              </div>
+              {g.data.length === 0 ? (
+                <div style={{ fontSize: 12, color: C.textSub, padding: '4px 0' }}>目前無號碼符合此等級</div>
+              ) : (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  {g.data.map(({ n }) => (
+                    <div key={n} style={{ width: 32, height: 32, borderRadius: '50%', background: info.bg, border: `2px solid ${info.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, fontWeight: 800, color: info.color }}>
+                      {padNum(n)}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div style={S.divider} />
+            </div>
+          );
+        })}
+      </Card>
+    </div>
+  );
 }
 
-// ★ 靈魂核心：讀取近期表現，計算自動微調信號
-// 過濾掉verdict='anomaly'的異常期(系統bug造成的不正常資料)
-async function fetchRecentPerformance(db) {
-  const { data, error } = await db
-    .from(PREDICTIONS_TABLE)
-    .select('groups_json, compare_result_json, created_at')
-    .eq('mode', MODE)
-    .eq('status', 'compared')
-    .eq('compare_status', 'done')
-    .neq('verdict', 'anomaly')
-    .order('created_at', { ascending: false })
-    .limit(500);
-
-  if (error || !data || data.length === 0) {
-    return { avgPnl30: -84, avgPnl10: -84, consecutiveLoss: 0, modeStats: {} };
-  }
-
-  // 各mode統計(用全部500筆)
-  const modeStats = {};
-  for (const p of data) {
-    const mode = p.groups_json?.[0]?.meta?.active_mode || 'standard';
-    const detail = p.compare_result_json?.detail || [];
-    const pnl = detail.reduce((sum, e) => {
-      const hit = toNum(e?.hit, 0);
-      return sum + (hit === 3 ? 500 : hit === 2 ? 50 : 0);
-    }, 0) - 200;
-    if (!modeStats[mode]) modeStats[mode] = { total: 0, count: 0 };
-    modeStats[mode].total += pnl;
-    modeStats[mode].count++;
-  }
-
-  const cleanPeriods = data.length;
-  const oldestDate = new Date(data[data.length - 1]?.created_at);
-  const daysPassed = (Date.now() - oldestDate) / (1000 * 60 * 60 * 24);
-  // ★ V0626-3：封印機制已拆除，移除isSealBroken/sealStatus計算和輸出
-
-  // 近30期用於信心等級判斷(avgPnl30維持跨天，反映較長期的整體趨勢)
-  const recent30 = data.slice(0, 30);
-  const pnlList = recent30.map(p => {
-    const detail = p.compare_result_json?.detail || [];
-    return detail.reduce((sum, e) => {
-      const hit = toNum(e?.hit, 0);
-      return sum + (hit === 3 ? 500 : hit === 2 ? 50 : 0);
-    }, 0) - 200;
-  });
-
-  const avgPnl30 = pnlList.length > 0
-    ? pnlList.reduce((a, b) => a + b, 0) / pnlList.length : -84;
-
-  // ★ V0618-2修正：avgPnl10改為只計算「當天(台北時間)」範圍的資料
-  // 根因：V0618-1只修正了consecutiveLoss的當日限制，但calcConfidenceLevel裡
-  // 判斷conservative用的`avgPnl10 < -150`條件，沒有同步修正，依然會用跨天的舊資料，
-  // 導致即使consecutiveLoss已經正常(只看今天)，avgPnl10仍可能因為昨天的爛資料觸發conservative，
-  // 這是V0618-1修正不完整造成的漏洞，今天才意識到要把today範圍的計算統一起來，不要顧此失彼。
-  const todayTaipeiDateStr = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  const todayPnlList = [];
-  for (const p of recent30) {
-    const pTaipeiDateStr = new Date(new Date(p.created_at).getTime() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
-    if (pTaipeiDateStr !== todayTaipeiDateStr) break; // 超出今天範圍，停止收集
-    const pnl = (p.compare_result_json?.detail || []).reduce((sum, e) => {
-      const hit = toNum(e?.hit, 0);
-      return sum + (hit === 3 ? 500 : hit === 2 ? 50 : 0);
-    }, 0) - 200;
-    todayPnlList.push(pnl);
-  }
-  const avgPnl10 = todayPnlList.slice(0, 10).length > 0
-    ? todayPnlList.slice(0, 10).reduce((a, b) => a + b, 0) / todayPnlList.slice(0, 10).length : 0;
-
-  let consecutiveLoss = 0;
-  for (const pnl of todayPnlList) {
-    if (pnl < 0) consecutiveLoss++;
-    else break;
-  }
-
-  return { avgPnl30, avgPnl10, consecutiveLoss, modeStats };
+function HotPoolPage({ prediction }) {
+  const row = prediction?.latest_3star_row;
+  const groups = toArray(row?.groups_json);
+  const meta0 = groups[0]?.meta || {};
+  const hotPool = (meta0?.hot_pool || '').split(',').map(Number).filter(Boolean);
+  const isSkipped = !row || row?.status === 'skipped' || groups.length === 0;
+  const bsInfo = boardStateInfo(meta0?.board_state);
+  const ssInfo = selectionStrategyInfo(meta0?.selection_strategy);
+  return (
+    <div style={S.page}>
+      <Card title="本期AI熱號池" icon="🕷️">
+        <div style={{ fontSize: 11, color: C.textSub, marginBottom: 12, lineHeight: 1.6 }}>
+          這裡顯示的號碼池，與「本期預測」使用完全同一份資料，是本期實際選出、用來組成3星預測的熱號池。
+        </div>
+        {isSkipped ? (
+          <div style={S.empty}>本期AI暫停出號，無熱號池資料</div>
+        ) : (
+          <>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
+              {bsInfo && <span style={{ fontSize: 12, fontWeight: 700, color: bsInfo.color, background: bsInfo.bg, borderRadius: 6, padding: '2px 8px' }}>{bsInfo.text}</span>}
+              {ssInfo && <span style={{ fontSize: 12, fontWeight: 700, color: ssInfo.color, background: ssInfo.bg, borderRadius: 6, padding: '2px 8px' }}>{ssInfo.text}</span>}
+              <span style={S.badge(C.textSub, C.grayLight)}>期號 {fmt(row?.source_draw_no)}</span>
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {hotPool.map(n => (
+                <div key={n} style={{ width: 36, height: 36, borderRadius: '50%', background: C.goldBg, border: `2px solid ${C.goldLight}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15, fontWeight: 800, color: C.gold }}>
+                  {padNum(n)}
+                </div>
+              ))}
+            </div>
+            <div style={{ fontSize: 11, color: C.textSub, marginTop: 12 }}>共 {hotPool.length} 顆</div>
+          </>
+        )}
+      </Card>
+    </div>
+  );
 }
 
-// ★ 靈魂決策：根據近期表現決定信心等級
-// ★★★ V0618-3：暫停靈魂第二階段 ★★★
-// 用戶決定：第二階段(信心等級判斷)這幾天反覆出現邏輯bug(統計頁倒扣假象、
-// 連續虧損跨天污染、avgPnl10同樣漏洞)，暫停運作，回到「只看訊號計數器決定
-// 要不要出手」的單純狀態。第三階段(signal_weights)維持運作不受影響。
-// 停用方式：函數保留、所有呼叫端完全不變，只是內部邏輯永遠回傳'normal'，
-// 這樣soul_blocked永遠不會被觸發，meta/log寫入結構也都不需要跟著修改，風險最小。
-// 如果之後想重新啟用，只需把下面這行return提早的部分移除即可，原邏輯都還在。
-function calcConfidenceLevel(perf) {
-  // ★ V0626-3：封印機制已拆除。
-  // 原本需要100期+strong模式20期才能解封，但strong模式幾乎不觸發，
-  // 系統一直卡在learning封印狀態，是過時的設計，直接移除。
-  return 'normal';
+export default function App() {
+  const [tab, setTab] = useState('quick');
+  const [loading, setLoading] = useState(false);
+  const [prediction, setPrediction] = useState(null);
+  const [recent20, setRecent20] = useState([]);
+  const [historyRows, setHistoryRows] = useState([]);
+  const [streakRows, setStreakRows] = useState([]); // ★ V0628-1：熱號錨點策略記錄
+  const [loopStatus, setLoopStatus] = useState('初始化中...');
+  const [emergencyAlert, setEmergencyAlert] = useState(null);
+  const timerRef = useRef(null);
 
-  /* ↓↓↓ 以下為原邏輯，暫停期間不會被執行到，保留供之後重新啟用參考 ↓↓↓
-  if (consecutiveLoss >= 13) {
-    console.log(`[靈魂] 今日連續虧損${consecutiveLoss}期，進入冷靜期，只允許strong/ultra出手`);
-    return 'cautious';
-  }
-
-  if (consecutiveLoss >= 8 || avgPnl10 < -150) {
-    console.log(`[靈魂] 今日連續虧損${consecutiveLoss}期或近10期avg=${avgPnl10.toFixed(0)}，進入保守模式`);
-    return 'conservative';
-  }
-
-  if (avgPnl30 > 0) {
-    console.log(`[靈魂] 近30期avg=${avgPnl30.toFixed(0)}，維持積極模式`);
-    return 'aggressive';
-  }
-
-  console.log(`[靈魂] 近30期avg=${avgPnl30.toFixed(0)}，維持正常模式`);
-  return 'normal';
-  */
-}
-
-// ★ V0626-1：讀取board_combo_weights表，取得各盤面+four_count組合的動態出手組數和最佳策略
-// V0626-1升級：回傳物件格式 {max_combos, best_strategy}，支援策略自動切換
-async function fetchComboWeights(db) {
-  const { data, error } = await db
-    .from('board_combo_weights')
-    .select('combo_key, board_state, four_count, max_combos, history_json');
-  if (error || !data) {
-    console.log('[board_combo_weights] 讀取失敗，使用預設8組');
-    return {};
-  }
-  const result = {};
-  for (const row of data) {
-    // 從history_json的最新一筆取得best_strategy和best_zm_strategy
-    const lastHistory = Array.isArray(row.history_json) && row.history_json.length > 0
-      ? row.history_json[row.history_json.length - 1]
-      : null;
-    const bestStrategy = lastHistory?.best_strategy || null;
-    const bestZmStrategy = lastHistory?.best_zm_strategy || null; // ★ V0629-3：ZM盤面匹配最佳策略
-    result[row.combo_key] = {
-      max_combos: row.max_combos,
-      best_strategy: bestStrategy,
-      best_zm_strategy: bestZmStrategy, // ★ V0629-3：供buildBingoGroups的ZM盤面匹配使用
-    };
-  }
-  return result;
-}
-
-// ★ V0616-4：讀取signal_weights表，組成傳給buildBingoGroups的開關物件
-async function fetchSignalEnabled(db) {
-  const { data, error } = await db
-    .from('signal_weights')
-    .select('signal_key, is_enabled');
-  if (error || !data) {
-    console.log('[signal_weights] 讀取失敗，全部訊號預設啟用');
-    return {};
-  }
-  const result = {};
-  for (const row of data) {
-    result[row.signal_key] = row.is_enabled !== false;
-  }
-  return result;
-}
-
-async function fetchNextDraw(db, sourceDrawNo) {
-  const { data, error } = await db
-    .from(DRAWS_TABLE)
-    .select('draw_no, draw_time, numbers')
-    .gt('draw_no', sourceDrawNo)
-    .order('draw_no', { ascending: true })
-    .limit(1)
-    .maybeSingle();
-  if (error) throw error;
-  return data;
-}
-
-function buildRandomGroups() {
-  const pool = Array.from({ length: 80 }, (_, i) => i + 1);
-  for (let i = pool.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [pool[i], pool[j]] = [pool[j], pool[i]];
-  }
-  const selected = pool.slice(0, 5);
-  const groups = [];
-  for (let i = 0; i < selected.length; i++)
-    for (let j = i + 1; j < selected.length; j++)
-      for (let k = j + 1; k < selected.length; k++) {
-        const nums = [selected[i], selected[j], selected[k]].sort((a, b) => a - b);
-        const key = `r${nums[0]}_${nums[1]}_${nums[2]}`;
-        groups.push({ key, label: key, nums, meta: { type: 'random', strategy_key: key } });
-      }
-  return groups;
-}
-
-async function createPrediction(db, latestDrawNo, groups, latestDrawNumbers) {
-  const { data: existing } = await db
-    .from(PREDICTIONS_TABLE)
-    .select('id, status')
-    .eq('mode', MODE)
-    .eq('source_draw_no', String(latestDrawNo))
-    .maybeSingle();
-
-  if (existing?.id) {
-    console.log(`[auto-train] draw_no=${latestDrawNo} 已有預測，跳過`);
-    return null;
-  }
-
-  const { data, error } = await db
-    .from(PREDICTIONS_TABLE)
-    .insert({
-      mode: MODE,
-      status: 'created',
-      source_draw_no: String(latestDrawNo),
-      target_periods: 1,
-      groups_json: groups,
-      compare_status: 'pending',
-      latest_draw_numbers: latestDrawNumbers,
-      created_at: new Date().toISOString(),
-    })
-    .select('id')
-    .maybeSingle();
-
-  if (error) throw error;
-  console.log(`[auto-train] 新預測建立 draw_no=${latestDrawNo} id=${data?.id}`);
-  return data;
-}
-
-async function comparePending(db) {
-  const { data: predictions, error } = await db
-    .from(PREDICTIONS_TABLE)
-    .select('*')
-    .in('mode', [MODE, 'random_test', 'streak_anchor'])
-    .eq('status', 'created')
-    .eq('compare_status', 'pending')
-    .order('created_at', { ascending: true })
-    .limit(10);
-
-  if (error) throw error;
-  if (!predictions || predictions.length === 0) return { processed: 0 };
-
-  let processed = 0;
-
-  for (const prediction of predictions) {
-    const sourceDrawNo = toNum(prediction.source_draw_no, 0);
-    if (!sourceDrawNo) continue;
-
-    const nextDraw = await fetchNextDraw(db, sourceDrawNo);
-    if (!nextDraw) {
-      console.log(`[comparePending] draw_no=${sourceDrawNo} 下一期尚未開獎，等待`);
-      continue;
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [predRes, recentRes, healthRes, streakRes] = await Promise.all([
+        apiFetch('/api/prediction-latest').catch(() => ({})),
+        apiFetch('/api/recent20').catch(() => ({})),
+        apiFetch('/api/health-status').catch(() => ({})),
+        apiFetch('/api/streak-anchor-latest').catch(() => ({})), // ★ V0628-1：熱號錨點最新記錄
+      ]);
+      setPrediction(predRes);
+      setHistoryRows(predRes?.recent_3star_compared_rows || predRes?.recent_compared_rows || []);
+      setStreakRows(streakRes?.rows || []);
+      setRecent20(recentRes?.recent20 || recentRes?.data || []);
+      setLoopStatus(isNight() ? '夜間停止（00:00-07:00）' : `已更新 ${new Date().toLocaleTimeString('zh-TW', { hour12: false })}`);
+      const consecutiveLoss = toNum(healthRes?.summary?.consecutive_loss, 0);
+      setEmergencyAlert(consecutiveLoss >= 18
+        ? `⚠️ 緊急警告：已連續虧損${consecutiveLoss}期，請人工檢查系統狀態`
+        : null);
+    } catch {
+      setLoopStatus('載入失敗，稍後重試');
+    } finally {
+      setLoading(false);
     }
+  }, []);
 
-    const groups = Array.isArray(prediction.groups_json) ? prediction.groups_json : [];
-    const { compareResult } = buildComparePayload({
-      groups,
-      drawRows: [nextDraw],
-      costPerGroupPerPeriod: COST_PER_GROUP,
-      starMode: 3,
-    });
+  useEffect(() => {
+    loadData();
+    timerRef.current = setInterval(loadData, REFRESH_INTERVAL_MS);
+    return () => clearInterval(timerRef.current);
+  }, [loadData]);
 
-    const bestHit = toNum(compareResult?.best_hit, 0);
-    const verdict = compareResult?.best_reward > 0 ? 'good' : 'bad';
+  const TABS = [
+    { key: 'quick',   label: '快速', icon: '⚡' },
+    { key: 'history', label: '近期', icon: '📋' },
+    { key: 'stats',   label: '統計', icon: '📊' },
+    { key: 'market',  label: '開獎', icon: '🎱' },
+    { key: 'hot',     label: '熱號', icon: '🔥' },
+    { key: 'hotpool', label: '熱號池', icon: '🕷️' },
+  ];
 
-    const resultSummary = {
-      best_hit: compareResult?.best_hit || 0,
-      best_reward: compareResult?.best_reward || 0,
-      total_cost: compareResult?.total_cost || 0,
-      total_reward: compareResult?.total_reward || 0,
-      roi: compareResult?.roi || 0,
-      groups_count: groups.length,
-      draw_nums: compareResult?.draw_nums || [],
-      detail: [
-        ...(compareResult?.detail || []).filter(d => d?.hit >= 3),
-        ...(compareResult?.detail || []).filter(d => d?.hit === 2),
-        ...(compareResult?.detail || []).filter(d => d?.hit <= 1),
-      ].slice(0, 20),
-    };
-
-    await db
-      .from(PREDICTIONS_TABLE)
-      .update({
-        status: 'compared',
-        compare_status: 'done',
-        compare_result_json: resultSummary,
-        hit_count: bestHit,
-        best_single_hit: bestHit,
-        verdict,
-        compared_at: new Date().toISOString(),
-      })
-      .eq('id', prediction.id);
-
-    processed++;
-    console.log(`[comparePending] draw_no=${sourceDrawNo} 比對完成 best_hit=${bestHit} verdict=${verdict}`);
-  }
-
-  return { processed };
-}
-
-export default async function handler(req, res) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ ok: false, error: 'Method not allowed' });
-  }
-
-  const taipeiHour = (new Date().getUTCHours() + 8) % 24;
-  if (taipeiHour >= 0 && taipeiHour < 7) {
-    console.log(`[auto-train] 非營業時間 ${taipeiHour}:xx，跳過`);
-    return res.status(200).json({ ok: true, skipped: true, reason: '非營業時間' });
-  }
-
-  try {
-    const db = getSupabase();
-
-    // 1. 先比對待處理的預測
-    const compareResult = await comparePending(db);
-
-    // 2. 取得最新開獎
-    const latestDraw = await fetchLatestDraw(db);
-    if (!latestDraw) {
-      return res.status(200).json({ ok: false, error: '無法取得最新開獎資料' });
-    }
-
-    const latestDrawNo = toNum(latestDraw.draw_no, 0);
-    const latestDrawNumbers = String(latestDraw.numbers || '');
-
-    // 3. ★ 靈魂：讀取近期表現，計算信心等級
-    const perf = await fetchRecentPerformance(db);
-    const confidenceLevel = calcConfidenceLevel(perf);
-
-    // ★ V0626-3：移除靈魂狀態log，封印機制已拆除，confidenceLevel永遠是normal
-
-    // ★ V0626-3：異常警示改為「緊急警告」，移除「靈魂」字眼
-    // 連續虧損超過18期代表可能有系統問題，主動提醒人工檢查
-    const emergencyAlert = perf.consecutiveLoss >= 18
-      ? `⚠️ 緊急警告：已連續虧損${perf.consecutiveLoss}期，請人工檢查系統狀態`
-      : null;
-    if (emergencyAlert) {
-      console.warn(`[緊急警告] ${emergencyAlert}`);
-    }
-
-    // 4. 取得開獎資料和預測歷史
-    const recent30 = await fetchRecent30Draws(db);
-    const recentPredictions = await fetchRecentPredictions(db, 30);
-
-    // 4.5 ★ V0616-4：讀取訊號開關狀態(由signal-revalidate.js定期更新)
-    const signalEnabled = await fetchSignalEnabled(db);
-
-    // 4.6 ★ V0625-1：讀取盤面組合動態出手組數(由board-combo-revalidate.js每小時更新)
-    const comboWeights = await fetchComboWeights(db);
-
-    // 5. 選號（★ V0625-1：加入comboWeights供動態出手組數使用）
-    const groups = buildBingoGroups(recent30, latestDrawNo, recentPredictions, signalEnabled, comboWeights);
-
-    // 6. ★ 靈魂：根據信心等級決定是否出手
-    const activeMode = groups[0]?.meta?.active_mode || 'standard';
-    const totalSignals = toNum(groups[0]?.meta?.total_signals, 0);
-
-    let shouldOutput = groups.length > 0;
-    // ★ V0626-3：封印機制已拆除，confidenceLevel永遠是normal，不再有learning/cautious/conservative分支
-    // normal/aggressive：不額外限制，buildBingoGroups自己的skip條件已處理
-
-    if (!shouldOutput || groups.length === 0) {
-      const skipReason = groups.length === 0 ? 'no_signal' : 'soul_blocked';
-      console.log(`[auto-train] 本期不出手 draw_no=${latestDrawNo} mode=${activeMode} confidence=${confidenceLevel} reason=${skipReason}`);
-
-      // ★ V0628-1：空窗期改用熱號錨點策略出手（streak_anchor）
-      // 連續2期以上出現的號碼當錨點，按組合邏輯產生4-8組
-      const streakGroups = buildStreakAnchorGroups(recent30);
-      if (streakGroups.length > 0) {
-        console.log(`[auto-train] 空窗期熱號錨點策略出手 draw_no=${latestDrawNo} anchors=${streakGroups[0]?.meta?.anchor_nums?.join('/')} groups=${streakGroups.length}`);
-        const { data: existingStreak } = await db
-          .from(PREDICTIONS_TABLE)
-          .select('id')
-          .eq('mode', 'streak_anchor')
-          .eq('source_draw_no', String(latestDrawNo))
-          .maybeSingle();
-
-        if (!existingStreak?.id) {
-          await db.from(PREDICTIONS_TABLE).insert({
-            mode: 'streak_anchor',
-            status: 'created',
-            source_draw_no: String(latestDrawNo),
-            target_periods: 1,
-            groups_json: streakGroups,
-            compare_status: 'pending',
-            latest_draw_numbers: latestDrawNumbers,
-            created_at: new Date().toISOString(),
-          });
-        }
-      }
-
-      const { data: existing } = await db
-        .from(PREDICTIONS_TABLE)
-        .select('id')
-        .eq('mode', MODE)
-        .eq('source_draw_no', String(latestDrawNo))
-        .maybeSingle();
-
-      if (!existing?.id) {
-        const skipDiagnostics = groups.__skipDiagnostics || {};
-        await db.from(PREDICTIONS_TABLE).insert({
-          mode: MODE,
-          status: 'skipped',
-          source_draw_no: String(latestDrawNo),
-          target_periods: 1,
-          groups_json: [{ key: 'skip_meta', label: 'skip_meta', nums: [], meta: {
-            ...skipDiagnostics,
-            active_mode: activeMode,
-            total_signals: totalSignals,
-            confidence_level: confidenceLevel,
-            skip_reason: skipReason,
-          } }],
-          compare_status: 'skipped',
-          latest_draw_numbers: latestDrawNumbers,
-          created_at: new Date().toISOString(),
-        });
-      }
-
-      return res.status(200).json({
-        ok: true,
-        latest_draw_no: latestDrawNo,
-        compared_count: toNum(compareResult?.processed, 0),
-        created_count: 0,
-        groups_count: 0,
-        streak_anchor_groups: streakGroups.length,
-        skipped: true,
-        reason: skipReason === 'no_signal' ? '選號條件不符' : `靈魂封鎖(${confidenceLevel})`,
-        confidence_level: confidenceLevel,
-        avg_pnl_30: Math.round(perf.avgPnl30),
-        avg_pnl_10: Math.round(perf.avgPnl10),
-        consecutive_loss: perf.consecutiveLoss,
-      });
-    }
-
-    // 7. ★ V0616-3：把靈魂的confidence_level注入第一組的meta，讓前端能顯示
-    if (groups[0]?.meta) {
-      groups[0].meta.confidence_level = confidenceLevel;
-    }
-    const prediction = await createPrediction(db, latestDrawNo, groups, latestDrawNumbers);
-
-    // 8. 同步建立隨機對照組
-    const randomGroups = buildRandomGroups();
-    const { data: existingRandom } = await db
-      .from(PREDICTIONS_TABLE)
-      .select('id')
-      .eq('mode', 'random_test')
-      .eq('source_draw_no', String(latestDrawNo))
-      .maybeSingle();
-    if (!existingRandom?.id) {
-      await db.from(PREDICTIONS_TABLE).insert({
-        mode: 'random_test',
-        status: 'created',
-        source_draw_no: String(latestDrawNo),
-        target_periods: 1,
-        groups_json: randomGroups,
-        compare_status: 'pending',
-        latest_draw_numbers: latestDrawNumbers,
-        created_at: new Date().toISOString(),
-      });
-    }
-
-    return res.status(200).json({
-      ok: true,
-      latest_draw_no: latestDrawNo,
-      compared_count: toNum(compareResult?.processed, 0),
-      created_count: prediction ? 1 : 0,
-      groups_count: groups.length,
-      active_mode: activeMode,
-      total_signals: totalSignals,
-      confidence_level: confidenceLevel,
-      avg_pnl_30: Math.round(perf.avgPnl30),
-      avg_pnl_10: Math.round(perf.avgPnl10),
-      consecutive_loss: perf.consecutiveLoss,
-      emergency_alert: emergencyAlert, // ★ V0626-3：緊急警告，前端第一頁頂端顯示
-    });
-
-  } catch (error) {
-    console.error('[auto-train] error:', error.message);
-    return res.status(500).json({ ok: false, error: error.message });
-  }
+  return (
+    <div style={S.app}>
+      {/* ★ V0626-3：緊急警告橫幅，連續虧損18期以上才顯示 */}
+      {emergencyAlert && (
+        <div style={{ background: '#DC2626', color: '#fff', fontSize: 13, fontWeight: 800, textAlign: 'center', padding: '8px 16px', letterSpacing: 0.5 }}>
+          {emergencyAlert}
+        </div>
+      )}
+      <div style={S.header}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          <div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0629-3</div>
+            <div style={S.headerSub}>{loopStatus}</div>
+          </div>
+          <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
+            {new Date().toLocaleString('zh-TW', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
+          </div>
+        </div>
+      </div>
+      <div style={S.tabs}>
+        {TABS.map(t => (
+          <button key={t.key} style={S.tab(tab === t.key)} onClick={() => setTab(t.key)}>
+            <div>{t.icon}</div>
+            <div>{t.label}</div>
+          </button>
+        ))}
+      </div>
+      {loading && tab === 'quick' && <Spinner />}
+      {tab === 'quick'   && <QuickPage   prediction={prediction} recent20={recent20} onRefresh={loadData} loading={loading} streakRows={streakRows} />}
+      {tab === 'history' && <HistoryPage historyRows={historyRows} streakRows={streakRows} />}
+      {tab === 'stats'   && <StatsPage   historyRows={historyRows} streakRows={streakRows} />}
+      {tab === 'market'  && <MarketPage  recent20={recent20} />}
+      {tab === 'hot'     && <HotPage     recent20={recent20} />}
+      {tab === 'hotpool' && <HotPoolPage prediction={prediction} />}
+    </div>
+  );
 }
