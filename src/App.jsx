@@ -1,5 +1,14 @@
 /**
- * App.jsx - V0629-4
+ * App.jsx - V0630-2
+ *
+ * ★ V0630-2更新(6/30)：五級分級UI重新設計（配合buildBingoV1Strategies V0630-2）
+ * 舊分級(golden_plus/golden/silver/bronze/weak)全部替換為新五級(gold/silver/bronze/iron/tin)
+ * 新分級依據6/29-6/30共164期實戰數據：7顆=35.3%/6顆=11.1%/5顆=8.3%/4顆=2.7%
+ *
+ * ★ V0630-1更新(6/30)：三層補位標記顯示
+ * 配合buildBingoV1Strategies V0630-1（三層補位系統解決空窗期）
+ * 新增fill_mode標記：真錨點(none)/次強錨點補位(second_tier)/盤面補位(board_fill)
+ * MetaTags、近期頁、錨點頁都新增補位模式顯示，不影響原有黃金/銀級/銅級邏輯
  *
  * ★ V0629-4：全新系統UI（六分頁架構保留，內容換新）
  * 配合buildBingoV1Strategies V0629-4（Z+M盤面 + 錨點黃金條件）
@@ -49,15 +58,25 @@ const ZM_LABEL = {
 function zmLabel(key) { return ZM_LABEL[key] || { text: key || '未知', desc: '', color: C.textSub, bg: C.grayLight }; }
 
 // ===== 錨點品質標籤 =====
+// ★ V0630-2：五級分級（依6/29-6/30實戰數據重新設計）
+// 7顆=35.3%/6顆=11.1%/5顆=8.3%/4顆=2.7%/1-3顆觸發補位
 const QUALITY_LABEL = {
-  golden_plus: { text: '🥇 黃金+', color: '#B45309', bg: '#FEF3C7' },
-  golden:      { text: '🥇 黃金',  color: '#B45309', bg: '#FEF9C3' },
-  silver:      { text: '🥈 銀級',  color: '#6B7280', bg: '#F3F4F6' },
-  bronze:      { text: '🥉 銅級',  color: '#92400E', bg: '#FEF3C7' },
-  weak:        { text: '⚠️ 弱',   color: '#DC2626', bg: '#FEE2E2' },
-  none:        { text: '❌ 無錨點', color: '#DC2626', bg: '#FEE2E2' },
+  gold:   { text: '🏆 金級', color: '#B45309', bg: '#FEF3C7', desc: '真錨點7顆' },
+  silver: { text: '🥈 銀級', color: '#6B7280', bg: '#F3F4F6', desc: '真錨點6顆(或8+)' },
+  bronze: { text: '🥉 銅級', color: '#92400E', bg: '#FFF7ED', desc: '真錨點5顆' },
+  iron:   { text: '🔩 鐵級', color: '#4B5563', bg: '#F3F4F6', desc: '真錨點4顆' },
+  tin:    { text: '⚪ 錫級', color: '#DC2626', bg: '#FEE2E2', desc: '真錨點1-3顆' },
+  none:   { text: '❌ 無錨點', color: '#DC2626', bg: '#FEE2E2', desc: '' },
 };
 function qualityLabel(q) { return QUALITY_LABEL[q] || QUALITY_LABEL['none']; }
+
+// ===== ★ V0630-1新增：補位模式標籤 =====
+const FILL_MODE_LABEL = {
+  none:        null, // 真錨點不顯示額外標記
+  second_tier: { text: '🔄 次強錨點補位', color: '#0891B2', bg: '#CFFAFE' },
+  board_fill:  { text: '🧩 盤面補位', color: '#9333EA', bg: '#F3E8FF' },
+};
+function fillModeLabel(mode) { return FILL_MODE_LABEL[mode] || null; }
 
 // ===== 樣式 =====
 const S = {
@@ -125,14 +144,18 @@ function MetaTags({ meta, isSkipped }) {
   if (!meta || isSkipped) return null;
   const zm = zmLabel(meta.zm_key);
   const quality = qualityLabel(meta.anchor_quality);
+  const fillMode = fillModeLabel(meta.fill_mode); // ★ V0630-1
   return (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
       {meta.zm_key && <span style={{ ...S.badge(zm.color, zm.bg) }}>{zm.text}</span>}
       {meta.anchor_quality && <span style={{ ...S.badge(quality.color, quality.bg) }}>{quality.text}</span>}
-      {meta.anchor_count != null && <span style={S.badge(C.textSub, C.grayLight)}>錨點{meta.anchor_count}顆</span>}
+      {fillMode && <span style={S.badge(fillMode.color, fillMode.bg)}>{fillMode.text}</span>}
+      {meta.anchor_count != null && <span style={S.badge(C.textSub, C.grayLight)}>真錨點{meta.anchor_count}顆</span>}
+      {meta.fill_mode === 'second_tier' && meta.second_tier_count > 0 && <span style={S.badge(C.textSub, C.grayLight)}>+次強{meta.second_tier_count}顆</span>}
+      {meta.fill_mode === 'board_fill' && meta.board_fill_count > 0 && <span style={S.badge(C.textSub, C.grayLight)}>+補位{meta.board_fill_count}顆</span>}
       {meta.anchor_span != null && <span style={S.badge(C.textSub, C.grayLight)}>跨度{meta.anchor_span}</span>}
       {meta.z_momentum === 'same' && <span style={S.badge(C.green, '#DCFCE7')}>↻ Z慣性</span>}
-      {meta.is_golden && <span style={S.badge(C.gold, '#FEF9C3')}>⭐ 黃金條件</span>}
+      {/* quality badge已顯示金/銀/銅/鐵/錫，此處不再重複顯示is_golden */}
       {meta.has_both_ends && <span style={S.badge(C.green, '#DCFCE7')}>首尾都有</span>}
       {meta.has_large_anchor && <span style={S.badge(C.purple, '#EDE9FE')}>含75-80</span>}
       {meta.max_combos != null && meta.max_combos < 8 && <span style={S.badge(C.purple, '#F5F3FF')}>📉 縮手{meta.max_combos}組</span>}
@@ -293,9 +316,10 @@ function HistoryPage({ historyRows }) {
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 6 }}>
                 {meta.zm_key && <span style={S.badge(zm.color, zm.bg)}>{zm.text}</span>}
                 {meta.anchor_quality && <span style={S.badge(quality.color, quality.bg)}>{quality.text}</span>}
-                {meta.anchor_count != null && <span style={S.badge(C.textSub, C.grayLight)}>錨點{meta.anchor_count}顆 跨度{meta.anchor_span}</span>}
+                {(() => { const fm = fillModeLabel(meta.fill_mode); return fm && <span style={S.badge(fm.color, fm.bg)}>{fm.text}</span>; })()}
+                {meta.anchor_count != null && <span style={S.badge(C.textSub, C.grayLight)}>真錨點{meta.anchor_count}顆 跨度{meta.anchor_span}</span>}
                 {meta.prev_z1 != null && <span style={S.badge(C.textSub, C.grayLight)}>上期區間 {meta.prev_z1}/{meta.prev_z2}/{meta.prev_z3}/{meta.prev_z4}</span>}
-                {meta.is_golden && <span style={S.badge(C.gold, '#FEF9C3')}>⭐ 黃金</span>}
+                {/* quality badge已顯示金/銀/銅/鐵/錫，此處不再重複 */}
                 {meta.has_both_ends && <span style={S.badge(C.green, '#DCFCE7')}>首尾都有</span>}
                 {meta.has_large_anchor && <span style={S.badge(C.purple, '#EDE9FE')}>含75-80</span>}
               </div>
@@ -343,6 +367,9 @@ function StatsPage({ historyRows }) {
   function filterByQuality(q) {
     return rows.filter(r => toArray(r?.groups_json).find(g => g.key !== 'skip_meta')?.meta?.anchor_quality === q);
   }
+  function filterByFillMode(mode) {
+    return rows.filter(r => toArray(r?.groups_json).find(g => g.key !== 'skip_meta')?.meta?.fill_mode === mode);
+  }
 
   const allStats = calcStats(rows);
   const rateColor = allStats.rate >= 0.15 ? C.green : allStats.rate >= 0.08 ? C.orange : C.red;
@@ -350,7 +377,8 @@ function StatsPage({ historyRows }) {
     { key: 'all', label: '全部', icon: '📊' },
     { key: 'zm', label: 'Z+M盤面', icon: '🗺️' },
     { key: 'quality', label: '錨點品質', icon: '⚓' },
-    { key: 'golden', label: '黃金條件', icon: '🥇' },
+    { key: 'golden', label: '等級對比', icon: '🏆' },
+    { key: 'fillmode', label: '補位模式', icon: '🧩' },
   ];
 
   return (
@@ -362,7 +390,7 @@ function StatsPage({ historyRows }) {
         </div>
         <div style={S.divider} />
         <StatRow label="理論值（隨機）" value="8.3%" valueColor={C.textSub} />
-        <StatRow label="黃金條件目標" value="20.8%" valueColor={C.gold} />
+        <StatRow label="金級(7顆)目標" value="35.3%" valueColor={C.gold} />
         <StatRow label="中3命中率" value={fmtPercent(allStats.rate)} valueColor={rateColor} />
         <StatRow label="中3次數" value={`${allStats.hit3} 次`} />
         <StatRow label="中2次數" value={`${allStats.hit2} 次`} />
@@ -405,7 +433,7 @@ function StatsPage({ historyRows }) {
 
       {subTab === 'quality' && (
         <Card title="錨點品質命中率" icon="⚓">
-          {['golden_plus', 'golden', 'silver', 'bronze'].map(q => {
+          {['gold', 'silver', 'bronze', 'iron', 'tin'].map(q => {
             const s = calcStats(filterByQuality(q));
             const ql = qualityLabel(q);
             const rc = s.rate >= 0.15 ? C.green : s.rate >= 0.08 ? C.orange : C.red;
@@ -425,39 +453,65 @@ function StatsPage({ historyRows }) {
       )}
 
       {subTab === 'golden' && (
-        <Card title="黃金條件命中率" icon="🥇">
+        <Card title="五級命中率對比" icon="🏆">
+          <div style={{ fontSize: 11, color: C.textSub, marginBottom: 10 }}>依6/29-6/30共164期實戰數據：7顆35.3% / 6顆11.1% / 5顆8.3% / 4顆2.7%</div>
           {(() => {
-            const goldenRows = rows.filter(r => toArray(r?.groups_json).find(g => g.key !== 'skip_meta')?.meta?.is_golden);
-            const otherRows = rows.filter(r => !toArray(r?.groups_json).find(g => g.key !== 'skip_meta')?.meta?.is_golden);
-            const gs = calcStats(goldenRows);
-            const os = calcStats(otherRows);
-            const gc = gs.rate >= 0.15 ? C.green : gs.rate >= 0.08 ? C.orange : C.red;
-            const oc = os.rate >= 0.08 ? C.orange : C.red;
-            return (<>
-              <div style={{ background: '#FEF9C3', borderRadius: 8, padding: '10px 12px', marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: C.gold }}>🥇 黃金條件</div>
-                  <div style={{ fontSize: 10, color: C.textSub }}>錨點≥6 + 跨度＞60 + z4≥2</div>
+            const levels = [
+              { count: 7, q: 'gold',   label: '🏆 金級(真錨點7顆)', bench: 35.3 },
+              { count: 6, q: 'silver', label: '🥈 銀級(真錨點6顆)', bench: 11.1 },
+              { count: 5, q: 'bronze', label: '🥉 銅級(真錨點5顆)', bench: 8.3 },
+              { count: 4, q: 'iron',   label: '🔩 鐵級(真錨點4顆)', bench: 2.7 },
+            ];
+            return levels.map(lv => {
+              const filtered = rows.filter(r => toArray(r?.groups_json).find(g => g.key !== 'skip_meta')?.meta?.anchor_quality === lv.q);
+              const s = calcStats(filtered);
+              const rc = s.rate >= 0.15 ? C.green : s.rate >= 0.08 ? C.orange : C.red;
+              return (
+                <div key={lv.q} style={{ background: C.grayLight, borderRadius: 8, padding: '10px 12px', marginBottom: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: C.text }}>{lv.label}</div>
+                    <div style={{ fontSize: 10, color: C.textSub }}>基準 {lv.bench}%</div>
+                  </div>
+                  {s.total === 0 ? <span style={{ fontSize: 10, color: C.textSub }}>無資料</span> : (
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontSize: 20, fontWeight: 900, color: rc }}>{fmtPercent(s.rate)}</div>
+                      <div style={{ fontSize: 10, color: C.textSub }}>{s.hit3}/{s.total}期</div>
+                    </div>
+                  )}
                 </div>
-                {gs.total === 0 ? <span style={{ fontSize: 10, color: C.textSub }}>無資料</span> : (
-                  <div style={{ textAlign: 'right' }}>
-                    <div style={{ fontSize: 22, fontWeight: 900, color: gc }}>{fmtPercent(gs.rate)}</div>
-                    <div style={{ fontSize: 10, color: C.textSub }}>{gs.hit3}/{gs.total}期</div>
-                  </div>
-                )}
-              </div>
-              <div style={{ background: C.grayLight, borderRadius: 8, padding: '10px 12px', marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div style={{ fontSize: 12, fontWeight: 700, color: C.textSub }}>非黃金條件</div>
-                {os.total === 0 ? <span style={{ fontSize: 10, color: C.textSub }}>無資料</span> : (
-                  <div style={{ textAlign: 'right' }}>
-                    <div style={{ fontSize: 22, fontWeight: 900, color: oc }}>{fmtPercent(os.rate)}</div>
-                    <div style={{ fontSize: 10, color: C.textSub }}>{os.hit3}/{os.total}期</div>
-                  </div>
-                )}
-              </div>
-              <div style={{ fontSize: 11, color: C.textSub, textAlign: 'center' }}>SQL驗證：黃金條件 20.8% vs 隨機 8.3%</div>
-            </>);
+              );
+            });
           })()}
+        </Card>
+      )}
+
+      {/* ★ V0630-1新增：補位模式統計 */}
+      {subTab === 'fillmode' && (
+        <Card title="補位模式命中率" icon="🧩">
+          <div style={{ fontSize: 11, color: C.textSub, marginBottom: 10, lineHeight: 1.6 }}>
+            真錨點不夠時的補救機制效果驗證：次強錨點(隔期出現)、盤面補位(上期符合區間的號碼)。這兩個是全新指標，邊跑邊驗證。
+          </div>
+          {[
+            { key: 'none', label: '✅ 真錨點（無需補位）', color: C.green, bg: '#DCFCE7' },
+            { key: 'second_tier', label: '🔄 次強錨點補位', color: '#0891B2', bg: '#CFFAFE' },
+            { key: 'board_fill', label: '🧩 盤面補位', color: '#9333EA', bg: '#F3E8FF' },
+          ].map(fm => {
+            const s = calcStats(filterByFillMode(fm.key));
+            const rc = s.rate >= 0.15 ? C.green : s.rate >= 0.08 ? C.orange : C.red;
+            return (
+              <div key={fm.key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: fm.bg, borderRadius: 8, padding: '10px 12px', marginBottom: 6 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: fm.color }}>{fm.label}</span>
+                {s.total === 0 ? <span style={{ fontSize: 10, color: C.textSub }}>無資料</span> : (
+                  <div style={{ textAlign: 'right' }}>
+                    <span style={{ fontSize: 16, fontWeight: 900, color: rc }}>{fmtPercent(s.rate)}</span>
+                    <span style={{ fontSize: 10, color: C.textSub, marginLeft: 4 }}>{s.hit3}/{s.total}期</span>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          <div style={S.divider} />
+          <div style={{ fontSize: 11, color: C.textSub, textAlign: 'center' }}>補位模式樣本累積中，尚無SQL歷史基準可比對</div>
         </Card>
       )}
 
@@ -568,7 +622,7 @@ function AnchorPage({ prediction }) {
     <div style={S.page}>
       <Card title="本期錨點分析" icon="⚓">
         <div style={{ fontSize: 11, color: C.textSub, marginBottom: 12, lineHeight: 1.6 }}>
-          錨點 = 連續兩期都出現的號碼。黃金條件：錨點≥6顆 + 跨度＞60 + 61-80區有2顆以上，SQL驗證命中率20.8%。
+          錨點 = 連續兩期都出現的號碼。依6/29-6/30共164期實戰數據，分五級：金(7顆)35.3% / 銀(6顆)11.1% / 銅(5顆)8.3% / 鐵(4顆)2.7% / 錫(1-3顆)觸發三層補位。
         </div>
 
         {isSkipped ? (
@@ -588,29 +642,61 @@ function AnchorPage({ prediction }) {
             </div>
           </div>
 
-          {/* 黃金條件檢查 */}
-          <div style={{ background: meta.is_golden ? '#FEF9C3' : C.grayLight, borderRadius: 10, padding: '10px 12px', marginBottom: 12, border: `1px solid ${meta.is_golden ? C.gold : C.border}` }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: meta.is_golden ? C.gold : C.textSub, marginBottom: 6 }}>
-              {meta.is_golden ? '✅ 黃金條件達成！' : '❌ 黃金條件未達'}
+          {/* ★ V0630-1：補位模式提示 */}
+          {meta.fill_mode && meta.fill_mode !== 'none' && (() => {
+            const fm = fillModeLabel(meta.fill_mode);
+            return fm ? (
+              <div style={{ background: fm.bg, borderRadius: 10, padding: '10px 12px', marginBottom: 12, border: `1px solid ${fm.color}44` }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: fm.color, marginBottom: 4 }}>{fm.text}</div>
+                <div style={{ fontSize: 11, color: fm.color, opacity: 0.85 }}>
+                  真錨點僅{meta.anchor_count}顆不夠，
+                  {meta.fill_mode === 'second_tier' && `補充次強錨點${meta.second_tier_count}顆（隔期出現的號碼）`}
+                  {meta.fill_mode === 'board_fill' && `補充次強錨點${meta.second_tier_count}顆 + 盤面補位${meta.board_fill_count}顆`}
+                  ，共{meta.working_anchor_count}顆用於選號
+                </div>
+              </div>
+            ) : null;
+          })()}
+
+          {/* ★ V0630-2：五級等級判定卡（依真錨點顆數） */}
+          <div style={{ background: quality.bg, borderRadius: 10, padding: '10px 12px', marginBottom: 12, border: `1px solid ${quality.color}44` }}>
+            <div style={{ fontSize: 13, fontWeight: 800, color: quality.color, marginBottom: 6 }}>
+              {quality.text}（真錨點{meta.anchor_count}顆）
             </div>
+            <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
+              {[
+                { n: 7, q: 'gold',   label: '金', bench: '35.3%' },
+                { n: 6, q: 'silver', label: '銀', bench: '11.1%' },
+                { n: 5, q: 'bronze', label: '銅', bench: '8.3%' },
+                { n: 4, q: 'iron',   label: '鐵', bench: '2.7%' },
+              ].map(lv => (
+                <div key={lv.q} style={{
+                  flex: 1, textAlign: 'center', borderRadius: 6, padding: '4px 2px',
+                  background: meta.anchor_quality === lv.q ? quality.color : '#fff',
+                  border: `1px solid ${meta.anchor_quality === lv.q ? quality.color : C.border}`,
+                }}>
+                  <div style={{ fontSize: 11, fontWeight: 800, color: meta.anchor_quality === lv.q ? '#fff' : C.textSub }}>{lv.label}({lv.n})</div>
+                  <div style={{ fontSize: 8, color: meta.anchor_quality === lv.q ? '#fff' : C.textSub }}>{lv.bench}</div>
+                </div>
+              ))}
+            </div>
+            <div style={S.divider} />
+            {/* 輔助參考指標（不再是主判斷依據） */}
             {[
-              { label: '錨點≥6顆', value: meta.anchor_count, pass: meta.anchor_count >= 6 },
-              { label: '跨度＞60', value: meta.anchor_span, pass: meta.anchor_span > 60 },
-              { label: '61-80區≥2顆', value: meta.anchor_z4, pass: meta.anchor_z4 >= 2 },
+              { label: '跨度', value: meta.anchor_span },
+              { label: '61-80區顆數', value: meta.anchor_z4 },
             ].map(item => (
               <div key={item.label} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 3 }}>
-                <span style={{ color: item.pass ? C.green : C.red }}>{item.pass ? '✅' : '❌'} {item.label}</span>
-                <span style={{ fontWeight: 700, color: item.pass ? C.green : C.red }}>{item.value ?? '-'}</span>
+                <span style={{ color: C.textSub }}>{item.label}（參考）</span>
+                <span style={{ fontWeight: 700, color: C.text }}>{item.value ?? '-'}</span>
               </div>
             ))}
-            {/* 加分條件 */}
-            <div style={S.divider} />
             {[
-              { label: '首尾都有（1-20≥2且61-80≥2）', pass: meta.has_both_ends, value: '' },
-              { label: '含75-80號碼', pass: meta.has_large_anchor, value: '' },
+              { label: '首尾都有（1-20≥2且61-80≥2）', pass: meta.has_both_ends },
+              { label: '含75-80號碼', pass: meta.has_large_anchor },
             ].map(item => (
               <div key={item.label} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 3 }}>
-                <span style={{ color: item.pass ? C.green : C.textSub }}>{item.pass ? '⭐' : '○'} {item.label}（加分）</span>
+                <span style={{ color: item.pass ? C.green : C.textSub }}>{item.pass ? '⭐' : '○'} {item.label}（參考）</span>
               </div>
             ))}
           </div>
@@ -711,7 +797,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0629-4</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0630-2</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
