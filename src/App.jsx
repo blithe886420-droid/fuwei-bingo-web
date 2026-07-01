@@ -1,5 +1,8 @@
 /**
- * App.jsx - V0701-1
+ * App.jsx - V0702-2
+ *
+ * ★ V0702-2更新(7/2)：退回V0630-2穩定版，分級改數字
+ * 配合buildBingoV1Strategies V0702-2
  *
  * ★ V0701-1更新(7/1)：四層選號維度 + 六層分級UI
  * 配合buildBingoV1Strategies V0701-1
@@ -62,20 +65,14 @@ const ZM_LABEL = {
 function zmLabel(key) { return ZM_LABEL[key] || { text: key || '未知', desc: '', color: C.textSub, bg: C.grayLight }; }
 
 // ===== 錨點品質標籤 =====
-// ★ V0701-1：六層分級（依7/1實戰194期數據重設計）
+// ★ V0702-2：五級數字分級（退回V0630-2穩定版）
 const QUALITY_LABEL = {
-  tier1_gold:   { text: '🥇 第一級', color: '#B45309', bg: '#FEF3C7', desc: '7顆 18.2%中3' },
-  tier2_super:  { text: '👑 第二級', color: '#7C3AED', bg: '#EDE9FE', desc: '8顆+ 觀察中' },
-  tier3_second: { text: '🔄 第三級', color: '#0891B2', bg: '#CFFAFE', desc: '補位 13.9%中3' },
-  tier4_valley: { text: '⚠️ 第四級', color: '#D97706', bg: '#FEF3C7', desc: '5-6顆死谷' },
-  tier5_weak:   { text: '🔩 第五級', color: '#6B7280', bg: '#F3F4F6', desc: '4顆 跳過' },
-  tin:          { text: '🔄 補位中', color: '#0891B2', bg: '#CFFAFE', desc: '1-3顆+次強錨點' },
-  none:         { text: '❌ 空窗', color: '#DC2626', bg: '#FEE2E2', desc: '' },
-  // 相容舊標籤
-  gold:         { text: '🥇 金級', color: '#B45309', bg: '#FEF3C7', desc: '7顆' },
-  silver:       { text: '👑 超金', color: '#7C3AED', bg: '#EDE9FE', desc: '8顆+' },
-  bronze:       { text: '⚠️ 銅級', color: '#D97706', bg: '#FEF3C7', desc: '5顆' },
-  iron:         { text: '🔩 鐵級', color: '#6B7280', bg: '#F3F4F6', desc: '4顆' },
+  lv1:  { text: '⭐ 第1級', color: '#B45309', bg: '#FEF3C7', desc: '7顆 35.3%中3' },
+  lv2:  { text: '🔵 第2級', color: '#1D4ED8', bg: '#DBEAFE', desc: '6顆或8顆+' },
+  lv3:  { text: '🟢 第3級', color: '#15803D', bg: '#DCFCE7', desc: '5顆 8.3%中3' },
+  lv4:  { text: '🟡 第4級', color: '#A16207', bg: '#FEF9C3', desc: '4顆 2.7%中3' },
+  lv5:  { text: '🔄 第5級', color: '#0891B2', bg: '#CFFAFE', desc: '1-3顆 觸發補位' },
+  none: { text: '❌ 空窗', color: '#DC2626', bg: '#FEE2E2', desc: '' },
 };
 function qualityLabel(q) { return QUALITY_LABEL[q] || QUALITY_LABEL['none']; }
 
@@ -87,24 +84,9 @@ const FILL_MODE_LABEL = {
 };
 function fillModeLabel(mode) { return FILL_MODE_LABEL[mode] || null; }
 
-// ===== ★ V0701-1新增：和值殘差標籤 =====
-const SUM_CLASS_LABEL = {
-  S_low:  { text: 'S偏低', color: '#0369A1', bg: '#DBEAFE' },
-  S_mid:  { text: 'S中等', color: '#6B7280', bg: '#F3F4F6' },
-  S_high: { text: 'S偏高', color: '#DC2626', bg: '#FEE2E2' },
-};
-function sumClassLabel(c) { return SUM_CLASS_LABEL[c] || null; }
-
-// ===== ★ V0701-1新增：AB象限標籤 =====
-const AB_PATTERN_LABEL = {
-  AB_strong_small:  { text: '↖️ AB強偏小', color: '#0369A1', bg: '#DBEAFE' },
-  AB_mild_small:    { text: '↖ AB略偏小', color: '#0284C7', bg: '#EFF6FF' },
-  AB_strong_large:  { text: '↘️ AB強偏大', color: '#DC2626', bg: '#FEE2E2' },
-  AB_mild_large:    { text: '↘ AB略偏大', color: '#B45309', bg: '#FEF3C7' },
-  AB_balanced:      { text: '↔ AB均衡',   color: '#6B7280', bg: '#F3F4F6' },
-  AB_opposite:      { text: '✕ AB反向',   color: '#7C3AED', bg: '#EDE9FE' },
-};
-function abPatternLabel(p) { return AB_PATTERN_LABEL[p] || null; }
+// ===== 和值殘差/AB象限標籤（V0702-2退回簡單版，暫不顯示）=====
+function sumClassLabel(c) { return null; }
+function abPatternLabel(p) { return null; }
 
 // ===== 樣式 =====
 const S = {
@@ -464,7 +446,7 @@ function StatsPage({ historyRows }) {
 
       {subTab === 'quality' && (
         <Card title="錨點品質命中率" icon="⚓">
-          {['gold', 'silver', 'bronze', 'iron', 'tin'].map(q => {
+          {['lv1', 'lv2', 'lv3', 'lv4', 'lv5'].map(q => {
             const s = calcStats(filterByQuality(q));
             const ql = qualityLabel(q);
             const rc = s.rate >= 0.15 ? C.green : s.rate >= 0.08 ? C.orange : C.red;
@@ -488,10 +470,10 @@ function StatsPage({ historyRows }) {
           <div style={{ fontSize: 11, color: C.textSub, marginBottom: 10 }}>依6/29-6/30共164期實戰數據：7顆35.3% / 6顆11.1% / 5顆8.3% / 4顆2.7%</div>
           {(() => {
             const levels = [
-              { count: 7, q: 'gold',   label: '🏆 金級(真錨點7顆)', bench: 35.3 },
-              { count: 6, q: 'silver', label: '🥈 銀級(真錨點6顆)', bench: 11.1 },
-              { count: 5, q: 'bronze', label: '🥉 銅級(真錨點5顆)', bench: 8.3 },
-              { count: 4, q: 'iron',   label: '🔩 鐵級(真錨點4顆)', bench: 2.7 },
+              { count: 7, q: 'lv1', label: '⭐ 第1級(7顆)', bench: 35.3 },
+              { count: 6, q: 'lv2', label: '🔵 第2級(6顆)', bench: 11.1 },
+              { count: 5, q: 'lv3', label: '🟢 第3級(5顆)', bench: 8.3 },
+              { count: 4, q: 'lv4', label: '🟡 第4級(4顆)', bench: 2.7 },
             ];
             return levels.map(lv => {
               const filtered = rows.filter(r => toArray(r?.groups_json).find(g => g.key !== 'skip_meta')?.meta?.anchor_quality === lv.q);
@@ -653,7 +635,7 @@ function AnchorPage({ prediction }) {
     <div style={S.page}>
       <Card title="本期錨點分析" icon="⚓">
         <div style={{ fontSize: 11, color: C.textSub, marginBottom: 12, lineHeight: 1.6 }}>
-          錨點 = 連續兩期都出現的號碼。依6/29-6/30共164期實戰數據，分五級：金(7顆)35.3% / 銀(6顆)11.1% / 銅(5顆)8.3% / 鐵(4顆)2.7% / 錫(1-3顆)觸發三層補位。
+          錨點 = 連續兩期都出現的號碼。分五級：第1級(7顆)35.3% / 第2級(6顆或8顆+)11.1% / 第3級(5顆)8.3% / 第4級(4顆)2.7% / 第5級(1-3顆)觸發三層補位。
         </div>
 
         {isSkipped ? (
@@ -696,10 +678,10 @@ function AnchorPage({ prediction }) {
             </div>
             <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
               {[
-                { n: 7, q: 'gold',   label: '金', bench: '35.3%' },
-                { n: 6, q: 'silver', label: '銀', bench: '11.1%' },
-                { n: 5, q: 'bronze', label: '銅', bench: '8.3%' },
-                { n: 4, q: 'iron',   label: '鐵', bench: '2.7%' },
+                { n: 7, q: 'lv1', label: '第1級', bench: '35.3%' },
+                { n: 6, q: 'lv2', label: '第2級', bench: '11.1%' },
+                { n: 5, q: 'lv3', label: '第3級', bench: '8.3%' },
+                { n: 4, q: 'lv4', label: '第4級', bench: '2.7%' },
               ].map(lv => (
                 <div key={lv.q} style={{
                   flex: 1, textAlign: 'center', borderRadius: 6, padding: '4px 2px',
@@ -828,7 +810,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0701-1</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0702-2</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
