@@ -1,7 +1,11 @@
 /**
- * App.jsx - V0630-2
+ * App.jsx - V0701-1
  *
- * ★ V0630-2更新(6/30)：五級分級UI重新設計（配合buildBingoV1Strategies V0630-2）
+ * ★ V0701-1更新(7/1)：四層選號維度 + 六層分級UI
+ * 配合buildBingoV1Strategies V0701-1
+ * 新增顯示：和值殘差(S_low/mid/high)、AB象限(同向/反向)、最大號分級、六層級別
+ *
+ * ★ V0630-2更新(6/30)：五級分級UI重新設計
  * 舊分級(golden_plus/golden/silver/bronze/weak)全部替換為新五級(gold/silver/bronze/iron/tin)
  * 新分級依據6/29-6/30共164期實戰數據：7顆=35.3%/6顆=11.1%/5顆=8.3%/4顆=2.7%
  *
@@ -58,25 +62,49 @@ const ZM_LABEL = {
 function zmLabel(key) { return ZM_LABEL[key] || { text: key || '未知', desc: '', color: C.textSub, bg: C.grayLight }; }
 
 // ===== 錨點品質標籤 =====
-// ★ V0630-2：五級分級（依6/29-6/30實戰數據重新設計）
-// 7顆=35.3%/6顆=11.1%/5顆=8.3%/4顆=2.7%/1-3顆觸發補位
+// ★ V0701-1：六層分級（依7/1實戰194期數據重設計）
 const QUALITY_LABEL = {
-  gold:   { text: '🏆 金級', color: '#B45309', bg: '#FEF3C7', desc: '真錨點7顆' },
-  silver: { text: '🥈 銀級', color: '#6B7280', bg: '#F3F4F6', desc: '真錨點6顆(或8+)' },
-  bronze: { text: '🥉 銅級', color: '#92400E', bg: '#FFF7ED', desc: '真錨點5顆' },
-  iron:   { text: '🔩 鐵級', color: '#4B5563', bg: '#F3F4F6', desc: '真錨點4顆' },
-  tin:    { text: '⚪ 錫級', color: '#DC2626', bg: '#FEE2E2', desc: '真錨點1-3顆' },
-  none:   { text: '❌ 無錨點', color: '#DC2626', bg: '#FEE2E2', desc: '' },
+  tier1_gold:   { text: '🥇 第一級', color: '#B45309', bg: '#FEF3C7', desc: '7顆 18.2%中3' },
+  tier2_super:  { text: '👑 第二級', color: '#7C3AED', bg: '#EDE9FE', desc: '8顆+ 觀察中' },
+  tier3_second: { text: '🔄 第三級', color: '#0891B2', bg: '#CFFAFE', desc: '補位 13.9%中3' },
+  tier4_valley: { text: '⚠️ 第四級', color: '#D97706', bg: '#FEF3C7', desc: '5-6顆死谷' },
+  tier5_weak:   { text: '🔩 第五級', color: '#6B7280', bg: '#F3F4F6', desc: '4顆 跳過' },
+  tin:          { text: '🔄 補位中', color: '#0891B2', bg: '#CFFAFE', desc: '1-3顆+次強錨點' },
+  none:         { text: '❌ 空窗', color: '#DC2626', bg: '#FEE2E2', desc: '' },
+  // 相容舊標籤
+  gold:         { text: '🥇 金級', color: '#B45309', bg: '#FEF3C7', desc: '7顆' },
+  silver:       { text: '👑 超金', color: '#7C3AED', bg: '#EDE9FE', desc: '8顆+' },
+  bronze:       { text: '⚠️ 銅級', color: '#D97706', bg: '#FEF3C7', desc: '5顆' },
+  iron:         { text: '🔩 鐵級', color: '#6B7280', bg: '#F3F4F6', desc: '4顆' },
 };
 function qualityLabel(q) { return QUALITY_LABEL[q] || QUALITY_LABEL['none']; }
 
 // ===== ★ V0630-1新增：補位模式標籤 =====
 const FILL_MODE_LABEL = {
-  none:        null, // 真錨點不顯示額外標記
+  none:        null,
   second_tier: { text: '🔄 次強錨點補位', color: '#0891B2', bg: '#CFFAFE' },
   board_fill:  { text: '🧩 盤面補位', color: '#9333EA', bg: '#F3E8FF' },
 };
 function fillModeLabel(mode) { return FILL_MODE_LABEL[mode] || null; }
+
+// ===== ★ V0701-1新增：和值殘差標籤 =====
+const SUM_CLASS_LABEL = {
+  S_low:  { text: 'S偏低', color: '#0369A1', bg: '#DBEAFE' },
+  S_mid:  { text: 'S中等', color: '#6B7280', bg: '#F3F4F6' },
+  S_high: { text: 'S偏高', color: '#DC2626', bg: '#FEE2E2' },
+};
+function sumClassLabel(c) { return SUM_CLASS_LABEL[c] || null; }
+
+// ===== ★ V0701-1新增：AB象限標籤 =====
+const AB_PATTERN_LABEL = {
+  AB_strong_small:  { text: '↖️ AB強偏小', color: '#0369A1', bg: '#DBEAFE' },
+  AB_mild_small:    { text: '↖ AB略偏小', color: '#0284C7', bg: '#EFF6FF' },
+  AB_strong_large:  { text: '↘️ AB強偏大', color: '#DC2626', bg: '#FEE2E2' },
+  AB_mild_large:    { text: '↘ AB略偏大', color: '#B45309', bg: '#FEF3C7' },
+  AB_balanced:      { text: '↔ AB均衡',   color: '#6B7280', bg: '#F3F4F6' },
+  AB_opposite:      { text: '✕ AB反向',   color: '#7C3AED', bg: '#EDE9FE' },
+};
+function abPatternLabel(p) { return AB_PATTERN_LABEL[p] || null; }
 
 // ===== 樣式 =====
 const S = {
@@ -155,9 +183,12 @@ function MetaTags({ meta, isSkipped }) {
       {meta.fill_mode === 'board_fill' && meta.board_fill_count > 0 && <span style={S.badge(C.textSub, C.grayLight)}>+補位{meta.board_fill_count}顆</span>}
       {meta.anchor_span != null && <span style={S.badge(C.textSub, C.grayLight)}>跨度{meta.anchor_span}</span>}
       {meta.z_momentum === 'same' && <span style={S.badge(C.green, '#DCFCE7')}>↻ Z慣性</span>}
-      {/* quality badge已顯示金/銀/銅/鐵/錫，此處不再重複顯示is_golden */}
+      {/* ★ V0701-1新增：四層維度標籤 */}
+      {(() => { const sl = sumClassLabel(meta.sum_class); return sl && sl.text !== 'S中等' && <span style={S.badge(sl.color, sl.bg)}>{sl.text}</span>; })()}
+      {(() => { const al = abPatternLabel(meta.ab_pattern); return al && meta.ab_pattern !== 'AB_balanced' && <span style={S.badge(al.color, al.bg)}>{al.text}</span>; })()}
+      {meta.max_num_class === 'X1_low' && <span style={S.badge(C.blue, '#DBEAFE')}>最大≤70</span>}
+      {meta.max_num_class === 'X3_high' && <span style={S.badge(C.red, '#FEE2E2')}>最大76+</span>}
       {meta.has_both_ends && <span style={S.badge(C.green, '#DCFCE7')}>首尾都有</span>}
-      {meta.has_large_anchor && <span style={S.badge(C.purple, '#EDE9FE')}>含75-80</span>}
       {meta.max_combos != null && meta.max_combos < 8 && <span style={S.badge(C.purple, '#F5F3FF')}>📉 縮手{meta.max_combos}組</span>}
     </div>
   );
@@ -515,7 +546,7 @@ function StatsPage({ historyRows }) {
         </Card>
       )}
 
-      <div style={{ fontSize: 11, color: C.textSub, textAlign: 'center' }}>※ 統計從 V0629-4 上線起算</div>
+      <div style={{ fontSize: 11, color: C.textSub, textAlign: 'center' }}>※ 統計從 V0701-1 上線起算</div>
     </div>
   );
 }
@@ -797,7 +828,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0630-2</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0701-1</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
