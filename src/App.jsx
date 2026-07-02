@@ -262,34 +262,38 @@ function QuickPage({ prediction, recent20, recentPredictions, onRefresh, loading
   function consecQ(num) { return streakMap[num] || 0; }
 
   // ★ V0703-1：近12期各等級損益平衡統計
+  // ★ V0703-1：近12期各等級損益平衡統計（直接用historyRows）
+  // 成本：lv1/lv2=200元 lv3=150元 lv4=100元 lv5=75元 lv6=50元
+  // 獎金：中3=500元 中2=50元，獎金>=成本算OK
   const gradeOkStats = React.useMemo(() => {
-    const COST = { lv1:200, lv2:200, lv3:150, lv4:100, lv5:75, lv6:50, none:0 };
+    const COST = { lv1:200, lv2:200, lv3:150, lv4:100, lv5:75, lv6:50 };
     const counts = {};
-    const recent12 = toArray(recentPredictions).slice(0, 12);
-    for (const p of recent12) {
+    const rows = toArray(prediction?.recent_3star_compared_rows || prediction?.recent_compared_rows).slice(0, 12);
+    for (const p of rows) {
       const groups = toArray(p?.groups_json);
-      const meta = groups.find(g => g.key !== 'skip_meta')?.meta || groups[0]?.meta || {};
+      const meta = groups.find(g => g?.key !== 'skip_meta')?.meta || groups[0]?.meta || {};
       const quality = meta?.anchor_quality;
-      if (!quality || quality === 'none') continue;
-      const cost = COST[quality] || 0;
-      if (cost === 0) continue;
-      // 從compare_result_json算獎金
-      const compareResult = p?.compare_result_json;
+      if (!quality || !COST[quality]) continue;
+      const cost = COST[quality];
+      // 跟第二頁近期頁一樣的方式讀命中
+      const compareResult = p?.compare_result_json && typeof p.compare_result_json === 'object'
+        ? p.compare_result_json
+        : (typeof p?.compare_result_json === 'string' ? JSON.parse(p.compare_result_json) : null);
       const detail = toArray(compareResult?.detail);
       let reward = 0;
       for (const d of detail) {
-        if (d?.hit === 3) reward += 500;
-        else if (d?.hit === 2) reward += 50;
+        const h = toNum(d?.hit, 0);
+        if (h >= 3) reward += 500;
+        else if (h >= 2) reward += 50;
       }
       if (reward >= cost) {
         counts[quality] = (counts[quality] || 0) + 1;
       }
     }
-    // 排序取前三
     return Object.entries(counts)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 3);
-  }, [recentPredictions]);
+  }, [prediction]);
   const streakStyleQ = {
     5: { color: '#DC2626', bg: '#FEF2F2', border: '#FCA5A5' },
     4: { color: '#EA580C', bg: '#FFF7ED', border: '#FED7AA' },
