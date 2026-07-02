@@ -1,5 +1,5 @@
 /**
- * App.jsx - V0702-2
+ * App.jsx - V0702-3
  *
  * ★ V0702-2更新(7/2)：退回V0630-2穩定版，分級改數字
  * 配合buildBingoV1Strategies V0702-2
@@ -243,6 +243,22 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
   const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.green : C.textSub;
   const [expanded, setExpanded] = useState(true);
 
+  // 連續期數顏色（跟熱號頁一樣）
+  const rows20q = toArray(recent20).slice(0, 20);
+  function consecQ(num) {
+    let c = 0;
+    for (const r of rows20q) {
+      if (parseNums(r?.numbers).includes(num)) c++;
+      else break;
+    }
+    return Math.min(c, 5);
+  }
+  const streakStyleQ = {
+    5: { color: '#DC2626' }, 4: { color: '#EA580C' },
+    3: { color: '#D97706' }, 2: { color: '#0F766E' },
+    1: { color: '#6B7280' }, 0: { color: '#6B7280' },
+  };
+
   return (
     <div style={S.page}>
       {/* 盤面分析 */}
@@ -279,7 +295,11 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
                   return (
                     <div key={g.key || idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '5px 8px', background: hit >= 3 ? '#FEF9C3' : hit >= 2 ? '#DCFCE7' : '#F9FAFB', borderRadius: 8 }}>
                       <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: 1 }}>
-                        {toArray(g.nums).map(n => padNum(n)).join(' · ')}
+                        {toArray(g.nums).map((n, i) => (
+                          <span key={n} style={{ color: streakStyleQ[consecQ(n)].color }}>
+                            {i > 0 ? ' · ' : ''}{padNum(n)}
+                          </span>
+                        ))}
                       </span>
                       {hit >= 0 && <span style={S.numBadge(hit)}>中{hit}</span>}
                     </div>
@@ -622,7 +642,7 @@ function HotPage({ recent20 }) {
 }
 
 // ===== 第六頁：錨點（原熱號池，換成錨點分析）=====
-function AnchorPage({ prediction }) {
+function AnchorPage({ prediction, recent20 }) {
   const row = prediction?.latest_3star_row;
   const groups = toArray(row?.groups_json);
   const meta = groups.find(g => g.key !== 'skip_meta')?.meta || groups[0]?.meta || {};
@@ -630,6 +650,29 @@ function AnchorPage({ prediction }) {
   const isSkipped = !row || row?.status === 'skipped';
   const zm = zmLabel(meta.zm_key);
   const quality = qualityLabel(meta.anchor_quality);
+
+  // 計算每顆錨點的連續期數（從recent20算，跟第五頁熱號一樣）
+  const rows20 = toArray(recent20).slice(0, 20);
+  function consecutiveCount(num) {
+    let c = 0;
+    for (const r of rows20) {
+      if (parseNums(r?.numbers).includes(num)) c++;
+      else break;
+    }
+    return c;
+  }
+  // 連續期數對應顏色（跟第五頁一樣）
+  const streakStyle = {
+    5: { bg: '#FEF2F2', border: '#FCA5A5', color: '#DC2626' },
+    4: { bg: '#FFF7ED', border: '#FED7AA', color: '#EA580C' },
+    3: { bg: '#FFFBEB', border: '#FDE68A', color: '#D97706' },
+    2: { bg: '#F0FDFA', border: '#99F6E4', color: '#0F766E' },
+    1: { bg: '#F3F4F6', border: '#E5E7EB', color: '#6B7280' },
+  };
+  function getStreakStyle(n) {
+    const c = Math.min(consecutiveCount(n), 5);
+    return streakStyle[c] || streakStyle[1];
+  }
 
   return (
     <div style={S.page}>
@@ -714,23 +757,52 @@ function AnchorPage({ prediction }) {
             ))}
           </div>
 
-          {/* 錨點號碼 */}
+          {/* 錨點號碼（顏色依連續期數，跟熱號頁一樣） */}
           {anchors.length > 0 && (
             <div>
               <div style={{ fontSize: 11, color: C.textSub, marginBottom: 6 }}>錨點號碼（{anchors.length}顆）</div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                {anchors.map(n => (
-                  <div key={n} style={{
-                    width: 36, height: 36, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    fontSize: 13, fontWeight: 800,
-                    background: n >= 61 ? '#EDE9FE' : n <= 20 ? '#DBEAFE' : '#F3F4F6',
-                    color: n >= 61 ? C.purple : n <= 20 ? C.blue : C.text,
-                    border: `2px solid ${n >= 61 ? '#C4B5FD' : n <= 20 ? '#93C5FD' : C.border}`,
-                  }}>{padNum(n)}</div>
-                ))}
+                {anchors.map(n => {
+                  const ss = getStreakStyle(n);
+                  const streak = Math.min(consecutiveCount(n), 5);
+                  return (
+                    <div key={n} style={{
+                      width: 36, height: 36, borderRadius: '50%',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontSize: 13, fontWeight: 800,
+                      background: ss.bg, color: ss.color,
+                      border: `2px solid ${ss.border}`,
+                      position: 'relative',
+                    }}>
+                      {padNum(n)}
+                      {streak >= 3 && (
+                        <div style={{
+                          position: 'absolute', top: -4, right: -4,
+                          fontSize: 8, fontWeight: 900, color: '#fff',
+                          background: ss.color, borderRadius: '50%',
+                          width: 14, height: 14, display: 'flex',
+                          alignItems: 'center', justifyContent: 'center',
+                        }}>{streak}</div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
-              <div style={{ fontSize: 10, color: C.textSub, marginTop: 6 }}>
-                🔵 1-20區（{meta.anchor_z1}顆）｜⬜ 21-60區｜🟣 61-80區（{meta.anchor_z4}顆）
+              <div style={{ display: 'flex', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
+                {[
+                  { streak: 5, label: '連5期' },
+                  { streak: 4, label: '連4期' },
+                  { streak: 3, label: '連3期' },
+                  { streak: 2, label: '連2期(錨點)' },
+                ].map(({ streak, label }) => {
+                  const ss = streakStyle[streak];
+                  return (
+                    <div key={streak} style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                      <div style={{ width: 10, height: 10, borderRadius: '50%', background: ss.bg, border: `1px solid ${ss.border}` }} />
+                      <span style={{ fontSize: 9, color: ss.color }}>{label}</span>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -810,7 +882,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0702-2</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0702-3</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
@@ -832,7 +904,7 @@ export default function App() {
       {tab === 'stats'   && <StatsPage   historyRows={historyRows} />}
       {tab === 'market'  && <MarketPage  recent20={recent20} />}
       {tab === 'hot'     && <HotPage     recent20={recent20} />}
-      {tab === 'anchor'  && <AnchorPage  prediction={prediction} />}
+      {tab === 'anchor'  && <AnchorPage  prediction={prediction} recent20={recent20} />}
     </div>
   );
 }
