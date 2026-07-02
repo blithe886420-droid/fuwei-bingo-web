@@ -245,15 +245,21 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
   const [expanded, setExpanded] = useState(true);
 
   // 連續期數顏色（跟熱號頁一樣）
-  const rows20q = toArray(recent20).slice(0, 20);
-  function consecQ(num) {
-    let c = 0;
-    for (const r of rows20q) {
-      if (parseNums(r?.numbers).includes(num)) c++;
-      else break;
+  // 用useMemo確保recent20更新後重新計算，解決第一頁載入時recent20還是空的問題
+  const streakMap = React.useMemo(() => {
+    const rows20q = toArray(recent20).slice(0, 20);
+    const map = {};
+    for (let num = 1; num <= 80; num++) {
+      let c = 0;
+      for (const r of rows20q) {
+        if (parseNums(r?.numbers).includes(num)) c++;
+        else break;
+      }
+      map[num] = Math.min(c, 5);
     }
-    return Math.min(c, 5);
-  }
+    return map;
+  }, [recent20]);
+  function consecQ(num) { return streakMap[num] || 0; }
   const streakStyleQ = {
     5: { color: '#DC2626', bg: '#FEF2F2', border: '#FCA5A5' },
     4: { color: '#EA580C', bg: '#FFF7ED', border: '#FED7AA' },
