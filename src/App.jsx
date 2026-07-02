@@ -178,7 +178,7 @@ function MetaTags({ meta, isSkipped }) {
 }
 
 // ===== 盤面分析卡 =====
-function BoardCard({ meta }) {
+function BoardCard({ meta, gradeOkStats = [] }) {
   if (!meta || !meta.zm_key) return null;
   const zm = zmLabel(meta.zm_key);
   const quality = qualityLabel(meta.anchor_quality);
@@ -186,7 +186,14 @@ function BoardCard({ meta }) {
 
   return (
     <div style={S.card}>
-      <div style={{ fontSize: 13, fontWeight: 800, color: C.text, marginBottom: 10 }}>🗺️ 當期盤面分析</div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+        <div style={{ fontSize: 13, fontWeight: 800, color: C.text }}>🗺️ 當期盤面分析</div>
+        {gradeOkStats.length > 0 && (
+          <div style={{ fontSize: 10, color: '#6B7280' }}>
+            近12期 {gradeOkStats.map(([g, n]) => `${QUALITY_LABEL[g]?.text || g}${n}次`).join(' ')}
+          </div>
+        )}
+      </div>
       <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
         <div style={{ flex: 1, background: zm.bg, borderRadius: 10, padding: '10px 12px', border: `1px solid ${zm.color}33` }}>
           <div style={{ fontSize: 11, color: zm.color, fontWeight: 700 }}>Z+M盤面</div>
@@ -306,7 +313,7 @@ function QuickPage({ prediction, recent20, recentPredictions, onRefresh, loading
   return (
     <div style={S.page}>
       {/* 盤面分析 */}
-      {meta0.zm_key && <BoardCard meta={meta0} />}
+      {meta0.zm_key && <BoardCard meta={meta0} gradeOkStats={gradeOkStats} />}
 
       {/* 預測組合 */}
       <div style={S.card}>
