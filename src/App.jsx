@@ -232,7 +232,7 @@ function BoardCard({ meta }) {
 }
 
 // ===== 第一頁：快速 =====
-function QuickPage({ prediction, recent20, onRefresh, loading }) {
+function QuickPage({ prediction, recent20, recentPredictions, onRefresh, loading }) {
   const row = prediction?.latest_3star_row;
   const groups = toArray(row?.groups_json);
   const meta0 = groups[0]?.meta || {};
@@ -260,6 +260,36 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
     return map;
   }, [recent20]);
   function consecQ(num) { return streakMap[num] || 0; }
+
+  // ★ V0703-1：近12期各等級損益平衡統計
+  const gradeOkStats = React.useMemo(() => {
+    const COST = { lv1:200, lv2:200, lv3:150, lv4:100, lv5:75, lv6:50, none:0 };
+    const counts = {};
+    const recent12 = toArray(recentPredictions).slice(0, 12);
+    for (const p of recent12) {
+      const groups = toArray(p?.groups_json);
+      const meta = groups.find(g => g.key !== 'skip_meta')?.meta || groups[0]?.meta || {};
+      const quality = meta?.anchor_quality;
+      if (!quality || quality === 'none') continue;
+      const cost = COST[quality] || 0;
+      if (cost === 0) continue;
+      // 從compare_result_json算獎金
+      const compareResult = p?.compare_result_json;
+      const detail = toArray(compareResult?.detail);
+      let reward = 0;
+      for (const d of detail) {
+        if (d?.hit === 3) reward += 500;
+        else if (d?.hit === 2) reward += 50;
+      }
+      if (reward >= cost) {
+        counts[quality] = (counts[quality] || 0) + 1;
+      }
+    }
+    // 排序取前三
+    return Object.entries(counts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3);
+  }, [recentPredictions]);
   const streakStyleQ = {
     5: { color: '#DC2626', bg: '#FEF2F2', border: '#FCA5A5' },
     4: { color: '#EA580C', bg: '#FFF7ED', border: '#FED7AA' },
@@ -856,6 +886,7 @@ export default function App() {
   const [prediction, setPrediction] = useState(null);
   const [historyRows, setHistoryRows] = useState([]);
   const [recent20, setRecent20] = useState([]);
+  const [recentPredictions, setRecentPredictions] = useState([]);
   const [loopStatus, setLoopStatus] = useState('載入中...');
   const [emergencyAlert, setEmergencyAlert] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -868,9 +899,11 @@ export default function App() {
       const [predRes, recentRes] = await Promise.all([
         apiFetch('/api/prediction-latest').catch(() => ({})),
         apiFetch('/api/recent20').catch(() => ({})),
+        apiFetch('/api/prediction-latest').catch(() => ({})),
       ]);
       setPrediction(predRes);
       setHistoryRows(predRes?.recent_3star_compared_rows || predRes?.recent_compared_rows || []);
+      setRecentPredictions(toArray(predRes?.recent_3star_compared_rows || predRes?.recent_compared_rows).slice(0, 12));
       setRecent20(recentRes?.recent20 || recentRes?.data || []);
       setLoopStatus(isNight() ? '夜間停止（00:00-07:00）' : `已更新 ${new Date().toLocaleTimeString('zh-TW', { hour12: false })}`);
       setEmergencyAlert(predRes?.emergency_alert || null);
@@ -923,7 +956,7 @@ export default function App() {
         ))}
       </div>
       {loading && tab === 'quick' && <Spinner />}
-      {tab === 'quick'   && <QuickPage   prediction={prediction} recent20={recent20} onRefresh={loadData} loading={loading} />}
+      {tab === 'quick'   && <QuickPage   prediction={prediction} recent20={recent20} recentPredictions={recentPredictions} onRefresh={loadData} loading={loading} />}
       {tab === 'history' && <HistoryPage historyRows={historyRows} />}
       {tab === 'stats'   && <StatsPage   historyRows={historyRows} />}
       {tab === 'market'  && <MarketPage  recent20={recent20} />}
