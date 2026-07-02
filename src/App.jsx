@@ -1,5 +1,5 @@
 /**
- * App.jsx - V0702-3
+ * App.jsx - V0702-4
  *
  * ★ V0702-2更新(7/2)：退回V0630-2穩定版，分級改數字
  * 配合buildBingoV1Strategies V0702-2
@@ -65,14 +65,15 @@ const ZM_LABEL = {
 function zmLabel(key) { return ZM_LABEL[key] || { text: key || '未知', desc: '', color: C.textSub, bg: C.grayLight }; }
 
 // ===== 錨點品質標籤 =====
-// ★ V0702-2：五級數字分級（退回V0630-2穩定版）
+// ★ V0702-4：七層分級（真錨點+次強錨點組合，SQL 21636期驗證）
 const QUALITY_LABEL = {
-  lv1:  { text: '⭐ 第1級', color: '#B45309', bg: '#FEF3C7', desc: '7顆 35.3%中3' },
-  lv2:  { text: '🔵 第2級', color: '#1D4ED8', bg: '#DBEAFE', desc: '6顆或8顆+' },
-  lv3:  { text: '🟢 第3級', color: '#15803D', bg: '#DCFCE7', desc: '5顆 8.3%中3' },
-  lv4:  { text: '🟡 第4級', color: '#A16207', bg: '#FEF9C3', desc: '4顆 2.7%中3' },
-  lv5:  { text: '🔄 第5級', color: '#0891B2', bg: '#CFFAFE', desc: '1-3顆 觸發補位' },
-  none: { text: '❌ 空窗', color: '#DC2626', bg: '#FEE2E2', desc: '' },
+  lv1:  { text: '👑 超金', color: '#B45309', bg: '#FEF3C7', desc: '真>=7 51.6%中3' },
+  lv2:  { text: '🥇 強補位', color: '#7C3AED', bg: '#EDE9FE', desc: '真>=4+次強>=5 50.8%' },
+  lv3:  { text: '🥈 金強', color: '#1D4ED8', bg: '#DBEAFE', desc: '真6+或次強爆發 35-37%' },
+  lv4:  { text: '🥉 銅強', color: '#15803D', bg: '#DCFCE7', desc: '真4+次強>=3 27.7%' },
+  lv5:  { text: '🔵 銀弱', color: '#0891B2', bg: '#CFFAFE', desc: '真5次強少或補位強 17-22%' },
+  lv6:  { text: '⚪ 銅弱', color: '#6B7280', bg: '#F3F4F6', desc: '真4次強少 14.2%' },
+  none: { text: '❌ 空窗', color: '#DC2626', bg: '#FEE2E2', desc: '7.7%' },
 };
 function qualityLabel(q) { return QUALITY_LABEL[q] || QUALITY_LABEL['none']; }
 
@@ -254,9 +255,12 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
     return Math.min(c, 5);
   }
   const streakStyleQ = {
-    5: { color: '#DC2626' }, 4: { color: '#EA580C' },
-    3: { color: '#D97706' }, 2: { color: '#0F766E' },
-    1: { color: '#6B7280' }, 0: { color: '#6B7280' },
+    5: { color: '#DC2626', bg: '#FEF2F2', border: '#FCA5A5' },
+    4: { color: '#EA580C', bg: '#FFF7ED', border: '#FED7AA' },
+    3: { color: '#D97706', bg: '#FFFBEB', border: '#FDE68A' },
+    2: { color: '#0F766E', bg: '#F0FDFA', border: '#99F6E4' },
+    1: { color: '#6B7280', bg: '#F3F4F6', border: '#E5E7EB' },
+    0: { color: '#9CA3AF', bg: '#F9FAFB', border: '#E5E7EB' },
   };
 
   return (
@@ -295,11 +299,21 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
                   return (
                     <div key={g.key || idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '5px 8px', background: hit >= 3 ? '#FEF9C3' : hit >= 2 ? '#DCFCE7' : '#F9FAFB', borderRadius: 8 }}>
                       <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: 1 }}>
-                        {toArray(g.nums).map((n, i) => (
-                          <span key={n} style={{ color: streakStyleQ[consecQ(n)].color }}>
-                            {i > 0 ? ' · ' : ''}{padNum(n)}
-                          </span>
-                        ))}
+                        {toArray(g.nums).map((n, i) => {
+                          const sq = streakStyleQ[consecQ(n)];
+                          return (
+                            <span key={n} style={{
+                              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                              width: 28, height: 28, borderRadius: '50%',
+                              background: sq.bg, color: sq.color,
+                              border: `2px solid ${sq.border}`,
+                              fontSize: 11, fontWeight: 800,
+                              marginRight: i < toArray(g.nums).length - 1 ? 4 : 0,
+                            }}>
+                              {padNum(n)}
+                            </span>
+                          );
+                        })}
                       </span>
                       {hit >= 0 && <span style={S.numBadge(hit)}>中{hit}</span>}
                     </div>
@@ -466,7 +480,7 @@ function StatsPage({ historyRows }) {
 
       {subTab === 'quality' && (
         <Card title="錨點品質命中率" icon="⚓">
-          {['lv1', 'lv2', 'lv3', 'lv4', 'lv5'].map(q => {
+          {['lv1', 'lv2', 'lv3', 'lv4', 'lv5', 'lv6'].map(q => {
             const s = calcStats(filterByQuality(q));
             const ql = qualityLabel(q);
             const rc = s.rate >= 0.15 ? C.green : s.rate >= 0.08 ? C.orange : C.red;
@@ -678,7 +692,7 @@ function AnchorPage({ prediction, recent20 }) {
     <div style={S.page}>
       <Card title="本期錨點分析" icon="⚓">
         <div style={{ fontSize: 11, color: C.textSub, marginBottom: 12, lineHeight: 1.6 }}>
-          錨點 = 連續兩期都出現的號碼。分五級：第1級(7顆)35.3% / 第2級(6顆或8顆+)11.1% / 第3級(5顆)8.3% / 第4級(4顆)2.7% / 第5級(1-3顆)觸發三層補位。
+          ★ V0702-4新分級（SQL 21636期驗證）：真錨點+次強錨點組合決定等級。次強錨點=這期有但上期沒有、前兩期有的號碼。超金(真>=7)51.6% / 強補位(真>=4+次強>=5)50.8% / 金強35-37% / 銅強27.7% / 銀弱17-22% / 銅弱14.2%
         </div>
 
         {isSkipped ? (
@@ -694,7 +708,9 @@ function AnchorPage({ prediction, recent20 }) {
             <div style={{ flex: 1, background: quality.bg, borderRadius: 10, padding: '10px 12px' }}>
               <div style={{ fontSize: 11, color: quality.color, fontWeight: 700 }}>錨點品質</div>
               <div style={{ fontSize: 18, fontWeight: 900, color: quality.color }}>{quality.text}</div>
-              <div style={{ fontSize: 10, color: quality.color, opacity: 0.8 }}>錨點{meta.anchor_count}顆</div>
+              <div style={{ fontSize: 10, color: quality.color, opacity: 0.8 }}>
+                真錨點{meta.anchor_count}顆 次強{meta.tier2_count || 0}顆
+              </div>
             </div>
           </div>
 
@@ -719,19 +735,21 @@ function AnchorPage({ prediction, recent20 }) {
             <div style={{ fontSize: 13, fontWeight: 800, color: quality.color, marginBottom: 6 }}>
               {quality.text}（真錨點{meta.anchor_count}顆）
             </div>
-            <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
+            <div style={{ display: 'flex', gap: 4, marginBottom: 8, flexWrap: 'wrap' }}>
               {[
-                { n: 7, q: 'lv1', label: '第1級', bench: '35.3%' },
-                { n: 6, q: 'lv2', label: '第2級', bench: '11.1%' },
-                { n: 5, q: 'lv3', label: '第3級', bench: '8.3%' },
-                { n: 4, q: 'lv4', label: '第4級', bench: '2.7%' },
+                { q: 'lv1', label: '超金', bench: '51.6%' },
+                { q: 'lv2', label: '強補位', bench: '50.8%' },
+                { q: 'lv3', label: '金強', bench: '35-37%' },
+                { q: 'lv4', label: '銅強', bench: '27.7%' },
+                { q: 'lv5', label: '銀弱', bench: '17-22%' },
+                { q: 'lv6', label: '銅弱', bench: '14.2%' },
               ].map(lv => (
                 <div key={lv.q} style={{
                   flex: 1, textAlign: 'center', borderRadius: 6, padding: '4px 2px',
                   background: meta.anchor_quality === lv.q ? quality.color : '#fff',
                   border: `1px solid ${meta.anchor_quality === lv.q ? quality.color : C.border}`,
                 }}>
-                  <div style={{ fontSize: 11, fontWeight: 800, color: meta.anchor_quality === lv.q ? '#fff' : C.textSub }}>{lv.label}({lv.n})</div>
+                  <div style={{ fontSize: 11, fontWeight: 800, color: meta.anchor_quality === lv.q ? '#fff' : C.textSub }}>{lv.label}</div>
                   <div style={{ fontSize: 8, color: meta.anchor_quality === lv.q ? '#fff' : C.textSub }}>{lv.bench}</div>
                 </div>
               ))}
@@ -882,7 +900,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0702-3</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0702-4</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
