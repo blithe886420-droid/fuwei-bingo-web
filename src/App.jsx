@@ -65,14 +65,14 @@ const ZM_LABEL = {
 function zmLabel(key) { return ZM_LABEL[key] || { text: key || '未知', desc: '', color: C.textSub, bg: C.grayLight }; }
 
 // ===== 錨點品質標籤 =====
-// ★ V0702-4：七層分級（真錨點+次強錨點組合，SQL 21636期驗證）
+// ★ V0702-4：六層數字分級（真錨點+次強錨點組合，SQL 21636期驗證）
 const QUALITY_LABEL = {
-  lv1:  { text: '👑 超金', color: '#B45309', bg: '#FEF3C7', desc: '真>=7 51.6%中3' },
-  lv2:  { text: '🥇 強補位', color: '#7C3AED', bg: '#EDE9FE', desc: '真>=4+次強>=5 50.8%' },
-  lv3:  { text: '🥈 金強', color: '#1D4ED8', bg: '#DBEAFE', desc: '真6+或次強爆發 35-37%' },
-  lv4:  { text: '🥉 銅強', color: '#15803D', bg: '#DCFCE7', desc: '真4+次強>=3 27.7%' },
-  lv5:  { text: '🔵 銀弱', color: '#0891B2', bg: '#CFFAFE', desc: '真5次強少或補位強 17-22%' },
-  lv6:  { text: '⚪ 銅弱', color: '#6B7280', bg: '#F3F4F6', desc: '真4次強少 14.2%' },
+  lv1:  { text: '第1級', color: '#B45309', bg: '#FEF3C7', desc: '真>=7 51.6%中3' },
+  lv2:  { text: '第2級', color: '#7C3AED', bg: '#EDE9FE', desc: '真>=4+次強>=5 50.8%' },
+  lv3:  { text: '第3級', color: '#1D4ED8', bg: '#DBEAFE', desc: '真6+或次強爆發 35-37%' },
+  lv4:  { text: '第4級', color: '#15803D', bg: '#DCFCE7', desc: '真4+次強>=3 27.7%' },
+  lv5:  { text: '第5級', color: '#0891B2', bg: '#CFFAFE', desc: '真5次強少或補位強 17-22%' },
+  lv6:  { text: '第6級', color: '#6B7280', bg: '#F3F4F6', desc: '真4次強少 14.2%' },
   none: { text: '❌ 空窗', color: '#DC2626', bg: '#FEE2E2', desc: '7.7%' },
 };
 function qualityLabel(q) { return QUALITY_LABEL[q] || QUALITY_LABEL['none']; }
@@ -743,12 +743,12 @@ function AnchorPage({ prediction, recent20 }) {
             </div>
             <div style={{ display: 'flex', gap: 4, marginBottom: 8, flexWrap: 'wrap' }}>
               {[
-                { q: 'lv1', label: '超金', bench: '51.6%' },
-                { q: 'lv2', label: '強補位', bench: '50.8%' },
-                { q: 'lv3', label: '金強', bench: '35-37%' },
-                { q: 'lv4', label: '銅強', bench: '27.7%' },
-                { q: 'lv5', label: '銀弱', bench: '17-22%' },
-                { q: 'lv6', label: '銅弱', bench: '14.2%' },
+                { q: 'lv1', label: '第1級', bench: '51.6%' },
+                { q: 'lv2', label: '第2級', bench: '50.8%' },
+                { q: 'lv3', label: '第3級', bench: '35-37%' },
+                { q: 'lv4', label: '第4級', bench: '27.7%' },
+                { q: 'lv5', label: '第5級', bench: '17-22%' },
+                { q: 'lv6', label: '第6級', bench: '14.2%' },
               ].map(lv => (
                 <div key={lv.q} style={{
                   flex: 1, textAlign: 'center', borderRadius: 6, padding: '4px 2px',
