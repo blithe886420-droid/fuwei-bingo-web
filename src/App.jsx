@@ -1,5 +1,7 @@
 /**
- * App.jsx - V0702-4
+ * App.jsx - V0703-1
+ *
+ * ★ V0703-1更新(7/3)：第一頁「當期盤面分析」旁顯示近20期損益OK前三名等級
  *
  * ★ V0702-2更新(7/2)：退回V0630-2穩定版，分級改數字
  * 配合buildBingoV1Strategies V0702-2
@@ -29,6 +31,8 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 const RAILWAY_URL = 'https://fuwei-bingo-backend-production.up.railway.app';
 const REFRESH_INTERVAL_MS = 30000;
 const STATS_START_DATE = '2026-06-29T00:00:00.000Z';
+const GRADE_OK_LOOKBACK = 20;
+const GRADE_COST = { lv1: 200, lv2: 200, lv3: 150, lv4: 100, lv5: 75, lv6: 50 };
 
 function toNum(v, fallback = 0) { const n = Number(v); return Number.isFinite(n) ? n : fallback; }
 function toArray(v) { return Array.isArray(v) ? v : []; }
@@ -40,6 +44,50 @@ function parseNums(v) {
   return String(v || '').trim().split(/\s+/).map(Number).filter(n => n >= 1 && n <= 80);
 }
 function isNight() { const h = (new Date().getUTCHours() + 8) % 24; return h >= 0 && h < 7; }
+
+function parseCompareResult(raw) {
+  if (!raw) return null;
+  if (typeof raw === 'object') return raw;
+  if (typeof raw === 'string') { try { return JSON.parse(raw); } catch { return null; } }
+  return null;
+}
+
+function extractRowMeta(row) {
+  const groups = toArray(row?.groups_json);
+  const g = groups.find(x => x?.key !== 'skip_meta') || groups[0];
+  return g?.meta || {};
+}
+
+function calcPeriodReward(row) {
+  const compareResult = parseCompareResult(row?.compare_result_json);
+  const detail = toArray(compareResult?.detail);
+  let reward = 0;
+  for (const d of detail) {
+    const h = toNum(d?.hit ?? d?.hit_count, 0);
+    if (h >= 3) reward += 500;
+    else if (h >= 2) reward += 50;
+  }
+  if (reward === 0 && detail.length === 0) {
+    const bestHit = toNum(row?.hit_count, 0);
+    if (bestHit >= 3) reward = 500;
+    else if (bestHit >= 2) reward = 50;
+  }
+  return reward;
+}
+
+function calcGradeOkStats(historyRows, limit = GRADE_OK_LOOKBACK) {
+  const counts = {};
+  const rows = toArray(historyRows)
+    .filter(r => r?.compare_status === 'done' && r?.status !== 'skipped')
+    .slice(0, limit);
+  for (const row of rows) {
+    const quality = extractRowMeta(row)?.anchor_quality;
+    const cost = GRADE_COST[quality];
+    if (!quality || !cost) continue;
+    if (calcPeriodReward(row) >= cost) counts[quality] = (counts[quality] || 0) + 1;
+  }
+  return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 3);
+}
 
 // ===== 顏色系統 =====
 const C = {
@@ -178,6 +226,42 @@ function MetaTags({ meta, isSkipped }) {
 }
 
 // ===== 盤面分析卡 =====
+function GradeOkStatsBar({ gradeOkStats = [] }) {
+  if (!gradeOkStats.length) {
+    return (
+      <div style={{
+        flex: 1, minWidth: 140, maxWidth: 220, marginLeft: 8,
+        background: '#F9FAFB', border: '1px solid #E5E7EB', borderRadius: 8,
+        padding: '6px 8px', fontSize: 10, color: '#9CA3AF', lineHeight: 1.5,
+      }}>
+        近{GRADE_OK_LOOKBACK}期損益OK：資料累積中
+      </div>
+    );
+  }
+  return (
+    <div style={{
+      flex: 1, minWidth: 140, maxWidth: 240, marginLeft: 8,
+      background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: 8,
+      padding: '6px 8px',
+    }}>
+      <div style={{ fontSize: 9, color: '#92400E', fontWeight: 700, marginBottom: 4 }}>
+        近{GRADE_OK_LOOKBACK}期損益OK TOP3
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+        {gradeOkStats.map(([g, n]) => {
+          const ql = QUALITY_LABEL[g] || { text: g, color: C.text };
+          return (
+            <div key={g} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 10 }}>
+              <span style={{ fontWeight: 700, color: ql.color }}>{ql.text}</span>
+              <span style={{ fontWeight: 800, color: '#1F2937' }}>{n}次</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function BoardCard({ meta, gradeOkStats = [] }) {
   if (!meta || !meta.zm_key) return null;
   const zm = zmLabel(meta.zm_key);
@@ -186,13 +270,9 @@ function BoardCard({ meta, gradeOkStats = [] }) {
 
   return (
     <div style={S.card}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-        <div style={{ fontSize: 13, fontWeight: 800, color: C.text }}>🗺️ 當期盤面分析</div>
-        {gradeOkStats.length > 0 && (
-          <div style={{ fontSize: 10, color: '#6B7280' }}>
-            近12期 {gradeOkStats.map(([g, n]) => `${QUALITY_LABEL[g]?.text || g}${n}次`).join(' ')}
-          </div>
-        )}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10, gap: 8 }}>
+        <div style={{ fontSize: 13, fontWeight: 800, color: C.text, whiteSpace: 'nowrap' }}>🗺️ 當期盤面分析</div>
+        <GradeOkStatsBar gradeOkStats={gradeOkStats} />
       </div>
       <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
         <div style={{ flex: 1, background: zm.bg, borderRadius: 10, padding: '10px 12px', border: `1px solid ${zm.color}33` }}>
@@ -239,13 +319,13 @@ function BoardCard({ meta, gradeOkStats = [] }) {
 }
 
 // ===== 第一頁：快速 =====
-function QuickPage({ prediction, recent20, recentPredictions, onRefresh, loading }) {
+function QuickPage({ prediction, historyRows, recent20, onRefresh, loading }) {
   const row = prediction?.latest_3star_row;
   const groups = toArray(row?.groups_json);
   const meta0 = groups[0]?.meta || {};
   const isSkipped = !row || row?.status === 'skipped' || groups.filter(g => g.key !== 'skip_meta').length === 0;
   const realGroups = groups.filter(g => g.key !== 'skip_meta');
-  const compareResult = row?.compare_result_json;
+  const compareResult = parseCompareResult(row?.compare_result_json);
   const detail = toArray(compareResult?.detail);
   const bestHit = toNum(row?.hit_count, 0);
   const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.green : C.textSub;
@@ -268,39 +348,10 @@ function QuickPage({ prediction, recent20, recentPredictions, onRefresh, loading
   }, [recent20]);
   function consecQ(num) { return streakMap[num] || 0; }
 
-  // ★ V0703-1：近12期各等級損益平衡統計
-  // ★ V0703-1：近12期各等級損益平衡統計（直接用historyRows）
-  // 成本：lv1/lv2=200元 lv3=150元 lv4=100元 lv5=75元 lv6=50元
-  // 獎金：中3=500元 中2=50元，獎金>=成本算OK
-  const gradeOkStats = React.useMemo(() => {
-    const COST = { lv1:200, lv2:200, lv3:150, lv4:100, lv5:75, lv6:50 };
-    const counts = {};
-    const rows = toArray(prediction?.recent_3star_compared_rows || prediction?.recent_compared_rows).slice(0, 12);
-    for (const p of rows) {
-      const groups = toArray(p?.groups_json);
-      const meta = groups.find(g => g?.key !== 'skip_meta')?.meta || groups[0]?.meta || {};
-      const quality = meta?.anchor_quality;
-      if (!quality || !COST[quality]) continue;
-      const cost = COST[quality];
-      // 跟第二頁近期頁一樣的方式讀命中
-      const compareResult = p?.compare_result_json && typeof p.compare_result_json === 'object'
-        ? p.compare_result_json
-        : (typeof p?.compare_result_json === 'string' ? JSON.parse(p.compare_result_json) : null);
-      const detail = toArray(compareResult?.detail);
-      let reward = 0;
-      for (const d of detail) {
-        const h = toNum(d?.hit, 0);
-        if (h >= 3) reward += 500;
-        else if (h >= 2) reward += 50;
-      }
-      if (reward >= cost) {
-        counts[quality] = (counts[quality] || 0) + 1;
-      }
-    }
-    return Object.entries(counts)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 3);
-  }, [prediction]);
+  const gradeOkStats = React.useMemo(
+    () => calcGradeOkStats(historyRows, GRADE_OK_LOOKBACK),
+    [historyRows]
+  );
   const streakStyleQ = {
     5: { color: '#DC2626', bg: '#FEF2F2', border: '#FCA5A5' },
     4: { color: '#EA580C', bg: '#FFF7ED', border: '#FED7AA' },
@@ -342,7 +393,7 @@ function QuickPage({ prediction, recent20, recentPredictions, onRefresh, loading
               <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 }}>
                 {realGroups.map((g, idx) => {
                   const d = detail.find(x => x?.key === g.key);
-                  const hit = d ? toNum(d?.hit, 0) : -1;
+                  const hit = d ? toNum(d?.hit ?? d?.hit_count, 0) : -1;
                   return (
                     <div key={g.key || idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '5px 8px', background: hit >= 3 ? '#FEF9C3' : hit >= 2 ? '#DCFCE7' : '#F9FAFB', borderRadius: 8 }}>
                       <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: 1 }}>
@@ -391,7 +442,7 @@ function HistoryPage({ historyRows }) {
           const isDone = row?.compare_status === 'done' && !isSkipped;
           const groups = toArray(row?.groups_json);
           const meta = groups.find(g => g.key !== 'skip_meta')?.meta || groups[0]?.meta || {};
-          const compareResult = row?.compare_result_json;
+          const compareResult = parseCompareResult(row?.compare_result_json);
           const detail = toArray(compareResult?.detail);
           const bestHit = toNum(row?.hit_count, 0);
           const timeStr = row?.created_at
@@ -424,9 +475,9 @@ function HistoryPage({ historyRows }) {
                 <div style={{ fontSize: 11, color: C.orange }}>等待比對...</div>
               ) : (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                  {detail.filter(d => d?.hit >= 2).map((d, i) => (
-                    <span key={i} style={S.numBadge(toNum(d?.hit, 0))}>
-                      {toArray(d?.nums).map(n => padNum(n)).join(' ')} 中{d?.hit}
+                  {detail.filter(d => toNum(d?.hit ?? d?.hit_count, 0) >= 2).map((d, i) => (
+                    <span key={i} style={S.numBadge(toNum(d?.hit ?? d?.hit_count, 0))}>
+                      {toArray(d?.nums).map(n => padNum(n)).join(' ')} 中{toNum(d?.hit ?? d?.hit_count, 0)}
                     </span>
                   ))}
                   <span style={{ ...S.numBadge(bestHit), fontWeight: 900 }}>最高中{bestHit}</span>
@@ -897,7 +948,6 @@ export default function App() {
   const [prediction, setPrediction] = useState(null);
   const [historyRows, setHistoryRows] = useState([]);
   const [recent20, setRecent20] = useState([]);
-  const [recentPredictions, setRecentPredictions] = useState([]);
   const [loopStatus, setLoopStatus] = useState('載入中...');
   const [emergencyAlert, setEmergencyAlert] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -910,11 +960,9 @@ export default function App() {
       const [predRes, recentRes] = await Promise.all([
         apiFetch('/api/prediction-latest').catch(() => ({})),
         apiFetch('/api/recent20').catch(() => ({})),
-        apiFetch('/api/prediction-latest').catch(() => ({})),
       ]);
       setPrediction(predRes);
       setHistoryRows(predRes?.recent_3star_compared_rows || predRes?.recent_compared_rows || []);
-      setRecentPredictions(toArray(predRes?.recent_3star_compared_rows || predRes?.recent_compared_rows).slice(0, 12));
       setRecent20(recentRes?.recent20 || recentRes?.data || []);
       setLoopStatus(isNight() ? '夜間停止（00:00-07:00）' : `已更新 ${new Date().toLocaleTimeString('zh-TW', { hour12: false })}`);
       setEmergencyAlert(predRes?.emergency_alert || null);
@@ -950,7 +998,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0702-4</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0703-1</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
@@ -967,7 +1015,7 @@ export default function App() {
         ))}
       </div>
       {loading && tab === 'quick' && <Spinner />}
-      {tab === 'quick'   && <QuickPage   prediction={prediction} recent20={recent20} recentPredictions={recentPredictions} onRefresh={loadData} loading={loading} />}
+      {tab === 'quick'   && <QuickPage   prediction={prediction} historyRows={historyRows} recent20={recent20} onRefresh={loadData} loading={loading} />}
       {tab === 'history' && <HistoryPage historyRows={historyRows} />}
       {tab === 'stats'   && <StatsPage   historyRows={historyRows} />}
       {tab === 'market'  && <MarketPage  recent20={recent20} />}
