@@ -1,10 +1,8 @@
 /**
- * App.jsx - V0703-6-fix2
+ * App.jsx - V0703-6-fix3
  *
- * ★ V0703-6-fix2(7/3)：再次修复白屏
- * - ErrorBoundary：就算渲染出错也不白屏
- * - meta0 改读 realGroups[0]（避免读到 skip_meta）
- * - resolveBettingAdvice 全面 meta?. 安全读取
+ * ★ V0703-6-fix3(7/3)：修复 liveGradeStatsAll=null 时读 lv1 崩溃
+ * - LiveGradeStatsBar：null 不会触发默认参数，改用手动转 {}
  *
  * ★ V0703-6-fix(7/3)：修复白屏
  * - betting_summary.grade_live.vs_random 可能为空 → 安全读取
@@ -378,9 +376,10 @@ function liveGradeStatusLabel(status) {
 }
 
 // ===== 投注建議卡 =====
-function LiveGradeStatsBar({ liveGradeStats = {} }) {
+function LiveGradeStatsBar({ liveGradeStats }) {
+  const stats = liveGradeStats && typeof liveGradeStats === 'object' ? liveGradeStats : {};
   const rows = ['lv1', 'lv2', 'lv3', 'lv4', 'lv5', 'lv6']
-    .map(q => ({ q, ...(liveGradeStats[q] || {}) }))
+    .map(q => ({ q, ...(stats[q] || {}) }))
     .filter(r => r.total > 0);
   if (!rows.length) return null;
   return (
@@ -405,7 +404,7 @@ function BettingAdviceCard({ meta, isSkipped, groupCount, lossWarning, liveGrade
   const zmStatus = liveZmStatusLabel(meta?.live_zm_status);
   const zmRate = meta?.live_zm_hit3_rate;
   const zmSamples = meta?.live_zm_samples;
-  const statsAll = liveGradeStatsAll || meta?.live_grade_stats_all || null;
+  const statsAll = liveGradeStatsAll || meta?.live_grade_stats_all || {};
   return (
     <div style={{
       ...S.card,
@@ -1250,7 +1249,7 @@ function AppInner() {
   const [loopStatus, setLoopStatus] = useState('載入中...');
   const [lossWarning, setLossWarning] = useState(null);
   const [emergencyAlert, setEmergencyAlert] = useState(null);
-  const [liveGradeStatsAll, setLiveGradeStatsAll] = useState(null);
+  const [liveGradeStatsAll, setLiveGradeStatsAll] = useState({});
   const [loading, setLoading] = useState(true);
   const timerRef = useRef(null);
 
@@ -1271,7 +1270,7 @@ function AppInner() {
       const latestMeta = predRes?.latest_3star_row?.groups_json?.find(g => g?.key !== 'skip_meta')?.meta
         || predRes?.formal?.row?.groups_json?.find(g => g?.key !== 'skip_meta')?.meta
         || {};
-      setLiveGradeStatsAll(predRes?.live_grade_stats_all || latestMeta?.live_grade_stats_all || null);
+      setLiveGradeStatsAll(predRes?.live_grade_stats_all || latestMeta?.live_grade_stats_all || {});
     } catch {
       setLoopStatus('載入失敗，稍後重試');
     } finally {
@@ -1309,7 +1308,7 @@ function AppInner() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0703-6-fix2</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0703-6-fix3</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
