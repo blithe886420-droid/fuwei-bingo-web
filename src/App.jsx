@@ -1,12 +1,12 @@
 /**
- * App.jsx - V0703-3
+ * App.jsx - V0703-4
  *
- * ★ V0703-3更新(7/3)：配合 buildBingoV1Strategies V0703-3
- * - 投注建議卡顯示 Live等級實戰中3率 / 樣本數 / 狀態
- * - 盤面卡顯示 combo_pick_mode（組合挑選模式）
- * - 標題列版本號同步改為 V0703-3
+ * ★ V0703-4更新(7/3)：配合 buildBingoV1Strategies V0703-4
+ * - 盤面卡顯示：穩定盤 / 轉換期 / 震盪盤 + 穩定度分數
+ * - 投注卡顯示：同Z+M Live中3率
+ * - 標題列版本號同步改為 V0703-4
  *
- * ★ V0703-2更新(7/3)：實戰優化整合（配合 buildBingoV1Strategies V0703-2）
+ * ★ V0703-3：Live等級 / combo_pick_mode
  * - 第一頁新增 BettingAdviceCard：投注建議/成本/回本條件/連虧警告
  * - TOP3改為近20期「中3率」排行（取代損益OK，避免低級別誤導）
  * - 統計頁「等級對比」對齊新六級定義（移除舊7顆=第1級）
@@ -273,6 +273,11 @@ function MetaTags({ meta, isSkipped }) {
       {meta.fill_mode === 'second_tier' && meta.second_tier_count > 0 && <span style={S.badge(C.textSub, C.grayLight)}>+次強{meta.second_tier_count}顆</span>}
       {meta.fill_mode === 'board_fill' && meta.board_fill_count > 0 && <span style={S.badge(C.textSub, C.grayLight)}>+補位{meta.board_fill_count}顆</span>}
       {meta.anchor_span != null && <span style={S.badge(C.textSub, C.grayLight)}>跨度{meta.anchor_span}</span>}
+      {meta.board_regime && meta.board_regime !== 'unknown' && (
+        <span style={S.badge(boardRegimeStyle(meta.board_regime).color, boardRegimeStyle(meta.board_regime).bg)}>
+          {meta.board_regime_label || meta.board_regime}
+        </span>
+      )}
       {meta.z_momentum === 'same' && <span style={S.badge(C.green, '#DCFCE7')}>↻ Z慣性</span>}
       {/* ★ V0701-1新增：四層維度標籤 */}
       {(() => { const sl = sumClassLabel(meta.sum_class); return sl && sl.text !== 'S中等' && <span style={S.badge(sl.color, sl.bg)}>{sl.text}</span>; })()}
@@ -322,6 +327,26 @@ function GradeHit3StatsBar({ gradeHit3Stats = [] }) {
   );
 }
 
+function boardRegimeStyle(regime) {
+  const map = {
+    stable: { color: C.green, bg: '#DCFCE7' },
+    transition: { color: '#D97706', bg: '#FFFBEB' },
+    volatile: { color: '#DC2626', bg: '#FEE2E2' },
+    unknown: { color: C.textSub, bg: C.grayLight },
+  };
+  return map[regime] || map.unknown;
+}
+
+function liveZmStatusLabel(status) {
+  const map = {
+    ok: { text: '同盤面達標', color: C.green },
+    underperform: { text: '同盤面偏低', color: C.orange },
+    live_skip: { text: '同盤面空窗', color: '#DC2626' },
+    insufficient: { text: '同盤面樣本不足', color: C.textSub },
+  };
+  return map[status] || { text: status || '-', color: C.textSub };
+}
+
 function liveGradeStatusLabel(status) {
   const map = {
     ok: { text: '實戰達標', color: C.green },
@@ -338,6 +363,9 @@ function BettingAdviceCard({ meta, isSkipped, groupCount, lossWarning }) {
   const liveStatus = liveGradeStatusLabel(meta?.live_grade_status);
   const liveRate = meta?.live_grade_hit3_rate;
   const liveSamples = meta?.live_grade_samples;
+  const zmStatus = liveZmStatusLabel(meta?.live_zm_status);
+  const zmRate = meta?.live_zm_hit3_rate;
+  const zmSamples = meta?.live_zm_samples;
   return (
     <div style={{
       ...S.card,
@@ -358,10 +386,19 @@ function BettingAdviceCard({ meta, isSkipped, groupCount, lossWarning }) {
       )}
       {(liveSamples > 0 || meta?.live_grade_status) && (
         <div style={{ marginTop: 8, padding: '6px 8px', background: '#fff8', borderRadius: 8, fontSize: 11 }}>
-          <span style={{ color: C.textSub }}>Live等級實戰：</span>
+          <span style={{ color: C.textSub }}>Live等級：</span>
           <span style={{ fontWeight: 700, color: liveStatus.color }}>{liveStatus.text}</span>
           {liveRate != null && liveSamples > 0 && (
-            <span style={{ color: C.textSub }}>｜近{liveSamples}期中3率 {(liveRate * 100).toFixed(1)}%（隨機8.3%）</span>
+            <span style={{ color: C.textSub }}>｜近{liveSamples}期 {(liveRate * 100).toFixed(1)}%</span>
+          )}
+        </div>
+      )}
+      {(zmSamples > 0 || meta?.live_zm_status) && (
+        <div style={{ marginTop: 6, padding: '6px 8px', background: '#fff8', borderRadius: 8, fontSize: 11 }}>
+          <span style={{ color: C.textSub }}>Live同盤面：</span>
+          <span style={{ fontWeight: 700, color: zmStatus.color }}>{zmStatus.text}</span>
+          {zmRate != null && zmSamples > 0 && (
+            <span style={{ color: C.textSub }}>｜{meta?.zm_key} 近{zmSamples}期 {(zmRate * 100).toFixed(1)}%</span>
           )}
         </div>
       )}
@@ -377,6 +414,7 @@ function BoardCard({ meta, gradeHit3Stats = [] }) {
   const zm = zmLabel(meta.zm_key);
   const quality = qualityLabel(meta.anchor_quality);
   const anchors = toArray(meta.anchor_nums);
+  const regimeStyle = boardRegimeStyle(meta.board_regime);
 
   return (
     <div style={S.card}>
@@ -384,6 +422,25 @@ function BoardCard({ meta, gradeHit3Stats = [] }) {
         <div style={{ fontSize: 13, fontWeight: 800, color: C.text, whiteSpace: 'nowrap' }}>🗺️ 當期盤面分析</div>
         <GradeHit3StatsBar gradeHit3Stats={gradeHit3Stats} />
       </div>
+      {meta.board_regime && meta.board_regime !== 'unknown' && (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+          marginBottom: 10, padding: '8px 10px', borderRadius: 10,
+          background: regimeStyle.bg, border: `1px solid ${regimeStyle.color}44`,
+        }}>
+          <div>
+            <div style={{ fontSize: 11, color: regimeStyle.color, fontWeight: 700 }}>盤面狀態</div>
+            <div style={{ fontSize: 16, fontWeight: 900, color: regimeStyle.color }}>
+              {meta.board_regime_label || meta.board_regime}
+            </div>
+          </div>
+          <div style={{ textAlign: 'right' }}>
+            <div style={{ fontSize: 11, color: regimeStyle.color }}>穩定度</div>
+            <div style={{ fontSize: 18, fontWeight: 900, color: regimeStyle.color }}>{meta.board_stability_score ?? '-'}分</div>
+            {meta.regime_shift && <div style={{ fontSize: 9, color: regimeStyle.color }}>Z主軸剛換邊</div>}
+          </div>
+        </div>
+      )}
       <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
         <div style={{ flex: 1, background: zm.bg, borderRadius: 10, padding: '10px 12px', border: `1px solid ${zm.color}33` }}>
           <div style={{ fontSize: 11, color: zm.color, fontWeight: 700 }}>Z+M盤面</div>
@@ -425,7 +482,10 @@ function BoardCard({ meta, gradeHit3Stats = [] }) {
         </div>
       )}
       {meta.combo_pick_mode && (
-        <div style={{ fontSize: 10, color: C.textSub, marginTop: 8 }}>組合挑選：{meta.combo_pick_mode === 'v0703_3_scored' ? '評分優化' : meta.combo_pick_mode}</div>
+        <div style={{ fontSize: 10, color: C.textSub, marginTop: 8 }}>
+          組合挑選：{meta.combo_pick_mode === 'v0703_4_scored' ? '評分優化V4' : meta.combo_pick_mode === 'v0703_3_scored' ? '評分優化' : meta.combo_pick_mode}
+          {meta.score_weight_regime && meta.score_weight_regime !== 'stable' ? `｜權重:${meta.score_weight_regime}` : ''}
+        </div>
       )}
     </div>
   );
@@ -1153,7 +1213,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0703-3</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0703-4</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
