@@ -1,8 +1,10 @@
 /**
- * App.jsx - V0703-6-fix3
+ * App.jsx - V0703-7
  *
- * ★ V0703-6-fix3(7/3)：修复 liveGradeStatsAll=null 时读 lv1 崩溃
- * - LiveGradeStatsBar：null 不会触发默认参数，改用手动转 {}
+ * ★ V0703-7(7/3)：中二保本統計
+ * - 近20期 TOP3 同時顯示中3率 + 中2率
+ * - 近30期實盤條顯示中3/中2
+ * - 投注建議卡顯示中2保本說明
  *
  * ★ V0703-6-fix(7/3)：修复白屏
  * - betting_summary.grade_live.vs_random 可能为空 → 安全读取
@@ -112,8 +114,9 @@ function calcPeriodReward(row) {
 
 function calcBreakEvenNote(groupCount) {
   const cost = groupCount * COST_PER_GROUP;
-  if (cost <= 500) return `成本${cost}元｜中3一次(500元)可回本`;
-  return `成本${cost}元｜至少需中3 ${Math.ceil(cost / 500)} 次才回本`;
+  const hit2Needed = Math.ceil(cost / 50);
+  const hit3Needed = Math.ceil(cost / 500);
+  return `成本${cost}元｜中2需${hit2Needed}組(各50元)可回本｜${hit3Needed <= 1 ? '或中3一次(500元)可回本' : `或中3需${hit3Needed}次`}`;
 }
 
 function calcGradeHit3Stats(historyRows, limit = GRADE_HIT3_LOOKBACK) {
@@ -124,12 +127,18 @@ function calcGradeHit3Stats(historyRows, limit = GRADE_HIT3_LOOKBACK) {
   for (const row of rows) {
     const quality = extractRowMeta(row)?.anchor_quality;
     if (!quality || quality === 'none') continue;
-    if (!stats[quality]) stats[quality] = { total: 0, hit3: 0 };
+    if (!stats[quality]) stats[quality] = { total: 0, hit3: 0, hit2: 0 };
     stats[quality].total++;
-    if (toNum(row?.hit_count) >= 3) stats[quality].hit3++;
+    const h = toNum(row?.hit_count);
+    if (h >= 3) stats[quality].hit3++;
+    if (h >= 2) stats[quality].hit2++;
   }
   return Object.entries(stats)
-    .map(([q, s]) => ({ q, hit3: s.hit3, total: s.total, rate: s.total > 0 ? s.hit3 / s.total : 0 }))
+    .map(([q, s]) => ({
+      q, hit3: s.hit3, hit2: s.hit2, total: s.total,
+      rate: s.total > 0 ? s.hit3 / s.total : 0,
+      rate2: s.total > 0 ? s.hit2 / s.total : 0,
+    }))
     .sort((a, b) => b.rate - a.rate || b.hit3 - a.hit3)
     .slice(0, 3);
 }
@@ -328,15 +337,17 @@ function GradeHit3StatsBar({ gradeHit3Stats = [] }) {
       padding: '6px 8px',
     }}>
       <div style={{ fontSize: 9, color: '#1D4ED8', fontWeight: 700, marginBottom: 4 }}>
-        近{GRADE_HIT3_LOOKBACK}期中3率 TOP3
+        近{GRADE_HIT3_LOOKBACK}期中3率 TOP3（含中2）
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-        {gradeHit3Stats.map(({ q, hit3, total, rate }) => {
+        {gradeHit3Stats.map(({ q, hit3, hit2, total, rate, rate2 }) => {
           const ql = QUALITY_LABEL[q] || { text: q, color: C.text };
           return (
             <div key={q} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 10 }}>
               <span style={{ fontWeight: 700, color: ql.color }}>{ql.text}</span>
-              <span style={{ fontWeight: 800, color: '#1F2937' }}>{fmtPercent(rate)} ({hit3}/{total})</span>
+              <span style={{ fontWeight: 800, color: '#1F2937' }}>
+                中3 {fmtPercent(rate)} ({hit3}/{total})｜中2 {fmtPercent(rate2)} ({hit2}/{total})
+              </span>
             </div>
           );
         })}
@@ -384,11 +395,11 @@ function LiveGradeStatsBar({ liveGradeStats }) {
   if (!rows.length) return null;
   return (
     <div style={{ marginTop: 10, padding: '8px 10px', background: '#fff9', borderRadius: 8 }}>
-      <div style={{ fontSize: 11, fontWeight: 800, color: C.textSub, marginBottom: 6 }}>📊 近30期实盘（各级中3率）</div>
+      <div style={{ fontSize: 11, fontWeight: 800, color: C.textSub, marginBottom: 6 }}>📊 近30期實盤（中3｜中2）</div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
         {rows.map(r => (
           <span key={r.q} style={{ fontSize: 10, padding: '3px 8px', borderRadius: 999, background: '#fff', border: '1px solid #E5E7EB' }}>
-            {qualityLabel(r.q).text} {Number.isFinite(r.rate) ? (r.rate * 100).toFixed(0) : '--'}% ({r.hit3 || 0}/{r.total})
+            {qualityLabel(r.q).text} 中3 {Number.isFinite(r.rate) ? (r.rate * 100).toFixed(0) : '--'}%｜中2 {Number.isFinite(r.hit2_rate) ? (r.hit2_rate * 100).toFixed(0) : '--'}%
           </span>
         ))}
       </div>
@@ -437,9 +448,9 @@ function BettingAdviceCard({ meta, isSkipped, groupCount, lossWarning, liveGrade
       )}
       {bet.gradeLive && (
         <div style={{ marginTop: 8, padding: '6px 8px', background: '#fff8', borderRadius: 8, fontSize: 11 }}>
-          <span style={{ color: C.textSub }}>本级实盘：</span>
-          <span style={{ fontWeight: 700, color: String(bet.gradeLive?.vs_random || '').includes('优') || String(bet.gradeLive?.vs_random || '').includes('優') ? '#15803D' : '#DC2626' }}>
-            近{bet.gradeLive.samples}期 {bet.gradeLive.hit3_pct} 中3（{bet.gradeLive.vs_random || '—'}）
+          <span style={{ color: C.textSub }}>本級實盤：</span>
+          <span style={{ fontWeight: 700, color: String(bet.gradeLive?.vs_random || '').includes('優') ? '#15803D' : '#DC2626' }}>
+            近{bet.gradeLive.samples}期 中3 {bet.gradeLive.hit3_pct}｜中2 {bet.gradeLive.hit2_pct || '--'}
           </span>
         </div>
       )}
@@ -1308,7 +1319,7 @@ function AppInner() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0703-6-fix3</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0703-7</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
