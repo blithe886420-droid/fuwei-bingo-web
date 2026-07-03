@@ -1,5 +1,9 @@
 /**
- * App.jsx - V0703-7
+ * App.jsx - V0704-2
+ *
+ * ★ V0704-2(7/4)：攻擊面—膽拖聚焦（強級把最會開的核心號放進最多組，攻中2）
+ *
+ * ★ V0704-1(7/4)：總教練手感調度（建議原因會顯示大盤冷熱/減碼）
  *
  * ★ V0703-7(7/3)：中二保本統計
  * - 近20期 TOP3 同時顯示中3率 + 中2率
@@ -1319,7 +1323,7 @@ function AppInner() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0703-7</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0704-2</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
