@@ -1,10 +1,22 @@
 /**
- * App.jsx - V0703-1
+ * App.jsx - V0703-2
  *
- * ★ V0703-1更新(7/3)：第一頁「當期盤面分析」旁顯示近20期損益OK前三名等級
+ * ★ V0703-2更新(7/3)：實戰優化整合（配合 buildBingoV1Strategies V0703-2）
+ * - 第一頁新增 BettingAdviceCard：投注建議/成本/回本條件/連虧警告
+ * - TOP3改為近20期「中3率」排行（取代損益OK，避免低級別誤導）
+ * - 統計頁「等級對比」對齊新六級定義（移除舊7顆=第1級）
+ * - 統計頁新增「系統 vs 隨機」對比卡
+ * - 第4級標籤改色（不再用綠色，避免誤以為最高級）
+ * - 補位標籤新增 lv2_with_tier2
+ * - 標題列版本號同步改為 V0703-2
+ *
+ * ★ V0703-1更新(7/3)：第一頁近20期等級TOP3顯示
+ *
+ * ★ V0702-4更新(7/2)：六層數字分級UI（lv1~lv6）
+ * 配合 buildBingoV1Strategies V0702-7
+ * 錨點品質標籤改為第1級~第6級，含次強錨點組合說明
  *
  * ★ V0702-2更新(7/2)：退回V0630-2穩定版，分級改數字
- * 配合buildBingoV1Strategies V0702-2
  *
  * ★ V0701-1更新(7/1)：四層選號維度 + 六層分級UI
  * 配合buildBingoV1Strategies V0701-1
@@ -31,8 +43,17 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 const RAILWAY_URL = 'https://fuwei-bingo-backend-production.up.railway.app';
 const REFRESH_INTERVAL_MS = 30000;
 const STATS_START_DATE = '2026-06-29T00:00:00.000Z';
-const GRADE_OK_LOOKBACK = 20;
-const GRADE_COST = { lv1: 200, lv2: 200, lv3: 150, lv4: 100, lv5: 75, lv6: 50 };
+const GRADE_HIT3_LOOKBACK = 20;
+const COST_PER_GROUP = 25;
+
+const GRADE_DEFINITIONS = [
+  { q: 'lv1', label: '第1級', rule: '真錨點=7顆', bench: 51.6 },
+  { q: 'lv2', label: '第2級', rule: '真>=4+次強>=5 或 8+降級', bench: 50.8 },
+  { q: 'lv3', label: '第3級', rule: '真6+ / 真5+次強3+ 等', bench: 36.0 },
+  { q: 'lv4', label: '第4級', rule: '真4+次強>=3', bench: 27.7 },
+  { q: 'lv5', label: '第5級', rule: '真5次強少 / 補位', bench: 19.5 },
+  { q: 'lv6', label: '第6級', rule: '真4次強少', bench: 14.2 },
+];
 
 function toNum(v, fallback = 0) { const n = Number(v); return Number.isFinite(n) ? n : fallback; }
 function toArray(v) { return Array.isArray(v) ? v : []; }
@@ -75,18 +96,50 @@ function calcPeriodReward(row) {
   return reward;
 }
 
-function calcGradeOkStats(historyRows, limit = GRADE_OK_LOOKBACK) {
-  const counts = {};
+function calcBreakEvenNote(groupCount) {
+  const cost = groupCount * COST_PER_GROUP;
+  if (cost <= 500) return `成本${cost}元｜中3一次(500元)可回本`;
+  return `成本${cost}元｜至少需中3 ${Math.ceil(cost / 500)} 次才回本`;
+}
+
+function calcGradeHit3Stats(historyRows, limit = GRADE_HIT3_LOOKBACK) {
+  const stats = {};
   const rows = toArray(historyRows)
     .filter(r => r?.compare_status === 'done' && r?.status !== 'skipped')
     .slice(0, limit);
   for (const row of rows) {
     const quality = extractRowMeta(row)?.anchor_quality;
-    const cost = GRADE_COST[quality];
-    if (!quality || !cost) continue;
-    if (calcPeriodReward(row) >= cost) counts[quality] = (counts[quality] || 0) + 1;
+    if (!quality || quality === 'none') continue;
+    if (!stats[quality]) stats[quality] = { total: 0, hit3: 0 };
+    stats[quality].total++;
+    if (toNum(row?.hit_count) >= 3) stats[quality].hit3++;
   }
-  return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 3);
+  return Object.entries(stats)
+    .map(([q, s]) => ({ q, hit3: s.hit3, total: s.total, rate: s.total > 0 ? s.hit3 / s.total : 0 }))
+    .sort((a, b) => b.rate - a.rate || b.hit3 - a.hit3)
+    .slice(0, 3);
+}
+
+function resolveBettingAdvice(meta, isSkipped, groupCount) {
+  if (isSkipped) {
+    return {
+      advice: 'skip', label: meta.betting_label || '⏸️ 本期空窗｜建議不投',
+      color: '#6B7280', bg: '#F3F4F6', cost: 0,
+      breakEven: '—', groups: 0,
+    };
+  }
+  const advice = meta.betting_advice || 'normal';
+  const label = meta.betting_label || '🟡 請參考等級出手';
+  const cost = meta.total_cost ?? groupCount * COST_PER_GROUP;
+  const breakEven = meta.break_even_note || calcBreakEvenNote(groupCount);
+  const palette = {
+    full: { color: '#15803D', bg: '#DCFCE7' },
+    normal: { color: '#D97706', bg: '#FFFBEB' },
+    reduce: { color: '#DC2626', bg: '#FEE2E2' },
+    skip: { color: '#6B7280', bg: '#F3F4F6' },
+  };
+  const p = palette[advice] || palette.normal;
+  return { advice, label, ...p, cost, breakEven, groups: groupCount };
 }
 
 // ===== 顏色系統 =====
@@ -118,7 +171,7 @@ const QUALITY_LABEL = {
   lv1:  { text: '第1級', color: '#B45309', bg: '#FEF3C7', desc: '真>=7 51.6%中3' },
   lv2:  { text: '第2級', color: '#7C3AED', bg: '#EDE9FE', desc: '真>=4+次強>=5 50.8%' },
   lv3:  { text: '第3級', color: '#1D4ED8', bg: '#DBEAFE', desc: '真6+或次強爆發 35-37%' },
-  lv4:  { text: '第4級', color: '#15803D', bg: '#DCFCE7', desc: '真4+次強>=3 27.7%' },
+  lv4:  { text: '第4級', color: '#CA8A04', bg: '#FEF9C3', desc: '真4+次強>=3 27.7%' },
   lv5:  { text: '第5級', color: '#0891B2', bg: '#CFFAFE', desc: '真5次強少或補位強 17-22%' },
   lv6:  { text: '第6級', color: '#6B7280', bg: '#F3F4F6', desc: '真4次強少 14.2%' },
   none: { text: '❌ 空窗', color: '#DC2626', bg: '#FEE2E2', desc: '7.7%' },
@@ -127,9 +180,10 @@ function qualityLabel(q) { return QUALITY_LABEL[q] || QUALITY_LABEL['none']; }
 
 // ===== ★ V0630-1新增：補位模式標籤 =====
 const FILL_MODE_LABEL = {
-  none:        null,
-  second_tier: { text: '🔄 次強錨點補位', color: '#0891B2', bg: '#CFFAFE' },
-  board_fill:  { text: '🧩 盤面補位', color: '#9333EA', bg: '#F3E8FF' },
+  none:             null,
+  second_tier:      { text: '🔄 次強錨點補位', color: '#0891B2', bg: '#CFFAFE' },
+  lv2_with_tier2:   { text: '⚡ 第2級次強組合', color: '#7C3AED', bg: '#EDE9FE' },
+  board_fill:       { text: '🧩 盤面補位', color: '#9333EA', bg: '#F3E8FF' },
 };
 function fillModeLabel(mode) { return FILL_MODE_LABEL[mode] || null; }
 
@@ -210,6 +264,7 @@ function MetaTags({ meta, isSkipped }) {
       {meta.anchor_quality && <span style={{ ...S.badge(quality.color, quality.bg) }}>{quality.text}</span>}
       {fillMode && <span style={S.badge(fillMode.color, fillMode.bg)}>{fillMode.text}</span>}
       {meta.anchor_count != null && <span style={S.badge(C.textSub, C.grayLight)}>真錨點{meta.anchor_count}顆</span>}
+      {meta.fill_mode === 'lv2_with_tier2' && meta.second_tier_count > 0 && <span style={S.badge(C.textSub, C.grayLight)}>次強{meta.second_tier_count}顆</span>}
       {meta.fill_mode === 'second_tier' && meta.second_tier_count > 0 && <span style={S.badge(C.textSub, C.grayLight)}>+次強{meta.second_tier_count}顆</span>}
       {meta.fill_mode === 'board_fill' && meta.board_fill_count > 0 && <span style={S.badge(C.textSub, C.grayLight)}>+補位{meta.board_fill_count}顆</span>}
       {meta.anchor_span != null && <span style={S.badge(C.textSub, C.grayLight)}>跨度{meta.anchor_span}</span>}
@@ -225,35 +280,35 @@ function MetaTags({ meta, isSkipped }) {
   );
 }
 
-// ===== 盤面分析卡 =====
-function GradeOkStatsBar({ gradeOkStats = [] }) {
-  if (!gradeOkStats.length) {
+// ===== 近20期中3率 TOP3 =====
+function GradeHit3StatsBar({ gradeHit3Stats = [] }) {
+  if (!gradeHit3Stats.length) {
     return (
       <div style={{
         flex: 1, minWidth: 140, maxWidth: 220, marginLeft: 8,
         background: '#F9FAFB', border: '1px solid #E5E7EB', borderRadius: 8,
         padding: '6px 8px', fontSize: 10, color: '#9CA3AF', lineHeight: 1.5,
       }}>
-        近{GRADE_OK_LOOKBACK}期損益OK：資料累積中
+        近{GRADE_HIT3_LOOKBACK}期中3率：資料累積中
       </div>
     );
   }
   return (
     <div style={{
       flex: 1, minWidth: 140, maxWidth: 240, marginLeft: 8,
-      background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: 8,
+      background: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: 8,
       padding: '6px 8px',
     }}>
-      <div style={{ fontSize: 9, color: '#92400E', fontWeight: 700, marginBottom: 4 }}>
-        近{GRADE_OK_LOOKBACK}期損益OK TOP3
+      <div style={{ fontSize: 9, color: '#1D4ED8', fontWeight: 700, marginBottom: 4 }}>
+        近{GRADE_HIT3_LOOKBACK}期中3率 TOP3
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-        {gradeOkStats.map(([g, n]) => {
-          const ql = QUALITY_LABEL[g] || { text: g, color: C.text };
+        {gradeHit3Stats.map(({ q, hit3, total, rate }) => {
+          const ql = QUALITY_LABEL[q] || { text: q, color: C.text };
           return (
-            <div key={g} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 10 }}>
+            <div key={q} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 10 }}>
               <span style={{ fontWeight: 700, color: ql.color }}>{ql.text}</span>
-              <span style={{ fontWeight: 800, color: '#1F2937' }}>{n}次</span>
+              <span style={{ fontWeight: 800, color: '#1F2937' }}>{fmtPercent(rate)} ({hit3}/{total})</span>
             </div>
           );
         })}
@@ -262,7 +317,35 @@ function GradeOkStatsBar({ gradeOkStats = [] }) {
   );
 }
 
-function BoardCard({ meta, gradeOkStats = [] }) {
+// ===== 投注建議卡 =====
+function BettingAdviceCard({ meta, isSkipped, groupCount, lossWarning }) {
+  const bet = resolveBettingAdvice(meta, isSkipped, groupCount);
+  return (
+    <div style={{
+      ...S.card,
+      background: bet.bg,
+      border: `2px solid ${bet.color}55`,
+    }}>
+      <div style={{ fontSize: 12, fontWeight: 800, color: bet.color, marginBottom: 8 }}>💰 實戰投注建議</div>
+      <div style={{ fontSize: 16, fontWeight: 900, color: bet.color, marginBottom: 8, lineHeight: 1.4 }}>
+        {bet.label}
+      </div>
+      {!isSkipped && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div style={{ fontSize: 12, color: C.text }}>
+            本期 <strong>{bet.groups}</strong> 組 × {COST_PER_GROUP}元 = <strong>{bet.cost}</strong> 元
+          </div>
+          <div style={{ fontSize: 11, color: C.textSub }}>{bet.breakEven}</div>
+        </div>
+      )}
+      {lossWarning && (
+        <div style={{ marginTop: 8, fontSize: 11, fontWeight: 700, color: '#DC2626' }}>{lossWarning}</div>
+      )}
+    </div>
+  );
+}
+
+function BoardCard({ meta, gradeHit3Stats = [] }) {
   if (!meta || !meta.zm_key) return null;
   const zm = zmLabel(meta.zm_key);
   const quality = qualityLabel(meta.anchor_quality);
@@ -272,7 +355,7 @@ function BoardCard({ meta, gradeOkStats = [] }) {
     <div style={S.card}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10, gap: 8 }}>
         <div style={{ fontSize: 13, fontWeight: 800, color: C.text, whiteSpace: 'nowrap' }}>🗺️ 當期盤面分析</div>
-        <GradeOkStatsBar gradeOkStats={gradeOkStats} />
+        <GradeHit3StatsBar gradeHit3Stats={gradeHit3Stats} />
       </div>
       <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
         <div style={{ flex: 1, background: zm.bg, borderRadius: 10, padding: '10px 12px', border: `1px solid ${zm.color}33` }}>
@@ -319,7 +402,7 @@ function BoardCard({ meta, gradeOkStats = [] }) {
 }
 
 // ===== 第一頁：快速 =====
-function QuickPage({ prediction, historyRows, recent20, onRefresh, loading }) {
+function QuickPage({ prediction, historyRows, recent20, onRefresh, loading, lossWarning }) {
   const row = prediction?.latest_3star_row;
   const groups = toArray(row?.groups_json);
   const meta0 = groups[0]?.meta || {};
@@ -348,8 +431,8 @@ function QuickPage({ prediction, historyRows, recent20, onRefresh, loading }) {
   }, [recent20]);
   function consecQ(num) { return streakMap[num] || 0; }
 
-  const gradeOkStats = React.useMemo(
-    () => calcGradeOkStats(historyRows, GRADE_OK_LOOKBACK),
+  const gradeHit3Stats = React.useMemo(
+    () => calcGradeHit3Stats(historyRows, GRADE_HIT3_LOOKBACK),
     [historyRows]
   );
   const streakStyleQ = {
@@ -363,8 +446,10 @@ function QuickPage({ prediction, historyRows, recent20, onRefresh, loading }) {
 
   return (
     <div style={S.page}>
+      <BettingAdviceCard meta={meta0} isSkipped={isSkipped} groupCount={realGroups.length} lossWarning={lossWarning} />
+
       {/* 盤面分析 */}
-      {meta0.zm_key && <BoardCard meta={meta0} gradeOkStats={gradeOkStats} />}
+      {meta0.zm_key && <BoardCard meta={meta0} gradeHit3Stats={gradeHit3Stats} />}
 
       {/* 預測組合 */}
       <div style={S.card}>
@@ -522,7 +607,7 @@ function StatsPage({ historyRows }) {
     { key: 'all', label: '全部', icon: '📊' },
     { key: 'zm', label: 'Z+M盤面', icon: '🗺️' },
     { key: 'quality', label: '錨點品質', icon: '⚓' },
-    { key: 'golden', label: '等級對比', icon: '🏆' },
+    { key: 'golden', label: '六級對比', icon: '🏆' },
     { key: 'fillmode', label: '補位模式', icon: '🧩' },
   ];
 
@@ -535,13 +620,48 @@ function StatsPage({ historyRows }) {
         </div>
         <div style={S.divider} />
         <StatRow label="理論值（隨機）" value="8.3%" valueColor={C.textSub} />
-        <StatRow label="金級(7顆)目標" value="35.3%" valueColor={C.gold} />
+        <StatRow label="第1級 SQL基準" value="51.6%" valueColor={C.gold} />
         <StatRow label="中3命中率" value={fmtPercent(allStats.rate)} valueColor={rateColor} />
         <StatRow label="中3次數" value={`${allStats.hit3} 次`} />
         <StatRow label="中2次數" value={`${allStats.hit2} 次`} />
         <StatRow label="中1次數" value={`${allStats.hit1} 次`} />
         <StatRow label="未中次數" value={`${allStats.hit0} 次`} />
       </Card>
+
+      {subTab === 'all' && (() => {
+        const systemStats = calcStats(rows);
+        const randomRows = toArray(historyRows)
+          .filter(r => r?.created_at >= STATS_START_DATE)
+          .filter(r => r?.mode === 'random_test' && r?.compare_status === 'done');
+        const randomStats = calcStats(randomRows);
+        const sysRc = systemStats.rate >= 0.083 ? C.green : C.red;
+        const rndRc = randomStats.rate >= 0.083 ? C.green : C.red;
+        return (
+          <Card title="系統 vs 隨機對照" icon="⚖️">
+            <div style={{ display: 'flex', gap: 8 }}>
+              <div style={{ flex: 1, background: '#EFF6FF', borderRadius: 10, padding: '12px', textAlign: 'center' }}>
+                <div style={{ fontSize: 11, color: C.blue, fontWeight: 700 }}>本系統</div>
+                <div style={{ fontSize: 22, fontWeight: 900, color: sysRc }}>{fmtPercent(systemStats.rate)}</div>
+                <div style={{ fontSize: 10, color: C.textSub }}>{systemStats.hit3}/{systemStats.total}期</div>
+              </div>
+              <div style={{ flex: 1, background: C.grayLight, borderRadius: 10, padding: '12px', textAlign: 'center' }}>
+                <div style={{ fontSize: 11, color: C.textSub, fontWeight: 700 }}>隨機對照</div>
+                {randomStats.total === 0 ? (
+                  <div style={{ fontSize: 11, color: C.textSub, marginTop: 8 }}>樣本累積中</div>
+                ) : (
+                  <>
+                    <div style={{ fontSize: 22, fontWeight: 900, color: rndRc }}>{fmtPercent(randomStats.rate)}</div>
+                    <div style={{ fontSize: 10, color: C.textSub }}>{randomStats.hit3}/{randomStats.total}期</div>
+                  </>
+                )}
+              </div>
+            </div>
+            <div style={{ fontSize: 10, color: C.textSub, marginTop: 8, textAlign: 'center' }}>
+              隨機理論值 8.3%｜系統需長期高於隨機才值得實戰加碼
+            </div>
+          </Card>
+        );
+      })()}
 
       <div style={{ display: 'flex', gap: 6, background: C.card, borderRadius: 12, padding: 8, boxShadow: C.shadow, flexWrap: 'wrap' }}>
         {subTabs.map(t => (
@@ -598,35 +718,31 @@ function StatsPage({ historyRows }) {
       )}
 
       {subTab === 'golden' && (
-        <Card title="五級命中率對比" icon="🏆">
-          <div style={{ fontSize: 11, color: C.textSub, marginBottom: 10 }}>依6/29-6/30共164期實戰數據：7顆35.3% / 6顆11.1% / 5顆8.3% / 4顆2.7%</div>
-          {(() => {
-            const levels = [
-              { count: 7, q: 'lv1', label: '⭐ 第1級(7顆)', bench: 35.3 },
-              { count: 6, q: 'lv2', label: '🔵 第2級(6顆)', bench: 11.1 },
-              { count: 5, q: 'lv3', label: '🟢 第3級(5顆)', bench: 8.3 },
-              { count: 4, q: 'lv4', label: '🟡 第4級(4顆)', bench: 2.7 },
-            ];
-            return levels.map(lv => {
-              const filtered = rows.filter(r => toArray(r?.groups_json).find(g => g.key !== 'skip_meta')?.meta?.anchor_quality === lv.q);
-              const s = calcStats(filtered);
-              const rc = s.rate >= 0.15 ? C.green : s.rate >= 0.08 ? C.orange : C.red;
-              return (
-                <div key={lv.q} style={{ background: C.grayLight, borderRadius: 8, padding: '10px 12px', marginBottom: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <div>
-                    <div style={{ fontSize: 12, fontWeight: 700, color: C.text }}>{lv.label}</div>
-                    <div style={{ fontSize: 10, color: C.textSub }}>基準 {lv.bench}%</div>
-                  </div>
-                  {s.total === 0 ? <span style={{ fontSize: 10, color: C.textSub }}>無資料</span> : (
-                    <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontSize: 20, fontWeight: 900, color: rc }}>{fmtPercent(s.rate)}</div>
-                      <div style={{ fontSize: 10, color: C.textSub }}>{s.hit3}/{s.total}期</div>
-                    </div>
-                  )}
+        <Card title="六級命中率對比" icon="🏆">
+          <div style={{ fontSize: 11, color: C.textSub, marginBottom: 10, lineHeight: 1.6 }}>
+            對齊 V0702-7 新分級（真錨點+次強錨點組合）。基準為 SQL 21636 期驗證。
+          </div>
+          {GRADE_DEFINITIONS.map(lv => {
+            const filtered = filterByQuality(lv.q);
+            const s = calcStats(filtered);
+            const rc = s.rate >= 0.15 ? C.green : s.rate >= 0.08 ? C.orange : C.red;
+            const ql = qualityLabel(lv.q);
+            return (
+              <div key={lv.q} style={{ background: ql.bg, borderRadius: 8, padding: '10px 12px', marginBottom: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center', border: `1px solid ${ql.color}33` }}>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: ql.color }}>{lv.label}</div>
+                  <div style={{ fontSize: 10, color: C.textSub }}>{lv.rule}</div>
+                  <div style={{ fontSize: 10, color: C.textSub }}>SQL基準 {lv.bench}%</div>
                 </div>
-              );
-            });
-          })()}
+                {s.total === 0 ? <span style={{ fontSize: 10, color: C.textSub }}>無資料</span> : (
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ fontSize: 20, fontWeight: 900, color: rc }}>{fmtPercent(s.rate)}</div>
+                    <div style={{ fontSize: 10, color: C.textSub }}>{s.hit3}/{s.total}期</div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </Card>
       )}
 
@@ -638,6 +754,7 @@ function StatsPage({ historyRows }) {
           </div>
           {[
             { key: 'none', label: '✅ 真錨點（無需補位）', color: C.green, bg: '#DCFCE7' },
+            { key: 'lv2_with_tier2', label: '⚡ 第2級次強組合', color: '#7C3AED', bg: '#EDE9FE' },
             { key: 'second_tier', label: '🔄 次強錨點補位', color: '#0891B2', bg: '#CFFAFE' },
             { key: 'board_fill', label: '🧩 盤面補位', color: '#9333EA', bg: '#F3E8FF' },
           ].map(fm => {
@@ -660,7 +777,7 @@ function StatsPage({ historyRows }) {
         </Card>
       )}
 
-      <div style={{ fontSize: 11, color: C.textSub, textAlign: 'center' }}>※ 統計從 V0701-1 上線起算</div>
+      <div style={{ fontSize: 11, color: C.textSub, textAlign: 'center' }}>※ 統計從 V0703-2 上線起算（含新六級定義）</div>
     </div>
   );
 }
@@ -819,16 +936,17 @@ function AnchorPage({ prediction, recent20 }) {
               <div style={{ background: fm.bg, borderRadius: 10, padding: '10px 12px', marginBottom: 12, border: `1px solid ${fm.color}44` }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: fm.color, marginBottom: 4 }}>{fm.text}</div>
                 <div style={{ fontSize: 11, color: fm.color, opacity: 0.85 }}>
-                  真錨點僅{meta.anchor_count}顆不夠，
-                  {meta.fill_mode === 'second_tier' && `補充次強錨點${meta.second_tier_count}顆（隔期出現的號碼）`}
-                  {meta.fill_mode === 'board_fill' && `補充次強錨點${meta.second_tier_count}顆 + 盤面補位${meta.board_fill_count}顆`}
-                  ，共{meta.working_anchor_count}顆用於選號
+                  真錨點{meta.anchor_count}顆
+                  {meta.fill_mode === 'lv2_with_tier2' && ` + 次強錨點${meta.second_tier_count || 0}顆（第2級核心組合）`}
+                  {meta.fill_mode === 'second_tier' && `，補充次強錨點${meta.second_tier_count}顆`}
+                  {meta.fill_mode === 'board_fill' && `，補次強${meta.second_tier_count}顆 + 盤面${meta.board_fill_count}顆`}
+                  {meta.working_anchor_count != null && `，共${meta.working_anchor_count}顆用於選號`}
                 </div>
               </div>
             ) : null;
           })()}
 
-          {/* ★ V0630-2：五級等級判定卡（依真錨點顆數） */}
+          {/* ★ V0702-7：六級等級判定卡 */}
           <div style={{ background: quality.bg, borderRadius: 10, padding: '10px 12px', marginBottom: 12, border: `1px solid ${quality.color}44` }}>
             <div style={{ fontSize: 13, fontWeight: 800, color: quality.color, marginBottom: 6 }}>
               {quality.text}（真錨點{meta.anchor_count}顆）
@@ -949,6 +1067,7 @@ export default function App() {
   const [historyRows, setHistoryRows] = useState([]);
   const [recent20, setRecent20] = useState([]);
   const [loopStatus, setLoopStatus] = useState('載入中...');
+  const [lossWarning, setLossWarning] = useState(null);
   const [emergencyAlert, setEmergencyAlert] = useState(null);
   const [loading, setLoading] = useState(true);
   const timerRef = useRef(null);
@@ -966,6 +1085,7 @@ export default function App() {
       setRecent20(recentRes?.recent20 || recentRes?.data || []);
       setLoopStatus(isNight() ? '夜間停止（00:00-07:00）' : `已更新 ${new Date().toLocaleTimeString('zh-TW', { hour12: false })}`);
       setEmergencyAlert(predRes?.emergency_alert || null);
+      setLossWarning(predRes?.loss_warning || null);
     } catch {
       setLoopStatus('載入失敗，稍後重試');
     } finally {
@@ -990,6 +1110,11 @@ export default function App() {
 
   return (
     <div style={S.app}>
+      {lossWarning && !emergencyAlert && (
+        <div style={{ background: '#FEF3C7', color: '#92400E', fontSize: 12, fontWeight: 700, textAlign: 'center', padding: '8px 16px', borderBottom: '1px solid #FDE68A' }}>
+          {lossWarning}
+        </div>
+      )}
       {emergencyAlert && (
         <div style={{ background: '#DC2626', color: '#fff', fontSize: 13, fontWeight: 800, textAlign: 'center', padding: '8px 16px' }}>
           {emergencyAlert}
@@ -998,7 +1123,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0703-1</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0703-2</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
@@ -1015,7 +1140,7 @@ export default function App() {
         ))}
       </div>
       {loading && tab === 'quick' && <Spinner />}
-      {tab === 'quick'   && <QuickPage   prediction={prediction} historyRows={historyRows} recent20={recent20} onRefresh={loadData} loading={loading} />}
+      {tab === 'quick'   && <QuickPage   prediction={prediction} historyRows={historyRows} recent20={recent20} onRefresh={loadData} loading={loading} lossWarning={lossWarning} />}
       {tab === 'history' && <HistoryPage historyRows={historyRows} />}
       {tab === 'stats'   && <StatsPage   historyRows={historyRows} />}
       {tab === 'market'  && <MarketPage  recent20={recent20} />}
