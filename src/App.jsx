@@ -1,5 +1,9 @@
 /**
- * App.jsx - V0703-5
+ * App.jsx - V0703-6
+ *
+ * ★ V0703-6更新(7/3)：配合 buildBingoV1Strategies V0703-6
+ * - 投注建议卡加大：行动标签/原因列表/实盘等级统计/减组说明
+ * - 读取 betting_summary + live_grade_stats_all
  *
  * ★ V0703-5更新(7/3)：配合 buildBingoV1Strategies V0703-5
  * - 停用无效自主学習（board_combo_weights）与 Z惯性加组
@@ -126,17 +130,20 @@ function calcGradeHit3Stats(historyRows, limit = GRADE_HIT3_LOOKBACK) {
 }
 
 function resolveBettingAdvice(meta, isSkipped, groupCount) {
+  const summary = meta?.betting_summary || null;
   if (isSkipped) {
     return {
-      advice: 'skip', label: meta.betting_label || '⏸️ 本期空窗｜建議不投',
+      advice: 'skip', label: summary?.label || meta.betting_label || '⏸️ 本期空窗｜建議不投',
       color: '#6B7280', bg: '#F3F4F6', cost: 0,
-      breakEven: '—', groups: 0,
+      breakEven: '—', groups: 0, actionText: '本期不投', reasons: summary?.reasons || [],
+      gradeLive: summary?.grade_live || null, reducedFrom: null,
     };
   }
-  const advice = meta.betting_advice || 'normal';
-  const label = meta.betting_label || '🟡 請參考等級出手';
-  const cost = meta.total_cost ?? groupCount * COST_PER_GROUP;
-  const breakEven = meta.break_even_note || calcBreakEvenNote(groupCount);
+  const advice = summary?.action || meta.betting_advice || 'normal';
+  const label = summary?.label || meta.betting_label || '🟡 請參考等級出手';
+  const cost = summary?.cost ?? meta.total_cost ?? groupCount * COST_PER_GROUP;
+  const breakEven = summary?.break_even_note || meta.break_even_note || calcBreakEvenNote(groupCount);
+  const hit2Backup = summary?.hit2_backup_note || null;
   const palette = {
     full: { color: '#15803D', bg: '#DCFCE7' },
     normal: { color: '#D97706', bg: '#FFFBEB' },
@@ -144,7 +151,13 @@ function resolveBettingAdvice(meta, isSkipped, groupCount) {
     skip: { color: '#6B7280', bg: '#F3F4F6' },
   };
   const p = palette[advice] || palette.normal;
-  return { advice, label, ...p, cost, breakEven, groups: groupCount };
+  return {
+    advice, label, ...p, cost, breakEven, hit2Backup, groups: groupCount,
+    actionText: summary?.action_text || (advice === 'full' ? '正常出手' : advice === 'reduce' ? '减组观望' : '可以出手'),
+    reasons: summary?.reasons || [],
+    gradeLive: summary?.grade_live || null,
+    reducedFrom: summary?.reduced_from_grade || meta.grade_max_groups || null,
+  };
 }
 
 // ===== 顏色系統 =====
@@ -358,7 +371,26 @@ function liveGradeStatusLabel(status) {
 }
 
 // ===== 投注建議卡 =====
-function BettingAdviceCard({ meta, isSkipped, groupCount, lossWarning }) {
+function LiveGradeStatsBar({ liveGradeStats = {} }) {
+  const rows = ['lv1', 'lv2', 'lv3', 'lv4', 'lv5', 'lv6']
+    .map(q => ({ q, ...(liveGradeStats[q] || {}) }))
+    .filter(r => r.total > 0);
+  if (!rows.length) return null;
+  return (
+    <div style={{ marginTop: 10, padding: '8px 10px', background: '#fff9', borderRadius: 8 }}>
+      <div style={{ fontSize: 11, fontWeight: 800, color: C.textSub, marginBottom: 6 }}>📊 近30期实盘（各级中3率）</div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+        {rows.map(r => (
+          <span key={r.q} style={{ fontSize: 10, padding: '3px 8px', borderRadius: 999, background: '#fff', border: '1px solid #E5E7EB' }}>
+            {qualityLabel(r.q).text} {(r.rate * 100).toFixed(0)}% ({r.hit3}/{r.total})
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BettingAdviceCard({ meta, isSkipped, groupCount, lossWarning, liveGradeStatsAll }) {
   const bet = resolveBettingAdvice(meta, isSkipped, groupCount);
   const liveStatus = liveGradeStatusLabel(meta?.live_grade_status);
   const liveRate = meta?.live_grade_hit3_rate;
@@ -366,22 +398,51 @@ function BettingAdviceCard({ meta, isSkipped, groupCount, lossWarning }) {
   const zmStatus = liveZmStatusLabel(meta?.live_zm_status);
   const zmRate = meta?.live_zm_hit3_rate;
   const zmSamples = meta?.live_zm_samples;
+  const statsAll = liveGradeStatsAll || meta?.live_grade_stats_all || null;
   return (
     <div style={{
       ...S.card,
       background: bet.bg,
       border: `2px solid ${bet.color}55`,
     }}>
-      <div style={{ fontSize: 12, fontWeight: 800, color: bet.color, marginBottom: 8 }}>💰 實戰投注建議</div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, gap: 8 }}>
+        <div style={{ fontSize: 12, fontWeight: 800, color: bet.color }}>💰 實戰投注建議</div>
+        <div style={{
+          fontSize: 13, fontWeight: 900, color: '#fff', background: bet.color,
+          padding: '4px 12px', borderRadius: 999,
+        }}>{bet.actionText}</div>
+      </div>
       <div style={{ fontSize: 16, fontWeight: 900, color: bet.color, marginBottom: 8, lineHeight: 1.4 }}>
         {bet.label}
       </div>
       {!isSkipped && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <div style={{ fontSize: 12, color: C.text }}>
-            本期 <strong>{bet.groups}</strong> 組 × {COST_PER_GROUP}元 = <strong>{bet.cost}</strong> 元
+          <div style={{ fontSize: 13, color: C.text }}>
+            本期 <strong>{bet.groups}</strong> 组 × {COST_PER_GROUP}元 = <strong style={{ fontSize: 18, color: bet.color }}>{bet.cost}</strong> 元
           </div>
-          <div style={{ fontSize: 11, color: C.textSub }}>{bet.breakEven}</div>
+          {bet.reducedFrom && bet.reducedFrom > bet.groups && (
+            <div style={{ fontSize: 11, color: '#DC2626', fontWeight: 700 }}>
+              ↓ 等级上限{bet.reducedFrom}组，经Live/盘面调整为{bet.groups}组
+            </div>
+          )}
+          <div style={{ fontSize: 12, color: C.text, fontWeight: 600 }}>{bet.breakEven}</div>
+          {bet.hit2Backup && <div style={{ fontSize: 11, color: C.textSub }}>{bet.hit2Backup}</div>}
+        </div>
+      )}
+      {bet.gradeLive && (
+        <div style={{ marginTop: 8, padding: '6px 8px', background: '#fff8', borderRadius: 8, fontSize: 11 }}>
+          <span style={{ color: C.textSub }}>本级实盘：</span>
+          <span style={{ fontWeight: 700, color: bet.gradeLive.vs_random.includes('优') ? '#15803D' : '#DC2626' }}>
+            近{bet.gradeLive.samples}期 {bet.gradeLive.hit3_pct} 中3（{bet.gradeLive.vs_random}）
+          </span>
+        </div>
+      )}
+      {bet.reasons?.length > 0 && (
+        <div style={{ marginTop: 8, padding: '8px 10px', background: '#fff9', borderRadius: 8 }}>
+          <div style={{ fontSize: 11, fontWeight: 800, color: C.textSub, marginBottom: 4 }}>📌 建议原因</div>
+          {bet.reasons.map((r, i) => (
+            <div key={i} style={{ fontSize: 11, color: C.text, lineHeight: 1.5 }}>• {r}</div>
+          ))}
         </div>
       )}
       {(liveSamples > 0 || meta?.live_grade_status) && (
@@ -402,6 +463,7 @@ function BettingAdviceCard({ meta, isSkipped, groupCount, lossWarning }) {
           )}
         </div>
       )}
+      <LiveGradeStatsBar liveGradeStats={statsAll} />
       {lossWarning && (
         <div style={{ marginTop: 8, fontSize: 11, fontWeight: 700, color: '#DC2626' }}>{lossWarning}</div>
       )}
@@ -492,7 +554,7 @@ function BoardCard({ meta, gradeHit3Stats = [] }) {
 }
 
 // ===== 第一頁：快速 =====
-function QuickPage({ prediction, historyRows, recent20, onRefresh, loading, lossWarning }) {
+function QuickPage({ prediction, historyRows, recent20, onRefresh, loading, lossWarning, liveGradeStatsAll }) {
   const row = prediction?.latest_3star_row;
   const groups = toArray(row?.groups_json);
   const meta0 = groups[0]?.meta || {};
@@ -536,7 +598,7 @@ function QuickPage({ prediction, historyRows, recent20, onRefresh, loading, loss
 
   return (
     <div style={S.page}>
-      <BettingAdviceCard meta={meta0} isSkipped={isSkipped} groupCount={realGroups.length} lossWarning={lossWarning} />
+      <BettingAdviceCard meta={meta0} isSkipped={isSkipped} groupCount={realGroups.length} lossWarning={lossWarning} liveGradeStatsAll={liveGradeStatsAll} />
 
       {/* 盤面分析 */}
       {meta0.zm_key && <BoardCard meta={meta0} gradeHit3Stats={gradeHit3Stats} />}
@@ -1159,6 +1221,7 @@ export default function App() {
   const [loopStatus, setLoopStatus] = useState('載入中...');
   const [lossWarning, setLossWarning] = useState(null);
   const [emergencyAlert, setEmergencyAlert] = useState(null);
+  const [liveGradeStatsAll, setLiveGradeStatsAll] = useState(null);
   const [loading, setLoading] = useState(true);
   const timerRef = useRef(null);
 
@@ -1176,6 +1239,10 @@ export default function App() {
       setLoopStatus(isNight() ? '夜間停止（00:00-07:00）' : `已更新 ${new Date().toLocaleTimeString('zh-TW', { hour12: false })}`);
       setEmergencyAlert(predRes?.emergency_alert || null);
       setLossWarning(predRes?.loss_warning || null);
+      const latestMeta = predRes?.latest_3star_row?.groups_json?.find(g => g?.key !== 'skip_meta')?.meta
+        || predRes?.formal?.row?.groups_json?.find(g => g?.key !== 'skip_meta')?.meta
+        || {};
+      setLiveGradeStatsAll(predRes?.live_grade_stats_all || latestMeta?.live_grade_stats_all || null);
     } catch {
       setLoopStatus('載入失敗，稍後重試');
     } finally {
@@ -1213,7 +1280,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0703-5</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0703-6</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
@@ -1230,7 +1297,7 @@ export default function App() {
         ))}
       </div>
       {loading && tab === 'quick' && <Spinner />}
-      {tab === 'quick'   && <QuickPage   prediction={prediction} historyRows={historyRows} recent20={recent20} onRefresh={loadData} loading={loading} lossWarning={lossWarning} />}
+      {tab === 'quick'   && <QuickPage   prediction={prediction} historyRows={historyRows} recent20={recent20} onRefresh={loadData} loading={loading} lossWarning={lossWarning} liveGradeStatsAll={liveGradeStatsAll} />}
       {tab === 'history' && <HistoryPage historyRows={historyRows} />}
       {tab === 'stats'   && <StatsPage   historyRows={historyRows} />}
       {tab === 'market'  && <MarketPage  recent20={recent20} />}
