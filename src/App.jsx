@@ -1,12 +1,12 @@
 /**
- * App.jsx - V0703-4
+ * App.jsx - V0703-5
  *
- * ★ V0703-4更新(7/3)：配合 buildBingoV1Strategies V0703-4
- * - 盤面卡顯示：穩定盤 / 轉換期 / 震盪盤 + 穩定度分數
- * - 投注卡顯示：同Z+M Live中3率
- * - 標題列版本號同步改為 V0703-4
+ * ★ V0703-5更新(7/3)：配合 buildBingoV1Strategies V0703-5
+ * - 停用无效自主学習（board_combo_weights）与 Z惯性加组
+ * - 保留 V0703-4 盘面雷达 / Live过滤 UI
+ * - 標題列版本號同步改為 V0703-5
  *
- * ★ V0703-3：Live等級 / combo_pick_mode
+ * ★ V0703-4：盤面狀態 / Live同盤面
  * - 第一頁新增 BettingAdviceCard：投注建議/成本/回本條件/連虧警告
  * - TOP3改為近20期「中3率」排行（取代損益OK，避免低級別誤導）
  * - 統計頁「等級對比」對齊新六級定義（移除舊7顆=第1級）
@@ -483,7 +483,7 @@ function BoardCard({ meta, gradeHit3Stats = [] }) {
       )}
       {meta.combo_pick_mode && (
         <div style={{ fontSize: 10, color: C.textSub, marginTop: 8 }}>
-          組合挑選：{meta.combo_pick_mode === 'v0703_4_scored' ? '評分優化V4' : meta.combo_pick_mode === 'v0703_3_scored' ? '評分優化' : meta.combo_pick_mode}
+          組合挑選：{meta.combo_pick_mode === 'v0703_5_scored' ? '評分優化V5' : meta.combo_pick_mode === 'v0703_4_scored' ? '評分優化V4' : meta.combo_pick_mode === 'v0703_3_scored' ? '評分優化' : meta.combo_pick_mode}
           {meta.score_weight_regime && meta.score_weight_regime !== 'stable' ? `｜權重:${meta.score_weight_regime}` : ''}
         </div>
       )}
@@ -1213,7 +1213,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0703-4</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0703-5</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
