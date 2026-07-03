@@ -1,5 +1,10 @@
 /**
- * App.jsx - V0703-2
+ * App.jsx - V0703-3
+ *
+ * ★ V0703-3更新(7/3)：配合 buildBingoV1Strategies V0703-3
+ * - 投注建議卡顯示 Live等級實戰中3率 / 樣本數 / 狀態
+ * - 盤面卡顯示 combo_pick_mode（組合挑選模式）
+ * - 標題列版本號同步改為 V0703-3
  *
  * ★ V0703-2更新(7/3)：實戰優化整合（配合 buildBingoV1Strategies V0703-2）
  * - 第一頁新增 BettingAdviceCard：投注建議/成本/回本條件/連虧警告
@@ -317,9 +322,22 @@ function GradeHit3StatsBar({ gradeHit3Stats = [] }) {
   );
 }
 
+function liveGradeStatusLabel(status) {
+  const map = {
+    ok: { text: '實戰達標', color: C.green },
+    underperform: { text: '低於隨機', color: C.orange },
+    live_skip: { text: '已觸發空窗', color: '#DC2626' },
+    insufficient: { text: '樣本不足', color: C.textSub },
+  };
+  return map[status] || { text: status || '-', color: C.textSub };
+}
+
 // ===== 投注建議卡 =====
 function BettingAdviceCard({ meta, isSkipped, groupCount, lossWarning }) {
   const bet = resolveBettingAdvice(meta, isSkipped, groupCount);
+  const liveStatus = liveGradeStatusLabel(meta?.live_grade_status);
+  const liveRate = meta?.live_grade_hit3_rate;
+  const liveSamples = meta?.live_grade_samples;
   return (
     <div style={{
       ...S.card,
@@ -336,6 +354,15 @@ function BettingAdviceCard({ meta, isSkipped, groupCount, lossWarning }) {
             本期 <strong>{bet.groups}</strong> 組 × {COST_PER_GROUP}元 = <strong>{bet.cost}</strong> 元
           </div>
           <div style={{ fontSize: 11, color: C.textSub }}>{bet.breakEven}</div>
+        </div>
+      )}
+      {(liveSamples > 0 || meta?.live_grade_status) && (
+        <div style={{ marginTop: 8, padding: '6px 8px', background: '#fff8', borderRadius: 8, fontSize: 11 }}>
+          <span style={{ color: C.textSub }}>Live等級實戰：</span>
+          <span style={{ fontWeight: 700, color: liveStatus.color }}>{liveStatus.text}</span>
+          {liveRate != null && liveSamples > 0 && (
+            <span style={{ color: C.textSub }}>｜近{liveSamples}期中3率 {(liveRate * 100).toFixed(1)}%（隨機8.3%）</span>
+          )}
         </div>
       )}
       {lossWarning && (
@@ -396,6 +423,9 @@ function BoardCard({ meta, gradeHit3Stats = [] }) {
             ))}
           </div>
         </div>
+      )}
+      {meta.combo_pick_mode && (
+        <div style={{ fontSize: 10, color: C.textSub, marginTop: 8 }}>組合挑選：{meta.combo_pick_mode === 'v0703_3_scored' ? '評分優化' : meta.combo_pick_mode}</div>
       )}
     </div>
   );
@@ -777,7 +807,7 @@ function StatsPage({ historyRows }) {
         </Card>
       )}
 
-      <div style={{ fontSize: 11, color: C.textSub, textAlign: 'center' }}>※ 統計從 V0703-2 上線起算（含新六級定義）</div>
+      <div style={{ fontSize: 11, color: C.textSub, textAlign: 'center' }}>※ 統計從 V0703-2 上線起算（含新六級定義 + Live過濾）</div>
     </div>
   );
 }
@@ -1123,7 +1153,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0703-2</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0703-3</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
