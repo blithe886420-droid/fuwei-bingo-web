@@ -1,5 +1,10 @@
 /**
- * App.jsx - V0703-6-fix
+ * App.jsx - V0703-6-fix2
+ *
+ * ★ V0703-6-fix2(7/3)：再次修复白屏
+ * - ErrorBoundary：就算渲染出错也不白屏
+ * - meta0 改读 realGroups[0]（避免读到 skip_meta）
+ * - resolveBettingAdvice 全面 meta?. 安全读取
  *
  * ★ V0703-6-fix(7/3)：修复白屏
  * - betting_summary.grade_live.vs_random 可能为空 → 安全读取
@@ -135,16 +140,16 @@ function resolveBettingAdvice(meta, isSkipped, groupCount) {
   const summary = meta?.betting_summary || null;
   if (isSkipped) {
     return {
-      advice: 'skip', label: summary?.label || meta.betting_label || '⏸️ 本期空窗｜建議不投',
+      advice: 'skip', label: summary?.label || meta?.betting_label || '⏸️ 本期空窗｜建議不投',
       color: '#6B7280', bg: '#F3F4F6', cost: 0,
       breakEven: '—', groups: 0, actionText: '本期不投', reasons: summary?.reasons || [],
       gradeLive: summary?.grade_live || null, reducedFrom: null,
     };
   }
-  const advice = summary?.action || meta.betting_advice || 'normal';
-  const label = summary?.label || meta.betting_label || '🟡 請參考等級出手';
-  const cost = summary?.cost ?? meta.total_cost ?? groupCount * COST_PER_GROUP;
-  const breakEven = summary?.break_even_note || meta.break_even_note || calcBreakEvenNote(groupCount);
+  const advice = summary?.action || meta?.betting_advice || 'normal';
+  const label = summary?.label || meta?.betting_label || '🟡 請參考等級出手';
+  const cost = summary?.cost ?? meta?.total_cost ?? groupCount * COST_PER_GROUP;
+  const breakEven = summary?.break_even_note || meta?.break_even_note || calcBreakEvenNote(groupCount);
   const hit2Backup = summary?.hit2_backup_note || null;
   const palette = {
     full: { color: '#15803D', bg: '#DCFCE7' },
@@ -158,7 +163,7 @@ function resolveBettingAdvice(meta, isSkipped, groupCount) {
     actionText: summary?.action_text || (advice === 'full' ? '正常出手' : advice === 'reduce' ? '减组观望' : '可以出手'),
     reasons: summary?.reasons || [],
     gradeLive: summary?.grade_live || null,
-    reducedFrom: summary?.reduced_from_grade || meta.grade_max_groups || null,
+    reducedFrom: summary?.reduced_from_grade || meta?.grade_max_groups || null,
   };
 }
 
@@ -559,9 +564,9 @@ function BoardCard({ meta, gradeHit3Stats = [] }) {
 function QuickPage({ prediction, historyRows, recent20, onRefresh, loading, lossWarning, liveGradeStatsAll }) {
   const row = prediction?.latest_3star_row;
   const groups = toArray(row?.groups_json);
-  const meta0 = groups[0]?.meta || {};
-  const isSkipped = !row || row?.status === 'skipped' || groups.filter(g => g.key !== 'skip_meta').length === 0;
   const realGroups = groups.filter(g => g.key !== 'skip_meta');
+  const meta0 = realGroups[0]?.meta || groups.find(g => g.key === 'skip_meta')?.meta || {};
+  const isSkipped = !row || row?.status === 'skipped' || realGroups.length === 0;
   const compareResult = parseCompareResult(row?.compare_result_json);
   const detail = toArray(compareResult?.detail);
   const bestHit = toNum(row?.hit_count, 0);
@@ -1214,8 +1219,30 @@ function AnchorPage({ prediction, recent20 }) {
   );
 }
 
+// ===== 錯誤邊界（防止白屏）=====
+class ErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{ padding: 24, fontFamily: 'sans-serif', maxWidth: 480, margin: '40px auto' }}>
+          <div style={{ fontSize: 18, fontWeight: 900, color: '#DC2626', marginBottom: 8 }}>⚠️ 頁面載入錯誤</div>
+          <div style={{ fontSize: 13, color: '#374151', lineHeight: 1.6, marginBottom: 16 }}>
+            {String(this.state.error?.message || this.state.error)}
+          </div>
+          <button type="button" onClick={() => window.location.reload()} style={{ padding: '10px 20px', borderRadius: 8, border: 'none', background: '#1E3A5F', color: '#fff', fontWeight: 700, cursor: 'pointer' }}>
+            重新載入
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 // ===== 主應用 =====
-export default function App() {
+function AppInner() {
   const [tab, setTab] = useState('quick');
   const [prediction, setPrediction] = useState(null);
   const [historyRows, setHistoryRows] = useState([]);
@@ -1282,7 +1309,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0703-6-fix</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0703-6-fix2</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
@@ -1306,5 +1333,13 @@ export default function App() {
       {tab === 'hot'     && <HotPage     recent20={recent20} />}
       {tab === 'anchor'  && <AnchorPage  prediction={prediction} recent20={recent20} />}
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <AppInner />
+    </ErrorBoundary>
   );
 }
