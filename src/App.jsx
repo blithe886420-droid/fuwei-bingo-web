@@ -1,7 +1,9 @@
 /**
- * App.jsx - V0703-6
+ * App.jsx - V0703-6-fix
  *
- * ★ V0703-6更新(7/3)：配合 buildBingoV1Strategies V0703-6
+ * ★ V0703-6-fix(7/3)：修复白屏
+ * - betting_summary.grade_live.vs_random 可能为空 → 安全读取
+ * - LiveGradeStatsBar rate 安全显示
  * - 投注建议卡加大：行动标签/原因列表/实盘等级统计/减组说明
  * - 读取 betting_summary + live_grade_stats_all
  *
@@ -382,7 +384,7 @@ function LiveGradeStatsBar({ liveGradeStats = {} }) {
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
         {rows.map(r => (
           <span key={r.q} style={{ fontSize: 10, padding: '3px 8px', borderRadius: 999, background: '#fff', border: '1px solid #E5E7EB' }}>
-            {qualityLabel(r.q).text} {(r.rate * 100).toFixed(0)}% ({r.hit3}/{r.total})
+            {qualityLabel(r.q).text} {Number.isFinite(r.rate) ? (r.rate * 100).toFixed(0) : '--'}% ({r.hit3 || 0}/{r.total})
           </span>
         ))}
       </div>
@@ -432,8 +434,8 @@ function BettingAdviceCard({ meta, isSkipped, groupCount, lossWarning, liveGrade
       {bet.gradeLive && (
         <div style={{ marginTop: 8, padding: '6px 8px', background: '#fff8', borderRadius: 8, fontSize: 11 }}>
           <span style={{ color: C.textSub }}>本级实盘：</span>
-          <span style={{ fontWeight: 700, color: bet.gradeLive.vs_random.includes('优') ? '#15803D' : '#DC2626' }}>
-            近{bet.gradeLive.samples}期 {bet.gradeLive.hit3_pct} 中3（{bet.gradeLive.vs_random}）
+          <span style={{ fontWeight: 700, color: String(bet.gradeLive?.vs_random || '').includes('优') || String(bet.gradeLive?.vs_random || '').includes('優') ? '#15803D' : '#DC2626' }}>
+            近{bet.gradeLive.samples}期 {bet.gradeLive.hit3_pct} 中3（{bet.gradeLive.vs_random || '—'}）
           </span>
         </div>
       )}
@@ -1280,7 +1282,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0703-6</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0703-6-fix</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
