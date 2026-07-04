@@ -1,5 +1,10 @@
 /**
- * App.jsx - V0704-4
+ * App.jsx - V0704-5
+ *
+ * ★ V0704-5(7/4晚)：每期都顯示選號(練習賽) + 時段徽章
+ * - 本期預測卡 / 投注建議卡 都蓋章：🔴真實推薦(可下注) / 📚練習研判(觀察用) / ⚠️今日子彈打完(參考)
+ * - 配合 auto-train-v0704-6：每一期都選號+比對，讓你隨時盯各等級手感、決定重壓哪一級
+ * - 徽章來源：每期預測 meta.session_type（prediction-latest-v0704-5 保留此欄位）
  *
  * ★ V0704-4(7/4晚)：作息窗口 + 練習賽儀表板
  * - 標題下方新增全域卡片：現在是「出手時段」還是「練習賽(累積實力)」
@@ -390,6 +395,16 @@ function WindowStatusCard({ windowStatus, practiceStats }) {
   );
 }
 
+// ===== 時段徽章：真實推薦 / 練習（V0704-5）=====
+function sessionBadge(sessionType) {
+  const map = {
+    real: { text: '🔴 真實推薦 · 現在可下注', bg: '#DC2626' },
+    practice: { text: '📚 練習研判 · 觀察用別真下', bg: '#6366F1' },
+    practice_over_budget: { text: '⚠️ 今日子彈打完 · 僅供參考', bg: '#D97706' },
+  };
+  return map[sessionType] || null;
+}
+
 // ===== MetaTags（新系統版）=====
 function MetaTags({ meta, isSkipped }) {
   if (!meta || isSkipped) return null;
@@ -528,6 +543,9 @@ function BettingAdviceCard({ meta, isSkipped, groupCount, lossWarning, liveGrade
       background: bet.bg,
       border: `2px solid ${bet.color}55`,
     }}>
+      {(() => { const sb = sessionBadge(meta?.session_type); return sb ? (
+        <div style={{ fontSize: 12, fontWeight: 900, color: '#fff', background: sb.bg, borderRadius: 8, padding: '5px 10px', marginBottom: 8, textAlign: 'center' }}>{sb.text}</div>
+      ) : null; })()}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, gap: 8 }}>
         <div style={{ fontSize: 12, fontWeight: 800, color: bet.color }}>💰 實戰投注建議</div>
         <div style={{
@@ -734,6 +752,10 @@ function QuickPage({ prediction, historyRows, recent20, onRefresh, loading, loss
             <span style={S.numBadge(bestHit)}>中{bestHit}</span>
           )}
         </div>
+
+        {(() => { const sb = sessionBadge(meta0.session_type); return sb ? (
+          <div style={{ display: 'inline-block', fontSize: 11, fontWeight: 900, color: '#fff', background: sb.bg, borderRadius: 8, padding: '3px 10px', marginBottom: 8 }}>{sb.text}</div>
+        ) : null; })()}
 
         <MetaTags meta={meta0} isSkipped={isSkipped} />
 
@@ -1429,7 +1451,7 @@ function AppInner() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0704-4</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0704-5</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
