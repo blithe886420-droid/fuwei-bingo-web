@@ -1,5 +1,7 @@
 /**
- * App.jsx - V0704-2
+ * App.jsx - V0704-3
+ *
+ * ★ V0704-3(7/4)：中2保本校準（各級桌子上限下修，讓中2就能接近保本）
  *
  * ★ V0704-2(7/4)：攻擊面—膽拖聚焦（強級把最會開的核心號放進最多組，攻中2）
  *
@@ -1323,7 +1325,7 @@ function AppInner() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0704-2</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0704-3</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
