@@ -1,5 +1,12 @@
 /**
- * App.jsx - V0704-3
+ * App.jsx - V0704-4
+ *
+ * ★ V0704-4(7/4晚)：作息窗口 + 練習賽儀表板
+ * - 標題下方新增全域卡片：現在是「出手時段」還是「練習賽(累積實力)」
+ * - 出手時段：顯示今日子彈進度(已下/剩餘組數、金額)，燒完顯示今日收工
+ * - 練習時段：顯示下次出手倒數 + 系統照常對獎練功
+ * - 三態都顯示修煉戰績：今日已研判期數、近期中3/中2手感
+ * - 資料來自 prediction-latest-v0704-4 的 window_status / practice_stats
  *
  * ★ V0704-3(7/4)：中2保本校準（各級桌子上限下修，讓中2就能接近保本）
  *
@@ -288,6 +295,99 @@ function StatRow({ label, value, valueColor }) {
 }
 function Spinner() {
   return <div style={{ textAlign: 'center', padding: 24, color: C.textSub, fontSize: 13 }}>⏳ 載入中...</div>;
+}
+
+// ===== 作息窗口 / 練習賽儀表板（V0704-4）=====
+function useCountdown(targetISO) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!targetISO) return;
+    const t = setInterval(() => setNow(Date.now()), 30000);
+    return () => clearInterval(t);
+  }, [targetISO]);
+  if (!targetISO) return null;
+  const diff = new Date(targetISO).getTime() - now;
+  if (diff <= 0) return '即將開盤';
+  const totalMin = Math.floor(diff / 60000);
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  if (h >= 24) { const d = Math.floor(h / 24); return `約 ${d} 天 ${h % 24} 小時後`; }
+  if (h >= 1) return `約 ${h} 小時 ${m} 分後`;
+  return `約 ${m} 分後`;
+}
+function ProgressBar({ used, total }) {
+  const pct = total > 0 ? Math.min(100, Math.round((used / total) * 100)) : 0;
+  return (
+    <div style={{ height: 8, background: 'rgba(255,255,255,0.25)', borderRadius: 999, marginTop: 6, overflow: 'hidden' }}>
+      <div style={{ height: '100%', width: `${pct}%`, background: 'rgba(255,255,255,0.92)', borderRadius: 999, transition: 'width .4s' }} />
+    </div>
+  );
+}
+function MiniStat({ label, value }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column' }}>
+      <span style={{ fontSize: 10, opacity: 0.85 }}>{label}</span>
+      <span style={{ fontSize: 14, fontWeight: 900 }}>{value}</span>
+    </div>
+  );
+}
+function WindowStatusCard({ windowStatus, practiceStats }) {
+  const ws = windowStatus || {};
+  const ps = practiceStats || {};
+  const countdown = useCountdown(ws.next_open_at);
+  if (!windowStatus) return null;
+  const phase = ws.phase || 'practice';
+  const theme = phase === 'betting'
+    ? { bg: 'linear-gradient(135deg,#065F46,#10B981)', tag: '🟢 出手時段開放中' }
+    : phase === 'used_up'
+      ? { bg: 'linear-gradient(135deg,#92400E,#D97706)', tag: '✅ 今日已收工' }
+      : { bg: 'linear-gradient(135deg,#3730A3,#6366F1)', tag: '📚 練習賽 · 累積實力中' };
+  const hit3 = ps.hit3_rate != null && Number.isFinite(ps.hit3_rate) ? (ps.hit3_rate * 100).toFixed(0) : '--';
+  const hit2 = ps.hit2_rate != null && Number.isFinite(ps.hit2_rate) ? (ps.hit2_rate * 100).toFixed(0) : '--';
+  return (
+    <div style={{ padding: '10px 14px 0', maxWidth: 500, margin: '0 auto', width: '100%', boxSizing: 'border-box' }}>
+      <div style={{ background: theme.bg, borderRadius: 14, padding: '12px 14px', color: '#fff', boxShadow: '0 2px 8px rgba(0,0,0,0.12)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ fontSize: 14, fontWeight: 900 }}>{theme.tag}</span>
+          {ws.label && <span style={{ fontSize: 11, opacity: 0.9 }}>{ws.label}</span>}
+        </div>
+
+        {phase === 'betting' && (
+          <div style={{ marginTop: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 700 }}>
+              今日預算 {ws.budget_money}元（{ws.budget_groups}組）｜還能出手 <span style={{ fontSize: 18, fontWeight: 900 }}>{ws.remaining_groups}</span> 組（約{ws.remaining_money}元）
+            </div>
+            <ProgressBar used={ws.used_groups} total={ws.budget_groups} />
+            <div style={{ fontSize: 11, opacity: 0.9, marginTop: 4 }}>已下 {ws.used_groups}／{ws.budget_groups} 組，系統挑好盤才出手，燒完自動收工</div>
+          </div>
+        )}
+
+        {phase === 'used_up' && (
+          <div style={{ marginTop: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 700 }}>{ws.label} 預算 {ws.budget_money}元（{ws.budget_groups}組）已用完</div>
+            <ProgressBar used={ws.used_groups} total={ws.budget_groups} />
+            <div style={{ fontSize: 11, opacity: 0.9, marginTop: 4 }}>今天已下 {ws.used_groups} 組，收手休息{countdown ? `，下次出手 ${countdown}` : ''}</div>
+          </div>
+        )}
+
+        {phase === 'practice' && (
+          <div style={{ marginTop: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 700 }}>現在不下注，系統照常對獎練功、磨手感</div>
+            <div style={{ fontSize: 13, fontWeight: 900, marginTop: 4 }}>
+              ⏰ 下次出手：{ws.next_open_label || '—'}{countdown ? `（${countdown}）` : ''}
+            </div>
+            {ws.reason && <div style={{ fontSize: 11, opacity: 0.85, marginTop: 2 }}>{ws.reason}</div>}
+          </div>
+        )}
+
+        <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid rgba(255,255,255,0.25)', display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+          <MiniStat label="今日已研判" value={`${ps.today_compared ?? 0} 期`} />
+          <MiniStat label={`近${ps.lookback ?? 0}期手感·中3`} value={`${hit3}%`} />
+          <MiniStat label="中2率" value={`${hit2}%`} />
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ===== MetaTags（新系統版）=====
@@ -1267,6 +1367,8 @@ function AppInner() {
   const [lossWarning, setLossWarning] = useState(null);
   const [emergencyAlert, setEmergencyAlert] = useState(null);
   const [liveGradeStatsAll, setLiveGradeStatsAll] = useState({});
+  const [windowStatus, setWindowStatus] = useState(null);
+  const [practiceStats, setPracticeStats] = useState(null);
   const [loading, setLoading] = useState(true);
   const timerRef = useRef(null);
 
@@ -1279,6 +1381,8 @@ function AppInner() {
         apiFetch('/api/recent20').catch(() => ({})),
       ]);
       setPrediction(predRes);
+      setWindowStatus(predRes?.window_status || null);
+      setPracticeStats(predRes?.practice_stats || null);
       setHistoryRows(predRes?.recent_3star_compared_rows || predRes?.recent_compared_rows || []);
       setRecent20(recentRes?.recent20 || recentRes?.data || []);
       setLoopStatus(isNight() ? '夜間停止（00:00-07:00）' : `已更新 ${new Date().toLocaleTimeString('zh-TW', { hour12: false })}`);
@@ -1325,7 +1429,7 @@ function AppInner() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0704-3</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0704-4</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
@@ -1333,6 +1437,7 @@ function AppInner() {
           </div>
         </div>
       </div>
+      <WindowStatusCard windowStatus={windowStatus} practiceStats={practiceStats} />
       <div style={S.tabs}>
         {TABS.map(t => (
           <button key={t.key} style={S.tab(tab === t.key)} onClick={() => setTab(t.key)}>
