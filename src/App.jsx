@@ -1,10 +1,8 @@
 /**
- * App.jsx - V0705-5
+ * App.jsx - V0705-7
  *
- * ★ V0705-5(7/5)：實戰保命版 UI
- * - 今日各級戰績看板（中2率決定能不能真下）
- * - 新增 practice_grade_cold 徽章（出手時段但手感未達標）
- * - 配合 prediction-latest-v0705-5 / auto-train-v0705-6
+ * ★ V0705-7(7/5)：SQL驗證版 UI（build V0705-7 / auto-train-v0705-8）
+ * - 練習永遠出號；lv1+Z_front_M1白名單；每組中2率才是準度指標
  *
  * ★ V0704-5(7/4晚)：每期都顯示選號(練習賽) + 時段徽章
  * - 本期預測卡 / 投注建議卡 都蓋章：🔴真實推薦(可下注) / 📚練習研判(觀察用) / ⚠️今日子彈打完(參考)
@@ -588,6 +586,11 @@ function BettingAdviceCard({ meta, isSkipped, groupCount, lossWarning, liveGrade
       {(() => { const sb = sessionBadge(meta?.session_type); return sb ? (
         <div style={{ fontSize: 12, fontWeight: 900, color: '#fff', background: sb.bg, borderRadius: 8, padding: '5px 10px', marginBottom: 8, textAlign: 'center' }}>{sb.text}</div>
       ) : null; })()}
+      {meta?.session_type === 'real' && meta?.real_suggested_groups > 0 && (
+        <div style={{ fontSize: 11, fontWeight: 700, color: '#B91C1C', background: '#FEE2E2', borderRadius: 8, padding: '6px 10px', marginBottom: 8, textAlign: 'center' }}>
+          🔴 lv1專攻：建議真下 {meta.real_suggested_groups} 組（共 {groupCount} 組｜看每組中2率）
+        </div>
+      )}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, gap: 8 }}>
         <div style={{ fontSize: 12, fontWeight: 800, color: bet.color }}>💰 實戰投注建議</div>
         <div style={{
@@ -1497,7 +1500,7 @@ function AppInner() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0705-5</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0705-7</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
