@@ -1,5 +1,10 @@
 /**
- * App.jsx - V0704-5
+ * App.jsx - V0705-5
+ *
+ * ★ V0705-5(7/5)：實戰保命版 UI
+ * - 今日各級戰績看板（中2率決定能不能真下）
+ * - 新增 practice_grade_cold 徽章（出手時段但手感未達標）
+ * - 配合 prediction-latest-v0705-5 / auto-train-v0705-6
  *
  * ★ V0704-5(7/4晚)：每期都顯示選號(練習賽) + 時段徽章
  * - 本期預測卡 / 投注建議卡 都蓋章：🔴真實推薦(可下注) / 📚練習研判(觀察用) / ⚠️今日子彈打完(參考)
@@ -336,6 +341,42 @@ function MiniStat({ label, value }) {
     </div>
   );
 }
+function TodayGradeStatsBar({ todayGradeStats, gradeRealReady, latestGrade }) {
+  const stats = todayGradeStats && typeof todayGradeStats === 'object' ? todayGradeStats : {};
+  const rows = ['lv1', 'lv2', 'lv3', 'lv4', 'lv5', 'lv6']
+    .map(q => ({ q, ...(stats[q] || {}) }))
+    .filter(r => r.total > 0);
+  if (!rows.length) return null;
+  return (
+    <div style={{ padding: '10px 14px 0', maxWidth: 500, margin: '0 auto', width: '100%', boxSizing: 'border-box' }}>
+      <div style={{ background: '#fff', borderRadius: 14, padding: '12px 14px', border: '2px solid #E5E7EB', boxShadow: '0 1px 4px rgba(0,0,0,0.06)' }}>
+        <div style={{ fontSize: 13, fontWeight: 900, color: C.text, marginBottom: 8 }}>📅 今日各級手感（決定能不能真下）</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {rows.map(r => {
+            const ready = r.real_ready;
+            const isCurrent = r.q === latestGrade;
+            return (
+              <span key={r.q} style={{
+                fontSize: 11, padding: '4px 10px', borderRadius: 999,
+                background: ready ? '#DCFCE7' : '#FEE2E2',
+                border: isCurrent ? '2px solid #6366F1' : '1px solid #E5E7EB',
+                fontWeight: isCurrent ? 900 : 700,
+              }}>
+                {qualityLabel(r.q).text} {r.total}期 中2 {Number.isFinite(r.hit2_rate) ? (r.hit2_rate * 100).toFixed(0) : '--'}% {ready ? '✅可真下' : '❄️觀望'}
+              </span>
+            );
+          })}
+        </div>
+        {latestGrade && (
+          <div style={{ marginTop: 8, fontSize: 12, fontWeight: 700, color: gradeRealReady ? '#15803D' : '#DC2626' }}>
+            本期{qualityLabel(latestGrade).text}：{gradeRealReady ? '✅ 達標，可考慮真下' : '🧊 未達標，建議只看不下'}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function WindowStatusCard({ windowStatus, practiceStats }) {
   const ws = windowStatus || {};
   const ps = practiceStats || {};
@@ -400,6 +441,7 @@ function sessionBadge(sessionType) {
   const map = {
     real: { text: '🔴 真實推薦 · 現在可下注', bg: '#DC2626' },
     practice: { text: '📚 練習研判 · 觀察用別真下', bg: '#6366F1' },
+    practice_grade_cold: { text: '🧊 出手時段·手感未達標 · 別真下', bg: '#0E7490' },
     practice_over_budget: { text: '⚠️ 今日子彈打完 · 僅供參考', bg: '#D97706' },
   };
   return map[sessionType] || null;
@@ -1391,6 +1433,8 @@ function AppInner() {
   const [liveGradeStatsAll, setLiveGradeStatsAll] = useState({});
   const [windowStatus, setWindowStatus] = useState(null);
   const [practiceStats, setPracticeStats] = useState(null);
+  const [todayGradeStats, setTodayGradeStats] = useState(null);
+  const [gradeRealReady, setGradeRealReady] = useState(false);
   const [loading, setLoading] = useState(true);
   const timerRef = useRef(null);
 
@@ -1405,6 +1449,8 @@ function AppInner() {
       setPrediction(predRes);
       setWindowStatus(predRes?.window_status || null);
       setPracticeStats(predRes?.practice_stats || null);
+      setTodayGradeStats(predRes?.today_grade_stats || null);
+      setGradeRealReady(!!predRes?.grade_real_ready);
       setHistoryRows(predRes?.recent_3star_compared_rows || predRes?.recent_compared_rows || []);
       setRecent20(recentRes?.recent20 || recentRes?.data || []);
       setLoopStatus(isNight() ? '夜間停止（00:00-07:00）' : `已更新 ${new Date().toLocaleTimeString('zh-TW', { hour12: false })}`);
@@ -1451,7 +1497,7 @@ function AppInner() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0704-5</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0705-5</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
@@ -1460,6 +1506,11 @@ function AppInner() {
         </div>
       </div>
       <WindowStatusCard windowStatus={windowStatus} practiceStats={practiceStats} />
+      <TodayGradeStatsBar
+        todayGradeStats={todayGradeStats}
+        gradeRealReady={gradeRealReady}
+        latestGrade={prediction?.latest_grade || prediction?.latest_3star_row?.groups_json?.find(g => g?.key !== 'skip_meta')?.meta?.anchor_quality}
+      />
       <div style={S.tabs}>
         {TABS.map(t => (
           <button key={t.key} style={S.tab(tab === t.key)} onClick={() => setTab(t.key)}>
