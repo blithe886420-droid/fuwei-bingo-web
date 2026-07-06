@@ -1,5 +1,10 @@
 /**
- * App.jsx - V0706-rollback-1
+ * App.jsx - V0707-h-axis
+ *
+ * ★ V0707-h-axis(7/7)：H軸（四區熱區）UI
+ * - 盤面卡顯示 H 熱區徽章、四區高亮
+ * - MetaTags / 近期頁同步 H 標籤
+ * - 配合 buildBingoV1Strategies v0707-h-axis
  *
  * ★ V0706-rollback-1(7/6)：SQL驅動回滾 UI
  * - 移除練習/實戰窗口卡、session_type 徽章
@@ -206,6 +211,24 @@ const ZM_LABEL = {
   'Z_back_M4':  { text: 'Z後M4', desc: '後段強+大號',   color: '#DC2626', bg: '#FEE2E2' },
 };
 function zmLabel(key) { return ZM_LABEL[key] || { text: key || '未知', desc: '', color: C.textSub, bg: C.grayLight }; }
+
+// ===== H軸（四區熱區）標籤 =====
+const H_LABEL = {
+  H_Z1: { text: 'H熱1-20', desc: '上期1~20區最多', color: '#0369A1', bg: '#DBEAFE' },
+  H_Z2: { text: 'H熱21-40', desc: '上期21~40區最多', color: '#15803D', bg: '#DCFCE7' },
+  H_Z3: { text: 'H熱41-60', desc: '上期41~60區最多', color: '#D97706', bg: '#FFFBEB' },
+  H_Z4: { text: 'H熱61-80', desc: '上期61~80區最多', color: '#7C3AED', bg: '#EDE9FE' },
+};
+function hLabel(key) { return H_LABEL[key] || { text: key || 'H未知', desc: '', color: C.textSub, bg: C.grayLight }; }
+
+function hAxisStatusLabel(status) {
+  const map = {
+    whitelist: { text: 'H白名單', color: '#15803D', bg: '#DCFCE7' },
+    reduce: { text: 'H減組', color: '#DC2626', bg: '#FEE2E2' },
+    neutral: null,
+  };
+  return map[status] || null;
+}
 
 // ===== 錨點品質標籤 =====
 // ★ V0702-4：六層數字分級（真錨點+次強錨點組合，SQL 21636期驗證）
@@ -438,11 +461,15 @@ function sessionBadge(sessionType) {
 function MetaTags({ meta, isSkipped }) {
   if (!meta || isSkipped) return null;
   const zm = zmLabel(meta.zm_key);
+  const h = hLabel(meta.h_key);
+  const hStatus = hAxisStatusLabel(meta.h_axis_status);
   const quality = qualityLabel(meta.anchor_quality);
   const fillMode = fillModeLabel(meta.fill_mode); // ★ V0630-1
   return (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
       {meta.zm_key && <span style={{ ...S.badge(zm.color, zm.bg) }}>{zm.text}</span>}
+      {meta.h_key && meta.h_key !== 'unknown' && <span style={{ ...S.badge(h.color, h.bg) }}>{h.text}</span>}
+      {hStatus && <span style={{ ...S.badge(hStatus.color, hStatus.bg) }}>{hStatus.text}</span>}
       {meta.anchor_quality && <span style={{ ...S.badge(quality.color, quality.bg) }}>{quality.text}</span>}
       {fillMode && <span style={S.badge(fillMode.color, fillMode.bg)}>{fillMode.text}</span>}
       {meta.anchor_count != null && <span style={S.badge(C.textSub, C.grayLight)}>真錨點{meta.anchor_count}顆</span>}
@@ -633,6 +660,16 @@ function BettingAdviceCard({ meta, isSkipped, groupCount, lossWarning, liveGrade
           )}
         </div>
       )}
+      {meta?.h_key && meta.h_key !== 'unknown' && (
+        <div style={{ marginTop: 6, padding: '6px 8px', background: '#fff8', borderRadius: 8, fontSize: 11 }}>
+          <span style={{ color: C.textSub }}>H熱區軸：</span>
+          <span style={{ fontWeight: 700, color: hLabel(meta.h_key).color }}>{hLabel(meta.h_key).text}</span>
+          {meta.h_axis_status && meta.h_axis_status !== 'neutral' && (
+            <span style={{ color: C.textSub }}>｜{hAxisStatusLabel(meta.h_axis_status)?.text || meta.h_axis_status}</span>
+          )}
+          {meta.h_axis_key && <span style={{ color: C.textSub }}>｜{meta.h_axis_key}</span>}
+        </div>
+      )}
       <LiveGradeStatsBar liveGradeStats={statsAll} />
       {lossWarning && (
         <div style={{ marginTop: 8, fontSize: 11, fontWeight: 700, color: '#DC2626' }}>{lossWarning}</div>
@@ -644,9 +681,12 @@ function BettingAdviceCard({ meta, isSkipped, groupCount, lossWarning, liveGrade
 function BoardCard({ meta, gradeHit3Stats = [] }) {
   if (!meta || !meta.zm_key) return null;
   const zm = zmLabel(meta.zm_key);
+  const h = hLabel(meta.h_key);
+  const hStatus = hAxisStatusLabel(meta.h_axis_status);
   const quality = qualityLabel(meta.anchor_quality);
   const anchors = toArray(meta.anchor_nums);
   const regimeStyle = boardRegimeStyle(meta.board_regime);
+  const hotZone = meta.h_hot_zone || (meta.h_key ? Number(String(meta.h_key).replace('H_Z', '')) : 0);
 
   return (
     <div style={S.card}>
@@ -673,13 +713,22 @@ function BoardCard({ meta, gradeHit3Stats = [] }) {
           </div>
         </div>
       )}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
-        <div style={{ flex: 1, background: zm.bg, borderRadius: 10, padding: '10px 12px', border: `1px solid ${zm.color}33` }}>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+        <div style={{ flex: 1, minWidth: 90, background: zm.bg, borderRadius: 10, padding: '10px 12px', border: `1px solid ${zm.color}33` }}>
           <div style={{ fontSize: 11, color: zm.color, fontWeight: 700 }}>Z+M盤面</div>
           <div style={{ fontSize: 20, fontWeight: 900, color: zm.color }}>{zm.text}</div>
           <div style={{ fontSize: 10, color: zm.color, opacity: 0.8 }}>{zm.desc}</div>
         </div>
-        <div style={{ flex: 1, background: quality.bg, borderRadius: 10, padding: '10px 12px', border: `1px solid ${quality.color}33` }}>
+        {meta.h_key && meta.h_key !== 'unknown' && (
+          <div style={{ flex: 1, minWidth: 90, background: h.bg, borderRadius: 10, padding: '10px 12px', border: `2px solid ${h.color}` }}>
+            <div style={{ fontSize: 11, color: h.color, fontWeight: 700 }}>H熱區軸</div>
+            <div style={{ fontSize: 20, fontWeight: 900, color: h.color }}>{h.text}</div>
+            <div style={{ fontSize: 10, color: h.color, opacity: 0.8 }}>
+              {h.desc}{hStatus ? `｜${hStatus.text}` : ''}
+            </div>
+          </div>
+        )}
+        <div style={{ flex: 1, minWidth: 90, background: quality.bg, borderRadius: 10, padding: '10px 12px', border: `1px solid ${quality.color}33` }}>
           <div style={{ fontSize: 11, color: quality.color, fontWeight: 700 }}>錨點品質</div>
           <div style={{ fontSize: 20, fontWeight: 900, color: quality.color }}>{quality.text}</div>
           <div style={{ fontSize: 10, color: quality.color, opacity: 0.8 }}>錨點{meta.anchor_count}顆 跨度{meta.anchor_span}</div>
@@ -687,14 +736,21 @@ function BoardCard({ meta, gradeHit3Stats = [] }) {
       </div>
       {/* 四區間 */}
       <div style={{ background: C.grayLight, borderRadius: 8, padding: '8px 10px', marginBottom: 8 }}>
-        <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>上期四區間分布</div>
+        <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>上期四區間分布{hotZone ? '（🔥=H熱區）' : ''}</div>
         <div style={{ display: 'flex', gap: 4 }}>
-          {[['1-20', meta.prev_z1, C.blue], ['21-40', meta.prev_z2, C.green], ['41-60', meta.prev_z3, C.orange], ['61-80', meta.prev_z4, C.purple]].map(([label, count, color]) => (
-            <div key={label} style={{ flex: 1, textAlign: 'center', background: '#fff', borderRadius: 6, padding: '4px 0', border: `1px solid ${C.border}` }}>
-              <div style={{ fontSize: 16, fontWeight: 900, color }}>{count ?? '-'}</div>
-              <div style={{ fontSize: 9, color: C.textSub }}>{label}</div>
-            </div>
-          ))}
+          {[['1-20', meta.prev_z1, C.blue, 1], ['21-40', meta.prev_z2, C.green, 2], ['41-60', meta.prev_z3, C.orange, 3], ['61-80', meta.prev_z4, C.purple, 4]].map(([label, count, color, zoneIdx]) => {
+            const isHot = hotZone === zoneIdx;
+            return (
+              <div key={label} style={{
+                flex: 1, textAlign: 'center', borderRadius: 6, padding: '4px 0',
+                background: isHot ? `${color}18` : '#fff',
+                border: isHot ? `2px solid ${color}` : `1px solid ${C.border}`,
+              }}>
+                <div style={{ fontSize: 16, fontWeight: 900, color }}>{count ?? '-'}{isHot ? ' 🔥' : ''}</div>
+                <div style={{ fontSize: 9, color: isHot ? color : C.textSub, fontWeight: isHot ? 800 : 400 }}>{label}</div>
+              </div>
+            );
+          })}
         </div>
       </div>
       {/* 錨點號碼 */}
@@ -860,6 +916,8 @@ function HistoryPage({ historyRows }) {
             ? new Date(row.created_at).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Taipei' })
             : '--';
           const zm = zmLabel(meta?.zm_key);
+          const h = hLabel(meta?.h_key);
+          const hStatus = hAxisStatusLabel(meta?.h_axis_status);
           const quality = qualityLabel(meta?.anchor_quality);
 
           return (
@@ -871,6 +929,8 @@ function HistoryPage({ historyRows }) {
               {/* MetaTags */}
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 6 }}>
                 {meta.zm_key && <span style={S.badge(zm.color, zm.bg)}>{zm.text}</span>}
+                {meta.h_key && meta.h_key !== 'unknown' && <span style={S.badge(h.color, h.bg)}>{h.text}</span>}
+                {hStatus && <span style={S.badge(hStatus.color, hStatus.bg)}>{hStatus.text}</span>}
                 {meta.anchor_quality && <span style={S.badge(quality.color, quality.bg)}>{quality.text}</span>}
                 {(() => { const fm = fillModeLabel(meta.fill_mode); return fm && <span style={S.badge(fm.color, fm.bg)}>{fm.text}</span>; })()}
                 {meta.anchor_count != null && <span style={S.badge(C.textSub, C.grayLight)}>真錨點{meta.anchor_count}顆 跨度{meta.anchor_span}</span>}
@@ -1204,6 +1264,7 @@ function AnchorPage({ prediction, recent20 }) {
   const anchors = toArray(meta.anchor_nums);
   const isSkipped = !row || row?.status === 'skipped';
   const zm = zmLabel(meta.zm_key);
+  const h = hLabel(meta.h_key);
   const quality = qualityLabel(meta.anchor_quality);
 
   // 計算每顆錨點的連續期數（從recent20算，跟第五頁熱號一樣）
@@ -1240,13 +1301,20 @@ function AnchorPage({ prediction, recent20 }) {
           <div style={S.empty}>本期空窗，無錨點資料</div>
         ) : (<>
           {/* 盤面+品質 */}
-          <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-            <div style={{ flex: 1, background: zm.bg, borderRadius: 10, padding: '10px 12px' }}>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+            <div style={{ flex: 1, minWidth: 90, background: zm.bg, borderRadius: 10, padding: '10px 12px' }}>
               <div style={{ fontSize: 11, color: zm.color, fontWeight: 700 }}>Z+M盤面</div>
               <div style={{ fontSize: 18, fontWeight: 900, color: zm.color }}>{zm.text}</div>
               <div style={{ fontSize: 10, color: zm.color, opacity: 0.8 }}>{zm.desc}</div>
             </div>
-            <div style={{ flex: 1, background: quality.bg, borderRadius: 10, padding: '10px 12px' }}>
+            {meta.h_key && meta.h_key !== 'unknown' && (
+              <div style={{ flex: 1, minWidth: 90, background: h.bg, borderRadius: 10, padding: '10px 12px', border: `2px solid ${h.color}` }}>
+                <div style={{ fontSize: 11, color: h.color, fontWeight: 700 }}>H熱區軸</div>
+                <div style={{ fontSize: 18, fontWeight: 900, color: h.color }}>{h.text}</div>
+                <div style={{ fontSize: 10, color: h.color, opacity: 0.8 }}>{h.desc}</div>
+              </div>
+            )}
+            <div style={{ flex: 1, minWidth: 90, background: quality.bg, borderRadius: 10, padding: '10px 12px' }}>
               <div style={{ fontSize: 11, color: quality.color, fontWeight: 700 }}>錨點品質</div>
               <div style={{ fontSize: 18, fontWeight: 900, color: quality.color }}>{quality.text}</div>
               <div style={{ fontSize: 10, color: quality.color, opacity: 0.8 }}>
@@ -1480,7 +1548,7 @@ function AppInner() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0706-rollback-1</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0707-h-axis</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
