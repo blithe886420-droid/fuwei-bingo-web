@@ -1,20 +1,9 @@
 /**
- * App.jsx - V0705-7
+ * App.jsx - V0706-rollback-1
  *
- * ★ V0705-7(7/5)：SQL驗證版 UI（build V0705-7 / auto-train-v0705-8）
- * - 練習永遠出號；lv1+Z_front_M1白名單；每組中2率才是準度指標
- *
- * ★ V0704-5(7/4晚)：每期都顯示選號(練習賽) + 時段徽章
- * - 本期預測卡 / 投注建議卡 都蓋章：🔴真實推薦(可下注) / 📚練習研判(觀察用) / ⚠️今日子彈打完(參考)
- * - 配合 auto-train-v0704-6：每一期都選號+比對，讓你隨時盯各等級手感、決定重壓哪一級
- * - 徽章來源：每期預測 meta.session_type（prediction-latest-v0704-5 保留此欄位）
- *
- * ★ V0704-4(7/4晚)：作息窗口 + 練習賽儀表板
- * - 標題下方新增全域卡片：現在是「出手時段」還是「練習賽(累積實力)」
- * - 出手時段：顯示今日子彈進度(已下/剩餘組數、金額)，燒完顯示今日收工
- * - 練習時段：顯示下次出手倒數 + 系統照常對獎練功
- * - 三態都顯示修煉戰績：今日已研判期數、近期中3/中2手感
- * - 資料來自 prediction-latest-v0704-4 的 window_status / practice_stats
+ * ★ V0706-rollback-1(7/6)：SQL驅動回滾 UI
+ * - 移除練習/實戰窗口卡、session_type 徽章
+ * - 保留投注建議、等級統計、選號顯示
  *
  * ★ V0704-3(7/4)：中2保本校準（各級桌子上限下修，讓中2就能接近保本）
  *
@@ -583,14 +572,9 @@ function BettingAdviceCard({ meta, isSkipped, groupCount, lossWarning, liveGrade
       background: bet.bg,
       border: `2px solid ${bet.color}55`,
     }}>
-      {(() => { const sb = sessionBadge(meta?.session_type); return sb ? (
+      {(() => { const sb = null; return sb ? (
         <div style={{ fontSize: 12, fontWeight: 900, color: '#fff', background: sb.bg, borderRadius: 8, padding: '5px 10px', marginBottom: 8, textAlign: 'center' }}>{sb.text}</div>
       ) : null; })()}
-      {meta?.session_type === 'real' && meta?.real_suggested_groups > 0 && (
-        <div style={{ fontSize: 11, fontWeight: 700, color: '#B91C1C', background: '#FEE2E2', borderRadius: 8, padding: '6px 10px', marginBottom: 8, textAlign: 'center' }}>
-          🔴 lv1專攻：建議真下 {meta.real_suggested_groups} 組（共 {groupCount} 組｜看每組中2率）
-        </div>
-      )}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, gap: 8 }}>
         <div style={{ fontSize: 12, fontWeight: 800, color: bet.color }}>💰 實戰投注建議</div>
         <div style={{
@@ -798,7 +782,7 @@ function QuickPage({ prediction, historyRows, recent20, onRefresh, loading, loss
           )}
         </div>
 
-        {(() => { const sb = sessionBadge(meta0.session_type); return sb ? (
+        {(() => { const sb = null; return sb ? (
           <div style={{ display: 'inline-block', fontSize: 11, fontWeight: 900, color: '#fff', background: sb.bg, borderRadius: 8, padding: '3px 10px', marginBottom: 8 }}>{sb.text}</div>
         ) : null; })()}
 
@@ -1434,8 +1418,6 @@ function AppInner() {
   const [lossWarning, setLossWarning] = useState(null);
   const [emergencyAlert, setEmergencyAlert] = useState(null);
   const [liveGradeStatsAll, setLiveGradeStatsAll] = useState({});
-  const [windowStatus, setWindowStatus] = useState(null);
-  const [practiceStats, setPracticeStats] = useState(null);
   const [todayGradeStats, setTodayGradeStats] = useState(null);
   const [gradeRealReady, setGradeRealReady] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -1450,8 +1432,6 @@ function AppInner() {
         apiFetch('/api/recent20').catch(() => ({})),
       ]);
       setPrediction(predRes);
-      setWindowStatus(predRes?.window_status || null);
-      setPracticeStats(predRes?.practice_stats || null);
       setTodayGradeStats(predRes?.today_grade_stats || null);
       setGradeRealReady(!!predRes?.grade_real_ready);
       setHistoryRows(predRes?.recent_3star_compared_rows || predRes?.recent_compared_rows || []);
@@ -1500,7 +1480,7 @@ function AppInner() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0705-7</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0706-rollback-1</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
@@ -1508,7 +1488,6 @@ function AppInner() {
           </div>
         </div>
       </div>
-      <WindowStatusCard windowStatus={windowStatus} practiceStats={practiceStats} />
       <TodayGradeStatsBar
         todayGradeStats={todayGradeStats}
         gradeRealReady={gradeRealReady}
