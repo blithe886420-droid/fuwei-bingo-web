@@ -1,7 +1,7 @@
 /**
- * App.jsx - V0707-h-axis
+ * App.jsx - V0707-77
  *
- * ★ V0707-h-axis(7/7)：H軸（四區熱區）UI
+ * ★ V0707-77(7/7)：ZM後代強化版 + H軸 + streak_anchor
  * - 盤面卡顯示 H 熱區徽章、四區高亮
  * - MetaTags / 近期頁同步 H 標籤
  * - 配合 buildBingoV1Strategies v0707-h-axis
@@ -963,7 +963,7 @@ function HistoryPage({ historyRows }) {
 }
 
 // ===== 第三頁：統計 =====
-function StatsPage({ historyRows }) {
+function StatsPage({ historyRows, streakSummary }) {
   const [subTab, setSubTab] = useState('all');
   const rows = toArray(historyRows)
     .filter(r => r?.created_at >= STATS_START_DATE)
@@ -999,6 +999,13 @@ function StatsPage({ historyRows }) {
 
   return (
     <div style={S.page}>
+      {streakSummary && (
+        <Card title="熱號錨點（streak_anchor）" icon="🔥">
+          <StatRow label="已比對期數" value={`${streakSummary.total || 0} 期`} />
+          <StatRow label="中3命中率" value={fmtPercent(streakSummary.hit3_rate || 0)} />
+          <StatRow label="中2命中率" value={fmtPercent(streakSummary.hit2_rate || 0)} />
+        </Card>
+      )}
       <Card title="整體命中率" icon="📊">
         <div style={{ textAlign: 'center', padding: '10px 0' }}>
           <div style={{ ...S.bigNum, color: rateColor }}>{fmtPercent(allStats.rate)}</div>
@@ -1488,6 +1495,7 @@ function AppInner() {
   const [liveGradeStatsAll, setLiveGradeStatsAll] = useState({});
   const [todayGradeStats, setTodayGradeStats] = useState(null);
   const [gradeRealReady, setGradeRealReady] = useState(false);
+  const [streakSummary, setStreakSummary] = useState(null);
   const [loading, setLoading] = useState(true);
   const timerRef = useRef(null);
 
@@ -1495,15 +1503,17 @@ function AppInner() {
 
   const loadData = useCallback(async () => {
     try {
-      const [predRes, recentRes] = await Promise.all([
+      const [predRes, recentRes, streakRes] = await Promise.all([
         apiFetch('/api/prediction-latest').catch(() => ({})),
         apiFetch('/api/recent20').catch(() => ({})),
+        apiFetch('/api/streak-anchor-latest').catch(() => ({})),
       ]);
       setPrediction(predRes);
       setTodayGradeStats(predRes?.today_grade_stats || null);
       setGradeRealReady(!!predRes?.grade_real_ready);
       setHistoryRows(predRes?.recent_3star_compared_rows || predRes?.recent_compared_rows || []);
       setRecent20(recentRes?.recent20 || recentRes?.data || []);
+      setStreakSummary(streakRes?.summary || null);
       setLoopStatus(isNight() ? '夜間停止（00:00-07:00）' : `已更新 ${new Date().toLocaleTimeString('zh-TW', { hour12: false })}`);
       setEmergencyAlert(predRes?.emergency_alert || null);
       setLossWarning(predRes?.loss_warning || null);
@@ -1548,7 +1558,7 @@ function AppInner() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0707-h-axis</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0707-77</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
@@ -1572,7 +1582,7 @@ function AppInner() {
       {loading && tab === 'quick' && <Spinner />}
       {tab === 'quick'   && <QuickPage   prediction={prediction} historyRows={historyRows} recent20={recent20} onRefresh={loadData} loading={loading} lossWarning={lossWarning} liveGradeStatsAll={liveGradeStatsAll} />}
       {tab === 'history' && <HistoryPage historyRows={historyRows} />}
-      {tab === 'stats'   && <StatsPage   historyRows={historyRows} />}
+      {tab === 'stats'   && <StatsPage   historyRows={historyRows} streakSummary={streakSummary} />}
       {tab === 'market'  && <MarketPage  recent20={recent20} />}
       {tab === 'hot'     && <HotPage     recent20={recent20} />}
       {tab === 'anchor'  && <AnchorPage  prediction={prediction} recent20={recent20} />}
