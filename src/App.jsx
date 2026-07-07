@@ -95,6 +95,32 @@ function parseNums(input) {
   }
   return [];
 }
+function getComparedDrawNo(row, compareResult) {
+  const detail = toArray(compareResult?.detail);
+  const firstDetail = detail.find((d) => d?.draw_no || d?.target_draw_no) || detail[0] || null;
+  const fromDetail = toNum(firstDetail?.draw_no || firstDetail?.target_draw_no, 0);
+  if (fromDetail > 0) return fromDetail;
+
+  const fromCompare = toNum(compareResult?.draw_no || compareResult?.target_draw_no, 0);
+  if (fromCompare > 0) return fromCompare;
+
+  const fromRow = toNum(row?.target_draw_no || row?.draw_no, 0);
+  if (fromRow > 0) return fromRow;
+
+  const source = toNum(row?.source_draw_no, 0);
+  const periods = Math.max(1, toNum(row?.target_periods, 1));
+  return source > 0 ? source + periods : 0;
+}
+
+function formatRowTime(row) {
+  const ts = row?.compared_at || row?.created_at;
+  if (!ts) return '--';
+  return new Date(ts).toLocaleTimeString('zh-TW', {
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: 'Asia/Taipei',
+  });
+}
 function safeJson(v, fallback = null) {
   if (v == null) return fallback;
   if (typeof v === 'object') return v;
@@ -413,15 +439,19 @@ function HistoryPage({ historyRows, streakRows }) {
           const histMode = allGroups[0]?.meta?.active_mode || '';
           const histIsAvoid = isSkipped || histMode === 'skip';
           const meta0 = allGroups[0]?.meta || {};
-          const comparedDraw = toArray(compareResult?.detail)[0]?.draw_no;
+          const comparedDraw = getComparedDrawNo(row, compareResult);
+          const timeStr = formatRowTime(row);
           const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.orange : C.gray;
           return (
             <div key={row?.id || idx} style={{ ...S.card, marginBottom: 8, padding: '10px 12px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                <div>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: C.textSub }}>
-                    預測 {fmt(row?.source_draw_no)} → 比對 {fmt(comparedDraw || '--')}
-                  </span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 2 }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: C.textSub }}>
+                      預測 {fmt(row?.source_draw_no)} → 比對 {fmt(comparedDraw > 0 ? comparedDraw : null)}
+                    </span>
+                    <span style={{ fontSize: 10, color: C.textSub, whiteSpace: 'nowrap' }}>{timeStr}</span>
+                  </div>
                   {/* 空窗期顯示熱號錨點 */}
                   {isSkipped ? (
                     (() => {
