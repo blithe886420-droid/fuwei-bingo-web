@@ -341,7 +341,7 @@ function QuickPage({ prediction, recent20, onRefresh, loading, streakRows }) {
               return (
                 <>
                   <div style={{ textAlign: 'center', padding: '12px 0 10px' }}>
-                    <div style={{ fontSize: 13, color: C.textSub, marginBottom: 6 }}>比對期號 {fmt(detail[0]?.draw_no)}</div>
+                    <div style={{ fontSize: 13, color: C.textSub, marginBottom: 6 }}>比對期號 {fmt(getComparedDrawNo(row, compareResult))}</div>
                     <div style={{ ...S.bigNum, color: labelColor }}>{label}</div>
                     <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>
                       本期淨損益：<span style={{ fontWeight: 800, color: netPnl >= 0 ? '#15803D' : '#B91C1C' }}>{netPnl >= 0 ? '+' : ''}{netPnl}元</span>（獎金{reward}元－成本{totalCost}元）
@@ -382,7 +382,7 @@ function QuickPage({ prediction, recent20, onRefresh, loading, streakRows }) {
             <>
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
                 <span style={S.badge(C.textSub, C.grayLight)}>
-                  {isDone && detail.length > 0 ? `比對期號 ${fmt(detail[0]?.draw_no)}` : `預測期號 ${fmt(toNum(row?.source_draw_no, 0) + 1)}`}
+                  預測 {fmt(row?.source_draw_no)} → 比對 {fmt(getComparedDrawNo(row, compareResult))}
                 </span>
                 <span style={S.badge(C.teal, C.greenBg)}>{groups.length} 組</span>
               </div>
@@ -439,19 +439,16 @@ function HistoryPage({ historyRows, streakRows }) {
           const histMode = allGroups[0]?.meta?.active_mode || '';
           const histIsAvoid = isSkipped || histMode === 'skip';
           const meta0 = allGroups[0]?.meta || {};
-          const comparedDraw = getComparedDrawNo(row, compareResult);
+          const comparedDraw = toNum(row?.target_draw_no, 0) || getComparedDrawNo(row, compareResult);
           const timeStr = formatRowTime(row);
           const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.orange : C.gray;
           return (
             <div key={row?.id || idx} style={{ ...S.card, marginBottom: 8, padding: '10px 12px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4 }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 2 }}>
-                    <span style={{ fontSize: 12, fontWeight: 700, color: C.textSub }}>
-                      預測 {fmt(row?.source_draw_no)} → 比對 {fmt(comparedDraw > 0 ? comparedDraw : null)}
-                    </span>
-                    <span style={{ fontSize: 10, color: C.textSub, whiteSpace: 'nowrap' }}>{timeStr}</span>
-                  </div>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: C.textSub }}>
+                    預測 {fmt(row?.source_draw_no)} → 比對 {fmt(comparedDraw > 0 ? comparedDraw : null)}
+                  </span>
                   {/* 空窗期顯示熱號錨點 */}
                   {isSkipped ? (
                     (() => {
@@ -501,11 +498,14 @@ function HistoryPage({ historyRows, streakRows }) {
                   )}
                   {!isSkipped && <MetaTags meta={meta0} isSkipped={isSkipped} />}
                 </div>
-                {isSkipped ? null : isDone ? (
-                  <span style={{ fontSize: 14, fontWeight: 900, color: hitColor, whiteSpace: 'nowrap' }}>
-                    {bestHit >= 3 ? `🏆 中${bestHit}` : bestHit >= 2 ? `🔸 中${bestHit}` : `❌ 未中`}
-                  </span>
-                ) : <span style={{ fontSize: 11, color: C.orange, whiteSpace: 'nowrap' }}>等待比對</span>}
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4, marginLeft: 8, flexShrink: 0 }}>
+                  <span style={{ fontSize: 10, color: C.textSub, whiteSpace: 'nowrap' }}>{timeStr}</span>
+                  {isSkipped ? null : isDone ? (
+                    <span style={{ fontSize: 14, fontWeight: 900, color: hitColor, whiteSpace: 'nowrap' }}>
+                      {bestHit >= 3 ? `🏆 中${bestHit}` : bestHit >= 2 ? `🔸 中${bestHit}` : `❌ 未中`}
+                    </span>
+                  ) : <span style={{ fontSize: 11, color: C.orange, whiteSpace: 'nowrap' }}>等待比對</span>}
+                </div>
               </div>
               {/* 空窗期不顯示號碼，有出手的才顯示 */}
               {!isSkipped && !histIsAvoid && isDone && (
@@ -781,7 +781,7 @@ function StatsPage({ historyRows, streakRows }) {
                     return (
                       <div key={p.draw_no || idx} style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: 6, padding: '6px 8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <span style={{ fontSize: 11, color: C.text }}>
-                          {timeStr} ・ {bsInfo ? bsInfo.text : '跳過'} ・ {isSkipped ? '空窗' : modeLabel(p.active_mode)}
+                          {fmt(p.draw_no)} → {fmt(p.compare_draw_no || (toNum(p.draw_no, 0) > 0 ? toNum(p.draw_no, 0) + 1 : null))} ・ {timeStr} ・ {bsInfo ? bsInfo.text : '跳過'} ・ {isSkipped ? '空窗' : modeLabel(p.active_mode)}
                         </span>
                         {isSkipped ? (
                           <span style={{ fontSize: 10, color: C.textSub }}>⏸️</span>
@@ -795,7 +795,6 @@ function StatsPage({ historyRows, streakRows }) {
                   })}
                 </div>
               )}
-                          ) : !isDone ? (
             </>
           );
         })()}
@@ -1047,7 +1046,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0628-1</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0628-rebuild+UIfix2</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
