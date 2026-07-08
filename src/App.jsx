@@ -216,7 +216,7 @@ function RandomGroupsCard({ drawNo, skipMeta }) {
   );
 }
 
-function QuickPage({ prediction, recent20, onRefresh, loading }) {
+function QuickPage({ prediction, recent20, onRefresh, loading, structureRows }) {
   const row = prediction?.latest_3star_row;
   const compareResult = safeJson(row?.compare_result_json) || safeJson(row?.compare_result);
   const detail = toArray(compareResult?.detail);
@@ -258,6 +258,9 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
 
   const hit2Groups = detail.filter(d => toNum(d?.hit, 0) === 2).length;
   const isWarning = hit2Groups >= 3;
+  const latestStructure = toArray(structureRows).find(r => r?.status !== 'skipped');
+  const activeTrackLabel = (isSkipped && latestStructure) ? 'B軌補位（structure_anchor）' : 'A軌主系統（formal_3star）';
+  const activeTrackColor = (isSkipped && latestStructure) ? C.purple : C.green;
 
 
   // ★ 換手率計算
@@ -494,6 +497,9 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
       )}
 
       {/* 本期預測 */}
+      <div style={{ marginBottom: 8 }}>
+        <span style={S.badge(activeTrackColor, C.grayLight)}>當前來源：{activeTrackLabel}</span>
+      </div>
       {isSkipped ? (
         <RandomGroupsCard drawNo={row?.source_draw_no || latestDraw?.draw_no} skipMeta={allGroups[0]?.meta} />
       ) : (
@@ -594,7 +600,7 @@ function QuickPage({ prediction, recent20, onRefresh, loading }) {
   );
 }
 
-function HistoryPage({ historyRows }) {
+function HistoryPage({ historyRows, structureRows }) {
   const rows = toArray(historyRows).slice(0, 20);
   return (
     <div style={S.page}>
@@ -1327,8 +1333,8 @@ export default function App() {
         ))}
       </div>
       {loading && tab === 'quick' && <Spinner />}
-      {tab === 'quick' && <QuickPage prediction={prediction} recent20={recent20} onRefresh={loadData} loading={loading} />}
-      {tab === 'history' && <HistoryPage historyRows={historyRows} />}
+      {tab === 'quick' && <QuickPage prediction={prediction} recent20={recent20} onRefresh={loadData} loading={loading} structureRows={structureRows} />}
+      {tab === 'history' && <HistoryPage historyRows={historyRows} structureRows={structureRows} />}
       {tab === 'stats' && <StatsPage historyRows={historyRows} structureRows={structureRows} />}
       {tab === 'market' && <MarketPage recent20={recent20} />}
       {tab === 'hot' && <HotPage recent20={recent20} />}
@@ -1336,5 +1342,6 @@ export default function App() {
     </div>
   );
 }
+
 
 
