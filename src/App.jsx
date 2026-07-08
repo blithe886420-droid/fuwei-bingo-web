@@ -209,7 +209,10 @@ function RandomGroupsCard({ drawNo, skipMeta }) {
           預測期號 {fmt(drawNo)}
         </div>
         <div style={{ fontSize: 20, fontWeight: 900, color: '#DC2626' }}>
-          🔴 本期不推薦號碼
+          🔴 A空窗，B也未出手
+        </div>
+        <div style={{ fontSize: 12, color: C.textSub, marginTop: 8 }}>
+          主系統暫停；補位軌本期無號碼
         </div>
       </div>
     </Card>
@@ -258,9 +261,20 @@ function QuickPage({ prediction, recent20, onRefresh, loading, structureRows }) 
 
   const hit2Groups = detail.filter(d => toNum(d?.hit, 0) === 2).length;
   const isWarning = hit2Groups >= 3;
-  const latestStructure = toArray(structureRows).find(r => r?.status !== 'skipped');
-  const activeTrackLabel = (isSkipped && latestStructure) ? 'B軌補位（structure_anchor）' : 'A軌主系統（formal_3star）';
-  const activeTrackColor = (isSkipped && latestStructure) ? C.purple : C.green;
+  // ★ V0708：B軌不是「A空窗就一定出號」；要看「同一期」B有沒有真的落地號碼
+  const currentDrawNo = String(row?.source_draw_no || latestDraw?.draw_no || '');
+  const samePeriodStructure = toArray(structureRows).find(r => String(r?.source_draw_no || '') === currentDrawNo);
+  const structureGroups = toArray(samePeriodStructure?.groups_json).filter(g => g?.key !== 'skip_meta');
+  const bHasNumbers = !!samePeriodStructure && structureGroups.length > 0 && samePeriodStructure?.status !== 'skipped';
+  let activeTrackLabel = 'A軌主系統（formal_3star）';
+  let activeTrackColor = C.green;
+  if (isSkipped && bHasNumbers) {
+    activeTrackLabel = 'B軌補位出手（structure_anchor）';
+    activeTrackColor = C.purple;
+  } else if (isSkipped && !bHasNumbers) {
+    activeTrackLabel = 'A空窗，B也未出手';
+    activeTrackColor = C.gray;
+  }
 
 
   // ★ 換手率計算
@@ -498,9 +512,31 @@ function QuickPage({ prediction, recent20, onRefresh, loading, structureRows }) 
 
       {/* 本期預測 */}
       <div style={{ marginBottom: 8 }}>
-        <span style={S.badge(activeTrackColor, C.grayLight)}>當前來源：{activeTrackLabel}</span>
+        <span style={S.badge(activeTrackColor, activeTrackColor === C.purple ? C.purpleBg : C.grayLight)}>當前來源：{activeTrackLabel}</span>
       </div>
-      {isSkipped ? (
+      {isSkipped && bHasNumbers ? (
+        <Card title="本期預測（B軌補位）" icon="🧪"
+          right={<span style={S.badge(C.purple, C.purpleBg)}>{structureGroups.length} 組</span>}>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+            <span style={S.badge(C.textSub, C.grayLight)}>
+              預測期號 {fmt(toNum(samePeriodStructure?.source_draw_no || currentDrawNo, 0) + 1)}
+            </span>
+            <span style={S.badge(C.purple, C.purpleBg)}>structure_anchor</span>
+          </div>
+          {structureGroups.slice(0, 8).map((g, idx) => {
+            const nums = parseNums(g?.nums);
+            const key = String(g?.key || g?.meta?.strategy_key || idx);
+            return (
+              <div key={key} style={{ background: C.purpleBg, border: `2px solid ${C.purpleLight}`, borderRadius: 12, padding: '12px 14px', marginBottom: 10 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: C.purple, marginBottom: 8 }}>B 第{idx + 1}組</div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  {nums.map(n => <Ball key={n} n={n} />)}
+                </div>
+              </div>
+            );
+          })}
+        </Card>
+      ) : isSkipped ? (
         <RandomGroupsCard drawNo={row?.source_draw_no || latestDraw?.draw_no} skipMeta={allGroups[0]?.meta} />
       ) : (
         <Card
@@ -604,7 +640,7 @@ function HistoryPage({ historyRows, structureRows }) {
   const rows = toArray(historyRows).slice(0, 20);
   return (
     <div style={S.page}>
-      <Card title="近期命中紀錄" icon="📋">
+      <Card title="近期命中紀錄（A軌）" icon="📋">
         {!rows.length ? <div style={S.empty}>尚無比對紀錄</div> : rows.map((row, idx) => {
           const compareResult = safeJson(row?.compare_result_json) || safeJson(row?.compare_result);
           const detail = toArray(compareResult?.detail);
@@ -641,9 +677,12 @@ function HistoryPage({ historyRows, structureRows }) {
             <div key={row?.id || idx} style={{ ...S.card, marginBottom: 10, padding: '12px 14px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                 <div>
-                  <span style={{ fontSize: 13, fontWeight: 700, color: C.textSub }}>
-                    預測 {fmt(row?.source_draw_no)} → 比對 {fmt(comparedDraw || '')}
-                  </span>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 11, fontWeight: 800, color: '#FFF', background: C.green, borderRadius: 6, padding: '2px 6px' }}>A</span>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: C.textSub }}>
+                      預測 {fmt(row?.source_draw_no)} → 比對 {fmt(comparedDraw || '')}
+                    </span>
+                  </div>
                   {!isSkipped && position && (
                     <div style={{ marginTop: 3, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                       {/* 週期標籤 */}
@@ -759,6 +798,56 @@ function HistoryPage({ historyRows, structureRows }) {
                       <div key={key} style={{ background: hit >= 3 ? C.goldBg : hit >= 2 ? C.orangeLight : C.grayLight, borderRadius: 8, padding: '4px 8px', fontSize: 12, border: `1px solid ${hit >= 3 ? C.goldLight : hit >= 2 ? C.orange : C.border}` }}>
                         {nums.map(n => padNum(n)).join(' ')}
                         {isDone && <span style={{ marginLeft: 4, fontWeight: 700, color: hit >= 3 ? C.gold : hit >= 2 ? C.orange : C.gray }}>中{hit}</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </Card>
+      <Card title="空窗補位紀錄（B軌）" icon="🧪">
+        {toArray(structureRows).length === 0 ? (
+          <div style={S.empty}>尚無補位紀錄（B不一定每次空窗都出號）</div>
+        ) : toArray(structureRows).slice(0, 20).map((row, idx) => {
+          const groups = toArray(row?.groups_json).filter(g => g?.key !== 'skip_meta');
+          const hit = toNum(row?.hit_count, 0);
+          const done = row?.compare_status === 'done';
+          const hasNums = groups.length > 0 && row?.status !== 'skipped';
+          const compareNo = row?.compare_result_json?.draw_no
+            || row?.target_draw_no
+            || (toNum(row?.source_draw_no, 0) > 0 ? toNum(row?.source_draw_no, 0) + 1 : '');
+          return (
+            <div key={row?.id || idx} style={{ ...S.card, marginBottom: 10, padding: '12px 14px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 11, fontWeight: 800, color: '#FFF', background: C.purple, borderRadius: 6, padding: '2px 6px' }}>B</span>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: C.textSub }}>
+                    補位 {fmt(row?.source_draw_no)} → 比對 {fmt(compareNo)}
+                  </span>
+                </div>
+                {!hasNums ? (
+                  <span style={{ fontSize: 12, color: C.gray, whiteSpace: 'nowrap' }}>未出手</span>
+                ) : done ? (
+                  <span style={{ fontSize: 14, fontWeight: 900, color: hit >= 3 ? C.gold : hit >= 2 ? C.orange : C.gray, whiteSpace: 'nowrap' }}>
+                    {hit >= 3 ? `🏆 中${hit}` : hit >= 2 ? `🔸 中${hit}` : `❌ 未中`}
+                  </span>
+                ) : (
+                  <span style={{ fontSize: 12, color: C.orange, whiteSpace: 'nowrap' }}>等待比對</span>
+                )}
+              </div>
+              {!hasNums ? (
+                <div style={{ fontSize: 11, color: C.gray, background: C.grayLight, borderRadius: 6, padding: '4px 8px', display: 'inline-block' }}>
+                  B軌本期未出號（結構條件不足或建組失敗）
+                </div>
+              ) : (
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {groups.slice(0, 8).map((g, gIdx) => {
+                    const nums = parseNums(g?.nums);
+                    return (
+                      <div key={String(g?.key || gIdx)} style={{ background: C.purpleBg, borderRadius: 8, padding: '4px 8px', fontSize: 12, border: `1px solid ${C.purpleLight}` }}>
+                        {nums.map(n => padNum(n)).join(' ')}
                       </div>
                     );
                   })}
@@ -1077,7 +1166,7 @@ function StatsPage({ historyRows, structureRows }) {
         const rows = toArray(structureRows).filter(r => r?.compare_status === 'done');
         if (rows.length === 0) {
           return (
-            <Card title="🧪 空窗補位 v0（structure_anchor）" icon="">
+            <Card title="🧪 B軌空窗補位 v0（不一定每期出手）" icon="">
               <div style={{ fontSize: 12, color: C.textSub, textAlign: 'center', padding: 8 }}>尚無比對資料</div>
             </Card>
           );
@@ -1087,7 +1176,7 @@ function StatsPage({ historyRows, structureRows }) {
         const rate = rows.length > 0 ? hit3 / rows.length : 0;
         const rateColor = rate >= 0.1 ? C.green : rate >= 0.06 ? C.orange : '#DC2626';
         return (
-          <Card title="🧪 空窗補位 v0（structure_anchor）" icon="">
+          <Card title="🧪 B軌空窗補位 v0（不一定每期出手）" icon="">
             <StatRow label="已比對期數" value={`${rows.length} 期`} />
             <StatRow label="中3次數" value={`${hit3} 次`} valueColor={rateColor} />
             <StatRow label="中3命中率" value={fmtPercent(rate)} valueColor={rateColor} />
@@ -1316,7 +1405,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0708-dualtrack</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0708-dualtrack-UIfixAB</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
