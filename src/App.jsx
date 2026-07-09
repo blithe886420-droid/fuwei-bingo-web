@@ -862,331 +862,86 @@ function HistoryPage({ historyRows, structureRows }) {
 }
 
 function StatsPage({ historyRows, structureRows }) {
-  const [subTab, setSubTab] = useState('all');
-  const [soulStatus, setSoulStatus] = useState(null);
-  const [soulLoading, setSoulLoading] = useState(true);
-  const [healthStatus, setHealthStatus] = useState(null);
-  const [healthLoading, setHealthLoading] = useState(true);
-  const [healthExpanded, setHealthExpanded] = useState(false);
+  const aRows = toArray(historyRows).filter(r => r?.compare_status === 'done' && toArray(r?.groups_json).length > 0);
+  const bRows = toArray(structureRows).filter(r => r?.compare_status === 'done');
 
-  // ★ V0616-1：靈魂戰況板改用獨立API直查資料庫，不受recent_3star_compared_rows的100筆視窗限制
-  useEffect(() => {
-    let active = true;
-    apiFetch('/api/soul-status')
-      .then(res => { if (active) setSoulStatus(res); })
-      .catch(() => { if (active) setSoulStatus(null); })
-      .finally(() => { if (active) setSoulLoading(false); });
-    return () => { active = false; };
-  }, []);
-
-  // ★ V0618-5：三天視窗健康檢查，取代手動SQL貼貼來貼去
-  useEffect(() => {
-    let active = true;
-    apiFetch('/api/health-status')
-      .then(res => { if (active) setHealthStatus(res); })
-      .catch(() => { if (active) setHealthStatus(null); })
-      .finally(() => { if (active) setHealthLoading(false); });
-    return () => { active = false; };
-  }, []);
-
-  const allRows = toArray(historyRows).filter(row =>
-    row?.created_at >= STATS_START_DATE && row?.status === 'compared' && toArray(row?.groups_json).length > 0
-  );
-
-  const cleanCount = toNum(soulStatus?.clean_periods, 0);
-  const sealTarget = toNum(soulStatus?.seal_target, 400);
-  const sealPct = toNum(soulStatus?.seal_pct, 0);
-  const isSealBroken = soulStatus?.is_seal_broken === true;
-  const daysPassed = toNum(soulStatus?.days_passed, 0);
-  const modeMap = soulStatus?.mode_stats || {};
-
-  // ★ V0623-2：統計頁改為依盤面狀態(board_state)分類，取代舊版position(爆發期/醞釀期)分類
-  // 同時加入選號策略(core_outer/spider_mid)篩選，對應V0623-2的盤面動態選號邏輯
-  const filterByBoardState = (key) => {
-    if (key === 'all') return allRows;
-    if (key === 'core_outer' || key === 'spider_mid') {
-      return allRows.filter(row => {
-        const s = toArray(row?.groups_json)[0]?.meta?.selection_strategy || '';
-        return s === key;
-      });
-    }
-    return allRows.filter(row => {
-      const bs = toArray(row?.groups_json)[0]?.meta?.board_state || '';
-      return bs === key;
-    });
-  };
-
-  const calcStats = (rows) => {
+  const calcSimpleStats = (rows) => {
     const total = rows.length;
-    const hit3 = rows.filter(r => toNum(r?.hit_count) >= 3).length;
-    const hit2 = rows.filter(r => toNum(r?.hit_count) === 2).length;
-    const hit1 = rows.filter(r => toNum(r?.hit_count) === 1).length;
-    const hit0 = rows.filter(r => toNum(r?.hit_count) === 0).length;
-    const rate = total > 0 ? hit3 / total : 0;
-    return { total, hit3, hit2, hit1, hit0, rate };
+    const hit3 = rows.filter(r => toNum(r?.hit_count, 0) >= 3).length;
+    const hit2p = rows.filter(r => toNum(r?.hit_count, 0) >= 2).length;
+    const groupsArr = rows.map((r) => {
+      const fromResult = toNum(r?.compare_result_json?.groups_count, 0);
+      if (fromResult > 0) return fromResult;
+      return toArray(r?.groups_json).filter(g => g?.key !== 'skip_meta').length;
+    });
+    const avgGroups = groupsArr.length ? groupsArr.reduce((a, b) => a + b, 0) / groupsArr.length : 0;
+    const totalCost = groupsArr.reduce((sum, g) => sum + g * 25, 0);
+    const totalReward = rows.reduce((sum, r) => sum + toNum(r?.compare_result_json?.total_reward, 0), 0);
+    const pnl = totalReward - totalCost;
+    return {
+      total,
+      hit3,
+      hit2p,
+      hit3Rate: total > 0 ? hit3 / total : 0,
+      hit2pRate: total > 0 ? hit2p / total : 0,
+      avgGroups,
+      totalCost,
+      totalReward,
+      pnl,
+      avgPnl: total > 0 ? pnl / total : 0,
+    };
   };
 
-  // ★ V0623-2：子頁籤改為盤面狀態+選號策略，取代舊版爆發期/醞釀期/觀察期
-  const subTabs = [
-    { key: 'all',              label: '全部',     icon: '📊' },
-    { key: 'A_golden',         label: '黃金共振', icon: '✨' },
-    { key: 'B_spider_calm',    label: '蜘蛛靜默', icon: '🕷️' },
-    { key: 'E_false_momentum', label: '假動能',   icon: '⚡' },
-    { key: 'F_quiet',          label: '平淡期',   icon: '😶' },
-    { key: 'core_outer',       label: '核心外圍', icon: '🎯' },
-    { key: 'spider_mid',       label: '次熱號',   icon: '🔬' },
-  ];
-
-  const currentRows = filterByBoardState(subTab);
-  const stats = calcStats(currentRows);
-  const rateColor = stats.rate > 0.0375 ? C.green : C.orange;
+  const a = calcSimpleStats(aRows);
+  const b = calcSimpleStats(bRows);
+  const recentMix = [
+    ...aRows.slice(0, 20).map(r => ({ track: 'A', row: r })),
+    ...bRows.slice(0, 20).map(r => ({ track: 'B', row: r })),
+  ]
+    .sort((x, y) => new Date(y.row?.created_at || 0) - new Date(x.row?.created_at || 0))
+    .slice(0, 20);
 
   return (
     <div style={S.page}>
-      {/* ★ 靈魂戰況板(V0616-1：直查資料庫，不受前端視窗限制) */}
-      <div style={{ background: C.card, borderRadius: 12, padding: '12px 14px', marginBottom: 10, boxShadow: C.shadow, border: `1px solid ${C.border}` }}>
-        <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>
-          🧠 靈魂學習進度
-        </div>
-        {soulLoading ? (
-          <div style={{ fontSize: 11, color: C.textSub }}>載入中...</div>
-        ) : !soulStatus?.ok ? (
-          <div style={{ fontSize: 11, color: C.textSub }}>暫無法取得靈魂狀態</div>
-        ) : (
-          <>
-            {/* 進度條 */}
-            <div style={{ background: C.grayLight, borderRadius: 99, height: 8, marginBottom: 6 }}>
-              <div style={{ background: isSealBroken ? C.green : C.gold, borderRadius: 99, height: 8, width: `${sealPct}%`, transition: 'width 0.3s' }} />
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: C.textSub, marginBottom: 8 }}>
-              <span>{isSealBroken ? '✅ 封印已解除，靈魂啟動' : `🔒 封印學習期(${daysPassed}天)`}</span>
-              <span style={{ fontWeight: 700, color: isSealBroken ? C.green : C.gold }}>{cleanCount}/{sealTarget}期 ({sealPct}%)</span>
-            </div>
-            {/* 各mode表現 */}
-            <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 8 }}>
-              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>V0623-2版本各模式表現：</div>
-              {Object.entries(modeMap).sort((a,b) => b[1].count - a[1].count).map(([mode, stat]) => {
-                const avg = toNum(stat?.avg_pnl, 0);
-                const color = avg > 0 ? C.green : avg > -100 ? C.orange : '#DC2626';
-                return (
-                  <div key={mode} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, padding: '2px 0' }}>
-                    <span style={{ color: C.text, fontWeight: 600 }}>{modeLabel(mode)}</span>
-                    <span style={{ color: C.textSub }}>{stat.count}期</span>
-                    <span style={{ color, fontWeight: 700 }}>{avg > 0 ? '+' : ''}{avg}元/期</span>
-                  </div>
-                );
-              })}
-              {Object.keys(modeMap).length === 0 && (
-                <div style={{ fontSize: 11, color: C.textSub }}>尚無V0615資料</div>
-              )}
-            </div>
-          </>
-        )}
-      </div>
-
-      {/* ★ V0618-5：三天視窗健康檢查(取代手動SQL貼貼來貼去) */}
-      <div style={{ background: C.card, borderRadius: 12, padding: '12px 14px', marginBottom: 14, boxShadow: C.shadow, border: `1px solid ${C.border}` }}>
-        <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>
-          📋 三天健康檢查
-        </div>
-        {healthLoading ? (
-          <div style={{ fontSize: 11, color: C.textSub }}>載入中...</div>
-        ) : !healthStatus?.ok ? (
-          <div style={{ fontSize: 11, color: C.textSub }}>暫無法取得健康檢查狀態</div>
-        ) : (() => {
-          const s = healthStatus.summary || {};
-          const levelColor = s.level === 'good' ? C.green : s.level === 'normal' ? C.orange : '#DC2626';
-          const levelBg = s.level === 'good' ? '#DCFCE7' : s.level === 'normal' ? '#FEF9C3' : '#FEE2E2';
-          const periods = toArray(healthStatus.periods);
-          return (
-            <>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6 }}>
-                <span style={{ fontSize: 24, fontWeight: 800, color: levelColor }}>
-                  {s.hit3_pct != null ? `${s.hit3_pct}%` : '--'}
-                </span>
-                <span style={{ fontSize: 11, padding: '2px 10px', borderRadius: 6, background: levelBg, color: levelColor, fontWeight: 700 }}>
-                  {s.level_label || '無資料'}
-                </span>
-              </div>
-              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 10 }}>
-                {fmt(s.compared_periods)}期已比對 ・ 出手率{s.output_rate_pct != null ? `${s.output_rate_pct}%` : '--'}
-              </div>
-              <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
-                <div style={{ flex: 1, background: C.grayLight, borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
-                  <div style={{ fontSize: 16, fontWeight: 800 }}>{fmt(s.hit3_periods)}</div>
-                  <div style={{ fontSize: 10, color: C.textSub }}>中3期數</div>
-                </div>
-                <div style={{ flex: 1, background: C.grayLight, borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
-                  <div style={{ fontSize: 16, fontWeight: 800 }}>{fmt(s.hit2plus_groups_total)}</div>
-                  <div style={{ fontSize: 10, color: C.textSub }}>中2以上組數</div>
-                </div>
-              </div>
-              {/* ★ V0621-3新增：超級組合(蜘蛛靜默/黃金共振疊加奇數微升)獨立追蹤，跟主統計分開，
-                  避免混淆已驗證/觀察中表現。樣本量還小，不計入上方主統計 */}
-              {(() => {
-                const sc = healthStatus.super_combo || {};
-                const spiderOddUp = sc.spider_odd_up || {};
-                const goldenOddUp = sc.golden_odd_up || {};
-                if (!spiderOddUp.periods && !goldenOddUp.periods) return null; // 還沒累積任何資料，不顯示
-                const renderCombo = (data, label) => {
-                  const hasData = data.periods > 0;
-                  return (
-                    <div style={{ flex: 1, background: '#CFFAFE', borderRadius: 8, padding: '8px 10px' }}>
-                      <div style={{ fontSize: 11, fontWeight: 700, color: '#0E7490', marginBottom: 4 }}>🔬 {label}</div>
-                      {hasData ? (
-                        <>
-                          <div style={{ fontSize: 11, color: '#0E7490' }}>{data.periods}期已比對 ・ 中3率{data.hit3_pct != null ? `${data.hit3_pct}%` : '--'}</div>
-                          <div style={{ fontSize: 11, color: '#0E7490' }}>平均{data.avg_pnl != null ? `${data.avg_pnl}元/期` : '--'}</div>
-                        </>
-                      ) : (
-                        <div style={{ fontSize: 11, color: '#0E7490' }}>尚無樣本</div>
-                      )}
-                    </div>
-                  );
-                };
-                return (
-                  <div style={{ marginBottom: 10 }}>
-                    <div style={{ fontSize: 11, color: C.textSub, marginBottom: 6 }}>超級組合表現（觀察中，樣本量小，不計入上方主統計）</div>
-                    <div style={{ display: 'flex', gap: 8 }}>
-                      {renderCombo(spiderOddUp, '蜘蛛靜默+奇數微升')}
-                      {renderCombo(goldenOddUp, '黃金共振+奇數微升')}
-                    </div>
-                  </div>
-                );
-              })()}
-              {/* ★ V0623-2新增：選號策略分別統計(core_outer/spider_mid)，對應盤面動態選號邏輯 */}
-              {(() => {
-                const periods = toArray(healthStatus.periods).filter(p => p.status !== 'skipped' && p.hit_count != null);
-                const coreRows = periods.filter(p => p.selection_strategy === 'core_outer');
-                const spiderRows = periods.filter(p => p.selection_strategy === 'spider_mid');
-                if (!coreRows.length && !spiderRows.length) return null;
-                const calcStrategyStats = (rows) => {
-                  const total = rows.length;
-                  const hit3 = rows.filter(r => toNum(r.hit_count) >= 3).length;
-                  const pnlList = rows.map(r => toNum(r.pnl, -200));
-                  const avgPnl = total > 0 ? Math.round(pnlList.reduce((a, b) => a + b, 0) / total) : null;
-                  const rate = total > 0 ? Math.round(100 * hit3 / total * 10) / 10 : null;
-                  return { total, hit3, rate, avgPnl };
-                };
-                const cs = calcStrategyStats(coreRows);
-                const ss = calcStrategyStats(spiderRows);
-                const renderStrategy = (data, label, icon) => (
-                  <div style={{ flex: 1, background: C.grayLight, borderRadius: 8, padding: '8px 10px' }}>
-                    <div style={{ fontSize: 11, fontWeight: 700, color: C.text, marginBottom: 4 }}>{icon} {label}</div>
-                    {data.total > 0 ? (
-                      <>
-                        <div style={{ fontSize: 11, color: C.textSub }}>{data.total}期 ・ 中3率{data.rate != null ? `${data.rate}%` : '--'}</div>
-                        <div style={{ fontSize: 11, color: data.avgPnl >= 0 ? C.green : C.orange }}>平均{data.avgPnl != null ? `${data.avgPnl}元/期` : '--'}</div>
-                      </>
-                    ) : (
-                      <div style={{ fontSize: 11, color: C.textSub }}>尚無樣本</div>
-                    )}
-                  </div>
-                );
-                return (
-                  <div style={{ marginBottom: 10 }}>
-                    <div style={{ fontSize: 11, color: C.textSub, marginBottom: 6 }}>選號策略表現（V0623-2起）</div>
-                    <div style={{ display: 'flex', gap: 8 }}>
-                      {renderStrategy(cs, '核心外圍', '🎯')}
-                      {renderStrategy(ss, '次熱號優先', '🔬')}
-                    </div>
-                  </div>
-                );
-              })()}
-              <button
-                onClick={() => setHealthExpanded(v => !v)}
-                style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 10px', background: C.grayLight, borderRadius: 8, border: 'none', fontSize: 12, fontWeight: 700, color: C.text, cursor: 'pointer' }}
-              >
-                <span>逐期明細（{periods.length}期）</span>
-                <span>{healthExpanded ? '▲' : '▼'}</span>
-              </button>
-              {healthExpanded && (
-                <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 360, overflowY: 'auto' }}>
-                  {periods.slice().reverse().map((p, idx) => {
-                    const isSkipped = p.status === 'skipped';
-                    const isDone = p.compare_status === 'done' && !isSkipped;
-                    const hit3 = toNum(p.hit3_groups, 0);
-                    const hit2 = toNum(p.hit2_groups, 0);
-                    const timeStr = p.time ? new Date(p.time).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Taipei' }) : '--';
-                    return (
-                      <div key={p.draw_no || idx} style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, padding: '8px 10px' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                          <span style={{ fontSize: 12, fontWeight: 700 }}>
-                            {timeStr} ・ {p.position || '-'} ・ {modeLabel(p.active_mode)}
-                          </span>
-                          {isSkipped ? (
-                            <span style={{ fontSize: 11, color: C.textSub }}>跳過</span>
-                          ) : !isDone ? (
-                            <span style={{ fontSize: 11, color: C.orange }}>等待比對</span>
-                          ) : (
-                            <span style={{ fontSize: 12, fontWeight: 800, color: toNum(p.best_hit) >= 3 ? C.gold : C.textSub }}>
-                              中{fmt(p.best_hit)}
-                            </span>
-                          )}
-                        </div>
-                        {isDone && (
-                          <div style={{ display: 'flex', gap: 10, fontSize: 11, color: C.textSub }}>
-                            <span>中3組數 <b style={{ color: C.text }}>{hit3}</b></span>
-                            <span>中2組數 <b style={{ color: C.text }}>{hit2}</b></span>
-                            <span>訊號數 {fmt(p.total_signals)}</span>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </>
-          );
-        })()}
-      </div>
-      <div style={{ display: 'flex', gap: 6, marginBottom: 14, background: C.card, borderRadius: 12, padding: 8, boxShadow: C.shadow }}>
-
-        {subTabs.map(t => (
-          <button key={t.key} style={S.subTab(subTab === t.key)} onClick={() => setSubTab(t.key)}>
-            {t.icon} {t.label}
-          </button>
-        ))}
-      </div>
-
-      <Card title={`${subTabs.find(t => t.key === subTab)?.icon} ${subTabs.find(t => t.key === subTab)?.label} 命中率`} icon="">
-        <div style={{ textAlign: 'center', padding: '10px 0' }}>
-          <div style={{ ...S.bigNum, color: rateColor }}>{fmtPercent(stats.rate)}</div>
-          <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>共 {stats.total} 期｜中3：{stats.hit3} 次</div>
-        </div>
-        <div style={S.divider} />
-        <StatRow label="理論值（隨機）" value="3.75%" valueColor={C.textSub} />
-        <StatRow label="中3命中率" value={fmtPercent(stats.rate)} valueColor={rateColor} />
-        <StatRow label="中3次數" value={`${stats.hit3} 次`} />
-        <StatRow label="中2次數" value={`${stats.hit2} 次`} />
-        <StatRow label="中1次數" value={`${stats.hit1} 次`} />
-        <StatRow label="未中次數" value={`${stats.hit0} 次`} />
+      <Card title="A軌主系統（formal_3star）" icon="🟢">
+        <StatRow label="已比對期數" value={`${a.total} 期`} />
+        <StatRow label="中3命中率" value={fmtPercent(a.hit3Rate)} valueColor={a.hit3Rate >= 0.1 ? C.green : C.orange} />
+        <StatRow label="中2以上命中率" value={fmtPercent(a.hit2pRate)} />
+        <StatRow label="平均出手組數" value={a.avgGroups.toFixed(2)} />
+        <StatRow label="總損益" value={`${a.pnl >= 0 ? '+' : ''}${a.pnl} 元`} valueColor={a.pnl >= 0 ? C.green : '#DC2626'} />
+        <StatRow label="平均每期損益" value={`${a.avgPnl >= 0 ? '+' : ''}${a.avgPnl.toFixed(2)} 元`} valueColor={a.avgPnl >= 0 ? C.green : '#DC2626'} />
       </Card>
-      {(() => {
-        const rows = toArray(structureRows).filter(r => r?.compare_status === 'done');
-        if (rows.length === 0) {
+
+      <Card title="B軌補位（structure_anchor）" icon="🧪">
+        <StatRow label="已比對期數" value={`${b.total} 期`} />
+        <StatRow label="中3命中率" value={fmtPercent(b.hit3Rate)} valueColor={b.hit3Rate >= 0.1 ? C.green : C.orange} />
+        <StatRow label="中2以上命中率" value={fmtPercent(b.hit2pRate)} />
+        <StatRow label="平均出手組數" value={b.avgGroups.toFixed(2)} />
+        <StatRow label="總損益" value={`${b.pnl >= 0 ? '+' : ''}${b.pnl} 元`} valueColor={b.pnl >= 0 ? C.green : '#DC2626'} />
+        <StatRow label="平均每期損益" value={`${b.avgPnl >= 0 ? '+' : ''}${b.avgPnl.toFixed(2)} 元`} valueColor={b.avgPnl >= 0 ? C.green : '#DC2626'} />
+      </Card>
+
+      <Card title="最近20筆對照（A/B）" icon="📌">
+        {recentMix.length === 0 ? (
+          <div style={S.empty}>尚無比對資料</div>
+        ) : recentMix.map((item, idx) => {
+          const r = item.row;
+          const hit = toNum(r?.hit_count, 0);
+          const groups = toNum(r?.compare_result_json?.groups_count, 0) || toArray(r?.groups_json).filter(g => g?.key !== 'skip_meta').length;
+          const reward = toNum(r?.compare_result_json?.total_reward, 0);
+          const pnl = reward - groups * 25;
           return (
-            <Card title="🧪 B軌空窗補位 v0（不一定每期出手）" icon="">
-              <div style={{ fontSize: 12, color: C.textSub, textAlign: 'center', padding: 8 }}>尚無比對資料</div>
-            </Card>
+            <div key={r?.id || idx} style={S.statRow}>
+              <span style={{ fontSize: 12 }}>
+                <b>{item.track}</b>｜{fmt(r?.source_draw_no)}｜中{hit}｜{groups}組
+              </span>
+              <span style={{ fontSize: 12, fontWeight: 700, color: pnl >= 0 ? C.green : '#DC2626' }}>
+                {pnl >= 0 ? '+' : ''}{pnl}
+              </span>
+            </div>
           );
-        }
-        const hit3 = rows.filter(r => toNum(r?.hit_count, 0) >= 3).length;
-        const hit2 = rows.filter(r => toNum(r?.hit_count, 0) >= 2).length;
-        const rate = rows.length > 0 ? hit3 / rows.length : 0;
-        const rateColor = rate >= 0.1 ? C.green : rate >= 0.06 ? C.orange : '#DC2626';
-        return (
-          <Card title="🧪 B軌空窗補位 v0（不一定每期出手）" icon="">
-            <StatRow label="已比對期數" value={`${rows.length} 期`} />
-            <StatRow label="中3次數" value={`${hit3} 次`} valueColor={rateColor} />
-            <StatRow label="中3命中率" value={fmtPercent(rate)} valueColor={rateColor} />
-            <StatRow label="中2以上次數" value={`${hit2} 次`} />
-          </Card>
-        );
-      })()}
-      <div style={{ fontSize: 11, color: C.textSub, textAlign: 'center', padding: '4px 0' }}>
-        ※ 統計數據從 6/8 起算（v35新版）
-      </div>
+        })}
+      </Card>
     </div>
   );
 }
