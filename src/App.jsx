@@ -1,3 +1,11 @@
+/**
+ * App.jsx - V0709-Aonly-hotfix41
+ *
+ * ★ hotfix41：關閉 B 軌 UI，只顯示 A 軌 formal_3star
+ * - 移除 structure_anchor API 與 B 卡片
+ * - 快速頁：主系統 / 空窗 兩態
+ * - 近期 / 統計：只顯示 A 軌資料
+ */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 const RAILWAY_URL = 'https://fuwei-bingo-backend-production.up.railway.app';
@@ -209,17 +217,17 @@ function RandomGroupsCard({ drawNo, skipMeta }) {
           預測期號 {fmt(drawNo)}
         </div>
         <div style={{ fontSize: 20, fontWeight: 900, color: '#DC2626' }}>
-          🔴 A空窗，B也未出手
+          🔴 本期空窗（不出號）
         </div>
         <div style={{ fontSize: 12, color: C.textSub, marginTop: 8 }}>
-          主系統暫停；補位軌本期無號碼
+          主系統本期暫停出手
         </div>
       </div>
     </Card>
   );
 }
 
-function QuickPage({ prediction, recent20, onRefresh, loading, structureRows }) {
+function QuickPage({ prediction, recent20, onRefresh, loading }) {
   const row = prediction?.latest_3star_row;
   const compareResult = safeJson(row?.compare_result_json) || safeJson(row?.compare_result);
   const detail = toArray(compareResult?.detail);
@@ -261,21 +269,8 @@ function QuickPage({ prediction, recent20, onRefresh, loading, structureRows }) 
 
   const hit2Groups = detail.filter(d => toNum(d?.hit, 0) === 2).length;
   const isWarning = hit2Groups >= 3;
-  // ★ V0708：B軌不是「A空窗就一定出號」；要看「同一期」B有沒有真的落地號碼
-  const currentDrawNo = String(row?.source_draw_no || latestDraw?.draw_no || '');
-  const samePeriodStructure = toArray(structureRows).find(r => String(r?.source_draw_no || '') === currentDrawNo);
-  const structureGroups = toArray(samePeriodStructure?.groups_json).filter(g => g?.key !== 'skip_meta');
-  const bHasNumbers = !!samePeriodStructure && structureGroups.length > 0 && samePeriodStructure?.status !== 'skipped';
-  let activeTrackLabel = 'A軌主系統（formal_3star）';
-  let activeTrackColor = C.green;
-  if (isSkipped && bHasNumbers) {
-    activeTrackLabel = 'B軌補位出手（structure_anchor）';
-    activeTrackColor = C.purple;
-  } else if (isSkipped && !bHasNumbers) {
-    activeTrackLabel = 'A空窗，B也未出手';
-    activeTrackColor = C.gray;
-  }
-
+  const activeTrackLabel = isSkipped ? '主系統空窗' : '主系統（formal_3star）';
+  const activeTrackColor = isSkipped ? C.gray : C.green;
 
   // ★ 換手率計算
   const prevPool = (recentRows[0]?.groups_json?.[0]?.meta?.hot_pool || '').split(',').filter(Boolean);
@@ -512,31 +507,9 @@ function QuickPage({ prediction, recent20, onRefresh, loading, structureRows }) 
 
       {/* 本期預測 */}
       <div style={{ marginBottom: 8 }}>
-        <span style={S.badge(activeTrackColor, activeTrackColor === C.purple ? C.purpleBg : C.grayLight)}>當前來源：{activeTrackLabel}</span>
+        <span style={S.badge(activeTrackColor, C.grayLight)}>當前來源：{activeTrackLabel}</span>
       </div>
-      {isSkipped && bHasNumbers ? (
-        <Card title="本期預測（B軌補位）" icon="🧪"
-          right={<span style={S.badge(C.purple, C.purpleBg)}>{structureGroups.length} 組</span>}>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
-            <span style={S.badge(C.textSub, C.grayLight)}>
-              預測期號 {fmt(toNum(samePeriodStructure?.source_draw_no || currentDrawNo, 0) + 1)}
-            </span>
-            <span style={S.badge(C.purple, C.purpleBg)}>structure_anchor</span>
-          </div>
-          {structureGroups.slice(0, 8).map((g, idx) => {
-            const nums = parseNums(g?.nums);
-            const key = String(g?.key || g?.meta?.strategy_key || idx);
-            return (
-              <div key={key} style={{ background: C.purpleBg, border: `2px solid ${C.purpleLight}`, borderRadius: 12, padding: '12px 14px', marginBottom: 10 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: C.purple, marginBottom: 8 }}>B 第{idx + 1}組</div>
-                <div style={{ display: 'flex', gap: 8 }}>
-                  {nums.map(n => <Ball key={n} n={n} />)}
-                </div>
-              </div>
-            );
-          })}
-        </Card>
-      ) : isSkipped ? (
+      {isSkipped ? (
         <RandomGroupsCard drawNo={row?.source_draw_no || latestDraw?.draw_no} skipMeta={allGroups[0]?.meta} />
       ) : (
         <Card
@@ -636,11 +609,11 @@ function QuickPage({ prediction, recent20, onRefresh, loading, structureRows }) 
   );
 }
 
-function HistoryPage({ historyRows, structureRows }) {
+function HistoryPage({ historyRows }) {
   const rows = toArray(historyRows).slice(0, 20);
   return (
     <div style={S.page}>
-      <Card title="近期命中紀錄（A軌）" icon="📋">
+      <Card title="近期命中紀錄" icon="📋">
         {!rows.length ? <div style={S.empty}>尚無比對紀錄</div> : rows.map((row, idx) => {
           const compareResult = safeJson(row?.compare_result_json) || safeJson(row?.compare_result);
           const detail = toArray(compareResult?.detail);
@@ -678,7 +651,6 @@ function HistoryPage({ historyRows, structureRows }) {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                 <div>
                   <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-                    <span style={{ fontSize: 11, fontWeight: 800, color: '#FFF', background: C.green, borderRadius: 6, padding: '2px 6px' }}>A</span>
                     <span style={{ fontSize: 13, fontWeight: 700, color: C.textSub }}>
                       預測 {fmt(row?.source_draw_no)} → 比對 {fmt(comparedDraw || '')}
                     </span>
@@ -807,63 +779,12 @@ function HistoryPage({ historyRows, structureRows }) {
           );
         })}
       </Card>
-      <Card title="空窗補位紀錄（B軌）" icon="🧪">
-        {toArray(structureRows).length === 0 ? (
-          <div style={S.empty}>尚無補位紀錄（B不一定每次空窗都出號）</div>
-        ) : toArray(structureRows).slice(0, 20).map((row, idx) => {
-          const groups = toArray(row?.groups_json).filter(g => g?.key !== 'skip_meta');
-          const hit = toNum(row?.hit_count, 0);
-          const done = row?.compare_status === 'done';
-          const hasNums = groups.length > 0 && row?.status !== 'skipped';
-          const compareNo = row?.compare_result_json?.draw_no
-            || row?.target_draw_no
-            || (toNum(row?.source_draw_no, 0) > 0 ? toNum(row?.source_draw_no, 0) + 1 : '');
-          return (
-            <div key={row?.id || idx} style={{ ...S.card, marginBottom: 10, padding: '12px 14px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <span style={{ fontSize: 11, fontWeight: 800, color: '#FFF', background: C.purple, borderRadius: 6, padding: '2px 6px' }}>B</span>
-                  <span style={{ fontSize: 13, fontWeight: 700, color: C.textSub }}>
-                    補位 {fmt(row?.source_draw_no)} → 比對 {fmt(compareNo)}
-                  </span>
-                </div>
-                {!hasNums ? (
-                  <span style={{ fontSize: 12, color: C.gray, whiteSpace: 'nowrap' }}>未出手</span>
-                ) : done ? (
-                  <span style={{ fontSize: 14, fontWeight: 900, color: hit >= 3 ? C.gold : hit >= 2 ? C.orange : C.gray, whiteSpace: 'nowrap' }}>
-                    {hit >= 3 ? `🏆 中${hit}` : hit >= 2 ? `🔸 中${hit}` : `❌ 未中`}
-                  </span>
-                ) : (
-                  <span style={{ fontSize: 12, color: C.orange, whiteSpace: 'nowrap' }}>等待比對</span>
-                )}
-              </div>
-              {!hasNums ? (
-                <div style={{ fontSize: 11, color: C.gray, background: C.grayLight, borderRadius: 6, padding: '4px 8px', display: 'inline-block' }}>
-                  B軌本期未出號（結構條件不足或建組失敗）
-                </div>
-              ) : (
-                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                  {groups.slice(0, 8).map((g, gIdx) => {
-                    const nums = parseNums(g?.nums);
-                    return (
-                      <div key={String(g?.key || gIdx)} style={{ background: C.purpleBg, borderRadius: 8, padding: '4px 8px', fontSize: 12, border: `1px solid ${C.purpleLight}` }}>
-                        {nums.map(n => padNum(n)).join(' ')}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </Card>
     </div>
   );
 }
 
-function StatsPage({ historyRows, structureRows }) {
+function StatsPage({ historyRows }) {
   const aRows = toArray(historyRows).filter(r => r?.compare_status === 'done' && toArray(r?.groups_json).length > 0);
-  const bRows = toArray(structureRows).filter(r => r?.compare_status === 'done');
 
   const calcSimpleStats = (rows) => {
     const total = rows.length;
@@ -893,17 +814,11 @@ function StatsPage({ historyRows, structureRows }) {
   };
 
   const a = calcSimpleStats(aRows);
-  const b = calcSimpleStats(bRows);
-  const recentMix = [
-    ...aRows.slice(0, 20).map(r => ({ track: 'A', row: r })),
-    ...bRows.slice(0, 20).map(r => ({ track: 'B', row: r })),
-  ]
-    .sort((x, y) => new Date(y.row?.created_at || 0) - new Date(x.row?.created_at || 0))
-    .slice(0, 20);
+  const recentA = aRows.slice(0, 20);
 
   return (
     <div style={S.page}>
-      <Card title="A軌主系統（formal_3star）" icon="🟢">
+      <Card title="主系統績效（formal_3star）" icon="📊">
         <StatRow label="已比對期數" value={`${a.total} 期`} />
         <StatRow label="中3命中率" value={fmtPercent(a.hit3Rate)} valueColor={a.hit3Rate >= 0.1 ? C.green : C.orange} />
         <StatRow label="中2以上命中率" value={fmtPercent(a.hit2pRate)} />
@@ -912,20 +827,10 @@ function StatsPage({ historyRows, structureRows }) {
         <StatRow label="平均每期損益" value={`${a.avgPnl >= 0 ? '+' : ''}${a.avgPnl.toFixed(2)} 元`} valueColor={a.avgPnl >= 0 ? C.green : '#DC2626'} />
       </Card>
 
-      <Card title="B軌補位（structure_anchor）" icon="🧪">
-        <StatRow label="已比對期數" value={`${b.total} 期`} />
-        <StatRow label="中3命中率" value={fmtPercent(b.hit3Rate)} valueColor={b.hit3Rate >= 0.1 ? C.green : C.orange} />
-        <StatRow label="中2以上命中率" value={fmtPercent(b.hit2pRate)} />
-        <StatRow label="平均出手組數" value={b.avgGroups.toFixed(2)} />
-        <StatRow label="總損益" value={`${b.pnl >= 0 ? '+' : ''}${b.pnl} 元`} valueColor={b.pnl >= 0 ? C.green : '#DC2626'} />
-        <StatRow label="平均每期損益" value={`${b.avgPnl >= 0 ? '+' : ''}${b.avgPnl.toFixed(2)} 元`} valueColor={b.avgPnl >= 0 ? C.green : '#DC2626'} />
-      </Card>
-
-      <Card title="最近20筆對照（A/B）" icon="📌">
-        {recentMix.length === 0 ? (
+      <Card title="最近20筆" icon="📌">
+        {recentA.length === 0 ? (
           <div style={S.empty}>尚無比對資料</div>
-        ) : recentMix.map((item, idx) => {
-          const r = item.row;
+        ) : recentA.map((r, idx) => {
           const hit = toNum(r?.hit_count, 0);
           const groups = toNum(r?.compare_result_json?.groups_count, 0) || toArray(r?.groups_json).filter(g => g?.key !== 'skip_meta').length;
           const reward = toNum(r?.compare_result_json?.total_reward, 0);
@@ -933,7 +838,7 @@ function StatsPage({ historyRows, structureRows }) {
           return (
             <div key={r?.id || idx} style={S.statRow}>
               <span style={{ fontSize: 12 }}>
-                <b>{item.track}</b>｜{fmt(r?.source_draw_no)}｜中{hit}｜{groups}組
+                {fmt(r?.source_draw_no)}｜中{hit}｜{groups}組
               </span>
               <span style={{ fontSize: 12, fontWeight: 700, color: pnl >= 0 ? C.green : '#DC2626' }}>
                 {pnl >= 0 ? '+' : ''}{pnl}
@@ -1116,21 +1021,18 @@ export default function App() {
   const [prediction, setPrediction] = useState(null);
   const [recent20, setRecent20] = useState([]);
   const [historyRows, setHistoryRows] = useState([]);
-  const [structureRows, setStructureRows] = useState([]);
   const [loopStatus, setLoopStatus] = useState('初始化中...');
   const timerRef = useRef(null);
 
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [predRes, recentRes, structureRes] = await Promise.all([
+      const [predRes, recentRes] = await Promise.all([
         apiFetch('/api/prediction-latest').catch(() => ({})),
         apiFetch('/api/recent20').catch(() => ({})),
-        apiFetch('/api/structure-anchor-latest').catch(() => ({})),
       ]);
       setPrediction(predRes);
       setHistoryRows(predRes?.recent_3star_compared_rows || predRes?.recent_compared_rows || []);
-      setStructureRows(structureRes?.rows || predRes?.recent_structure_anchor_rows || []);
       setRecent20(recentRes?.recent20 || recentRes?.data || []);
       setLoopStatus(isNight() ? '夜間停止（00:00-07:00）' : `已更新 ${new Date().toLocaleTimeString('zh-TW', { hour12: false })}`);
     } catch {
@@ -1160,7 +1062,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0708-dualtrack-UIfixAB</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0709-Aonly-hotfix41</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
@@ -1177,9 +1079,9 @@ export default function App() {
         ))}
       </div>
       {loading && tab === 'quick' && <Spinner />}
-      {tab === 'quick' && <QuickPage prediction={prediction} recent20={recent20} onRefresh={loadData} loading={loading} structureRows={structureRows} />}
-      {tab === 'history' && <HistoryPage historyRows={historyRows} structureRows={structureRows} />}
-      {tab === 'stats' && <StatsPage historyRows={historyRows} structureRows={structureRows} />}
+      {tab === 'quick' && <QuickPage prediction={prediction} recent20={recent20} onRefresh={loadData} loading={loading} />}
+      {tab === 'history' && <HistoryPage historyRows={historyRows} />}
+      {tab === 'stats' && <StatsPage historyRows={historyRows} />}
       {tab === 'market' && <MarketPage recent20={recent20} />}
       {tab === 'hot' && <HotPage recent20={recent20} />}
       {tab === 'hotpool' && <HotPoolPage prediction={prediction} />}
