@@ -1,7 +1,7 @@
 /**
- * App.jsx - V0709-Aonly-hotfix41
+ * App.jsx - V0709-Aonly-hotfix42
  *
- * ★ hotfix41：關閉 B 軌 UI，只顯示 A 軌 formal_3star
+ * ★ hotfix42：空窗頁顯示 skip_reason 中文說明
  * - 移除 structure_anchor API 與 B 卡片
  * - 快速頁：主系統 / 空窗 兩態
  * - 近期 / 統計：只顯示 A 軌資料
@@ -208,8 +208,21 @@ function Spinner() {
   );
 }
 
+const SKIP_REASON_LABEL = {
+  insufficient_draws: '開獎資料不足（工程問題）',
+  pool_too_small: '週期熱號不足（未達建組門檻）',
+  strategy_gate: '策略門檻空窗（刻意不出手）',
+  hot_pool_insufficient: '熱號池未達此盤面門檻',
+  no_groups: '未產出組合',
+  no_signal: '訊號不足',
+};
+function skipReasonLabel(reason) {
+  return SKIP_REASON_LABEL[reason] || reason || '主系統本期暫停出手';
+}
+
 function RandomGroupsCard({ drawNo, skipMeta }) {
-  // ★ V0617-4：徹底移除隨機號碼產生，skip時只顯示期數和文字，現實使用上不該有任何號碼出現
+  const skipReason = skipMeta?.skip_reason || '';
+  const skipSummary = skipMeta?.betting_summary || skipReasonLabel(skipReason);
   return (
     <Card title="本期預測" icon="⏸️">
       <div style={{ textAlign: 'center', padding: '32px 12px' }}>
@@ -220,8 +233,13 @@ function RandomGroupsCard({ drawNo, skipMeta }) {
           🔴 本期空窗（不出號）
         </div>
         <div style={{ fontSize: 12, color: C.textSub, marginTop: 8 }}>
-          主系統本期暫停出手
+          {skipSummary}
         </div>
+        {skipReason ? (
+          <div style={{ fontSize: 11, color: C.gray, marginTop: 6 }}>
+            原因碼：{skipReason}
+          </div>
+        ) : null}
       </div>
     </Card>
   );
@@ -1062,7 +1080,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0709-Aonly-hotfix41</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0709-Aonly-hotfix42</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
