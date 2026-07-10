@@ -2,8 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 const RAILWAY_URL = 'https://fuwei-bingo-backend-production.up.railway.app';
 const REFRESH_INTERVAL_MS = 30000;
-const STATS_START_DATE = '2026-06-08T00:00:00.000Z';
-// ★ V0710：乾淨基線自 7/9 21:00 台北部署起（統計頁預設顯示基線）
+// ★ V0710：統計頁只顯示 7/9 21:00 台北部署後的基線數據
 const BASELINE_START_DATE = '2026-07-09T13:00:00.000Z';
 
 // V0623-2：四種active_mode中文對照
@@ -549,348 +548,62 @@ function MetaTags({ meta, isSkipped }) {
     </div>
   );
 }
-function calcRowPnl(row) {
-  const groups = toArray(row?.groups_json).filter(g => g?.key !== 'skip_meta');
-  const groupCount = groups.length;
-  const detail = toArray(safeJson(row?.compare_result_json)?.detail);
-  const reward = detail.reduce((sum, d) => {
-    const hit = toNum(d?.hit, 0);
-    if (hit >= 3) return sum + 500;
-    if (hit === 2) return sum + 50;
-    return sum;
-  }, 0);
-  return reward - groupCount * 25;
+function countOutputGroups(row) {
+  return toArray(row?.groups_json).filter(g => g?.key !== 'skip_meta').length;
 }
 
-function summarizeBetRows(rows) {
+function simpleStats(rows) {
   const total = rows.length;
   const hit3 = rows.filter(r => toNum(r?.hit_count) >= 3).length;
   const hit2plus = rows.filter(r => toNum(r?.hit_count) >= 2).length;
-  const totalPnl = rows.reduce((sum, r) => sum + calcRowPnl(r), 0);
+  const groups = rows.reduce((sum, r) => sum + countOutputGroups(r), 0);
   return {
     total,
     hit3,
     hit2plus,
-    hit3Rate: total > 0 ? hit3 / total : 0,
-    avgPnl: total > 0 ? totalPnl / total : 0,
-    totalPnl,
+    groups,
+    avgGroups: total > 0 ? (groups / total).toFixed(1) : '--',
   };
 }
 
-function rowBoardState(row) {
-  return toArray(row?.groups_json).find(g => g?.key !== 'skip_meta')?.meta?.board_state
-    || toArray(row?.groups_json)[0]?.meta?.board_state
-    || '';
-}
-
-function KpiBox({ label, sub, value, valueColor, hint }) {
+function SimpleStatsCard({ title, rows, emptyText }) {
+  const s = simpleStats(rows);
   return (
-    <div style={{ flex: 1, minWidth: 0, background: C.grayLight, borderRadius: 10, padding: '10px 8px', textAlign: 'center' }}>
-      <div style={{ fontSize: 10, color: C.textSub, marginBottom: 4 }}>{label}</div>
-      <div style={{ fontSize: 20, fontWeight: 900, color: valueColor || C.text, lineHeight: 1.1 }}>{value}</div>
-      {sub && <div style={{ fontSize: 10, color: C.textSub, marginTop: 4 }}>{sub}</div>}
-      {hint && <div style={{ fontSize: 9, color: C.gray, marginTop: 2 }}>{hint}</div>}
-    </div>
-  );
-}
-
-function pnlColor(v) {
-  if (v > 0) return C.green;
-  if (v > -80) return C.orange;
-  return '#DC2626';
-}
-
-function ComboWeightsCard({ embedded = false }) {
-  const [weights, setWeights] = useState(null);
-  const [loading, setLoading] = useState(true);
-  useEffect(() => {
-    let active = true;
-    apiFetch('/api/board-combo-revalidate', { method: 'POST' })
-      .then(res => { if (active) setWeights(res); })
-      .catch(() => { if (active) setWeights(null); })
-      .finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
-  }, []);
-
-  const BOARD_LABEL = {
-    A_golden: '✨黃金', B_spider_calm: '🕷️蜘蛛',
-    E_false_momentum: '⚡假動', F_quiet: '😶平淡',
-  };
-  const comboColor = (maxCombos) =>
-    maxCombos === 8 ? C.green : maxCombos === 4 ? C.orange : '#DC2626';
-
-  const body = (
-    <>
-      {!embedded && <div style={{ fontSize: 11, color: C.textSub, marginBottom: 10 }}>每小時自動更新，根據近24小時命中率動態調整出手組數</div>}
-      {loading ? (
-        <div style={{ fontSize: 11, color: C.textSub }}>載入中...</div>
-      ) : !weights?.ok ? (
-        <div style={{ fontSize: 11, color: C.textSub }}>尚無學習資料</div>
+    <Card title={title} icon="">
+      {s.total === 0 ? (
+        <div style={{ fontSize: 12, color: C.textSub, textAlign: 'center', padding: 10 }}>{emptyText}</div>
       ) : (
         <>
-          <div style={{ fontSize: 11, color: C.textSub, marginBottom: 8 }}>
-            基準 {weights.baseline_avg_pnl != null ? `${weights.baseline_avg_pnl}元/期` : '--'}
-            ・ 中3 {weights.baseline_hit3_rate != null ? `${weights.baseline_hit3_rate}%` : '--'}
-            ・ 樣本 {weights.total_sample || 0}期
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {toArray(weights.combos).sort((a, b) => a.combo_key.localeCompare(b.combo_key)).map(c => {
-              const boardLabel = BOARD_LABEL[c.combo_key.split('_').slice(0, -1).join('_')] || c.combo_key;
-              const color = comboColor(c.max_combos);
-              return (
-                <div key={c.combo_key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: C.grayLight, borderRadius: 8, padding: '7px 10px' }}>
-                  <div>
-                    <span style={{ fontSize: 12, fontWeight: 700 }}>{boardLabel} fc={c.combo_key.split('_').pop()}</span>
-                    <div style={{ fontSize: 10, color: C.textSub, marginTop: 2 }}>
-                      {c.sample}期 ・ 中3 {c.hit3_rate != null ? `${c.hit3_rate}%` : '--'}
-                    </div>
-                  </div>
-                  <div style={{ fontSize: 14, fontWeight: 900, color }}>
-                    {c.max_combos === 0 ? '🚫' : `${c.max_combos}組`}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+          <StatRow label="出手期數" value={`${s.total} 期`} />
+          <StatRow label="中3期數" value={`${s.hit3} 期`} />
+          <StatRow label="中2以上期數" value={`${s.hit2plus} 期`} />
+          <StatRow label="總組數" value={`${s.groups} 組`} />
+          <StatRow label="平均每期組數" value={`${s.avgGroups} 組`} />
         </>
       )}
-    </>
-  );
-
-  if (embedded) return <div>{body}</div>;
-
-  return (
-    <div style={S.card}>
-      <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>🤖 自主學習狀態</div>
-      {body}
-    </div>
+    </Card>
   );
 }
 
 function StatsPage({ historyRows, streakRows }) {
-  const [rangeMode, setRangeMode] = useState('baseline');
-  const [healthStatus, setHealthStatus] = useState(null);
-  const [healthLoading, setHealthLoading] = useState(true);
-  const [showRecent, setShowRecent] = useState(false);
-  const [showLearning, setShowLearning] = useState(false);
-
-  useEffect(() => {
-    let active = true;
-    apiFetch('/api/health-status')
-      .then(res => { if (active) setHealthStatus(res); })
-      .catch(() => { if (active) setHealthStatus(null); })
-      .finally(() => { if (active) setHealthLoading(false); });
-    return () => { active = false; };
-  }, []);
-
-  const rangeStart = rangeMode === 'baseline' ? BASELINE_START_DATE : STATS_START_DATE;
-  const rangeLabel = rangeMode === 'baseline' ? '7/9 21:00 基線起' : '6/8 起全部';
-
   const formalRows = toArray(historyRows).filter(row =>
-    row?.created_at >= rangeStart
+    row?.created_at >= BASELINE_START_DATE
     && row?.status === 'compared'
     && toArray(row?.groups_json).some(g => g?.key !== 'skip_meta')
   );
 
   const streakDone = toArray(streakRows).filter(row =>
-    row?.created_at >= rangeStart && row?.compare_status === 'done'
+    row?.created_at >= BASELINE_START_DATE && row?.compare_status === 'done'
   );
-
-  const formalSummary = summarizeBetRows(formalRows);
-  const streakSummary = summarizeBetRows(streakDone);
-
-  const health = healthStatus?.summary || {};
-  const healthPeriods = toArray(healthStatus?.periods);
-
-  const BOARD_ORDER = [
-    'E_false_momentum',
-    'A_golden',
-    'B_spider_calm',
-    'F_quiet',
-    'D_burst_danger',
-  ];
-
-  const boardRows = BOARD_ORDER.map(key => {
-    const rows = formalRows.filter(r => rowBoardState(r) === key);
-    const sum = summarizeBetRows(rows);
-    const info = boardStateInfo(key);
-    return { key, label: info?.text || key, icon: key === 'E_false_momentum' ? '⚡' : key === 'A_golden' ? '✨' : key === 'B_spider_calm' ? '🕷️' : key === 'F_quiet' ? '😶' : '💥', ...sum };
-  }).filter(b => b.total > 0);
-
-  const otherRows = formalRows.filter(r => !BOARD_ORDER.includes(rowBoardState(r)));
-  const otherSummary = summarizeBetRows(otherRows);
 
   return (
     <div style={S.page}>
-      {/* 時間範圍切換 */}
-      <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
-        {[
-          { key: 'baseline', label: '基線 7/9起' },
-          { key: 'all', label: '全部 6/8起' },
-        ].map(opt => (
-          <button
-            key={opt.key}
-            onClick={() => setRangeMode(opt.key)}
-            style={{
-              flex: 1, padding: '8px 6px', border: `1px solid ${rangeMode === opt.key ? C.gold : C.border}`,
-              borderRadius: 8, background: rangeMode === opt.key ? C.goldBg : C.card,
-              fontSize: 12, fontWeight: rangeMode === opt.key ? 700 : 500,
-              color: rangeMode === opt.key ? C.gold : C.textSub, cursor: 'pointer',
-            }}
-          >
-            {opt.label}
-          </button>
-        ))}
+      <div style={{ fontSize: 11, color: C.textSub, textAlign: 'center', marginBottom: 10, padding: '6px 8px', background: C.goldBg, borderRadius: 8 }}>
+        統計自 7/9 21:00 部署起（V0628 基線）
       </div>
 
-      {/* 一眼看懂：三軌 KPI */}
-      <div style={S.card}>
-        <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 10 }}>
-          📊 戰況總覽
-          <span style={{ fontSize: 10, fontWeight: 500, color: C.textSub, marginLeft: 6 }}>({rangeLabel})</span>
-        </div>
-        <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-          <KpiBox
-            label="主策略 A軌"
-            value={formalSummary.total > 0 ? fmtPercent(formalSummary.hit3Rate) : '--'}
-            valueColor={formalSummary.hit3Rate >= 0.075 ? C.green : C.orange}
-            sub={`${formalSummary.total}期 ・ 中3 ${formalSummary.hit3}次`}
-            hint={formalSummary.total > 0 ? `${formalSummary.avgPnl > 0 ? '+' : ''}${Math.round(formalSummary.avgPnl)}元/期` : '尚無出手'}
-          />
-          <KpiBox
-            label="空窗錨點"
-            value={streakSummary.total > 0 ? fmtPercent(streakSummary.hit3Rate) : '--'}
-            valueColor={streakSummary.hit3Rate >= 0.08 ? C.green : C.orange}
-            sub={`${streakSummary.total}期 ・ 中3 ${streakSummary.hit3}次`}
-            hint={streakSummary.total > 0 ? `${streakSummary.avgPnl > 0 ? '+' : ''}${Math.round(streakSummary.avgPnl)}元/期` : '尚無資料'}
-          />
-          <KpiBox
-            label="近72h健康"
-            value={health.hit3_pct != null ? `${health.hit3_pct}%` : '--'}
-            valueColor={health.level === 'good' ? C.green : health.level === 'normal' ? C.orange : '#DC2626'}
-            sub={healthLoading ? '載入中' : `${fmt(health.compared_periods)}期比對`}
-            hint={health.output_rate_pct != null ? `出手率 ${health.output_rate_pct}%` : ''}
-          />
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <div style={{ flex: 1, background: C.grayLight, borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
-            <div style={{ fontSize: 10, color: C.textSub }}>主策略總損益</div>
-            <div style={{ fontSize: 16, fontWeight: 800, color: pnlColor(formalSummary.totalPnl) }}>
-              {formalSummary.total > 0 ? `${formalSummary.totalPnl > 0 ? '+' : ''}${Math.round(formalSummary.totalPnl)}元` : '--'}
-            </div>
-          </div>
-          <div style={{ flex: 1, background: C.grayLight, borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
-            <div style={{ fontSize: 10, color: C.textSub }}>錨點總損益</div>
-            <div style={{ fontSize: 16, fontWeight: 800, color: pnlColor(streakSummary.totalPnl) }}>
-              {streakSummary.total > 0 ? `${streakSummary.totalPnl > 0 ? '+' : ''}${Math.round(streakSummary.totalPnl)}元` : '--'}
-            </div>
-          </div>
-          <div style={{ flex: 1, background: C.grayLight, borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
-            <div style={{ fontSize: 10, color: C.textSub }}>理論中3率</div>
-            <div style={{ fontSize: 16, fontWeight: 800, color: C.textSub }}>3.75%</div>
-          </div>
-        </div>
-      </div>
-
-      {/* 各球場表現 */}
-      <div style={S.card}>
-        <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>🏟️ 主策略・各球場</div>
-        {formalRows.length === 0 ? (
-          <div style={{ fontSize: 12, color: C.textSub, textAlign: 'center', padding: 12 }}>此區間尚無出手紀錄</div>
-        ) : (
-          <>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 44px 52px 64px', gap: 4, fontSize: 10, color: C.textSub, padding: '0 4px 6px', borderBottom: `1px solid ${C.border}` }}>
-              <span>球場</span>
-              <span style={{ textAlign: 'right' }}>期數</span>
-              <span style={{ textAlign: 'right' }}>中3率</span>
-              <span style={{ textAlign: 'right' }}>均損益</span>
-            </div>
-            {boardRows.map(b => (
-              <div key={b.key} style={{ display: 'grid', gridTemplateColumns: '1fr 44px 52px 64px', gap: 4, alignItems: 'center', padding: '8px 4px', borderBottom: `1px solid ${C.border}` }}>
-                <span style={{ fontSize: 12, fontWeight: 700 }}>{b.icon} {b.label}</span>
-                <span style={{ fontSize: 12, textAlign: 'right' }}>{b.total}</span>
-                <span style={{ fontSize: 12, textAlign: 'right', fontWeight: 700, color: b.hit3Rate >= 0.075 ? C.green : C.orange }}>
-                  {fmtPercent(b.hit3Rate)}
-                </span>
-                <span style={{ fontSize: 12, textAlign: 'right', fontWeight: 700, color: pnlColor(b.avgPnl) }}>
-                  {b.avgPnl > 0 ? '+' : ''}{Math.round(b.avgPnl)}
-                </span>
-              </div>
-            ))}
-            {otherSummary.total > 0 && (
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 44px 52px 64px', gap: 4, alignItems: 'center', padding: '8px 4px' }}>
-                <span style={{ fontSize: 12, fontWeight: 700 }}>其他</span>
-                <span style={{ fontSize: 12, textAlign: 'right' }}>{otherSummary.total}</span>
-                <span style={{ fontSize: 12, textAlign: 'right' }}>{fmtPercent(otherSummary.hit3Rate)}</span>
-                <span style={{ fontSize: 12, textAlign: 'right', color: pnlColor(otherSummary.avgPnl) }}>
-                  {otherSummary.avgPnl > 0 ? '+' : ''}{Math.round(otherSummary.avgPnl)}
-                </span>
-              </div>
-            )}
-            <div style={{ fontSize: 10, color: C.textSub, marginTop: 8, textAlign: 'center' }}>
-              均損益 = 獎金 − 組數×25元 ・ 僅計已比對出手期
-            </div>
-          </>
-        )}
-      </div>
-
-      {/* 近72h逐期明細（收合） */}
-      <div style={S.card}>
-        <button
-          onClick={() => setShowRecent(v => !v)}
-          style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'transparent', border: 'none', padding: 0, cursor: 'pointer' }}
-        >
-          <span style={{ fontSize: 13, fontWeight: 800, color: C.gold }}>📋 近72小時逐期</span>
-          <span style={{ fontSize: 12, color: C.textSub }}>{showRecent ? '▲ 收合' : `▼ 展開（${healthPeriods.length}期）`}</span>
-        </button>
-        {showRecent && (
-          <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 300, overflowY: 'auto' }}>
-            {healthLoading ? (
-              <div style={{ fontSize: 11, color: C.textSub }}>載入中...</div>
-            ) : healthPeriods.length === 0 ? (
-              <div style={{ fontSize: 11, color: C.textSub }}>暫無資料</div>
-            ) : healthPeriods.slice().reverse().map((p, idx) => {
-              const isSkipped = p.status === 'skipped';
-              const isDone = p.compare_status === 'done' && !isSkipped;
-              const timeStr = p.time
-                ? new Date(p.time).toLocaleString('zh-TW', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Taipei' })
-                : '--';
-              const bsInfo = boardStateInfo(p.board_state);
-              const hitColor = toNum(p.best_hit) >= 3 ? C.gold : toNum(p.best_hit) >= 2 ? C.orange : C.textSub;
-              return (
-                <div key={p.draw_no || idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: C.grayLight, borderRadius: 6, padding: '6px 8px' }}>
-                  <div style={{ fontSize: 11, color: C.text }}>
-                    <div>{timeStr}</div>
-                    <div style={{ color: C.textSub, marginTop: 2 }}>
-                      {isSkipped ? '⏸️ 空窗' : (bsInfo ? bsInfo.text : '出手')}
-                      {p.four_count != null ? ` ・ fc${p.four_count}` : ''}
-                    </div>
-                  </div>
-                  <div style={{ fontSize: 12, fontWeight: 800, color: isSkipped ? C.textSub : hitColor }}>
-                    {isSkipped ? '—' : !isDone ? '等待' : `中${fmt(p.best_hit)}`}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      {/* 自主學習（收合） */}
-      <div style={S.card}>
-        <button
-          onClick={() => setShowLearning(v => !v)}
-          style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', marginBottom: showLearning ? 10 : 0 }}
-        >
-          <span style={{ fontSize: 13, fontWeight: 800, color: C.gold }}>🤖 自主學習組數</span>
-          <span style={{ fontSize: 12, color: C.textSub }}>{showLearning ? '▲ 收合' : '▼ 展開'}</span>
-        </button>
-        {showLearning && <ComboWeightsCard embedded />}
-      </div>
-
-      <div style={{ fontSize: 10, color: C.textSub, textAlign: 'center', padding: '4px 0 8px' }}>
-        基線統計自 7/9 21:00 部署起 ・ hotfix44：E盤 fc5 空窗
-      </div>
+      <SimpleStatsCard title="主策略（A軌）" rows={formalRows} emptyText="尚無出手紀錄" />
+      <SimpleStatsCard title="空窗錨點（輔助）" rows={streakDone} emptyText="尚無比對紀錄" />
     </div>
   );
 }
