@@ -3,6 +3,8 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 const RAILWAY_URL = 'https://fuwei-bingo-backend-production.up.railway.app';
 const REFRESH_INTERVAL_MS = 30000;
 const STATS_START_DATE = '2026-06-08T00:00:00.000Z';
+// ★ V0710：乾淨基線自 7/9 21:00 台北部署起（統計頁預設顯示基線）
+const BASELINE_START_DATE = '2026-07-09T13:00:00.000Z';
 
 // V0623-2：四種active_mode中文對照
 const MODE_LABEL = {
@@ -547,7 +549,58 @@ function MetaTags({ meta, isSkipped }) {
     </div>
   );
 }
-function ComboWeightsCard() {
+function calcRowPnl(row) {
+  const groups = toArray(row?.groups_json).filter(g => g?.key !== 'skip_meta');
+  const groupCount = groups.length;
+  const detail = toArray(safeJson(row?.compare_result_json)?.detail);
+  const reward = detail.reduce((sum, d) => {
+    const hit = toNum(d?.hit, 0);
+    if (hit >= 3) return sum + 500;
+    if (hit === 2) return sum + 50;
+    return sum;
+  }, 0);
+  return reward - groupCount * 25;
+}
+
+function summarizeBetRows(rows) {
+  const total = rows.length;
+  const hit3 = rows.filter(r => toNum(r?.hit_count) >= 3).length;
+  const hit2plus = rows.filter(r => toNum(r?.hit_count) >= 2).length;
+  const totalPnl = rows.reduce((sum, r) => sum + calcRowPnl(r), 0);
+  return {
+    total,
+    hit3,
+    hit2plus,
+    hit3Rate: total > 0 ? hit3 / total : 0,
+    avgPnl: total > 0 ? totalPnl / total : 0,
+    totalPnl,
+  };
+}
+
+function rowBoardState(row) {
+  return toArray(row?.groups_json).find(g => g?.key !== 'skip_meta')?.meta?.board_state
+    || toArray(row?.groups_json)[0]?.meta?.board_state
+    || '';
+}
+
+function KpiBox({ label, sub, value, valueColor, hint }) {
+  return (
+    <div style={{ flex: 1, minWidth: 0, background: C.grayLight, borderRadius: 10, padding: '10px 8px', textAlign: 'center' }}>
+      <div style={{ fontSize: 10, color: C.textSub, marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: 20, fontWeight: 900, color: valueColor || C.text, lineHeight: 1.1 }}>{value}</div>
+      {sub && <div style={{ fontSize: 10, color: C.textSub, marginTop: 4 }}>{sub}</div>}
+      {hint && <div style={{ fontSize: 9, color: C.gray, marginTop: 2 }}>{hint}</div>}
+    </div>
+  );
+}
+
+function pnlColor(v) {
+  if (v > 0) return C.green;
+  if (v > -80) return C.orange;
+  return '#DC2626';
+}
+
+function ComboWeightsCard({ embedded = false }) {
   const [weights, setWeights] = useState(null);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
@@ -566,10 +619,9 @@ function ComboWeightsCard() {
   const comboColor = (maxCombos) =>
     maxCombos === 8 ? C.green : maxCombos === 4 ? C.orange : '#DC2626';
 
-  return (
-    <div style={S.card}>
-      <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>🤖 自主學習狀態</div>
-      <div style={{ fontSize: 11, color: C.textSub, marginBottom: 10 }}>每小時自動更新，根據近24小時命中率動態調整出手組數</div>
+  const body = (
+    <>
+      {!embedded && <div style={{ fontSize: 11, color: C.textSub, marginBottom: 10 }}>每小時自動更新，根據近24小時命中率動態調整出手組數</div>}
       {loading ? (
         <div style={{ fontSize: 11, color: C.textSub }}>載入中...</div>
       ) : !weights?.ok ? (
@@ -577,9 +629,9 @@ function ComboWeightsCard() {
       ) : (
         <>
           <div style={{ fontSize: 11, color: C.textSub, marginBottom: 8 }}>
-            基準損益：{weights.baseline_avg_pnl != null ? `${weights.baseline_avg_pnl}元/期` : '--'} ・
-            基準中3率：{weights.baseline_hit3_rate != null ? `${weights.baseline_hit3_rate}%` : '--'} ・
-            樣本：{weights.total_sample || 0}期
+            基準 {weights.baseline_avg_pnl != null ? `${weights.baseline_avg_pnl}元/期` : '--'}
+            ・ 中3 {weights.baseline_hit3_rate != null ? `${weights.baseline_hit3_rate}%` : '--'}
+            ・ 樣本 {weights.total_sample || 0}期
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {toArray(weights.combos).sort((a, b) => a.combo_key.localeCompare(b.combo_key)).map(c => {
@@ -590,14 +642,11 @@ function ComboWeightsCard() {
                   <div>
                     <span style={{ fontSize: 12, fontWeight: 700 }}>{boardLabel} fc={c.combo_key.split('_').pop()}</span>
                     <div style={{ fontSize: 10, color: C.textSub, marginTop: 2 }}>
-                      {c.sample}期 ・ 中3率{c.hit3_rate != null ? `${c.hit3_rate}%` : '--'} ・ 優勢{c.relative_edge != null ? `${c.relative_edge}元` : '--'}
+                      {c.sample}期 ・ 中3 {c.hit3_rate != null ? `${c.hit3_rate}%` : '--'}
                     </div>
                   </div>
-                  <div style={{ textAlign: 'right' }}>
-                    <div style={{ fontSize: 14, fontWeight: 900, color }}>
-                      {c.max_combos === 0 ? '🚫暫停' : `${c.max_combos}組`}
-                    </div>
-                    <div style={{ fontSize: 9, color: C.textSub }}>出手組數</div>
+                  <div style={{ fontSize: 14, fontWeight: 900, color }}>
+                    {c.max_combos === 0 ? '🚫' : `${c.max_combos}組`}
                   </div>
                 </div>
               );
@@ -605,26 +654,25 @@ function ComboWeightsCard() {
           </div>
         </>
       )}
+    </>
+  );
+
+  if (embedded) return <div>{body}</div>;
+
+  return (
+    <div style={S.card}>
+      <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>🤖 自主學習狀態</div>
+      {body}
     </div>
   );
 }
 
 function StatsPage({ historyRows, streakRows }) {
-  const [subTab, setSubTab] = useState('all');
-  const [soulStatus, setSoulStatus] = useState(null);
-  const [soulLoading, setSoulLoading] = useState(true);
+  const [rangeMode, setRangeMode] = useState('baseline');
   const [healthStatus, setHealthStatus] = useState(null);
   const [healthLoading, setHealthLoading] = useState(true);
-  const [healthExpanded, setHealthExpanded] = useState(false);
-
-  useEffect(() => {
-    let active = true;
-    apiFetch('/api/soul-status')
-      .then(res => { if (active) setSoulStatus(res); })
-      .catch(() => { if (active) setSoulStatus(null); })
-      .finally(() => { if (active) setSoulLoading(false); });
-    return () => { active = false; };
-  }, []);
+  const [showRecent, setShowRecent] = useState(false);
+  const [showLearning, setShowLearning] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -635,213 +683,214 @@ function StatsPage({ historyRows, streakRows }) {
     return () => { active = false; };
   }, []);
 
-  const allRows = toArray(historyRows).filter(row =>
-    row?.created_at >= STATS_START_DATE && row?.status === 'compared' && toArray(row?.groups_json).length > 0
+  const rangeStart = rangeMode === 'baseline' ? BASELINE_START_DATE : STATS_START_DATE;
+  const rangeLabel = rangeMode === 'baseline' ? '7/9 21:00 基線起' : '6/8 起全部';
+
+  const formalRows = toArray(historyRows).filter(row =>
+    row?.created_at >= rangeStart
+    && row?.status === 'compared'
+    && toArray(row?.groups_json).some(g => g?.key !== 'skip_meta')
   );
 
-  const cleanCount = toNum(soulStatus?.clean_periods, 0);
-  // ★ V0626-3：封印相關變數(sealTarget/sealPct/isSealBroken/daysPassed)已移除
-  const modeMap = soulStatus?.mode_stats || {};
+  const streakDone = toArray(streakRows).filter(row =>
+    row?.created_at >= rangeStart && row?.compare_status === 'done'
+  );
 
-  // V0623-2：依盤面狀態或選號策略篩選
-  const filterByBoardState = (key) => {
-    if (key === 'all') return allRows;
-    if (key === 'core_outer' || key === 'spider_mid') {
-      return allRows.filter(row => {
-        const s = toArray(row?.groups_json)[0]?.meta?.selection_strategy || '';
-        return s === key;
-      });
-    }
-    return allRows.filter(row => {
-      const bs = toArray(row?.groups_json)[0]?.meta?.board_state || '';
-      return bs === key;
-    });
-  };
+  const formalSummary = summarizeBetRows(formalRows);
+  const streakSummary = summarizeBetRows(streakDone);
 
-  const calcStats = (rows) => {
-    const total = rows.length;
-    const hit3 = rows.filter(r => toNum(r?.hit_count) >= 3).length;
-    const hit2 = rows.filter(r => toNum(r?.hit_count) === 2).length;
-    const hit1 = rows.filter(r => toNum(r?.hit_count) === 1).length;
-    const hit0 = rows.filter(r => toNum(r?.hit_count) === 0).length;
-    const rate = total > 0 ? hit3 / total : 0;
-    return { total, hit3, hit2, hit1, hit0, rate };
-  };
+  const health = healthStatus?.summary || {};
+  const healthPeriods = toArray(healthStatus?.periods);
 
-  // V0623-2：子頁籤（盤面+選號策略），V0625-2加入wide_spread和gradient
-  const subTabs = [
-    { key: 'all',               label: '全部',     icon: '📊' },
-    { key: 'A_golden',          label: '黃金共振', icon: '✨' },
-    { key: 'B_spider_calm',     label: '蜘蛛靜默', icon: '🕷️' },
-    { key: 'E_false_momentum',  label: '假動能',   icon: '⚡' },
-    { key: 'F_quiet',           label: '平淡期',   icon: '😶' },
-    { key: 'wide_spread',       label: '寬幅分散', icon: '🌐' },
-    { key: 'gradient',          label: '梯度遞減', icon: '📐' },
-    { key: 'core_outer',        label: '核心外圍', icon: '🎯' },
-    { key: 'spider_mid',        label: '次熱號',   icon: '🔬' },
+  const BOARD_ORDER = [
+    'E_false_momentum',
+    'A_golden',
+    'B_spider_calm',
+    'F_quiet',
+    'D_burst_danger',
   ];
 
-  const currentRows = filterByBoardState(subTab);
-  const stats = calcStats(currentRows);
-  const rateColor = stats.rate > 0.0375 ? C.green : C.orange;
+  const boardRows = BOARD_ORDER.map(key => {
+    const rows = formalRows.filter(r => rowBoardState(r) === key);
+    const sum = summarizeBetRows(rows);
+    const info = boardStateInfo(key);
+    return { key, label: info?.text || key, icon: key === 'E_false_momentum' ? '⚡' : key === 'A_golden' ? '✨' : key === 'B_spider_calm' ? '🕷️' : key === 'F_quiet' ? '😶' : '💥', ...sum };
+  }).filter(b => b.total > 0);
+
+  const otherRows = formalRows.filter(r => !BOARD_ORDER.includes(rowBoardState(r)));
+  const otherSummary = summarizeBetRows(otherRows);
 
   return (
     <div style={S.page}>
-      {/* 靈魂戰況板 */}
-      <div style={S.card}>
-        <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>🧠 靈魂學習進度</div>
-        {soulLoading ? (
-          <div style={{ fontSize: 11, color: C.textSub }}>載入中...</div>
-        ) : !soulStatus?.ok ? (
-          <div style={{ fontSize: 11, color: C.textSub }}>暫無法取得靈魂狀態</div>
-        ) : (
-          <>
-            <div style={{ borderBottom: `1px solid ${C.border}`, paddingBottom: 8, marginBottom: 8 }}>
-              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>V0627-1版本各模式表現：</div>
-              {Object.entries(modeMap).sort((a, b) => b[1].count - a[1].count).map(([mode, stat]) => {
-                const avg = toNum(stat?.avg_pnl, 0);
-                const color = avg > 0 ? C.green : avg > -100 ? C.orange : '#DC2626';
-                return (
-                  <div key={mode} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, padding: '2px 0' }}>
-                    <span style={{ color: C.text, fontWeight: 600 }}>{modeLabel(mode)}</span>
-                    <span style={{ color: C.textSub }}>{stat.count}期</span>
-                    <span style={{ color, fontWeight: 700 }}>{avg > 0 ? '+' : ''}{avg}元/期</span>
-                  </div>
-                );
-              })}
-              {Object.keys(modeMap).length === 0 && <div style={{ fontSize: 11, color: C.textSub }}>尚無資料</div>}
-            </div>
-            <div style={{ fontSize: 11, color: C.textSub }}>共 {cleanCount} 期乾淨資料</div>
-          </>
-        )}
-      </div>
-
-      {/* 三天健康檢查 */}
-      <div style={S.card}>
-        <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>📋 三天健康檢查</div>
-        {healthLoading ? (
-          <div style={{ fontSize: 11, color: C.textSub }}>載入中...</div>
-        ) : !healthStatus?.ok ? (
-          <div style={{ fontSize: 11, color: C.textSub }}>暫無法取得健康檢查狀態</div>
-        ) : (() => {
-          const s = healthStatus.summary || {};
-          const levelColor = s.level === 'good' ? C.green : s.level === 'normal' ? C.orange : '#DC2626';
-          const levelBg = s.level === 'good' ? '#DCFCE7' : s.level === 'normal' ? '#FEF9C3' : '#FEE2E2';
-          const periods = toArray(healthStatus.periods);
-          return (
-            <>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6 }}>
-                <span style={{ fontSize: 24, fontWeight: 800, color: levelColor }}>{s.hit3_pct != null ? `${s.hit3_pct}%` : '--'}</span>
-                <span style={{ fontSize: 11, padding: '2px 10px', borderRadius: 6, background: levelBg, color: levelColor, fontWeight: 700 }}>{s.level_label || '無資料'}</span>
-              </div>
-              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 10 }}>
-                {fmt(s.compared_periods)}期已比對 ・ 出手率{s.output_rate_pct != null ? `${s.output_rate_pct}%` : '--'}
-              </div>
-              <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
-                <div style={{ flex: 1, background: C.grayLight, borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
-                  <div style={{ fontSize: 16, fontWeight: 800 }}>{fmt(s.hit3_periods)}</div>
-                  <div style={{ fontSize: 10, color: C.textSub }}>中3期數</div>
-                </div>
-                <div style={{ flex: 1, background: C.grayLight, borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
-                  <div style={{ fontSize: 16, fontWeight: 800 }}>{fmt(s.hit2plus_groups_total)}</div>
-                  <div style={{ fontSize: 10, color: C.textSub }}>中2以上組數</div>
-                </div>
-              </div>
-              {/* 精簡版：移除超級組合和選號策略的大塊，只保留逐期明細收合 */}
-              <button
-                onClick={() => setHealthExpanded(v => !v)}
-                style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 10px', background: C.grayLight, borderRadius: 8, border: 'none', fontSize: 12, fontWeight: 700, color: C.text, cursor: 'pointer' }}
-              >
-                <span>逐期明細（{periods.length}期）</span>
-                <span>{healthExpanded ? '▲' : '▼'}</span>
-              </button>
-              {healthExpanded && (
-                <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 320, overflowY: 'auto' }}>
-                  {periods.slice().reverse().map((p, idx) => {
-                    const isSkipped = p.status === 'skipped';
-                    const isDone = p.compare_status === 'done' && !isSkipped;
-                    const timeStr = p.time ? new Date(p.time).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Taipei' }) : '--';
-                    const bsInfo = boardStateInfo(p.board_state);
-                    const hitColor = toNum(p.best_hit) >= 3 ? C.gold : C.textSub;
-                    return (
-                      <div key={p.draw_no || idx} style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: 6, padding: '6px 8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ fontSize: 11, color: C.text }}>
-                          {timeStr} ・ {bsInfo ? bsInfo.text : '跳過'} ・ {isSkipped ? '空窗' : modeLabel(p.active_mode)}
-                        </span>
-                        {isSkipped ? (
-                          <span style={{ fontSize: 10, color: C.textSub }}>⏸️</span>
-                        ) : !isDone ? (
-                          <span style={{ fontSize: 10, color: C.orange }}>等待</span>
-                        ) : (
-                          <span style={{ fontSize: 11, fontWeight: 800, color: hitColor }}>中{fmt(p.best_hit)}</span>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-                          ) : !isDone ? (
-            </>
-          );
-        })()}
-      </div>
-
-      {/* 統計子頁籤 */}
-      <div style={{ display: 'flex', gap: 6, marginBottom: 14, background: C.card, borderRadius: 12, padding: 8, boxShadow: C.shadow, flexWrap: 'wrap' }}>
-        {subTabs.map(t => (
-          <button key={t.key} style={S.subTab(subTab === t.key)} onClick={() => setSubTab(t.key)}>
-            {t.icon} {t.label}
+      {/* 時間範圍切換 */}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+        {[
+          { key: 'baseline', label: '基線 7/9起' },
+          { key: 'all', label: '全部 6/8起' },
+        ].map(opt => (
+          <button
+            key={opt.key}
+            onClick={() => setRangeMode(opt.key)}
+            style={{
+              flex: 1, padding: '8px 6px', border: `1px solid ${rangeMode === opt.key ? C.gold : C.border}`,
+              borderRadius: 8, background: rangeMode === opt.key ? C.goldBg : C.card,
+              fontSize: 12, fontWeight: rangeMode === opt.key ? 700 : 500,
+              color: rangeMode === opt.key ? C.gold : C.textSub, cursor: 'pointer',
+            }}
+          >
+            {opt.label}
           </button>
         ))}
       </div>
 
-      <Card title="📊 全部 命中率" icon="">
-        <div style={{ textAlign: 'center', padding: '10px 0' }}>
-          <div style={{ ...S.bigNum, color: rateColor }}>{fmtPercent(stats.rate)}</div>
-          <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>共 {stats.total} 期｜中3：{stats.hit3} 次</div>
+      {/* 一眼看懂：三軌 KPI */}
+      <div style={S.card}>
+        <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 10 }}>
+          📊 戰況總覽
+          <span style={{ fontSize: 10, fontWeight: 500, color: C.textSub, marginLeft: 6 }}>({rangeLabel})</span>
         </div>
-        <div style={S.divider} />
-        <StatRow label="理論值（隨機）" value="3.75%" valueColor={C.textSub} />
-        <StatRow label="中3命中率" value={fmtPercent(stats.rate)} valueColor={rateColor} />
-        <StatRow label="中3次數" value={`${stats.hit3} 次`} />
-        <StatRow label="中2次數" value={`${stats.hit2} 次`} />
-        <StatRow label="中1次數" value={`${stats.hit1} 次`} />
-        <StatRow label="未中次數" value={`${stats.hit0} 次`} />
-      </Card>
-
-      {/* ★ V0628-1：熱號錨點策略獨立統計 */}
-      {(() => {
-        const sRows = toArray(streakRows).filter(r => r?.compare_status === 'done');
-        if (sRows.length === 0) return (
-          <Card title="🔥 熱號錨點策略統計" icon="">
-            <div style={{ fontSize: 12, color: C.textSub, textAlign: 'center', padding: 8 }}>資料累積中，尚無比對記錄</div>
-          </Card>
-        );
-        const sHit3 = sRows.filter(r => toNum(r?.hit_count, 0) >= 3).length;
-        const sHit2 = sRows.filter(r => toNum(r?.hit_count, 0) >= 2).length;
-        const sRate = sRows.length > 0 ? (sHit3 / sRows.length * 100).toFixed(1) : '0.0';
-        const sRateColor = Number(sRate) >= 10 ? C.green : Number(sRate) >= 5 ? C.orange : '#DC2626';
-        return (
-          <Card title="🔥 熱號錨點策略統計" icon="">
-            <div style={{ textAlign: 'center', padding: '10px 0' }}>
-              <div style={{ ...S.bigNum, color: sRateColor }}>{sRate}%</div>
-              <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>共 {sRows.length} 期｜中3：{sHit3} 次</div>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+          <KpiBox
+            label="主策略 A軌"
+            value={formalSummary.total > 0 ? fmtPercent(formalSummary.hit3Rate) : '--'}
+            valueColor={formalSummary.hit3Rate >= 0.075 ? C.green : C.orange}
+            sub={`${formalSummary.total}期 ・ 中3 ${formalSummary.hit3}次`}
+            hint={formalSummary.total > 0 ? `${formalSummary.avgPnl > 0 ? '+' : ''}${Math.round(formalSummary.avgPnl)}元/期` : '尚無出手'}
+          />
+          <KpiBox
+            label="空窗錨點"
+            value={streakSummary.total > 0 ? fmtPercent(streakSummary.hit3Rate) : '--'}
+            valueColor={streakSummary.hit3Rate >= 0.08 ? C.green : C.orange}
+            sub={`${streakSummary.total}期 ・ 中3 ${streakSummary.hit3}次`}
+            hint={streakSummary.total > 0 ? `${streakSummary.avgPnl > 0 ? '+' : ''}${Math.round(streakSummary.avgPnl)}元/期` : '尚無資料'}
+          />
+          <KpiBox
+            label="近72h健康"
+            value={health.hit3_pct != null ? `${health.hit3_pct}%` : '--'}
+            valueColor={health.level === 'good' ? C.green : health.level === 'normal' ? C.orange : '#DC2626'}
+            sub={healthLoading ? '載入中' : `${fmt(health.compared_periods)}期比對`}
+            hint={health.output_rate_pct != null ? `出手率 ${health.output_rate_pct}%` : ''}
+          />
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ flex: 1, background: C.grayLight, borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
+            <div style={{ fontSize: 10, color: C.textSub }}>主策略總損益</div>
+            <div style={{ fontSize: 16, fontWeight: 800, color: pnlColor(formalSummary.totalPnl) }}>
+              {formalSummary.total > 0 ? `${formalSummary.totalPnl > 0 ? '+' : ''}${Math.round(formalSummary.totalPnl)}元` : '--'}
             </div>
-            <div style={S.divider} />
-            <StatRow label="中3命中率" value={`${sRate}%`} valueColor={sRateColor} />
-            <StatRow label="中3次數" value={`${sHit3} 次`} />
-            <StatRow label="中2以上次數" value={`${sHit2} 次`} />
-            <StatRow label="出手期數" value={`${sRows.length} 期`} />
-            <div style={{ fontSize: 10, color: C.textSub, marginTop: 6, textAlign: 'center' }}>
-              ※ 此策略專用於主系統空窗期，與主策略統計完全分開
+          </div>
+          <div style={{ flex: 1, background: C.grayLight, borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
+            <div style={{ fontSize: 10, color: C.textSub }}>錨點總損益</div>
+            <div style={{ fontSize: 16, fontWeight: 800, color: pnlColor(streakSummary.totalPnl) }}>
+              {streakSummary.total > 0 ? `${streakSummary.totalPnl > 0 ? '+' : ''}${Math.round(streakSummary.totalPnl)}元` : '--'}
             </div>
-          </Card>
-        );
-      })()}
+          </div>
+          <div style={{ flex: 1, background: C.grayLight, borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
+            <div style={{ fontSize: 10, color: C.textSub }}>理論中3率</div>
+            <div style={{ fontSize: 16, fontWeight: 800, color: C.textSub }}>3.75%</div>
+          </div>
+        </div>
+      </div>
 
-      <ComboWeightsCard />
+      {/* 各球場表現 */}
+      <div style={S.card}>
+        <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>🏟️ 主策略・各球場</div>
+        {formalRows.length === 0 ? (
+          <div style={{ fontSize: 12, color: C.textSub, textAlign: 'center', padding: 12 }}>此區間尚無出手紀錄</div>
+        ) : (
+          <>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 44px 52px 64px', gap: 4, fontSize: 10, color: C.textSub, padding: '0 4px 6px', borderBottom: `1px solid ${C.border}` }}>
+              <span>球場</span>
+              <span style={{ textAlign: 'right' }}>期數</span>
+              <span style={{ textAlign: 'right' }}>中3率</span>
+              <span style={{ textAlign: 'right' }}>均損益</span>
+            </div>
+            {boardRows.map(b => (
+              <div key={b.key} style={{ display: 'grid', gridTemplateColumns: '1fr 44px 52px 64px', gap: 4, alignItems: 'center', padding: '8px 4px', borderBottom: `1px solid ${C.border}` }}>
+                <span style={{ fontSize: 12, fontWeight: 700 }}>{b.icon} {b.label}</span>
+                <span style={{ fontSize: 12, textAlign: 'right' }}>{b.total}</span>
+                <span style={{ fontSize: 12, textAlign: 'right', fontWeight: 700, color: b.hit3Rate >= 0.075 ? C.green : C.orange }}>
+                  {fmtPercent(b.hit3Rate)}
+                </span>
+                <span style={{ fontSize: 12, textAlign: 'right', fontWeight: 700, color: pnlColor(b.avgPnl) }}>
+                  {b.avgPnl > 0 ? '+' : ''}{Math.round(b.avgPnl)}
+                </span>
+              </div>
+            ))}
+            {otherSummary.total > 0 && (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 44px 52px 64px', gap: 4, alignItems: 'center', padding: '8px 4px' }}>
+                <span style={{ fontSize: 12, fontWeight: 700 }}>其他</span>
+                <span style={{ fontSize: 12, textAlign: 'right' }}>{otherSummary.total}</span>
+                <span style={{ fontSize: 12, textAlign: 'right' }}>{fmtPercent(otherSummary.hit3Rate)}</span>
+                <span style={{ fontSize: 12, textAlign: 'right', color: pnlColor(otherSummary.avgPnl) }}>
+                  {otherSummary.avgPnl > 0 ? '+' : ''}{Math.round(otherSummary.avgPnl)}
+                </span>
+              </div>
+            )}
+            <div style={{ fontSize: 10, color: C.textSub, marginTop: 8, textAlign: 'center' }}>
+              均損益 = 獎金 − 組數×25元 ・ 僅計已比對出手期
+            </div>
+          </>
+        )}
+      </div>
 
-      <div style={{ fontSize: 11, color: C.textSub, textAlign: 'center', padding: '4px 0' }}>※ 統計數據從 6/8 起算</div>
+      {/* 近72h逐期明細（收合） */}
+      <div style={S.card}>
+        <button
+          onClick={() => setShowRecent(v => !v)}
+          style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'transparent', border: 'none', padding: 0, cursor: 'pointer' }}
+        >
+          <span style={{ fontSize: 13, fontWeight: 800, color: C.gold }}>📋 近72小時逐期</span>
+          <span style={{ fontSize: 12, color: C.textSub }}>{showRecent ? '▲ 收合' : `▼ 展開（${healthPeriods.length}期）`}</span>
+        </button>
+        {showRecent && (
+          <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 300, overflowY: 'auto' }}>
+            {healthLoading ? (
+              <div style={{ fontSize: 11, color: C.textSub }}>載入中...</div>
+            ) : healthPeriods.length === 0 ? (
+              <div style={{ fontSize: 11, color: C.textSub }}>暫無資料</div>
+            ) : healthPeriods.slice().reverse().map((p, idx) => {
+              const isSkipped = p.status === 'skipped';
+              const isDone = p.compare_status === 'done' && !isSkipped;
+              const timeStr = p.time
+                ? new Date(p.time).toLocaleString('zh-TW', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Taipei' })
+                : '--';
+              const bsInfo = boardStateInfo(p.board_state);
+              const hitColor = toNum(p.best_hit) >= 3 ? C.gold : toNum(p.best_hit) >= 2 ? C.orange : C.textSub;
+              return (
+                <div key={p.draw_no || idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: C.grayLight, borderRadius: 6, padding: '6px 8px' }}>
+                  <div style={{ fontSize: 11, color: C.text }}>
+                    <div>{timeStr}</div>
+                    <div style={{ color: C.textSub, marginTop: 2 }}>
+                      {isSkipped ? '⏸️ 空窗' : (bsInfo ? bsInfo.text : '出手')}
+                      {p.four_count != null ? ` ・ fc${p.four_count}` : ''}
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 12, fontWeight: 800, color: isSkipped ? C.textSub : hitColor }}>
+                    {isSkipped ? '—' : !isDone ? '等待' : `中${fmt(p.best_hit)}`}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* 自主學習（收合） */}
+      <div style={S.card}>
+        <button
+          onClick={() => setShowLearning(v => !v)}
+          style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', marginBottom: showLearning ? 10 : 0 }}
+        >
+          <span style={{ fontSize: 13, fontWeight: 800, color: C.gold }}>🤖 自主學習組數</span>
+          <span style={{ fontSize: 12, color: C.textSub }}>{showLearning ? '▲ 收合' : '▼ 展開'}</span>
+        </button>
+        {showLearning && <ComboWeightsCard embedded />}
+      </div>
+
+      <div style={{ fontSize: 10, color: C.textSub, textAlign: 'center', padding: '4px 0 8px' }}>
+        基線統計自 7/9 21:00 部署起 ・ hotfix44：E盤 fc5 空窗
+      </div>
     </div>
   );
 }
@@ -1032,7 +1081,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0628-baseline-hotfix42</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0628-hotfix44 (7/10)</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
