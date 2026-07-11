@@ -572,7 +572,7 @@ function MetaTags({ meta, isSkipped }) {
       {bsInfo && <span style={{ fontSize: 10, fontWeight: 700, color: bsInfo.color, background: bsInfo.bg, borderRadius: 6, padding: '2px 6px' }}>{bsInfo.text}</span>}
       {/* 回饋模式 */}
       {fbInfo && <span style={{ fontSize: 10, fontWeight: 700, color: fbInfo.color, background: fbInfo.bg, borderRadius: 6, padding: '2px 6px' }}>{fbInfo.text}</span>}
-      {/* 自主學習縮手 */}
+      {/* 冷靜期縮手（非自主學習） */}
       {dynamicMax != null && dynamicMax < 8 && (
         <span style={{ fontSize: 10, fontWeight: 700, color: '#7C3AED', background: '#F5F3FF', borderRadius: 6, padding: '2px 6px' }}>
           {dynamicMax === 0 ? '🚫 暫停' : `📉 縮手${dynamicMax}組`}
@@ -588,63 +588,13 @@ function MetaTags({ meta, isSkipped }) {
   );
 }
 function ComboWeightsCard() {
-  const [weights, setWeights] = useState(null);
-  const [loading, setLoading] = useState(true);
-  useEffect(() => {
-    let active = true;
-    apiFetch('/api/board-combo-revalidate', { method: 'POST' })
-      .then(res => { if (active) setWeights(res); })
-      .catch(() => { if (active) setWeights(null); })
-      .finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
-  }, []);
-
-  const BOARD_LABEL = {
-    A_golden: '✨黃金', B_spider_calm: '🕷️蜘蛛',
-    E_false_momentum: '⚡假動', F_quiet: '😶平淡',
-  };
-  const comboColor = (maxCombos) =>
-    maxCombos === 8 ? C.green : maxCombos === 4 ? C.orange : '#DC2626';
-
   return (
     <div style={S.card}>
-      <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>🤖 自主學習狀態</div>
-      <div style={{ fontSize: 11, color: C.textSub, marginBottom: 10 }}>每小時自動更新，根據近24小時命中率動態調整出手組數</div>
-      {loading ? (
-        <div style={{ fontSize: 11, color: C.textSub }}>載入中...</div>
-      ) : !weights?.ok ? (
-        <div style={{ fontSize: 11, color: C.textSub }}>尚無學習資料</div>
-      ) : (
-        <>
-          <div style={{ fontSize: 11, color: C.textSub, marginBottom: 8 }}>
-            基準損益：{weights.baseline_avg_pnl != null ? `${weights.baseline_avg_pnl}元/期` : '--'} ・
-            基準中3率：{weights.baseline_hit3_rate != null ? `${weights.baseline_hit3_rate}%` : '--'} ・
-            樣本：{weights.total_sample || 0}期
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {toArray(weights.combos).sort((a, b) => a.combo_key.localeCompare(b.combo_key)).map(c => {
-              const boardLabel = BOARD_LABEL[c.combo_key.split('_').slice(0, -1).join('_')] || c.combo_key;
-              const color = comboColor(c.max_combos);
-              return (
-                <div key={c.combo_key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: C.grayLight, borderRadius: 8, padding: '7px 10px' }}>
-                  <div>
-                    <span style={{ fontSize: 12, fontWeight: 700 }}>{boardLabel} fc={c.combo_key.split('_').pop()}</span>
-                    <div style={{ fontSize: 10, color: C.textSub, marginTop: 2 }}>
-                      {c.sample}期 ・ 中3率{c.hit3_rate != null ? `${c.hit3_rate}%` : '--'} ・ 優勢{c.relative_edge != null ? `${c.relative_edge}元` : '--'}
-                    </div>
-                  </div>
-                  <div style={{ textAlign: 'right' }}>
-                    <div style={{ fontSize: 14, fontWeight: 900, color }}>
-                      {c.max_combos === 0 ? '🚫暫停' : `${c.max_combos}組`}
-                    </div>
-                    <div style={{ fontSize: 9, color: C.textSub }}>出手組數</div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </>
-      )}
+      <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>🤖 自主學習</div>
+      <div style={{ fontSize: 12, color: C.textSub, lineHeight: 1.6 }}>
+        V0711-3 已下線。formal 固定 8 組，選號由 fc3/fc4/fc6 配方決定。
+        <br />ZM / H 軸盤面研究請用 SQL 工具，不影響 live 出手。
+      </div>
     </div>
   );
 }
@@ -1071,7 +1021,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0711-3</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0711-4</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
