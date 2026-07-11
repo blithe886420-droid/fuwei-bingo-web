@@ -2,26 +2,13 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 const RAILWAY_URL = 'https://fuwei-bingo-backend-production.up.railway.app';
 const REFRESH_INTERVAL_MS = 30000;
-// ★ V0710：統計頁只顯示 7/9 21:00 台北部署後的基線數據
-const BASELINE_START_DATE = '2026-07-09T13:00:00.000Z';
+const STATS_START_DATE = '2026-06-08T00:00:00.000Z';
 
 // V0623-2：四種active_mode中文對照
 const MODE_LABEL = {
   standard: '標準', strong: '強訊號', ultra: '超強訊號', spider: '蜘蛛感知',
 };
 function modeLabel(m) { return MODE_LABEL[m] || m || '-'; }
-
-const SKIP_REASON_LABEL = {
-  insufficient_draws: '開獎資料不足（工程問題）',
-  pool_too_small: '週期熱號不足（未達建組門檻）',
-  strategy_gate: '策略門檻空窗（刻意不出手）',
-  hot_pool_insufficient: '熱號池未達此盤面門檻',
-  no_signal: '選號條件不符',
-  no_groups: '未產出組合',
-};
-function skipReasonLabel(reason) {
-  return SKIP_REASON_LABEL[reason] || reason || '主系統本期不推薦';
-}
 
 // V0620-3：五種盤面狀態中文對照
 const BOARD_STATE_LABEL = {
@@ -107,6 +94,64 @@ function parseNums(input) {
     return input.replace(/[{}[\]]/g, ' ').split(/[,\s|/]+/).map(n => Number(n.trim())).filter(Number.isFinite);
   }
   return [];
+}
+function getComparedDrawNo(row, compareResult) {
+  const detail = toArray(compareResult?.detail);
+  const firstDetail = detail.find((d) => d?.draw_no || d?.target_draw_no) || detail[0] || null;
+  const fromDetail = toNum(firstDetail?.draw_no || firstDetail?.target_draw_no, 0);
+  if (fromDetail > 0) return fromDetail;
+
+  const fromCompare = toNum(compareResult?.draw_no || compareResult?.target_draw_no, 0);
+  if (fromCompare > 0) return fromCompare;
+
+  const fromRow = toNum(row?.target_draw_no || row?.draw_no, 0);
+  if (fromRow > 0) return fromRow;
+
+  const source = toNum(row?.source_draw_no, 0);
+  const periods = Math.max(1, toNum(row?.target_periods, 1));
+  return source > 0 ? source + periods : 0;
+}
+
+function formatRowTime(row) {
+  const ts = row?.compared_at || row?.created_at;
+  if (!ts) return '--';
+  const d = new Date(ts);
+  const date = d.toLocaleDateString('zh-TW', { month: '2-digit', day: '2-digit', timeZone: 'Asia/Taipei' });
+  const time = d.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Taipei' });
+  return `${date} ${time}`;
+}
+
+function countGroupHits(detail) {
+  const d = toArray(detail);
+  let hit3 = 0;
+  let hit2 = 0;
+  for (const x of d) {
+    const h = toNum(x?.hit, 0);
+    if (h >= 3) hit3++;
+    else if (h === 2) hit2++;
+  }
+  return { hit3, hit2 };
+}
+
+function HistoryRowMeta({ row, detail, isDone }) {
+  const timeStr = formatRowTime(row);
+  if (!isDone) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4, marginLeft: 8, flexShrink: 0 }}>
+        <span style={{ fontSize: 11, fontWeight: 600, color: C.textSub, whiteSpace: 'nowrap' }}>{timeStr}</span>
+        <span style={{ fontSize: 11, color: C.orange, whiteSpace: 'nowrap' }}>等待比對</span>
+      </div>
+    );
+  }
+  const { hit3, hit2 } = countGroupHits(detail);
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 3, marginLeft: 8, flexShrink: 0 }}>
+      <span style={{ fontSize: 11, fontWeight: 600, color: C.textSub, whiteSpace: 'nowrap' }}>{timeStr}</span>
+      {hit3 > 0 && <span style={{ fontSize: 11, fontWeight: 800, color: C.gold, whiteSpace: 'nowrap' }}>中3 {hit3}組</span>}
+      {hit2 > 0 && <span style={{ fontSize: 11, fontWeight: 800, color: C.orange, whiteSpace: 'nowrap' }}>中2 {hit2}組</span>}
+      {hit3 === 0 && hit2 === 0 && <span style={{ fontSize: 11, color: C.gray, whiteSpace: 'nowrap' }}>未中</span>}
+    </div>
+  );
 }
 function safeJson(v, fallback = null) {
   if (v == null) return fallback;
@@ -276,10 +321,7 @@ function QuickPage({ prediction, recent20, onRefresh, loading, streakRows }) {
         <Card title="本期預測" icon="⏸️">
           <div style={{ textAlign: 'center', padding: '20px 12px' }}>
             <div style={{ fontSize: 13, color: C.textSub, marginBottom: 8 }}>預測期號 {fmt(row?.source_draw_no || latestDraw?.draw_no)}</div>
-            <div style={{ fontSize: 16, fontWeight: 900, color: '#DC2626', marginBottom: 8 }}>🔴 主系統本期不推薦</div>
-            <div style={{ fontSize: 12, color: C.textSub, marginBottom: 12 }}>
-              {allGroups[0]?.meta?.betting_summary || skipReasonLabel(allGroups[0]?.meta?.skip_reason)}
-            </div>
+            <div style={{ fontSize: 16, fontWeight: 900, color: '#DC2626', marginBottom: 12 }}>🔴 主系統本期不推薦</div>
             {/* ★ V0628-1：顯示熱號錨點策略 */}
             {(() => {
               const srcNo = String(row?.source_draw_no || latestDraw?.draw_no || '');
@@ -331,7 +373,7 @@ function QuickPage({ prediction, recent20, onRefresh, loading, streakRows }) {
               return (
                 <>
                   <div style={{ textAlign: 'center', padding: '12px 0 10px' }}>
-                    <div style={{ fontSize: 13, color: C.textSub, marginBottom: 6 }}>比對期號 {fmt(detail[0]?.draw_no)}</div>
+                    <div style={{ fontSize: 13, color: C.textSub, marginBottom: 6 }}>比對期號 {fmt(getComparedDrawNo(row, compareResult))}</div>
                     <div style={{ ...S.bigNum, color: labelColor }}>{label}</div>
                     <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>
                       本期淨損益：<span style={{ fontWeight: 800, color: netPnl >= 0 ? '#15803D' : '#B91C1C' }}>{netPnl >= 0 ? '+' : ''}{netPnl}元</span>（獎金{reward}元－成本{totalCost}元）
@@ -372,7 +414,7 @@ function QuickPage({ prediction, recent20, onRefresh, loading, streakRows }) {
             <>
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
                 <span style={S.badge(C.textSub, C.grayLight)}>
-                  {isDone && detail.length > 0 ? `比對期號 ${fmt(detail[0]?.draw_no)}` : `預測期號 ${fmt(toNum(row?.source_draw_no, 0) + 1)}`}
+                  預測 {fmt(row?.source_draw_no)} → 比對 {fmt(getComparedDrawNo(row, compareResult))}
                 </span>
                 <span style={S.badge(C.teal, C.greenBg)}>{groups.length} 組</span>
               </div>
@@ -429,24 +471,25 @@ function HistoryPage({ historyRows, streakRows }) {
           const histMode = allGroups[0]?.meta?.active_mode || '';
           const histIsAvoid = isSkipped || histMode === 'skip';
           const meta0 = allGroups[0]?.meta || {};
-          const comparedDraw = toArray(compareResult?.detail)[0]?.draw_no;
-          const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.orange : C.gray;
+          const comparedDraw = toNum(row?.target_draw_no, 0) || getComparedDrawNo(row, compareResult);
+          const streakRow = isSkipped ? streakRows?.find(s => String(s?.source_draw_no) === String(row?.source_draw_no)) : null;
+          const streakDetail = toArray(streakRow?.compare_result_json?.detail);
+          const isDoneStreak = streakRow?.compare_status === 'done';
+          const rightDetail = isSkipped && streakDetail.length ? streakDetail : detail;
+          const rightIsDone = isSkipped ? isDoneStreak : isDone;
           return (
             <div key={row?.id || idx} style={{ ...S.card, marginBottom: 8, padding: '10px 12px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
                   <span style={{ fontSize: 12, fontWeight: 700, color: C.textSub }}>
-                    預測 {fmt(row?.source_draw_no)} → 比對 {fmt(comparedDraw || '--')}
+                    預測 {fmt(row?.source_draw_no)} → 比對 {fmt(comparedDraw > 0 ? comparedDraw : null)}
                   </span>
                   {/* 空窗期顯示熱號錨點 */}
                   {isSkipped ? (
                     (() => {
-                      const streakRow = streakRows?.find(s => String(s?.source_draw_no) === String(row?.source_draw_no));
                       const streakGroups = streakRow ? toArray(streakRow?.groups_json) : [];
-                      const streakDetail = streakRow?.compare_result_json?.detail || [];
                       const streakBestHit = streakDetail.reduce((m, e) => Math.max(m, toNum(e?.hit, 0)), 0);
                       const anchorNums = streakGroups[0]?.meta?.anchor_nums || [];
-                      const isDoneStreak = streakRow?.compare_status === 'done';
                       return streakGroups.length > 0 ? (
                         <div style={{ marginTop: 3 }}>
                           <div style={{ fontSize: 10, color: '#D97706', marginBottom: 3 }}>
@@ -487,11 +530,7 @@ function HistoryPage({ historyRows, streakRows }) {
                   )}
                   {!isSkipped && <MetaTags meta={meta0} isSkipped={isSkipped} />}
                 </div>
-                {isSkipped ? null : isDone ? (
-                  <span style={{ fontSize: 14, fontWeight: 900, color: hitColor, whiteSpace: 'nowrap' }}>
-                    {bestHit >= 3 ? `🏆 中${bestHit}` : bestHit >= 2 ? `🔸 中${bestHit}` : `❌ 未中`}
-                  </span>
-                ) : <span style={{ fontSize: 11, color: C.orange, whiteSpace: 'nowrap' }}>等待比對</span>}
+                <HistoryRowMeta row={row} detail={rightDetail} isDone={rightIsDone} />
               </div>
               {/* 空窗期不顯示號碼，有出手的才顯示 */}
               {!isSkipped && !histIsAvoid && isDone && (
@@ -548,62 +587,300 @@ function MetaTags({ meta, isSkipped }) {
     </div>
   );
 }
-function countOutputGroups(row) {
-  return toArray(row?.groups_json).filter(g => g?.key !== 'skip_meta').length;
-}
+function ComboWeightsCard() {
+  const [weights, setWeights] = useState(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let active = true;
+    apiFetch('/api/board-combo-revalidate', { method: 'POST' })
+      .then(res => { if (active) setWeights(res); })
+      .catch(() => { if (active) setWeights(null); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, []);
 
-function simpleStats(rows) {
-  const total = rows.length;
-  const hit3 = rows.filter(r => toNum(r?.hit_count) >= 3).length;
-  const hit2plus = rows.filter(r => toNum(r?.hit_count) >= 2).length;
-  const groups = rows.reduce((sum, r) => sum + countOutputGroups(r), 0);
-  return {
-    total,
-    hit3,
-    hit2plus,
-    groups,
-    avgGroups: total > 0 ? (groups / total).toFixed(1) : '--',
+  const BOARD_LABEL = {
+    A_golden: '✨黃金', B_spider_calm: '🕷️蜘蛛',
+    E_false_momentum: '⚡假動', F_quiet: '😶平淡',
   };
-}
+  const comboColor = (maxCombos) =>
+    maxCombos === 8 ? C.green : maxCombos === 4 ? C.orange : '#DC2626';
 
-function SimpleStatsCard({ title, rows, emptyText }) {
-  const s = simpleStats(rows);
   return (
-    <Card title={title} icon="">
-      {s.total === 0 ? (
-        <div style={{ fontSize: 12, color: C.textSub, textAlign: 'center', padding: 10 }}>{emptyText}</div>
+    <div style={S.card}>
+      <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>🤖 自主學習狀態</div>
+      <div style={{ fontSize: 11, color: C.textSub, marginBottom: 10 }}>每小時自動更新，根據近24小時命中率動態調整出手組數</div>
+      {loading ? (
+        <div style={{ fontSize: 11, color: C.textSub }}>載入中...</div>
+      ) : !weights?.ok ? (
+        <div style={{ fontSize: 11, color: C.textSub }}>尚無學習資料</div>
       ) : (
         <>
-          <StatRow label="出手期數" value={`${s.total} 期`} />
-          <StatRow label="中3期數" value={`${s.hit3} 期`} />
-          <StatRow label="中2以上期數" value={`${s.hit2plus} 期`} />
-          <StatRow label="總組數" value={`${s.groups} 組`} />
-          <StatRow label="平均每期組數" value={`${s.avgGroups} 組`} />
+          <div style={{ fontSize: 11, color: C.textSub, marginBottom: 8 }}>
+            基準損益：{weights.baseline_avg_pnl != null ? `${weights.baseline_avg_pnl}元/期` : '--'} ・
+            基準中3率：{weights.baseline_hit3_rate != null ? `${weights.baseline_hit3_rate}%` : '--'} ・
+            樣本：{weights.total_sample || 0}期
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {toArray(weights.combos).sort((a, b) => a.combo_key.localeCompare(b.combo_key)).map(c => {
+              const boardLabel = BOARD_LABEL[c.combo_key.split('_').slice(0, -1).join('_')] || c.combo_key;
+              const color = comboColor(c.max_combos);
+              return (
+                <div key={c.combo_key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: C.grayLight, borderRadius: 8, padding: '7px 10px' }}>
+                  <div>
+                    <span style={{ fontSize: 12, fontWeight: 700 }}>{boardLabel} fc={c.combo_key.split('_').pop()}</span>
+                    <div style={{ fontSize: 10, color: C.textSub, marginTop: 2 }}>
+                      {c.sample}期 ・ 中3率{c.hit3_rate != null ? `${c.hit3_rate}%` : '--'} ・ 優勢{c.relative_edge != null ? `${c.relative_edge}元` : '--'}
+                    </div>
+                  </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ fontSize: 14, fontWeight: 900, color }}>
+                      {c.max_combos === 0 ? '🚫暫停' : `${c.max_combos}組`}
+                    </div>
+                    <div style={{ fontSize: 9, color: C.textSub }}>出手組數</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </>
       )}
-    </Card>
+    </div>
   );
 }
 
 function StatsPage({ historyRows, streakRows }) {
-  const formalRows = toArray(historyRows).filter(row =>
-    row?.created_at >= BASELINE_START_DATE
-    && row?.status === 'compared'
-    && toArray(row?.groups_json).some(g => g?.key !== 'skip_meta')
+  const [subTab, setSubTab] = useState('all');
+  const [soulStatus, setSoulStatus] = useState(null);
+  const [soulLoading, setSoulLoading] = useState(true);
+  const [healthStatus, setHealthStatus] = useState(null);
+  const [healthLoading, setHealthLoading] = useState(true);
+  const [healthExpanded, setHealthExpanded] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    apiFetch('/api/soul-status')
+      .then(res => { if (active) setSoulStatus(res); })
+      .catch(() => { if (active) setSoulStatus(null); })
+      .finally(() => { if (active) setSoulLoading(false); });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    apiFetch('/api/health-status')
+      .then(res => { if (active) setHealthStatus(res); })
+      .catch(() => { if (active) setHealthStatus(null); })
+      .finally(() => { if (active) setHealthLoading(false); });
+    return () => { active = false; };
+  }, []);
+
+  const allRows = toArray(historyRows).filter(row =>
+    row?.created_at >= STATS_START_DATE && row?.status === 'compared' && toArray(row?.groups_json).length > 0
   );
 
-  const streakDone = toArray(streakRows).filter(row =>
-    row?.created_at >= BASELINE_START_DATE && row?.compare_status === 'done'
-  );
+  const cleanCount = toNum(soulStatus?.clean_periods, 0);
+  // ★ V0626-3：封印相關變數(sealTarget/sealPct/isSealBroken/daysPassed)已移除
+  const modeMap = soulStatus?.mode_stats || {};
+
+  // V0623-2：依盤面狀態或選號策略篩選
+  const filterByBoardState = (key) => {
+    if (key === 'all') return allRows;
+    if (key === 'core_outer' || key === 'spider_mid') {
+      return allRows.filter(row => {
+        const s = toArray(row?.groups_json)[0]?.meta?.selection_strategy || '';
+        return s === key;
+      });
+    }
+    return allRows.filter(row => {
+      const bs = toArray(row?.groups_json)[0]?.meta?.board_state || '';
+      return bs === key;
+    });
+  };
+
+  const calcStats = (rows) => {
+    const total = rows.length;
+    const hit3 = rows.filter(r => toNum(r?.hit_count) >= 3).length;
+    const hit2 = rows.filter(r => toNum(r?.hit_count) === 2).length;
+    const hit1 = rows.filter(r => toNum(r?.hit_count) === 1).length;
+    const hit0 = rows.filter(r => toNum(r?.hit_count) === 0).length;
+    const rate = total > 0 ? hit3 / total : 0;
+    return { total, hit3, hit2, hit1, hit0, rate };
+  };
+
+  // V0623-2：子頁籤（盤面+選號策略），V0625-2加入wide_spread和gradient
+  const subTabs = [
+    { key: 'all',               label: '全部',     icon: '📊' },
+    { key: 'A_golden',          label: '黃金共振', icon: '✨' },
+    { key: 'B_spider_calm',     label: '蜘蛛靜默', icon: '🕷️' },
+    { key: 'E_false_momentum',  label: '假動能',   icon: '⚡' },
+    { key: 'F_quiet',           label: '平淡期',   icon: '😶' },
+    { key: 'wide_spread',       label: '寬幅分散', icon: '🌐' },
+    { key: 'gradient',          label: '梯度遞減', icon: '📐' },
+    { key: 'core_outer',        label: '核心外圍', icon: '🎯' },
+    { key: 'spider_mid',        label: '次熱號',   icon: '🔬' },
+  ];
+
+  const currentRows = filterByBoardState(subTab);
+  const stats = calcStats(currentRows);
+  const rateColor = stats.rate > 0.0375 ? C.green : C.orange;
 
   return (
     <div style={S.page}>
-      <div style={{ fontSize: 11, color: C.textSub, textAlign: 'center', marginBottom: 10, padding: '6px 8px', background: C.goldBg, borderRadius: 8 }}>
-        統計自 7/9 21:00 部署起（V0628 基線）
+      {/* 靈魂戰況板 */}
+      <div style={S.card}>
+        <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>🧠 靈魂學習進度</div>
+        {soulLoading ? (
+          <div style={{ fontSize: 11, color: C.textSub }}>載入中...</div>
+        ) : !soulStatus?.ok ? (
+          <div style={{ fontSize: 11, color: C.textSub }}>暫無法取得靈魂狀態</div>
+        ) : (
+          <>
+            <div style={{ borderBottom: `1px solid ${C.border}`, paddingBottom: 8, marginBottom: 8 }}>
+              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>V0627-1版本各模式表現：</div>
+              {Object.entries(modeMap).sort((a, b) => b[1].count - a[1].count).map(([mode, stat]) => {
+                const avg = toNum(stat?.avg_pnl, 0);
+                const color = avg > 0 ? C.green : avg > -100 ? C.orange : '#DC2626';
+                return (
+                  <div key={mode} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, padding: '2px 0' }}>
+                    <span style={{ color: C.text, fontWeight: 600 }}>{modeLabel(mode)}</span>
+                    <span style={{ color: C.textSub }}>{stat.count}期</span>
+                    <span style={{ color, fontWeight: 700 }}>{avg > 0 ? '+' : ''}{avg}元/期</span>
+                  </div>
+                );
+              })}
+              {Object.keys(modeMap).length === 0 && <div style={{ fontSize: 11, color: C.textSub }}>尚無資料</div>}
+            </div>
+            <div style={{ fontSize: 11, color: C.textSub }}>共 {cleanCount} 期乾淨資料</div>
+          </>
+        )}
       </div>
 
-      <SimpleStatsCard title="主策略（A軌）" rows={formalRows} emptyText="尚無出手紀錄" />
-      <SimpleStatsCard title="空窗錨點（輔助）" rows={streakDone} emptyText="尚無比對紀錄" />
+      {/* 三天健康檢查 */}
+      <div style={S.card}>
+        <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>📋 三天健康檢查</div>
+        {healthLoading ? (
+          <div style={{ fontSize: 11, color: C.textSub }}>載入中...</div>
+        ) : !healthStatus?.ok ? (
+          <div style={{ fontSize: 11, color: C.textSub }}>暫無法取得健康檢查狀態</div>
+        ) : (() => {
+          const s = healthStatus.summary || {};
+          const levelColor = s.level === 'good' ? C.green : s.level === 'normal' ? C.orange : '#DC2626';
+          const levelBg = s.level === 'good' ? '#DCFCE7' : s.level === 'normal' ? '#FEF9C3' : '#FEE2E2';
+          const periods = toArray(healthStatus.periods);
+          return (
+            <>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6 }}>
+                <span style={{ fontSize: 24, fontWeight: 800, color: levelColor }}>{s.hit3_pct != null ? `${s.hit3_pct}%` : '--'}</span>
+                <span style={{ fontSize: 11, padding: '2px 10px', borderRadius: 6, background: levelBg, color: levelColor, fontWeight: 700 }}>{s.level_label || '無資料'}</span>
+              </div>
+              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 10 }}>
+                {fmt(s.compared_periods)}期已比對 ・ 出手率{s.output_rate_pct != null ? `${s.output_rate_pct}%` : '--'}
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+                <div style={{ flex: 1, background: C.grayLight, borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
+                  <div style={{ fontSize: 16, fontWeight: 800 }}>{fmt(s.hit3_periods)}</div>
+                  <div style={{ fontSize: 10, color: C.textSub }}>中3期數</div>
+                </div>
+                <div style={{ flex: 1, background: C.grayLight, borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
+                  <div style={{ fontSize: 16, fontWeight: 800 }}>{fmt(s.hit2plus_groups_total)}</div>
+                  <div style={{ fontSize: 10, color: C.textSub }}>中2以上組數</div>
+                </div>
+              </div>
+              {/* 精簡版：移除超級組合和選號策略的大塊，只保留逐期明細收合 */}
+              <button
+                onClick={() => setHealthExpanded(v => !v)}
+                style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 10px', background: C.grayLight, borderRadius: 8, border: 'none', fontSize: 12, fontWeight: 700, color: C.text, cursor: 'pointer' }}
+              >
+                <span>逐期明細（{periods.length}期）</span>
+                <span>{healthExpanded ? '▲' : '▼'}</span>
+              </button>
+              {healthExpanded && (
+                <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 320, overflowY: 'auto' }}>
+                  {periods.slice().reverse().map((p, idx) => {
+                    const isSkipped = p.status === 'skipped';
+                    const isDone = p.compare_status === 'done' && !isSkipped;
+                    const timeStr = p.time ? new Date(p.time).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Taipei' }) : '--';
+                    const bsInfo = boardStateInfo(p.board_state);
+                    const hitColor = toNum(p.best_hit) >= 3 ? C.gold : C.textSub;
+                    return (
+                      <div key={p.draw_no || idx} style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: 6, padding: '6px 8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ fontSize: 11, color: C.text }}>
+                          {fmt(p.draw_no)} → {fmt(p.compare_draw_no || (toNum(p.draw_no, 0) > 0 ? toNum(p.draw_no, 0) + 1 : null))} ・ {timeStr} ・ {bsInfo ? bsInfo.text : '跳過'} ・ {isSkipped ? '空窗' : modeLabel(p.active_mode)}
+                        </span>
+                        {isSkipped ? (
+                          <span style={{ fontSize: 10, color: C.textSub }}>⏸️</span>
+                        ) : !isDone ? (
+                          <span style={{ fontSize: 10, color: C.orange }}>等待</span>
+                        ) : (
+                          <span style={{ fontSize: 11, fontWeight: 800, color: hitColor }}>中{fmt(p.best_hit)}</span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </>
+          );
+        })()}
+      </div>
+
+      {/* 統計子頁籤 */}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 14, background: C.card, borderRadius: 12, padding: 8, boxShadow: C.shadow, flexWrap: 'wrap' }}>
+        {subTabs.map(t => (
+          <button key={t.key} style={S.subTab(subTab === t.key)} onClick={() => setSubTab(t.key)}>
+            {t.icon} {t.label}
+          </button>
+        ))}
+      </div>
+
+      <Card title="📊 全部 命中率" icon="">
+        <div style={{ textAlign: 'center', padding: '10px 0' }}>
+          <div style={{ ...S.bigNum, color: rateColor }}>{fmtPercent(stats.rate)}</div>
+          <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>共 {stats.total} 期｜中3：{stats.hit3} 次</div>
+        </div>
+        <div style={S.divider} />
+        <StatRow label="理論值（隨機）" value="3.75%" valueColor={C.textSub} />
+        <StatRow label="中3命中率" value={fmtPercent(stats.rate)} valueColor={rateColor} />
+        <StatRow label="中3次數" value={`${stats.hit3} 次`} />
+        <StatRow label="中2次數" value={`${stats.hit2} 次`} />
+        <StatRow label="中1次數" value={`${stats.hit1} 次`} />
+        <StatRow label="未中次數" value={`${stats.hit0} 次`} />
+      </Card>
+
+      {/* ★ V0628-1：熱號錨點策略獨立統計 */}
+      {(() => {
+        const sRows = toArray(streakRows).filter(r => r?.compare_status === 'done');
+        if (sRows.length === 0) return (
+          <Card title="🔥 熱號錨點策略統計" icon="">
+            <div style={{ fontSize: 12, color: C.textSub, textAlign: 'center', padding: 8 }}>資料累積中，尚無比對記錄</div>
+          </Card>
+        );
+        const sHit3 = sRows.filter(r => toNum(r?.hit_count, 0) >= 3).length;
+        const sHit2 = sRows.filter(r => toNum(r?.hit_count, 0) >= 2).length;
+        const sRate = sRows.length > 0 ? (sHit3 / sRows.length * 100).toFixed(1) : '0.0';
+        const sRateColor = Number(sRate) >= 10 ? C.green : Number(sRate) >= 5 ? C.orange : '#DC2626';
+        return (
+          <Card title="🔥 熱號錨點策略統計" icon="">
+            <div style={{ textAlign: 'center', padding: '10px 0' }}>
+              <div style={{ ...S.bigNum, color: sRateColor }}>{sRate}%</div>
+              <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>共 {sRows.length} 期｜中3：{sHit3} 次</div>
+            </div>
+            <div style={S.divider} />
+            <StatRow label="中3命中率" value={`${sRate}%`} valueColor={sRateColor} />
+            <StatRow label="中3次數" value={`${sHit3} 次`} />
+            <StatRow label="中2以上次數" value={`${sHit2} 次`} />
+            <StatRow label="出手期數" value={`${sRows.length} 期`} />
+            <div style={{ fontSize: 10, color: C.textSub, marginTop: 6, textAlign: 'center' }}>
+              ※ 此策略專用於主系統空窗期，與主策略統計完全分開
+            </div>
+          </Card>
+        );
+      })()}
+
+      <ComboWeightsCard />
+
+      <div style={{ fontSize: 11, color: C.textSub, textAlign: 'center', padding: '4px 0' }}>※ 統計數據從 6/8 起算</div>
     </div>
   );
 }
@@ -794,7 +1071,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0628-hotfix44 (7/10)</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0711-3</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
