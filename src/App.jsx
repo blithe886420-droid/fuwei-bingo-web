@@ -592,7 +592,7 @@ function ComboWeightsCard() {
     <div style={S.card}>
       <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>🤖 自主學習</div>
       <div style={{ fontSize: 12, color: C.textSub, lineHeight: 1.6 }}>
-        V0711-3 已下線。formal 固定 8 組，選號由 fc3/fc4/fc6 配方決定。
+        V0712：自主學習已下線。formal 固定 8 組，選號由 fc3/fc4/fc6 配方決定（fc4 G1 已回退共享錨點）。
         <br />ZM / H 軸盤面研究請用 SQL 工具，不影響 live 出手。
       </div>
     </div>
@@ -1021,7 +1021,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0711-4</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0712</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
