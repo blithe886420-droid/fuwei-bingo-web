@@ -592,7 +592,7 @@ function ComboWeightsCard() {
     <div style={S.card}>
       <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>🤖 自主學習</div>
       <div style={{ fontSize: 12, color: C.textSub, lineHeight: 1.6 }}>
-        V0712-2：V0612-2 蜘蛛動態 C(7,3) 選號。保留 fc3 G1 同區、fc4 G1 錨點+G4 refocus、熱號錨點、可進場二元。
+        V0713：pool 門檻修復 + E 純蜘蛛動態。保留熱號錨點、可進場二元。
         <br />ZM / H 軸盤面研究請用 SQL 工具，不影響 live 出手。
       </div>
     </div>
@@ -1021,7 +1021,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0712-2</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0713</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
