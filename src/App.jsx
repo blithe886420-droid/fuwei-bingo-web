@@ -1,8 +1,15 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
+// App.jsx - V0719（7/19）：1套正式主策略 + 3套影子策略平行實戰頁
 const RAILWAY_URL = 'https://fuwei-bingo-backend-production.up.railway.app';
 const REFRESH_INTERVAL_MS = 30000;
 const STATS_START_DATE = '2026-06-08T00:00:00.000Z';
+const PARALLEL_UI = [
+  { key: 'primary', label: '主策略', short: '主' },
+  { key: 'neighbor', label: '挑戰1・鄰號', short: '挑1' },
+  { key: 'champ', label: '挑戰2・結構感知', short: '挑2' },
+  { key: 'consec', label: '挑戰3・連號鄰邊', short: '挑3' },
+];
 
 // V0623-2：四種active_mode中文對照
 const MODE_LABEL = {
@@ -26,6 +33,10 @@ const SELECTION_STRATEGY_LABEL = {
   spider_mid:  { text: '🔬 次熱號優先', color: '#0E7490', bg: '#CFFAFE' },
   wide_spread: { text: '🌐 寬幅分散', color: '#7C3AED', bg: '#F5F3FF' },
   gradient:    { text: '📐 梯度遞減', color: '#059669', bg: '#ECFDF5' },
+  neighbor_t120:{ text: '🧭 鄰號挑戰', color: '#0369A1', bg: '#E0F2FE' },
+  skip26_t120: { text: '⏱️ 隔2至6期', color: '#7C3AED', bg: '#F5F3FF' },
+  champ_aware: { text: '🧠 結構感知', color: '#7C3AED', bg: '#F5F3FF' },
+  consec_t120: { text: '🔗 連號鄰邊', color: '#C2410C', bg: '#FFEDD5' },
 };
 function selectionStrategyInfo(s) { return SELECTION_STRATEGY_LABEL[s] || null; }
 
@@ -238,7 +249,7 @@ function Spinner() {
 }
 
 // ★ 標籤列：盤面+訊號+謹慎旗標+回饋迴路+動態組數，統一元件供第一頁和第二頁使用
-function QuickPage({ prediction, recent20, onRefresh, loading, streakRows }) {
+function QuickPage({ prediction, recent20, onRefresh, loading, streakRows, isShadow = false }) {
   const row = prediction?.latest_3star_row;
   const compareResult = safeJson(row?.compare_result_json) || safeJson(row?.compare_result);
   const detail = toArray(compareResult?.detail);
@@ -254,6 +265,12 @@ function QuickPage({ prediction, recent20, onRefresh, loading, streakRows }) {
   const hitColor = bestHit >= 3 ? C.gold : bestHit >= 2 ? C.orange : C.textSub;
   const hit2Groups = detail.filter(d => toNum(d?.hit, 0) === 2).length;
   const isWarning = hit2Groups >= 3;
+  const settledReward = detail.reduce((sum, item) => {
+    const hit = toNum(item?.hit, 0);
+    return sum + (hit >= 3 ? 500 : hit === 2 ? 50 : 0);
+  }, 0);
+  const settledCost = groups.length * 25;
+  const settledNet = settledReward - settledCost;
 
   const comparedDrawNumsArr = toArray(compareResult?.draw_nums);
   const drawNums = new Set(
@@ -281,8 +298,15 @@ function QuickPage({ prediction, recent20, onRefresh, loading, streakRows }) {
         ) : <div style={S.empty}>載入中...</div>}
       </Card>
 
-      {/* 行動建議框（V0623-2清理版：移除confidenceScore/brewCount/forcedSwitch等舊邏輯） */}
-      {!isSkipped && !isDone && (() => {
+      {isShadow && (
+        <div style={{ background: '#F3E8FF', border: '2px solid #9333EA', borderRadius: 12, padding: '10px 12px', marginBottom: 12 }}>
+          <div style={{ fontSize: 16, fontWeight: 900, color: '#7E22CE' }}>🧪 影子觀察・禁止下注</div>
+          <div style={{ fontSize: 11, color: '#6B21A8', marginTop: 4 }}>只記錄相同 E／F 期別的真實命中成績，不會觸發任何下注或主策略判斷。</div>
+        </div>
+      )}
+
+      {/* 行動建議框（影子策略永遠不顯示進場建議） */}
+      {!isShadow && !isSkipped && !isDone && (() => {
         const isGo = !isAvoidNow;
         const actionBg = isGo ? '#DCFCE7' : '#FEE2E2';
         const actionBorder = isGo ? '#16A34A' : '#DC2626';
@@ -321,7 +345,9 @@ function QuickPage({ prediction, recent20, onRefresh, loading, streakRows }) {
         <Card title="本期預測" icon="⏸️">
           <div style={{ textAlign: 'center', padding: '20px 12px' }}>
             <div style={{ fontSize: 13, color: C.textSub, marginBottom: 8 }}>預測期號 {fmt(row?.source_draw_no || latestDraw?.draw_no)}</div>
-            <div style={{ fontSize: 16, fontWeight: 900, color: '#DC2626', marginBottom: 12 }}>🔴 主系統本期不推薦</div>
+            <div style={{ fontSize: 16, fontWeight: 900, color: isShadow ? '#7E22CE' : '#DC2626', marginBottom: 12 }}>
+              {isShadow ? '🧪 影子策略等待共同 E／F 結算期' : '🔴 主系統本期不推薦'}
+            </div>
             {/* ★ V0628-1：顯示熱號錨點策略 */}
             {(() => {
               const srcNo = String(row?.source_draw_no || latestDraw?.draw_no || '');
@@ -358,25 +384,35 @@ function QuickPage({ prediction, recent20, onRefresh, loading, streakRows }) {
           right={
             isDone ? (
               <span style={S.badge(hitColor, hitColor + '18')}>
-                {bestHit >= 3 ? `🏆 中${bestHit}！` : bestHit >= 2 ? `🔸 中${bestHit}(仍虧)` : `❌ 未中`}
+                {bestHit >= 3
+                  ? `🏆 中${bestHit}！`
+                  : bestHit >= 2
+                    ? `🔸 中2組合${settledNet > 0 ? '獲利' : settledNet === 0 ? '打平' : '仍虧'}`
+                    : '❌ 未中'}
               </span>
             ) : row ? <span style={S.badge(C.orange, C.orangeLight)}>等待開獎</span> : null
           }
         >
           {isDone ? (
             (() => {
-              const totalCost = groups.length * 25;
-              const reward = bestHit >= 3 ? 500 : bestHit >= 2 ? 50 : 0;
+              const totalCost = settledCost;
+              const reward = settledReward;
               const netPnl = reward - totalCost;
               const labelColor = bestHit >= 3 ? hitColor : netPnl < 0 ? '#B91C1C' : C.textSub;
-              const label = bestHit >= 3 ? '🏆 恭喜中3！' : bestHit >= 2 ? '🔸 中2（仍虧本）' : '❌ 未中';
+              const label = bestHit >= 3
+                ? '🏆 恭喜中3！'
+                : bestHit >= 2
+                  ? `🔸 ${hit2Groups > 1 ? '多組' : '單組'}中2（${netPnl > 0 ? '獲利' : netPnl === 0 ? '打平' : '仍虧本'}）`
+                  : '❌ 未中';
               return (
                 <>
                   <div style={{ textAlign: 'center', padding: '12px 0 10px' }}>
                     <div style={{ fontSize: 13, color: C.textSub, marginBottom: 6 }}>比對期號 {fmt(getComparedDrawNo(row, compareResult))}</div>
                     <div style={{ ...S.bigNum, color: labelColor }}>{label}</div>
                     <div style={{ fontSize: 12, color: C.textSub, marginTop: 4 }}>
-                      本期淨損益：<span style={{ fontWeight: 800, color: netPnl >= 0 ? '#15803D' : '#B91C1C' }}>{netPnl >= 0 ? '+' : ''}{netPnl}元</span>（獎金{reward}元－成本{totalCost}元）
+                      {isShadow ? '影子模擬差額（未下注）' : '本期淨損益'}：
+                      <span style={{ fontWeight: 800, color: netPnl >= 0 ? '#15803D' : '#B91C1C' }}>{netPnl >= 0 ? '+' : ''}{netPnl}元</span>
+                      （獎金{reward}元－模擬成本{totalCost}元）
                     </div>
                   </div>
                   <div style={S.divider} />
@@ -391,7 +427,7 @@ function QuickPage({ prediction, recent20, onRefresh, loading, streakRows }) {
                       <div key={key} style={{ background: is3 ? C.goldBg : C.grayLight, border: `2px solid ${is3 ? C.goldLight : C.border}`, borderRadius: 10, padding: '8px 12px', marginBottom: 8 }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                           <div style={{ fontSize: 11, fontWeight: 600, color: C.textSub }}>第{idx + 1}組</div>
-                          {hit >= 0 && <span style={{ fontSize: 14, fontWeight: 900, color: is3 ? C.gold : is2 ? C.orange : C.gray }}>{is3 ? `🏆 中${hit}` : is2 ? `中${hit}(仍虧)` : `中${hit}`}</span>}
+                          {hit >= 0 && <span style={{ fontSize: 14, fontWeight: 900, color: is3 ? C.gold : is2 ? C.orange : C.gray }}>{is3 ? `🏆 中${hit}` : `中${hit}`}</span>}
                         </div>
                         <div style={{ display: 'flex', gap: 6 }}>
                           {nums.map(n => {
@@ -431,7 +467,7 @@ function QuickPage({ prediction, recent20, onRefresh, loading, streakRows }) {
                       <div style={{ fontSize: 12, fontWeight: 600, color: C.textSub }}>第{idx + 1}組</div>
                       {isDone && hit >= 0 && (
                         <span style={{ fontSize: 16, fontWeight: 900, color: is3 ? C.gold : is2 ? C.orange : C.gray }}>
-                          {is3 ? `🏆 中${hit}` : is2 ? `中${hit}(仍虧)` : `中${hit}`}
+                          {is3 ? `🏆 中${hit}` : `中${hit}`}
                         </span>
                       )}
                     </div>
@@ -455,7 +491,7 @@ function QuickPage({ prediction, recent20, onRefresh, loading, streakRows }) {
   );
 }
 
-function HistoryPage({ historyRows, streakRows }) {
+function HistoryPage({ historyRows, streakRows, isShadow = false }) {
   const rows = toArray(historyRows).slice(0, 20);
   return (
     <div style={S.page}>
@@ -523,8 +559,8 @@ function HistoryPage({ historyRows, streakRows }) {
                     })()
                   ) : (
                     <div style={{ marginTop: 3, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-                      <span style={{ fontSize: 11, fontWeight: 700, color: histIsAvoid ? '#DC2626' : '#15803D', background: histIsAvoid ? '#FEE2E2' : '#DCFCE7', borderRadius: 6, padding: '2px 8px' }}>
-                        {histIsAvoid ? '🔴 不推薦' : '🟢 可進場'}
+                      <span style={{ fontSize: 11, fontWeight: 700, color: isShadow ? '#7E22CE' : histIsAvoid ? '#DC2626' : '#15803D', background: isShadow ? '#F3E8FF' : histIsAvoid ? '#FEE2E2' : '#DCFCE7', borderRadius: 6, padding: '2px 8px' }}>
+                        {isShadow ? '🧪 影子觀察・未下注' : (histIsAvoid ? '🔴 不推薦' : '🟢 可進場')}
                       </span>
                     </div>
                   )}
@@ -590,31 +626,20 @@ function MetaTags({ meta, isSkipped }) {
 function ComboWeightsCard() {
   return (
     <div style={S.card}>
-      <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>🤖 自主學習</div>
+      <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>🧪 平行實戰</div>
       <div style={{ fontSize: 12, color: C.textSub, lineHeight: 1.6 }}>
-        V0713：pool 門檻修復 + E 純蜘蛛動態。保留熱號錨點、可進場二元。
+        V0719：正式主線固定，另以三套影子策略平行累積真實 E／F 成績。
         <br />ZM / H 軸盤面研究請用 SQL 工具，不影響 live 出手。
       </div>
     </div>
   );
 }
 
-function StatsPage({ historyRows, streakRows }) {
+function StatsPage({ historyRows, streakRows, isShadow = false }) {
   const [subTab, setSubTab] = useState('all');
-  const [soulStatus, setSoulStatus] = useState(null);
-  const [soulLoading, setSoulLoading] = useState(true);
   const [healthStatus, setHealthStatus] = useState(null);
   const [healthLoading, setHealthLoading] = useState(true);
   const [healthExpanded, setHealthExpanded] = useState(false);
-
-  useEffect(() => {
-    let active = true;
-    apiFetch('/api/soul-status')
-      .then(res => { if (active) setSoulStatus(res); })
-      .catch(() => { if (active) setSoulStatus(null); })
-      .finally(() => { if (active) setSoulLoading(false); });
-    return () => { active = false; };
-  }, []);
 
   useEffect(() => {
     let active = true;
@@ -628,10 +653,6 @@ function StatsPage({ historyRows, streakRows }) {
   const allRows = toArray(historyRows).filter(row =>
     row?.created_at >= STATS_START_DATE && row?.status === 'compared' && toArray(row?.groups_json).length > 0
   );
-
-  const cleanCount = toNum(soulStatus?.clean_periods, 0);
-  // ★ V0626-3：封印相關變數(sealTarget/sealPct/isSealBroken/daysPassed)已移除
-  const modeMap = soulStatus?.mode_stats || {};
 
   // V0623-2：依盤面狀態或選號策略篩選
   const filterByBoardState = (key) => {
@@ -677,35 +698,11 @@ function StatsPage({ historyRows, streakRows }) {
 
   return (
     <div style={S.page}>
-      {/* 靈魂戰況板 */}
-      <div style={S.card}>
-        <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>🧠 靈魂學習進度</div>
-        {soulLoading ? (
-          <div style={{ fontSize: 11, color: C.textSub }}>載入中...</div>
-        ) : !soulStatus?.ok ? (
-          <div style={{ fontSize: 11, color: C.textSub }}>暫無法取得靈魂狀態</div>
-        ) : (
-          <>
-            <div style={{ borderBottom: `1px solid ${C.border}`, paddingBottom: 8, marginBottom: 8 }}>
-              <div style={{ fontSize: 11, color: C.textSub, marginBottom: 4 }}>V0627-1版本各模式表現：</div>
-              {Object.entries(modeMap).sort((a, b) => b[1].count - a[1].count).map(([mode, stat]) => {
-                const avg = toNum(stat?.avg_pnl, 0);
-                const color = avg > 0 ? C.green : avg > -100 ? C.orange : '#DC2626';
-                return (
-                  <div key={mode} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, padding: '2px 0' }}>
-                    <span style={{ color: C.text, fontWeight: 600 }}>{modeLabel(mode)}</span>
-                    <span style={{ color: C.textSub }}>{stat.count}期</span>
-                    <span style={{ color, fontWeight: 700 }}>{avg > 0 ? '+' : ''}{avg}元/期</span>
-                  </div>
-                );
-              })}
-              {Object.keys(modeMap).length === 0 && <div style={{ fontSize: 11, color: C.textSub }}>尚無資料</div>}
-            </div>
-            <div style={{ fontSize: 11, color: C.textSub }}>共 {cleanCount} 期乾淨資料</div>
-          </>
-        )}
-      </div>
-
+      {isShadow && (
+        <div style={{ background: '#F3E8FF', border: '2px solid #9333EA', borderRadius: 12, padding: '9px 12px', marginBottom: 10, color: '#7E22CE', fontSize: 12, fontWeight: 800 }}>
+          🧪 本頁為影子模擬統計，所有金額僅是同條件換算，實際未下注。
+        </div>
+      )}
       {/* 三天健康檢查 */}
       <div style={S.card}>
         <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>📋 三天健康檢查</div>
@@ -959,8 +956,56 @@ function HotPoolPage({ prediction }) {
   );
 }
 
+function ParallelStrategyTabs({ activeKey, onChange, strategies }) {
+  const activeSummary = strategies?.[activeKey]?.summary || {};
+  return (
+    <div style={{ padding: '10px 12px 4px', background: '#F8FAFC' }}>
+      <div style={{ fontSize: 11, color: C.textSub, marginBottom: 6 }}>
+        V0719 平行實戰：挑戰策略只記錄成績，不會觸發下注
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 6 }}>
+        {PARALLEL_UI.map(item => {
+          const active = item.key === activeKey;
+          const summary = strategies?.[item.key]?.summary || {};
+          return (
+            <button
+              key={item.key}
+              onClick={() => onChange(item.key)}
+              style={{
+                border: active ? `2px solid ${C.gold}` : '1px solid #D1D5DB',
+                borderRadius: 9,
+                background: active ? C.goldBg : '#FFFFFF',
+                padding: '7px 3px',
+                cursor: 'pointer',
+                minWidth: 0,
+              }}
+            >
+              <div style={{ fontSize: 12, fontWeight: 800, color: active ? C.gold : C.text }}>{item.short}</div>
+              <div style={{ fontSize: 10, color: C.textSub, marginTop: 2 }}>
+                {toNum(summary.total, 0) > 0
+                  ? `${summary.total}期｜合格${fmtPercent(summary.qualified_rate)}`
+                  : '等待 E/F 資料'}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+      {toNum(activeSummary.total, 0) > 0 && (
+        <div style={{ fontSize: 11, color: C.textSub, marginTop: 7, textAlign: 'center' }}>
+          {activeSummary.sample_scope || '近期'}：
+          合格 {activeSummary.qualified}/{activeSummary.total}（{fmtPercent(activeSummary.qualified_rate)}）｜
+          路徑A {activeSummary.path_a}/{activeSummary.total}（{fmtPercent(activeSummary.path_a_rate)}）｜
+          路徑B {activeSummary.path_b}/{activeSummary.total}（{fmtPercent(activeSummary.path_b_rate)}）｜
+          六期密度 {activeSummary.density_passed}/{activeSummary.density_windows}（{fmtPercent(activeSummary.density_rate)}）
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   const [tab, setTab] = useState('quick');
+  const [strategyKey, setStrategyKey] = useState('primary');
   const [loading, setLoading] = useState(false);
   const [prediction, setPrediction] = useState(null);
   const [recent20, setRecent20] = useState([]);
@@ -1001,6 +1046,17 @@ export default function App() {
     return () => clearInterval(timerRef.current);
   }, [loadData]);
 
+  const parallelStrategies = prediction?.parallel_strategies || {};
+  const activeLane = parallelStrategies?.[strategyKey] || null;
+  const activePrediction = activeLane
+    ? { ...prediction, latest_3star_row: activeLane.latest_row }
+    : prediction;
+  const activeHistoryRows = activeLane
+    ? (activeLane.recent_rows || [])
+    : historyRows;
+  const isShadowLane = strategyKey !== 'primary';
+  const activeStreakRows = strategyKey === 'primary' ? streakRows : [];
+
   const TABS = [
     { key: 'quick',   label: '快速', icon: '⚡' },
     { key: 'history', label: '近期', icon: '📋' },
@@ -1021,7 +1077,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0713</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0719</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
@@ -1037,10 +1093,17 @@ export default function App() {
           </button>
         ))}
       </div>
+      {['quick', 'history', 'stats'].includes(tab) && (
+        <ParallelStrategyTabs
+          activeKey={strategyKey}
+          onChange={setStrategyKey}
+          strategies={parallelStrategies}
+        />
+      )}
       {loading && tab === 'quick' && <Spinner />}
-      {tab === 'quick'   && <QuickPage   prediction={prediction} recent20={recent20} onRefresh={loadData} loading={loading} streakRows={streakRows} />}
-      {tab === 'history' && <HistoryPage historyRows={historyRows} streakRows={streakRows} />}
-      {tab === 'stats'   && <StatsPage   historyRows={historyRows} streakRows={streakRows} />}
+      {tab === 'quick'   && <QuickPage   prediction={activePrediction} recent20={recent20} onRefresh={loadData} loading={loading} streakRows={activeStreakRows} isShadow={isShadowLane} />}
+      {tab === 'history' && <HistoryPage historyRows={activeHistoryRows} streakRows={activeStreakRows} isShadow={isShadowLane} />}
+      {tab === 'stats'   && <StatsPage   historyRows={activeHistoryRows} streakRows={activeStreakRows} isShadow={isShadowLane} />}
       {tab === 'market'  && <MarketPage  recent20={recent20} />}
       {tab === 'hot'     && <HotPage     recent20={recent20} />}
       {tab === 'hotpool' && <HotPoolPage prediction={prediction} />}
