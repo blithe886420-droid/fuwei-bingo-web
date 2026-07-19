@@ -1,14 +1,14 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
-// App.jsx - V0719-3（7/19）：挑3升擂主，加入覆蓋、快反應、混合池三個挑戰者
+// App.jsx - V0719-4（7/19）：快反應升暫時擂主，加入三套異質候選池與 E／F 分場成績
 const RAILWAY_URL = 'https://fuwei-bingo-backend-production.up.railway.app';
 const REFRESH_INTERVAL_MS = 30000;
 const STATS_START_DATE = '2026-06-08T00:00:00.000Z';
 const PARALLEL_UI = [
-  { key: 'primary', label: '擂主・連號鄰邊', short: '擂主' },
-  { key: 'cover', label: '挑戰1・覆蓋加強', short: '挑1' },
-  { key: 'fast', label: '挑戰2・快速反應', short: '挑2' },
-  { key: 'hybrid', label: '挑戰3・混合池', short: '挑3' },
+  { key: 'primary', label: '暫時擂主・快反應', short: '擂主' },
+  { key: 'shadow_freq', label: '挑戰1・近期頻率', short: '挑1' },
+  { key: 'shadow_delay', label: '挑戰2・延遲覆蓋', short: '挑2' },
+  { key: 'shadow_cross', label: '挑戰3・跨池分散', short: '挑3' },
 ];
 
 // V0623-2：四種active_mode中文對照
@@ -40,6 +40,9 @@ const SELECTION_STRATEGY_LABEL = {
   consec_cover_t120:{ text: '🌐 覆蓋加強', color: '#0369A1', bg: '#E0F2FE' },
   consec_fast_t60:{ text: '⚡ 快速反應', color: '#7C3AED', bg: '#F5F3FF' },
   consec_hybrid_t120:{ text: '🧩 混合池', color: '#047857', bg: '#D1FAE5' },
+  freq12_t60: { text: '🔥 近期頻率', color: '#B91C1C', bg: '#FEE2E2' },
+  delay26_t120:{ text: '⏳ 延遲覆蓋', color: '#7C3AED', bg: '#F5F3FF' },
+  cross3pool_t120:{ text: '🌐 跨池分散', color: '#047857', bg: '#D1FAE5' },
 };
 function selectionStrategyInfo(s) { return SELECTION_STRATEGY_LABEL[s] || null; }
 
@@ -631,7 +634,7 @@ function ComboWeightsCard() {
     <div style={S.card}>
       <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>🧪 平行實戰</div>
       <div style={{ fontSize: 12, color: C.textSub, lineHeight: 1.6 }}>
-        V0719-3：挑3升為擂主，另以三個改良方向平行累積真實 E／F 成績。
+        V0719-4：快反應升為暫時擂主，另以三套異質候選池平行累積真實 E／F 成績。
         <br />ZM / H 軸盤面研究請用 SQL 工具，不影響 live 出手。
       </div>
     </div>
@@ -961,10 +964,12 @@ function HotPoolPage({ prediction }) {
 
 function ParallelStrategyTabs({ activeKey, onChange, strategies }) {
   const activeSummary = strategies?.[activeKey]?.summary || {};
+  const eSummary = activeSummary?.by_board?.E_false_momentum || {};
+  const fSummary = activeSummary?.by_board?.F_quiet || {};
   return (
     <div style={{ padding: '10px 12px 4px', background: '#F8FAFC' }}>
       <div style={{ fontSize: 11, color: C.textSub, marginBottom: 6 }}>
-        V0719-3 擂台實戰：挑戰策略只記錄成績，不會觸發下注
+        V0719-4 擂台實戰：挑戰策略只記錄成績，不會觸發下注
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 6 }}>
         {PARALLEL_UI.map(item => {
@@ -994,12 +999,20 @@ function ParallelStrategyTabs({ activeKey, onChange, strategies }) {
         })}
       </div>
       {toNum(activeSummary.total, 0) > 0 && (
-        <div style={{ fontSize: 11, color: C.textSub, marginTop: 7, textAlign: 'center' }}>
-          {activeSummary.sample_scope || '近期'}：
-          合格 {activeSummary.qualified}/{activeSummary.total}（{fmtPercent(activeSummary.qualified_rate)}）｜
-          路徑A {activeSummary.path_a}/{activeSummary.total}（{fmtPercent(activeSummary.path_a_rate)}）｜
-          路徑B {activeSummary.path_b}/{activeSummary.total}（{fmtPercent(activeSummary.path_b_rate)}）｜
-          六期密度 {activeSummary.density_passed}/{activeSummary.density_windows}（{fmtPercent(activeSummary.density_rate)}）
+        <div style={{ fontSize: 11, color: C.textSub, marginTop: 7, textAlign: 'center', lineHeight: 1.6 }}>
+          <div>
+            {activeSummary.sample_scope || '近期'}：
+            合格 {activeSummary.qualified}/{activeSummary.total}（{fmtPercent(activeSummary.qualified_rate)}）｜
+            路徑A {activeSummary.path_a}/{activeSummary.total}（{fmtPercent(activeSummary.path_a_rate)}）｜
+            路徑B {activeSummary.path_b}/{activeSummary.total}（{fmtPercent(activeSummary.path_b_rate)}）｜
+            六期密度 {activeSummary.density_passed}/{activeSummary.density_windows}（{fmtPercent(activeSummary.density_rate)}）
+          </div>
+          <div>
+            E場 合格 {toNum(eSummary.qualified, 0)}/{toNum(eSummary.total, 0)}
+            （{fmtPercent(eSummary.qualified_rate)}）｜
+            F場 合格 {toNum(fSummary.qualified, 0)}/{toNum(fSummary.total, 0)}
+            （{fmtPercent(fSummary.qualified_rate)}）
+          </div>
         </div>
       )}
     </div>
@@ -1080,7 +1093,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0719-3</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0719-4</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
