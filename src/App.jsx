@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
-// App.jsx - V0720（7/20）：延遲覆蓋升暫時擂主，測 Aware／T60／頻率挑戰者
+// App.jsx - V0720-2（7/20）：延遲覆蓋暫時擂主；統計改看最近200期共同樣本
 const RAILWAY_URL = 'https://fuwei-bingo-backend-production.up.railway.app';
 const REFRESH_INTERVAL_MS = 30000;
 const STATS_START_DATE = '2026-06-08T00:00:00.000Z';
@@ -636,7 +636,7 @@ function ComboWeightsCard() {
     <div style={S.card}>
       <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>🧪 平行實戰</div>
       <div style={{ fontSize: 12, color: C.textSub, lineHeight: 1.6 }}>
-        V0720：延遲覆蓋升為暫時擂主，另測 Aware組法、T60、頻率挑戰者。
+        V0720-2：延遲覆蓋暫時擂主；統計改看最近200期，方便看整天成績。
         <br />ZM / H 軸盤面研究請用 SQL 工具，不影響 live 出手。
       </div>
     </div>
@@ -971,7 +971,7 @@ function ParallelStrategyTabs({ activeKey, onChange, strategies }) {
   return (
     <div style={{ padding: '10px 12px 4px', background: '#F8FAFC' }}>
       <div style={{ fontSize: 11, color: C.textSub, marginBottom: 6 }}>
-        V0720 擂台實戰：挑戰策略只記錄成績，不會觸發下注
+        V0720-2 擂台實戰：挑戰策略只記錄成績，不會觸發下注
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 6 }}>
         {PARALLEL_UI.map(item => {
@@ -1095,7 +1095,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0720</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0720-2</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
