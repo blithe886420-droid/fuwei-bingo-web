@@ -1,16 +1,17 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
-// App.jsx - V0720-4（7/20）：六路並行；前端先載主資料，次要 API 不擋畫面
+// App.jsx - V0720-5（7/20）：Aware 升擂主；五挑戰重排（舊覆蓋／避開／三池／連號／鄰號）
+// ★ V0720-4（7/20）：六路並行；前端先載主資料，次要 API 不擋畫面
 // ★ V0720-3（7/20）：六路並行；新增避開上期、鄰號
 const RAILWAY_URL = 'https://fuwei-bingo-backend-production.up.railway.app';
 const REFRESH_INTERVAL_MS = 30000;
 const STATS_START_DATE = '2026-06-08T00:00:00.000Z';
 const PARALLEL_UI = [
-  { key: 'primary', label: '暫時擂主・延遲覆蓋', short: '擂主' },
-  { key: 'shadow_delay_aware', label: '挑戰1・延遲Aware', short: '挑1' },
-  { key: 'shadow_delay_fast', label: '挑戰2・延遲T60', short: '挑2' },
-  { key: 'shadow_freq', label: '挑戰3・近期頻率', short: '挑3' },
-  { key: 'shadow_anti', label: '挑戰4・避開上期', short: '挑4' },
+  { key: 'primary', label: '暫時擂主・延遲Aware', short: '擂主' },
+  { key: 'shadow_delay_cover', label: '挑戰1・舊擂主覆蓋', short: '挑1' },
+  { key: 'shadow_anti', label: '挑戰2・避開上期', short: '挑2' },
+  { key: 'shadow_cross', label: '挑戰3・三池交叉', short: '挑3' },
+  { key: 'shadow_consec', label: '挑戰4・連號混合', short: '挑4' },
   { key: 'shadow_neighbor', label: '挑戰5・鄰號', short: '挑5' },
 ];
 
@@ -640,7 +641,7 @@ function ComboWeightsCard() {
     <div style={S.card}>
       <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>🧪 平行實戰</div>
       <div style={{ fontSize: 12, color: C.textSub, lineHeight: 1.6 }}>
-        V0720-4：六路並行測試；統計看最近80期，避免畫面打爆資料庫。
+        V0720-5：六路並行；Aware 升擂主；統計看最近80期。
         <br />ZM / H 軸盤面研究請用 SQL 工具，不影響 live 出手。
       </div>
     </div>
@@ -975,7 +976,7 @@ function ParallelStrategyTabs({ activeKey, onChange, strategies }) {
   return (
     <div style={{ padding: '10px 12px 4px', background: '#F8FAFC' }}>
       <div style={{ fontSize: 11, color: C.textSub, marginBottom: 6 }}>
-        V0720-4 六路實戰：挑戰策略只記錄成績，不會觸發下注
+        V0720-5 六路實戰：挑戰策略只記錄成績，不會觸發下注
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 6 }}>
         {PARALLEL_UI.map(item => {
@@ -1103,7 +1104,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0720-4</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0720-5</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
