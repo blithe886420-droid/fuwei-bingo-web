@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
-// App.jsx - V0720-3（7/20）：六路並行；新增避開上期、鄰號
+// App.jsx - V0720-4（7/20）：六路並行；前端先載主資料，次要 API 不擋畫面
+// ★ V0720-3（7/20）：六路並行；新增避開上期、鄰號
 const RAILWAY_URL = 'https://fuwei-bingo-backend-production.up.railway.app';
 const REFRESH_INTERVAL_MS = 30000;
 const STATS_START_DATE = '2026-06-08T00:00:00.000Z';
@@ -639,7 +640,7 @@ function ComboWeightsCard() {
     <div style={S.card}>
       <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>🧪 平行實戰</div>
       <div style={{ fontSize: 12, color: C.textSub, lineHeight: 1.6 }}>
-        V0720-3：六路並行測試；統計看最近200期，方便看整天成績。
+        V0720-4：六路並行測試；統計看最近80期，避免畫面打爆資料庫。
         <br />ZM / H 軸盤面研究請用 SQL 工具，不影響 live 出手。
       </div>
     </div>
@@ -974,7 +975,7 @@ function ParallelStrategyTabs({ activeKey, onChange, strategies }) {
   return (
     <div style={{ padding: '10px 12px 4px', background: '#F8FAFC' }}>
       <div style={{ fontSize: 11, color: C.textSub, marginBottom: 6 }}>
-        V0720-3 六路實戰：挑戰策略只記錄成績，不會觸發下注
+        V0720-4 六路實戰：挑戰策略只記錄成績，不會觸發下注
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 6 }}>
         {PARALLEL_UI.map(item => {
@@ -1039,24 +1040,28 @@ export default function App() {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [predRes, recentRes, healthRes, streakRes] = await Promise.all([
+      // V0720-4：先載主畫面需要的兩支；health／streak 後載，避免一起打爆資料庫
+      const [predRes, recentRes] = await Promise.all([
         apiFetch('/api/prediction-latest').catch(() => ({})),
         apiFetch('/api/recent20').catch(() => ({})),
-        apiFetch('/api/health-status').catch(() => ({})),
-        apiFetch('/api/streak-anchor-latest').catch(() => ({})), // ★ V0628-1：熱號錨點最新記錄
       ]);
       setPrediction(predRes);
       setHistoryRows(predRes?.recent_3star_compared_rows || predRes?.recent_compared_rows || []);
-      setStreakRows(streakRes?.rows || []);
       setRecent20(recentRes?.recent20 || recentRes?.data || []);
       setLoopStatus(isNight() ? '夜間停止（00:00-07:00）' : `已更新 ${new Date().toLocaleTimeString('zh-TW', { hour12: false })}`);
+      setLoading(false);
+
+      const [healthRes, streakRes] = await Promise.all([
+        apiFetch('/api/health-status').catch(() => ({})),
+        apiFetch('/api/streak-anchor-latest').catch(() => ({})),
+      ]);
+      setStreakRows(streakRes?.rows || []);
       const consecutiveLoss = toNum(healthRes?.summary?.consecutive_loss, 0);
       setEmergencyAlert(consecutiveLoss >= 18
         ? `⚠️ 緊急警告：已連續虧損${consecutiveLoss}期，請人工檢查系統狀態`
         : null);
     } catch {
       setLoopStatus('載入失敗，稍後重試');
-    } finally {
       setLoading(false);
     }
   }, []);
@@ -1098,7 +1103,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0720-3</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0720-4</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
