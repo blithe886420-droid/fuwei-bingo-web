@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
-// App.jsx - V0721（7/21）：六路延遲系公平實驗；第三頁改固定窗口、三閘與逐時統計
+// App.jsx - V0721-2（7/21）：兩個延遲核心＋四個異質舊專家；固定窗口逐時比較
 // ★ V0720-4（7/20）：六路並行；前端先載主資料，次要 API 不擋畫面
 // ★ V0720-3（7/20）：六路並行；新增避開上期、鄰號
 const RAILWAY_URL = 'https://fuwei-bingo-backend-production.up.railway.app';
@@ -9,10 +9,10 @@ const STATS_START_DATE = '2026-06-08T00:00:00.000Z';
 const PARALLEL_UI = [
   { key: 'primary', label: '暫時擂主・延遲Aware', short: '擂主' },
   { key: 'shadow_delay_cover', label: '挑戰1・延遲覆蓋', short: '挑1' },
-  { key: 'shadow_delay_mix', label: '挑戰2・Aware覆蓋混合', short: '挑2' },
-  { key: 'shadow_delay_short', label: '挑戰3・短延遲1至4', short: '挑3' },
-  { key: 'shadow_delay_long', label: '挑戰4・長延遲3至8', short: '挑4' },
-  { key: 'shadow_delay_diverse', label: '挑戰5・延遲分散覆蓋', short: '挑5' },
+  { key: 'shadow_consec', label: '挑戰2・原版連號', short: '挑2' },
+  { key: 'shadow_cross', label: '挑戰3・三池交叉', short: '挑3' },
+  { key: 'shadow_anti', label: '挑戰4・避開上期', short: '挑4' },
+  { key: 'shadow_neighbor', label: '挑戰5・鄰號', short: '挑5' },
 ];
 
 // V0623-2：四種active_mode中文對照
@@ -641,7 +641,7 @@ function ComboWeightsCard() {
     <div style={S.card}>
       <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>🧪 平行實戰</div>
       <div style={{ fontSize: 12, color: C.textSub, lineHeight: 1.6 }}>
-        V0721：六路延遲系公平實驗；正式統計使用固定共同窗口。
+        V0721-2：兩個延遲核心＋四個異質專家；正式統計使用固定共同窗口。
         <br />ZM / H 軸盤面研究請用 SQL 工具，不影響 live 出手。
       </div>
     </div>
@@ -864,8 +864,8 @@ function StatsPage({ audit }) {
   if (!audit?.ok) {
     return (
       <div style={S.page}>
-        <Card title="📊 V0721 六路固定窗口" icon="">
-          <div style={S.empty}>固定成績表尚未就緒，請先執行 V0721 SQL，部署後會自動累積。</div>
+        <Card title="📊 V0721-2 六路固定窗口" icon="">
+          <div style={S.empty}>固定成績表尚未就緒，請先執行 V0721-2 SQL，部署後會自動累積。</div>
         </Card>
       </div>
     );
@@ -874,7 +874,7 @@ function StatsPage({ audit }) {
   return (
     <div style={S.page}>
       <div style={{ ...S.card, border: `2px solid ${C.gold}` }}>
-        <div style={{ fontSize: 15, fontWeight: 900, color: C.gold }}>V0721 六路固定窗口</div>
+        <div style={{ fontSize: 15, fontWeight: 900, color: C.gold }}>V0721-2 六路固定窗口</div>
         <div style={{ fontSize: 11, color: C.textSub, marginTop: 5, lineHeight: 1.6 }}>
           只比較六路都有結果的共同期，不再用最近80期滾動替換。共同期：
           <b style={{ color: C.text }}>{toNum(current?.common_periods, 0)}</b> 期。
@@ -919,7 +919,7 @@ function StatsPage({ audit }) {
         })}
       </div>
 
-      <Card title="🕐 V0721 逐時共同成績" icon="">
+      <Card title="🕐 V0721-2 逐時共同成績" icon="">
         {hourly.length === 0 ? (
           <div style={S.empty}>等待第一批六路共同期結算</div>
         ) : (
@@ -1105,7 +1105,7 @@ function ParallelStrategyTabs({ activeKey, onChange, strategies }) {
   return (
     <div style={{ padding: '10px 12px 4px', background: '#F8FAFC' }}>
       <div style={{ fontSize: 11, color: C.textSub, marginBottom: 6 }}>
-        V0721 六路延遲系實戰：挑戰策略只記錄成績，不會觸發下注
+        V0721-2 六路強者聯隊：挑戰策略只記錄成績，不會觸發下注
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 6 }}>
         {PARALLEL_UI.map(item => {
@@ -1249,7 +1249,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0721</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0721-2</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
