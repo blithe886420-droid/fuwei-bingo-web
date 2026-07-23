@@ -1,19 +1,28 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
-// App.jsx - V0722（7/22）：交叉擂主；保留覆蓋／避開；換上短延遲／頻率／早上結構
+// App.jsx - V0723（7/23）：覆蓋擂主；顯示五挑戰；兩實驗席只上統計頁
+// ★ V0722（7/22）：交叉擂主；保留覆蓋／避開；換上短延遲／頻率／早上結構
 // ★ V0720-4（7/20）：六路並行；前端先載主資料，次要 API 不擋畫面
 // ★ V0720-3（7/20）：六路並行；新增避開上期、鄰號
 const RAILWAY_URL = 'https://fuwei-bingo-backend-production.up.railway.app';
 const REFRESH_INTERVAL_MS = 30000;
 const STATS_START_DATE = '2026-06-08T00:00:00.000Z';
 const PARALLEL_UI = [
-  { key: 'primary', label: '暫時擂主・三池交叉', short: '擂主' },
-  { key: 'shadow_delay_cover', label: '挑戰1・延遲覆蓋', short: '挑1' },
-  { key: 'shadow_anti', label: '挑戰2・避開上期', short: '挑2' },
-  { key: 'shadow_delay_short', label: '挑戰3・短延遲1至4', short: '挑3' },
-  { key: 'shadow_freq', label: '挑戰4・近期頻率', short: '挑4' },
-  { key: 'shadow_morn_anti', label: '挑戰5・早上結構', short: '挑5' },
+  { key: 'primary', label: '暫時擂主・延遲覆蓋', short: '擂主' },
+  { key: 'shadow_delay_short', label: '挑戰1・短延遲1至4', short: '挑1' },
+  { key: 'shadow_freq', label: '挑戰2・近期頻率', short: '挑2' },
+  { key: 'shadow_cross', label: '挑戰3・三池交叉', short: '挑3' },
+  { key: 'shadow_consec', label: '挑戰4・連號', short: '挑4' },
+  { key: 'shadow_neighbor', label: '挑戰5・鄰號', short: '挑5' },
 ];
+const PARALLEL_LAB_UI = [
+  { key: 'lab_anti', label: '實驗・避開上期', short: '實1' },
+  { key: 'lab_delay_aware', label: '實驗・延遲Aware', short: '實2' },
+];
+const PARALLEL_ALL_UI = [...PARALLEL_UI, ...PARALLEL_LAB_UI];
+function parallelShort(key) {
+  return PARALLEL_ALL_UI.find(x => x.key === key)?.short || key;
+}
 
 // V0623-2：四種active_mode中文對照
 const MODE_LABEL = {
@@ -641,7 +650,7 @@ function ComboWeightsCard() {
     <div style={S.card}>
       <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>🧪 平行實戰</div>
       <div style={{ fontSize: 12, color: C.textSub, lineHeight: 1.6 }}>
-        V0722：交叉擂主＋覆蓋／避開保留；短延遲／頻率／早上結構新挑戰。
+        V0723：覆蓋擂主＋短延遲／頻率／交叉／連號／鄰號；避開與Aware改實驗席（只上統計頁）。
         <br />ZM / H 軸盤面研究請用 SQL 工具，不影響 live 出手。
       </div>
     </div>
@@ -864,26 +873,30 @@ function StatsPage({ audit }) {
   if (!audit?.ok) {
     return (
       <div style={S.page}>
-        <Card title="📊 V0722 六路固定窗口" icon="">
-          <div style={S.empty}>固定成績表尚未就緒，請先執行 V0722 SQL，部署後會自動累積。</div>
+        <Card title="📊 V0723 固定窗口" icon="">
+          <div style={S.empty}>固定成績表尚未就緒，請先執行 V0723 SQL，部署後會自動累積。</div>
         </Card>
       </div>
     );
   }
 
+  const displayKeys = laneOrder.filter(k => !String(k).startsWith('lab_'));
+  const labKeys = laneOrder.filter(k => String(k).startsWith('lab_'));
+
   return (
     <div style={S.page}>
       <div style={{ ...S.card, border: `2px solid ${C.gold}` }}>
-        <div style={{ fontSize: 15, fontWeight: 900, color: C.gold }}>V0722 六路固定窗口</div>
+        <div style={{ fontSize: 15, fontWeight: 900, color: C.gold }}>V0723 顯示六路＋兩路實驗席</div>
         <div style={{ fontSize: 11, color: C.textSub, marginTop: 5, lineHeight: 1.6 }}>
-          只比較六路都有結果的共同期，不再用最近80期滾動替換。共同期：
+          共同期要八路都有結果才算。共同期：
           <b style={{ color: C.text }}>{toNum(current?.common_periods, 0)}</b> 期。
-          未滿20期只顯示累積，不會宣告升擂主。
+          未滿20期只顯示累積，不會宣告升擂主。實驗席只在本頁，不出現在快速／近期。
         </div>
       </div>
 
+      <div style={{ fontSize: 12, fontWeight: 800, color: C.text, margin: '4px 0 8px' }}>顯示六路</div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8, marginBottom: 12 }}>
-        {laneOrder.map(laneKey => {
+        {displayKeys.map(laneKey => {
           const lane = lanes?.[laneKey] || {};
           const s = lane?.summary || {};
           const g = s?.gates || {};
@@ -919,16 +932,51 @@ function StatsPage({ audit }) {
         })}
       </div>
 
-      <Card title="🕐 V0722 逐時共同成績" icon="">
+      {labKeys.length > 0 && (
+        <>
+          <div style={{ fontSize: 12, fontWeight: 800, color: C.text, margin: '4px 0 8px' }}>實驗席（不顯示於快速／近期）</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8, marginBottom: 12 }}>
+            {labKeys.map(laneKey => {
+              const lane = lanes?.[laneKey] || {};
+              const s = lane?.summary || {};
+              const g = s?.gates || {};
+              const waiting = !g.sample_ready;
+              return (
+                <div key={laneKey} style={{ ...S.card, marginBottom: 0, padding: 11, border: `1px dashed ${C.border}`, background: '#F8FAFC' }}>
+                  <div style={{ fontSize: 12, fontWeight: 900, minHeight: 34 }}>{lane.label || laneKey}</div>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 5, marginTop: 4 }}>
+                    <span style={{ fontSize: 22, fontWeight: 900, color: C.gold }}>
+                      {fmtPercent(s.qualified_rate)}
+                    </span>
+                    <span style={{ fontSize: 10, color: C.textSub }}>合格 {toNum(s.qualified)}/{toNum(s.total)}</span>
+                  </div>
+                  <div style={{ fontSize: 10, color: C.textSub, lineHeight: 1.65, marginTop: 4 }}>
+                    A {toNum(s.path_a)}期｜B {toNum(s.path_b)}期<br />
+                    近6期 {toNum(s?.recent?.last6_qualified)}/{toNum(s?.recent?.last6_total)}
+                    ｜近12期 {toNum(s?.recent?.last12_qualified)}/{toNum(s?.recent?.last12_total)}
+                  </div>
+                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 7 }}>
+                    <span style={gatePill(g.frequency, waiting)}>頻率{waiting ? '累積中' : g.frequency ? '通過' : '未過'}</span>
+                    <span style={gatePill(g.density, waiting)}>密度{waiting ? '累積中' : g.density ? '通過' : '未過'}</span>
+                    <span style={gatePill(g.stability, waiting)}>逐時{waiting ? '累積中' : g.stability ? '通過' : '未過'}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      <Card title="🕐 V0723 逐時共同成績" icon="">
         {hourly.length === 0 ? (
-          <div style={S.empty}>等待第一批六路共同期結算</div>
+          <div style={S.empty}>等待第一批八路共同期結算</div>
         ) : (
           <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 650, fontSize: 10 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 720, fontSize: 10 }}>
               <thead>
                 <tr>
                   <th style={{ textAlign: 'left', padding: 6, borderBottom: `1px solid ${C.border}` }}>時段</th>
-                  {laneOrder.map(key => <th key={key} style={{ padding: 6, borderBottom: `1px solid ${C.border}` }}>{PARALLEL_UI.find(x => x.key === key)?.short || key}</th>)}
+                  {laneOrder.map(key => <th key={key} style={{ padding: 6, borderBottom: `1px solid ${C.border}` }}>{parallelShort(key)}</th>)}
                 </tr>
               </thead>
               <tbody>
@@ -1105,7 +1153,7 @@ function ParallelStrategyTabs({ activeKey, onChange, strategies }) {
   return (
     <div style={{ padding: '10px 12px 4px', background: '#F8FAFC' }}>
       <div style={{ fontSize: 11, color: C.textSub, marginBottom: 6 }}>
-        V0722 六路實戰：挑戰策略只記錄成績，不會觸發下注
+        V0723 顯示六路：挑戰只記錄成績；實驗席只在統計頁
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 6 }}>
         {PARALLEL_UI.map(item => {
@@ -1249,7 +1297,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0722</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0723</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
