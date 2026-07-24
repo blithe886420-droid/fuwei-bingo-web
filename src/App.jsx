@@ -1,11 +1,13 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
-// App.jsx - V0723（7/23）：覆蓋擂主；顯示五挑戰；兩實驗席只上統計頁
+// App.jsx - V0725-2（7/25）：第一頁懶人分數；統計讀取修復後可吃滿共同期
+// ★ V0723（7/23）：覆蓋擂主；顯示五挑戰；兩實驗席只上統計頁
 // ★ V0722（7/22）：交叉擂主；保留覆蓋／避開；換上短延遲／頻率／早上結構
 // ★ V0720-4（7/20）：六路並行；前端先載主資料，次要 API 不擋畫面
 // ★ V0720-3（7/20）：六路並行；新增避開上期、鄰號
 const RAILWAY_URL = 'https://fuwei-bingo-backend-production.up.railway.app';
 const REFRESH_INTERVAL_MS = 30000;
+const AUDIT_REFRESH_MS = 60000;
 const STATS_START_DATE = '2026-06-08T00:00:00.000Z';
 const PARALLEL_UI = [
   { key: 'primary', label: '暫時擂主・延遲覆蓋', short: '擂主' },
@@ -22,6 +24,70 @@ const PARALLEL_LAB_UI = [
 const PARALLEL_ALL_UI = [...PARALLEL_UI, ...PARALLEL_LAB_UI];
 function parallelShort(key) {
   return PARALLEL_ALL_UI.find(x => x.key === key)?.short || key;
+}
+
+/** 懶人分數：長線45 + 近2小時30 + 近況25 = 100 */
+function scoreLongLine(rate, gates = {}) {
+  const r = Number(rate) || 0;
+  let s = r >= 0.2 ? 42
+    : r >= 0.18 ? 36
+    : r >= 0.15 ? 30
+    : r >= 0.12 ? 22
+    : r >= 0.1 ? 14
+    : 6;
+  if (gates.density) s += 2;
+  if (gates.stability) s += 1;
+  return Math.max(0, Math.min(45, s));
+}
+
+function scoreRecentWindow(rate) {
+  const r = Number(rate) || 0;
+  if (r >= 0.3) return 25;
+  if (r >= 0.2) return 18;
+  if (r >= 0.12) return 12;
+  if (r >= 0.05) return 7;
+  return 2;
+}
+
+function scoreHourWindow(rate, sampleN) {
+  const r = Number(rate) || 0;
+  let s = r >= 0.25 ? 30
+    : r >= 0.2 ? 24
+    : r >= 0.15 ? 18
+    : r >= 0.1 ? 10
+    : 4;
+  if (sampleN > 0 && sampleN < 6) s = Math.min(s, 16);
+  return Math.max(0, Math.min(30, s));
+}
+
+function buildLazyScoreMap(audit, strategies) {
+  const map = {};
+  const lanes = audit?.current?.lanes || {};
+  const hourly = toArray(audit?.hourly);
+  const last2 = hourly.slice(-2);
+  for (const item of PARALLEL_UI) {
+    const longSummary = lanes?.[item.key]?.summary || {};
+    const recentSummary = strategies?.[item.key]?.summary || {};
+    let hq = 0;
+    let ht = 0;
+    for (const hour of last2) {
+      const cell = hour?.lanes?.[item.key] || {};
+      hq += toNum(cell.qualified, 0);
+      ht += toNum(cell.total, 0);
+    }
+    const long = scoreLongLine(longSummary.qualified_rate, longSummary.gates);
+    const time = scoreHourWindow(ht > 0 ? hq / ht : 0, ht);
+    const recent = scoreRecentWindow(recentSummary.qualified_rate);
+    const total = long + time + recent;
+    map[item.key] = {
+      total,
+      long,
+      time,
+      recent,
+      label: total >= 75 ? '優先' : total >= 60 ? '可跟' : total >= 45 ? '普通' : '觀望',
+    };
+  }
+  return map;
 }
 
 // V0623-2：四種active_mode中文對照
@@ -1146,19 +1212,22 @@ function HotPoolPage({ prediction }) {
   );
 }
 
-function ParallelStrategyTabs({ activeKey, onChange, strategies }) {
+function ParallelStrategyTabs({ activeKey, onChange, strategies, audit }) {
   const activeSummary = strategies?.[activeKey]?.summary || {};
   const eSummary = activeSummary?.by_board?.E_false_momentum || {};
   const fSummary = activeSummary?.by_board?.F_quiet || {};
+  const lazyMap = buildLazyScoreMap(audit, strategies);
+  const auditReady = !!audit?.ok && toNum(audit?.current?.common_periods, 0) > 0;
   return (
     <div style={{ padding: '10px 12px 4px', background: '#F8FAFC' }}>
-      <div style={{ fontSize: 11, color: C.textSub, marginBottom: 6 }}>
-        V0723 顯示六路：挑戰只記錄成績；實驗席只在統計頁
+      <div style={{ fontSize: 11, color: C.textSub, marginBottom: 6, lineHeight: 1.5 }}>
+        V0725-2 懶人分＝長線＋近2小時＋近況。臨時跟牌看右側大分；細節仍可開統計頁。
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 6 }}>
         {PARALLEL_UI.map(item => {
           const active = item.key === activeKey;
           const summary = strategies?.[item.key]?.summary || {};
+          const lazy = lazyMap[item.key] || { total: 0, long: 0, time: 0, recent: 0, label: '—' };
           return (
             <button
               key={item.key}
@@ -1167,16 +1236,31 @@ function ParallelStrategyTabs({ activeKey, onChange, strategies }) {
                 border: active ? `2px solid ${C.gold}` : '1px solid #D1D5DB',
                 borderRadius: 9,
                 background: active ? C.goldBg : '#FFFFFF',
-                padding: '7px 3px',
+                padding: '7px 6px',
                 cursor: 'pointer',
                 minWidth: 0,
+                textAlign: 'left',
               }}
             >
-              <div style={{ fontSize: 12, fontWeight: 800, color: active ? C.gold : C.text }}>{item.short}</div>
-              <div style={{ fontSize: 10, color: C.textSub, marginTop: 2 }}>
-                {toNum(summary.total, 0) > 0
-                  ? `${summary.total}期｜合格${fmtPercent(summary.qualified_rate)}`
-                  : '等待 E/F 資料'}
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 4, alignItems: 'flex-start' }}>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ fontSize: 12, fontWeight: 800, color: active ? C.gold : C.text }}>{item.short}</div>
+                  <div style={{ fontSize: 10, color: C.textSub, marginTop: 2 }}>
+                    {toNum(summary.total, 0) > 0
+                      ? `${summary.total}期｜合格${fmtPercent(summary.qualified_rate)}`
+                      : '等待 E/F 資料'}
+                  </div>
+                </div>
+                <div style={{ textAlign: 'right', flexShrink: 0, minWidth: 52 }}>
+                  <div style={{ fontSize: 20, fontWeight: 900, color: lazy.total >= 60 ? '#15803D' : C.gold, lineHeight: 1 }}>
+                    {auditReady ? lazy.total : '—'}
+                  </div>
+                  <div style={{ fontSize: 9, color: C.textSub, marginTop: 2, lineHeight: 1.35 }}>
+                    {auditReady
+                      ? <>長{lazy.long} 時{lazy.time} 近{lazy.recent}<br />{lazy.label}</>
+                      : '統計載入中'}
+                  </div>
+                </div>
               </div>
             </button>
           );
@@ -1259,7 +1343,7 @@ export default function App() {
     loadData();
     loadAudit();
     timerRef.current = setInterval(loadData, REFRESH_INTERVAL_MS);
-    auditTimerRef.current = setInterval(loadAudit, 5 * 60 * 1000);
+    auditTimerRef.current = setInterval(loadAudit, AUDIT_REFRESH_MS);
     return () => {
       clearInterval(timerRef.current);
       clearInterval(auditTimerRef.current);
@@ -1271,9 +1355,9 @@ export default function App() {
   const activePrediction = activeLane
     ? { ...prediction, latest_3star_row: activeLane.latest_row }
     : prediction;
-  const activeHistoryRows = activeLane
-    ? (activeLane.recent_rows || [])
-    : historyRows;
+  const activeHistoryRows = strategyKey === 'primary'
+    ? historyRows
+    : (activeLane?.recent_rows || []);
   const isShadowLane = strategyKey !== 'primary';
   const activeStreakRows = strategyKey === 'primary' ? streakRows : [];
 
@@ -1297,7 +1381,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0723</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0725-2</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
@@ -1318,6 +1402,7 @@ export default function App() {
           activeKey={strategyKey}
           onChange={setStrategyKey}
           strategies={parallelStrategies}
+          audit={parallelAudit}
         />
       )}
       {loading && tab === 'quick' && <Spinner />}
