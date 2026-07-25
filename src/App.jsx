@@ -1,10 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
-// App.jsx - V0725-2（7/25）：第一頁懶人分數；統計讀取修復後可吃滿共同期
+// App.jsx - V0725-3（7/25）：懶人分改版（長35／時35／近30）＋第一頁顯示實驗席
+// ★ V0725-2（7/25）：第一頁懶人分數；統計讀取修復後可吃滿共同期
 // ★ V0723（7/23）：覆蓋擂主；顯示五挑戰；兩實驗席只上統計頁
-// ★ V0722（7/22）：交叉擂主；保留覆蓋／避開；換上短延遲／頻率／早上結構
-// ★ V0720-4（7/20）：六路並行；前端先載主資料，次要 API 不擋畫面
-// ★ V0720-3（7/20）：六路並行；新增避開上期、鄰號
 const RAILWAY_URL = 'https://fuwei-bingo-backend-production.up.railway.app';
 const REFRESH_INTERVAL_MS = 30000;
 const AUDIT_REFRESH_MS = 60000;
@@ -26,46 +24,55 @@ function parallelShort(key) {
   return PARALLEL_ALL_UI.find(x => x.key === key)?.short || key;
 }
 
-/** 懶人分數：長線45 + 近2小時30 + 近況25 = 100 */
+/** 懶人分數 V0725-3：長線35 + 近2小時35 + 近況30 = 100 */
 function scoreLongLine(rate, gates = {}) {
   const r = Number(rate) || 0;
-  let s = r >= 0.2 ? 42
-    : r >= 0.18 ? 36
-    : r >= 0.15 ? 30
-    : r >= 0.12 ? 22
-    : r >= 0.1 ? 14
+  let s = r >= 0.2 ? 32
+    : r >= 0.17 ? 28
+    : r >= 0.15 ? 24
+    : r >= 0.13 ? 18
+    : r >= 0.11 ? 12
     : 6;
   if (gates.density) s += 2;
   if (gates.stability) s += 1;
-  return Math.max(0, Math.min(45, s));
-}
-
-function scoreRecentWindow(rate) {
-  const r = Number(rate) || 0;
-  if (r >= 0.3) return 25;
-  if (r >= 0.2) return 18;
-  if (r >= 0.12) return 12;
-  if (r >= 0.05) return 7;
-  return 2;
+  return Math.max(0, Math.min(35, s));
 }
 
 function scoreHourWindow(rate, sampleN) {
   const r = Number(rate) || 0;
-  let s = r >= 0.25 ? 30
-    : r >= 0.2 ? 24
-    : r >= 0.15 ? 18
-    : r >= 0.1 ? 10
+  let s = r >= 0.25 ? 35
+    : r >= 0.2 ? 28
+    : r >= 0.15 ? 22
+    : r >= 0.1 ? 12
     : 4;
-  if (sampleN > 0 && sampleN < 6) s = Math.min(s, 16);
-  return Math.max(0, Math.min(30, s));
+  if (sampleN > 0 && sampleN < 6) s = Math.min(s, 18);
+  return Math.max(0, Math.min(35, s));
+}
+
+function scoreRecentWindow(rate) {
+  const r = Number(rate) || 0;
+  if (r >= 0.3) return 30;
+  if (r >= 0.2) return 22;
+  if (r >= 0.12) return 14;
+  if (r >= 0.05) return 8;
+  return 2;
+}
+
+function lazyLabel(total) {
+  if (total >= 70) return '優先';
+  if (total >= 55) return '可跟';
+  if (total >= 40) return '普通';
+  return '觀望';
 }
 
 function buildLazyScoreMap(audit, strategies) {
   const map = {};
+  const backend = audit?.lazy_scores?.by_lane || {};
   const lanes = audit?.current?.lanes || {};
   const hourly = toArray(audit?.hourly);
   const last2 = hourly.slice(-2);
-  for (const item of PARALLEL_UI) {
+  for (const item of PARALLEL_ALL_UI) {
+    const fromApi = backend[item.key];
     const longSummary = lanes?.[item.key]?.summary || {};
     const recentSummary = strategies?.[item.key]?.summary || {};
     let hq = 0;
@@ -75,16 +82,25 @@ function buildLazyScoreMap(audit, strategies) {
       hq += toNum(cell.qualified, 0);
       ht += toNum(cell.total, 0);
     }
-    const long = scoreLongLine(longSummary.qualified_rate, longSummary.gates);
-    const time = scoreHourWindow(ht > 0 ? hq / ht : 0, ht);
-    const recent = scoreRecentWindow(recentSummary.qualified_rate);
+    // 近況優先用第一頁短窗；沒有才用後端近6期
+    const recentRate = toNum(recentSummary.total, 0) > 0
+      ? toNum(recentSummary.qualified_rate, 0)
+      : toNum(fromApi?.recent_rate, 0);
+    const long = fromApi
+      ? toNum(fromApi.long, scoreLongLine(longSummary.qualified_rate, longSummary.gates))
+      : scoreLongLine(longSummary.qualified_rate, longSummary.gates);
+    const time = fromApi
+      ? toNum(fromApi.time, scoreHourWindow(ht > 0 ? hq / ht : 0, ht))
+      : scoreHourWindow(ht > 0 ? hq / ht : 0, ht);
+    const recent = scoreRecentWindow(recentRate);
     const total = long + time + recent;
     map[item.key] = {
       total,
       long,
       time,
       recent,
-      label: total >= 75 ? '優先' : total >= 60 ? '可跟' : total >= 45 ? '普通' : '觀望',
+      label: lazyLabel(total),
+      seat: item.key.startsWith('lab_') ? 'lab' : 'display',
     };
   }
   return map;
@@ -1218,55 +1234,79 @@ function ParallelStrategyTabs({ activeKey, onChange, strategies, audit }) {
   const fSummary = activeSummary?.by_board?.F_quiet || {};
   const lazyMap = buildLazyScoreMap(audit, strategies);
   const auditReady = !!audit?.ok && toNum(audit?.current?.common_periods, 0) > 0;
+  const overallLeader = audit?.lazy_scores?.leader
+    || Object.values(lazyMap).sort((a, b) => b.total - a.total)[0];
+  const leaderKey = audit?.lazy_scores?.leader?.key
+    || Object.keys(lazyMap).sort((a, b) => lazyMap[b].total - lazyMap[a].total)[0];
+  const leaderShort = parallelShort(leaderKey);
+  const leaderName = PARALLEL_ALL_UI.find(x => x.key === leaderKey)?.label || leaderKey;
+
+  const renderLazyCard = (item, { labStyle = false } = {}) => {
+    const active = item.key === activeKey;
+    const summary = strategies?.[item.key]?.summary || {};
+    const lazy = lazyMap[item.key] || { total: 0, long: 0, time: 0, recent: 0, label: '—' };
+    const isClickable = !labStyle;
+    const body = (
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 4, alignItems: 'flex-start' }}>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ fontSize: 12, fontWeight: 800, color: active ? C.gold : C.text }}>{item.short}</div>
+          <div style={{ fontSize: 10, color: C.textSub, marginTop: 2 }}>
+            {toNum(summary.total, 0) > 0
+              ? `${summary.total}期｜合格${fmtPercent(summary.qualified_rate)}`
+              : (labStyle ? '實驗席成績' : '等待 E/F 資料')}
+          </div>
+        </div>
+        <div style={{ textAlign: 'right', flexShrink: 0, minWidth: 52 }}>
+          <div style={{ fontSize: 20, fontWeight: 900, color: lazy.total >= 55 ? '#15803D' : C.gold, lineHeight: 1 }}>
+            {auditReady ? lazy.total : '—'}
+          </div>
+          <div style={{ fontSize: 9, color: C.textSub, marginTop: 2, lineHeight: 1.35 }}>
+            {auditReady
+              ? <>長{lazy.long} 時{lazy.time} 近{lazy.recent}<br />{lazy.label}</>
+              : '統計載入中'}
+          </div>
+        </div>
+      </div>
+    );
+    const boxStyle = {
+      border: active ? `2px solid ${C.gold}` : (labStyle ? `1px dashed ${C.border}` : '1px solid #D1D5DB'),
+      borderRadius: 9,
+      background: active ? C.goldBg : (labStyle ? '#F8FAFC' : '#FFFFFF'),
+      padding: '7px 6px',
+      minWidth: 0,
+      textAlign: 'left',
+      width: '100%',
+    };
+    if (!isClickable) {
+      return <div key={item.key} style={boxStyle}>{body}</div>;
+    }
+    return (
+      <button
+        key={item.key}
+        onClick={() => onChange(item.key)}
+        style={{ ...boxStyle, cursor: 'pointer' }}
+      >
+        {body}
+      </button>
+    );
+  };
+
   return (
     <div style={{ padding: '10px 12px 4px', background: '#F8FAFC' }}>
       <div style={{ fontSize: 11, color: C.textSub, marginBottom: 6, lineHeight: 1.5 }}>
-        V0725-2 懶人分＝長線＋近2小時＋近況。臨時跟牌看右側大分；細節仍可開統計頁。
+        V0725-3 懶人分＝長線35＋近2小時35＋近況30。臨時跟牌看右側大分。
+        {auditReady && overallLeader ? (
+          <> 目前最高：<b style={{ color: C.text }}>{leaderShort}</b>（{leaderName} {overallLeader.total || audit?.lazy_scores?.leader?.total}分）</>
+        ) : null}
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 6 }}>
-        {PARALLEL_UI.map(item => {
-          const active = item.key === activeKey;
-          const summary = strategies?.[item.key]?.summary || {};
-          const lazy = lazyMap[item.key] || { total: 0, long: 0, time: 0, recent: 0, label: '—' };
-          return (
-            <button
-              key={item.key}
-              onClick={() => onChange(item.key)}
-              style={{
-                border: active ? `2px solid ${C.gold}` : '1px solid #D1D5DB',
-                borderRadius: 9,
-                background: active ? C.goldBg : '#FFFFFF',
-                padding: '7px 6px',
-                cursor: 'pointer',
-                minWidth: 0,
-                textAlign: 'left',
-              }}
-            >
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 4, alignItems: 'flex-start' }}>
-                <div style={{ minWidth: 0, flex: 1 }}>
-                  <div style={{ fontSize: 12, fontWeight: 800, color: active ? C.gold : C.text }}>{item.short}</div>
-                  <div style={{ fontSize: 10, color: C.textSub, marginTop: 2 }}>
-                    {toNum(summary.total, 0) > 0
-                      ? `${summary.total}期｜合格${fmtPercent(summary.qualified_rate)}`
-                      : '等待 E/F 資料'}
-                  </div>
-                </div>
-                <div style={{ textAlign: 'right', flexShrink: 0, minWidth: 52 }}>
-                  <div style={{ fontSize: 20, fontWeight: 900, color: lazy.total >= 60 ? '#15803D' : C.gold, lineHeight: 1 }}>
-                    {auditReady ? lazy.total : '—'}
-                  </div>
-                  <div style={{ fontSize: 9, color: C.textSub, marginTop: 2, lineHeight: 1.35 }}>
-                    {auditReady
-                      ? <>長{lazy.long} 時{lazy.time} 近{lazy.recent}<br />{lazy.label}</>
-                      : '統計載入中'}
-                  </div>
-                </div>
-              </div>
-            </button>
-          );
-        })}
+        {PARALLEL_UI.map(item => renderLazyCard(item))}
       </div>
-      {toNum(activeSummary.total, 0) > 0 && (
+      <div style={{ fontSize: 11, fontWeight: 800, color: C.text, margin: '8px 0 4px' }}>實驗席（只記成績／可跟牌參考）</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 6 }}>
+        {PARALLEL_LAB_UI.map(item => renderLazyCard(item, { labStyle: true }))}
+      </div>
+      {toNum(activeSummary.total, 0) > 0 && !String(activeKey).startsWith('lab_') && (
         <div style={{ fontSize: 11, color: C.textSub, marginTop: 7, textAlign: 'center', lineHeight: 1.6 }}>
           <div>
             {activeSummary.sample_scope || '近期'}：
@@ -1381,7 +1421,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0725-2</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0725-3</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
