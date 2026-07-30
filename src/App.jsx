@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
-// App.jsx - V0730（7/30）：擂主盤面適配 E=anti／F=freq；鄰號降挑戰
-// ★ V0728-3（7/28）：時段強化鄰號擂主；午前／晚間原版；午後混合
+// App.jsx - V0730-2（7/30）：修分數空白——新版共同期為0時改顯示上一版參考成績
+// ★ V0730（7/30）：擂主盤面適配 E=anti／F=freq；鄰號降挑戰
 const RAILWAY_URL = 'https://fuwei-bingo-backend-production.up.railway.app';
 const REFRESH_INTERVAL_MS = 30000;
 const AUDIT_REFRESH_MS = 60000;
@@ -18,6 +18,17 @@ const PARALLEL_LAB_UI = [
   { key: 'lab_consec_hybrid', label: '實驗・連號混合', short: '實1' },
   { key: 'lab_delay_mix', label: '實驗・延遲混合', short: '實2' },
 ];
+/** 新版座位對上一版 lane 的參考對照（僅顯示用） */
+const REFERENCE_LANE_FALLBACK = {
+  primary: ['primary'],
+  shadow_neighbor: ['shadow_neighbor', 'primary'],
+  shadow_consec: ['shadow_consec'],
+  shadow_delay_diverse: ['shadow_delay_diverse', 'lab_delay_diverse'],
+  shadow_cross: ['shadow_cross'],
+  shadow_neighbor_balanced: ['shadow_neighbor_balanced', 'lab_neighbor_balanced'],
+  lab_consec_hybrid: ['lab_consec_hybrid'],
+  lab_delay_mix: ['lab_delay_mix', 'shadow_delay_diverse'],
+};
 const PARALLEL_ALL_UI = [...PARALLEL_UI, ...PARALLEL_LAB_UI];
 function parallelShort(key) {
   return PARALLEL_ALL_UI.find(x => x.key === key)?.short || key;
@@ -735,7 +746,7 @@ function ComboWeightsCard() {
     <div style={S.card}>
       <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>🧪 平行實戰</div>
       <div style={{ fontSize: 12, color: C.textSub, lineHeight: 1.6 }}>
-        V0730：擂主盤面適配（E避開／F頻率）；鄰號降挑戰對照。
+        V0730-2：修分數空白；新版累積中暫顯示上一版參考。
         <br />ZM / H 軸盤面研究請用 SQL 工具，不影響 live 出手。
       </div>
     </div>
@@ -1236,7 +1247,25 @@ function ParallelStrategyTabs({ activeKey, onChange, strategies, audit }) {
   const eSummary = activeSummary?.by_board?.E_false_momentum || {};
   const fSummary = activeSummary?.by_board?.F_quiet || {};
   const lazyMap = buildLazyScoreMap(audit, strategies);
-  const auditReady = !!audit?.ok && toNum(audit?.current?.common_periods, 0) > 0;
+  const commonN = toNum(audit?.current?.common_periods, 0);
+  const auditOk = !!audit?.ok;
+  const warming = auditOk && commonN < 8;
+  const refLanes = audit?.reference?.lanes || {};
+  const refRunId = audit?.reference?.run_id || '';
+
+  function resolveLaneSummary(key) {
+    const live = strategies?.[key]?.summary || {};
+    if (toNum(live.total, 0) > 0) return { summary: live, source: 'live' };
+    const cur = audit?.current?.lanes?.[key]?.summary || {};
+    if (toNum(cur.total, 0) > 0) return { summary: cur, source: 'current' };
+    const fallbackKeys = REFERENCE_LANE_FALLBACK[key] || [key];
+    for (const fk of fallbackKeys) {
+      const ref = refLanes?.[fk]?.summary || {};
+      if (toNum(ref.total, 0) > 0) return { summary: ref, source: 'reference' };
+    }
+    return { summary: {}, source: 'empty' };
+  }
+
   const overallLeader = audit?.lazy_scores?.leader
     || Object.values(lazyMap).sort((a, b) => b.total - a.total)[0];
   const leaderKey = audit?.lazy_scores?.leader?.key
@@ -1246,27 +1275,29 @@ function ParallelStrategyTabs({ activeKey, onChange, strategies, audit }) {
 
   const renderLazyCard = (item, { labStyle = false } = {}) => {
     const active = item.key === activeKey;
-    const summary = strategies?.[item.key]?.summary || {};
-    const lazy = lazyMap[item.key] || { total: 0, long: 0, time: 0, recent: 0, label: '—' };
+    const resolved = resolveLaneSummary(item.key);
+    const summary = resolved.summary || {};
+    const lazy = lazyMap[item.key] || { total: 0, long: 0, time: 0, recent: 0, playbook: 0, label: '—' };
     const isClickable = !labStyle;
+    const leftText = toNum(summary.total, 0) > 0
+      ? `${resolved.source === 'reference' ? '上版' : ''}${summary.total}期｜合格${fmtPercent(summary.qualified_rate)}`
+      : (labStyle ? '實驗席累積中' : (warming ? '新版累積中' : '等待 E/F 資料'));
     const body = (
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 4, alignItems: 'flex-start' }}>
         <div style={{ minWidth: 0, flex: 1 }}>
           <div style={{ fontSize: 12, fontWeight: 800, color: active ? C.gold : C.text }}>{item.short}</div>
           <div style={{ fontSize: 10, color: C.textSub, marginTop: 2 }}>
-            {toNum(summary.total, 0) > 0
-              ? `${summary.total}期｜合格${fmtPercent(summary.qualified_rate)}`
-              : (labStyle ? '實驗席成績' : '等待 E/F 資料')}
+            {leftText}
           </div>
         </div>
         <div style={{ textAlign: 'right', flexShrink: 0, minWidth: 52 }}>
           <div style={{ fontSize: 20, fontWeight: 900, color: lazy.total >= 55 ? '#15803D' : C.gold, lineHeight: 1 }}>
-            {auditReady ? lazy.total : '—'}
+            {auditOk ? lazy.total : '—'}
           </div>
           <div style={{ fontSize: 9, color: C.textSub, marginTop: 2, lineHeight: 1.35 }}>
-            {auditReady
+            {auditOk
               ? <>長{lazy.long} 時{lazy.time} 近{lazy.recent}{toNum(lazy.playbook, 0) > 0 ? ` 劇+${lazy.playbook}` : ''}<br />{lazy.label}</>
-              : '統計載入中'}
+              : '讀取統計中'}
           </div>
         </div>
       </div>
@@ -1297,11 +1328,22 @@ function ParallelStrategyTabs({ activeKey, onChange, strategies, audit }) {
   return (
     <div style={{ padding: '10px 12px 4px', background: '#F8FAFC' }}>
       <div style={{ fontSize: 11, color: C.textSub, marginBottom: 6, lineHeight: 1.5 }}>
-        V0730 懶人分＝長線35＋近2小時35＋近況30＋時段劇本加分。臨時跟牌看右側大分。
-        {auditReady && overallLeader ? (
+        V0730-2 懶人分＝長線35＋近2小時35＋近況30＋時段劇本加分。臨時跟牌看右側大分。
+        {auditOk && overallLeader ? (
           <> 目前最高：<b style={{ color: C.text }}>{leaderShort}</b>（{leaderName} {overallLeader.total || audit?.lazy_scores?.leader?.total}分）</>
         ) : null}
       </div>
+      {warming ? (
+        <div style={{
+          fontSize: 12, fontWeight: 800, color: '#9A3412',
+          background: '#FFEDD5', border: '1px solid #FDBA74',
+          borderRadius: 8, padding: '8px 10px', marginBottom: 8, lineHeight: 1.45,
+        }}>
+          新版 V0730 共同期尚在累積（目前 {commonN} 期）。
+          {refRunId ? <>左側暫顯示上一版 {refRunId} 成績參考；</> : null}
+          右側懶人分仍可看。
+        </div>
+      ) : null}
       {audit?.hour_playbook?.follow_label ? (
         <div style={{
           fontSize: 12, fontWeight: 800, color: '#166534',
@@ -1436,7 +1478,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0730</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0730-2</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
