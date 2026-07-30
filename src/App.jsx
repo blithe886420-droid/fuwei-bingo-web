@@ -1,22 +1,22 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
-// App.jsx - V0728-3（7/28）：時段強化鄰號擂主；午前／晚間原版；午後混合
-// ★ V0728-2（7/28）：修同指紋；實驗2改連號混合
+// App.jsx - V0730（7/30）：擂主盤面適配 E=anti／F=freq；鄰號降挑戰
+// ★ V0728-3（7/28）：時段強化鄰號擂主；午前／晚間原版；午後混合
 const RAILWAY_URL = 'https://fuwei-bingo-backend-production.up.railway.app';
 const REFRESH_INTERVAL_MS = 30000;
 const AUDIT_REFRESH_MS = 60000;
 const STATS_START_DATE = '2026-06-08T00:00:00.000Z';
 const PARALLEL_UI = [
-  { key: 'primary', label: '暫時擂主・時段鄰號', short: '擂主' },
-  { key: 'shadow_consec', label: '挑戰1・連號', short: '挑1' },
-  { key: 'shadow_delay_diverse', label: '挑戰2・延遲分散', short: '挑2' },
-  { key: 'shadow_freq', label: '挑戰3・近期頻率', short: '挑3' },
-  { key: 'shadow_anti', label: '挑戰4・避開上期', short: '挑4' },
-  { key: 'shadow_cross', label: '挑戰5・三池交叉', short: '挑5' },
+  { key: 'primary', label: '暫時擂主・盤面適配', short: '擂主' },
+  { key: 'shadow_neighbor', label: '挑戰1・原版鄰號', short: '挑1' },
+  { key: 'shadow_consec', label: '挑戰2・連號', short: '挑2' },
+  { key: 'shadow_delay_diverse', label: '挑戰3・延遲分散', short: '挑3' },
+  { key: 'shadow_cross', label: '挑戰4・三池交叉', short: '挑4' },
+  { key: 'shadow_neighbor_balanced', label: '挑戰5・鄰號3A5B', short: '挑5' },
 ];
 const PARALLEL_LAB_UI = [
-  { key: 'lab_neighbor_balanced', label: '實驗・鄰號3A5B', short: '實1' },
-  { key: 'lab_consec_hybrid', label: '實驗・連號混合', short: '實2' },
+  { key: 'lab_consec_hybrid', label: '實驗・連號混合', short: '實1' },
+  { key: 'lab_delay_mix', label: '實驗・延遲混合', short: '實2' },
 ];
 const PARALLEL_ALL_UI = [...PARALLEL_UI, ...PARALLEL_LAB_UI];
 function parallelShort(key) {
@@ -131,6 +131,7 @@ const SELECTION_STRATEGY_LABEL = {
   gradient:    { text: '📐 梯度遞減', color: '#059669', bg: '#ECFDF5' },
   neighbor_t120:{ text: '🧭 鄰號挑戰', color: '#0369A1', bg: '#E0F2FE' },
   neighbor_hour_t120:{ text: '🧭 時段鄰號', color: '#0369A1', bg: '#E0F2FE' },
+  board_ef_adaptive:{ text: '🎯 盤面適配', color: '#7C2D12', bg: '#FFEDD5' },
   skip26_t120: { text: '⏱️ 隔2至6期', color: '#7C3AED', bg: '#F5F3FF' },
   champ_aware: { text: '🧠 結構感知', color: '#7C3AED', bg: '#F5F3FF' },
   consec_t120: { text: '🔗 連號鄰邊', color: '#C2410C', bg: '#FFEDD5' },
@@ -734,7 +735,7 @@ function ComboWeightsCard() {
     <div style={S.card}>
       <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>🧪 平行實戰</div>
       <div style={{ fontSize: 12, color: C.textSub, lineHeight: 1.6 }}>
-        V0728-3：時段強化鄰號擂主；午前／晚間原版；午後鄰號＋連號混合。
+        V0730：擂主盤面適配（E避開／F頻率）；鄰號降挑戰對照。
         <br />ZM / H 軸盤面研究請用 SQL 工具，不影響 live 出手。
       </div>
     </div>
@@ -957,8 +958,8 @@ function StatsPage({ audit }) {
   if (!audit?.ok) {
     return (
       <div style={S.page}>
-        <Card title="📊 V0728-3 固定窗口" icon="">
-          <div style={S.empty}>固定成績表尚未就緒，請先執行 V0728-3 SQL，部署後會自動累積。</div>
+        <Card title="📊 V0730 固定窗口" icon="">
+          <div style={S.empty}>固定成績表尚未就緒，請先執行 V0730 SQL，部署後會自動累積。</div>
         </Card>
       </div>
     );
@@ -970,7 +971,7 @@ function StatsPage({ audit }) {
   return (
     <div style={S.page}>
       <div style={{ ...S.card, border: `2px solid ${C.gold}` }}>
-        <div style={{ fontSize: 15, fontWeight: 900, color: C.gold }}>V0728-3 顯示六路＋兩路實驗席</div>
+        <div style={{ fontSize: 15, fontWeight: 900, color: C.gold }}>V0730 顯示六路＋兩路實驗席</div>
         <div style={{ fontSize: 11, color: C.textSub, marginTop: 5, lineHeight: 1.6 }}>
           共同期要八路都有結果才算。共同期：
           <b style={{ color: C.text }}>{toNum(current?.common_periods, 0)}</b> 期。
@@ -1051,7 +1052,7 @@ function StatsPage({ audit }) {
         </>
       )}
 
-      <Card title="🕐 V0728-3 逐時共同成績" icon="">
+      <Card title="🕐 V0730 逐時共同成績" icon="">
         {hourly.length === 0 ? (
           <div style={S.empty}>等待第一批八路共同期結算</div>
         ) : (
@@ -1296,7 +1297,7 @@ function ParallelStrategyTabs({ activeKey, onChange, strategies, audit }) {
   return (
     <div style={{ padding: '10px 12px 4px', background: '#F8FAFC' }}>
       <div style={{ fontSize: 11, color: C.textSub, marginBottom: 6, lineHeight: 1.5 }}>
-        V0728-3 懶人分＝長線35＋近2小時35＋近況30＋時段劇本加分。臨時跟牌看右側大分。
+        V0730 懶人分＝長線35＋近2小時35＋近況30＋時段劇本加分。臨時跟牌看右側大分。
         {auditReady && overallLeader ? (
           <> 目前最高：<b style={{ color: C.text }}>{leaderShort}</b>（{leaderName} {overallLeader.total || audit?.lazy_scores?.leader?.total}分）</>
         ) : null}
@@ -1435,7 +1436,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0728-3</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0730</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
