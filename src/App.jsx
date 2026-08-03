@@ -1,33 +1,28 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
-// App.jsx - V0730-2（7/30）：修分數空白——新版共同期為0時改顯示上一版參考成績
-// ★ V0730（7/30）：擂主盤面適配 E=anti／F=freq；鄰號降挑戰
+// App.jsx - V0803-2（8/3）：整月擂主避開上期；六路無實驗席；common=0 仍顯示上一版參考
+// ★ V0730-2（7/30）：修分數空白——新版共同期為0時改顯示上一版參考成績
 const RAILWAY_URL = 'https://fuwei-bingo-backend-production.up.railway.app';
 const REFRESH_INTERVAL_MS = 30000;
 const AUDIT_REFRESH_MS = 60000;
 const STATS_START_DATE = '2026-06-08T00:00:00.000Z';
 const PARALLEL_UI = [
-  { key: 'primary', label: '暫時擂主・盤面適配', short: '擂主' },
-  { key: 'shadow_neighbor', label: '挑戰1・原版鄰號', short: '挑1' },
-  { key: 'shadow_consec', label: '挑戰2・連號', short: '挑2' },
-  { key: 'shadow_delay_diverse', label: '挑戰3・延遲分散', short: '挑3' },
+  { key: 'primary', label: '暫時擂主・避開上期', short: '擂主' },
+  { key: 'shadow_consec', label: '挑戰1・連號', short: '挑1' },
+  { key: 'shadow_neighbor', label: '挑戰2・原版鄰號', short: '挑2' },
+  { key: 'shadow_freq', label: '挑戰3・頻率快軸', short: '挑3' },
   { key: 'shadow_cross', label: '挑戰4・三池交叉', short: '挑4' },
-  { key: 'shadow_neighbor_balanced', label: '挑戰5・鄰號3A5B', short: '挑5' },
+  { key: 'shadow_delay_diverse', label: '挑戰5・延遲分散', short: '挑5' },
 ];
-const PARALLEL_LAB_UI = [
-  { key: 'lab_consec_hybrid', label: '實驗・連號混合', short: '實1' },
-  { key: 'lab_delay_mix', label: '實驗・延遲混合', short: '實2' },
-];
+const PARALLEL_LAB_UI = [];
 /** 新版座位對上一版 lane 的參考對照（僅顯示用） */
 const REFERENCE_LANE_FALLBACK = {
-  primary: ['primary'],
-  shadow_neighbor: ['shadow_neighbor', 'primary'],
+  primary: ['primary', 'shadow_anti'],
   shadow_consec: ['shadow_consec'],
-  shadow_delay_diverse: ['shadow_delay_diverse', 'lab_delay_diverse'],
+  shadow_neighbor: ['shadow_neighbor', 'primary'],
+  shadow_freq: ['shadow_freq'],
   shadow_cross: ['shadow_cross'],
-  shadow_neighbor_balanced: ['shadow_neighbor_balanced', 'lab_neighbor_balanced'],
-  lab_consec_hybrid: ['lab_consec_hybrid'],
-  lab_delay_mix: ['lab_delay_mix', 'shadow_delay_diverse'],
+  shadow_delay_diverse: ['shadow_delay_diverse', 'lab_delay_diverse'],
 };
 const PARALLEL_ALL_UI = [...PARALLEL_UI, ...PARALLEL_LAB_UI];
 function parallelShort(key) {
@@ -142,6 +137,8 @@ const SELECTION_STRATEGY_LABEL = {
   gradient:    { text: '📐 梯度遞減', color: '#059669', bg: '#ECFDF5' },
   neighbor_t120:{ text: '🧭 鄰號挑戰', color: '#0369A1', bg: '#E0F2FE' },
   neighbor_hour_t120:{ text: '🧭 時段鄰號', color: '#0369A1', bg: '#E0F2FE' },
+  board_anti_month:{ text: '🎯 避開上期', color: '#7C2D12', bg: '#FFEDD5' },
+  board_dn_adaptive:{ text: '🎯 盤面適配', color: '#7C2D12', bg: '#FFEDD5' },
   board_ef_adaptive:{ text: '🎯 盤面適配', color: '#7C2D12', bg: '#FFEDD5' },
   skip26_t120: { text: '⏱️ 隔2至6期', color: '#7C3AED', bg: '#F5F3FF' },
   champ_aware: { text: '🧠 結構感知', color: '#7C3AED', bg: '#F5F3FF' },
@@ -746,7 +743,7 @@ function ComboWeightsCard() {
     <div style={S.card}>
       <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>🧪 平行實戰</div>
       <div style={{ fontSize: 12, color: C.textSub, lineHeight: 1.6 }}>
-        V0730-2：修分數空白；新版累積中暫顯示上一版參考。
+        V0803-2：整月擂主避開上期；六路無實驗席。新版累積中暫顯示上一版參考。
         <br />ZM / H 軸盤面研究請用 SQL 工具，不影響 live 出手。
       </div>
     </div>
@@ -969,8 +966,8 @@ function StatsPage({ audit }) {
   if (!audit?.ok) {
     return (
       <div style={S.page}>
-        <Card title="📊 V0730 固定窗口" icon="">
-          <div style={S.empty}>固定成績表尚未就緒，請先執行 V0730 SQL，部署後會自動累積。</div>
+        <Card title="📊 V0803-2 固定窗口" icon="">
+          <div style={S.empty}>固定成績表尚未就緒，請先執行 V0803-2 SQL，部署後會自動累積。</div>
         </Card>
       </div>
     );
@@ -982,11 +979,11 @@ function StatsPage({ audit }) {
   return (
     <div style={S.page}>
       <div style={{ ...S.card, border: `2px solid ${C.gold}` }}>
-        <div style={{ fontSize: 15, fontWeight: 900, color: C.gold }}>V0730 顯示六路＋兩路實驗席</div>
+        <div style={{ fontSize: 15, fontWeight: 900, color: C.gold }}>V0803-2 顯示六路（無實驗席）</div>
         <div style={{ fontSize: 11, color: C.textSub, marginTop: 5, lineHeight: 1.6 }}>
-          共同期要八路都有結果才算。共同期：
+          共同期要六路都有結果才算。共同期：
           <b style={{ color: C.text }}>{toNum(current?.common_periods, 0)}</b> 期。
-          未滿20期只顯示累積，不會宣告升擂主。實驗席只在本頁，不出現在快速／近期。
+          未滿20期只顯示累積，不會宣告升擂主。
         </div>
       </div>
 
@@ -1063,7 +1060,7 @@ function StatsPage({ audit }) {
         </>
       )}
 
-      <Card title="🕐 V0730 逐時共同成績" icon="">
+      <Card title="🕐 V0803-2 逐時共同成績" icon="">
         {hourly.length === 0 ? (
           <div style={S.empty}>等待第一批八路共同期結算</div>
         ) : (
@@ -1328,7 +1325,7 @@ function ParallelStrategyTabs({ activeKey, onChange, strategies, audit }) {
   return (
     <div style={{ padding: '10px 12px 4px', background: '#F8FAFC' }}>
       <div style={{ fontSize: 11, color: C.textSub, marginBottom: 6, lineHeight: 1.5 }}>
-        V0730-2 懶人分＝長線35＋近2小時35＋近況30＋時段劇本加分。臨時跟牌看右側大分。
+        V0803-2 懶人分＝長線35＋近2小時35＋近況30＋時段劇本加分。臨時跟牌看右側大分。
         {auditOk && overallLeader ? (
           <> 目前最高：<b style={{ color: C.text }}>{leaderShort}</b>（{leaderName} {overallLeader.total || audit?.lazy_scores?.leader?.total}分）</>
         ) : null}
@@ -1339,7 +1336,7 @@ function ParallelStrategyTabs({ activeKey, onChange, strategies, audit }) {
           background: '#FFEDD5', border: '1px solid #FDBA74',
           borderRadius: 8, padding: '8px 10px', marginBottom: 8, lineHeight: 1.45,
         }}>
-          新版 V0730 共同期尚在累積（目前 {commonN} 期）。
+          新版 V0803-2 共同期尚在累積（目前 {commonN} 期）。
           {refRunId ? <>左側暫顯示上一版 {refRunId} 成績參考；</> : null}
           右側懶人分仍可看。
         </div>
@@ -1359,10 +1356,14 @@ function ParallelStrategyTabs({ activeKey, onChange, strategies, audit }) {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 6 }}>
         {PARALLEL_UI.map(item => renderLazyCard(item))}
       </div>
-      <div style={{ fontSize: 11, fontWeight: 800, color: C.text, margin: '8px 0 4px' }}>實驗席（只記成績／可跟牌參考）</div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 6 }}>
-        {PARALLEL_LAB_UI.map(item => renderLazyCard(item, { labStyle: true }))}
-      </div>
+      {PARALLEL_LAB_UI.length > 0 ? (
+        <>
+          <div style={{ fontSize: 11, fontWeight: 800, color: C.text, margin: '8px 0 4px' }}>實驗席（只記成績／可跟牌參考）</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 6 }}>
+            {PARALLEL_LAB_UI.map(item => renderLazyCard(item, { labStyle: true }))}
+          </div>
+        </>
+      ) : null}
       {toNum(activeSummary.total, 0) > 0 && !String(activeKey).startsWith('lab_') && (
         <div style={{ fontSize: 11, color: C.textSub, marginTop: 7, textAlign: 'center', lineHeight: 1.6 }}>
           <div>
@@ -1478,7 +1479,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0730-2</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0803-2</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
