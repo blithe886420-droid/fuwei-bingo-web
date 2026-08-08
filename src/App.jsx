@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
-// App.jsx - V0808-4（8/8）：方法擂台——挑戰席測切換／組法；臨場分各路自有
+// App.jsx - V0808-5（8/8）：第一頁六路即時更新預測／比對；第二頁收錄各路自有近6
+// ★ V0808-4（8/8）：方法擂台——挑戰席測切換／組法；臨場分各路自有
 // ★ V0808-3（8/8）：臨場分／近期改各路自有（不等共同）；分數與第二頁對齊
 // ★ V0808-2（8/8）：臨場大分＝近2小時＋近6期（臨時跟牌）；長線只附註
 // ★ V0808（8/8）：擂主 E=連號／F=避開；六路無實驗席；common=0 仍顯示上一版參考
@@ -87,7 +88,11 @@ function buildLazyScoreMap(audit, strategies) {
     const longSummary = lanes?.[item.key]?.summary || {};
     // 臨場近6：優先後端自有；否則用各路 own_summary／own_recent（不等共同）
     const ownSummary = strategies?.[item.key]?.own_summary || {};
-    const ownRows = toArray(strategies?.[item.key]?.own_recent_rows).slice(0, 6);
+    const ownRows = toArray(strategies?.[item.key]?.own_last6_rows).length
+      ? toArray(strategies?.[item.key]?.own_last6_rows).slice(0, 6)
+      : toArray(strategies?.[item.key]?.own_recent_rows)
+        .filter(row => row?.status === 'compared' && row?.compare_status === 'done')
+        .slice(0, 6);
     let recentTotal = toNum(fromApi?.recent_sample, 0);
     let recentOk = toNum(fromApi?.recent_ok, 0);
     if (!(recentTotal > 0) && toNum(ownSummary.total, 0) > 0) {
@@ -624,12 +629,30 @@ function QuickPage({ prediction, recent20, onRefresh, loading, streakRows, isSha
   );
 }
 
-function HistoryPage({ historyRows, streakRows, isShadow = false }) {
+function HistoryPage({ historyRows, streakRows, isShadow = false, laneLabel = '' }) {
   const rows = toArray(historyRows).slice(0, 20);
+  const last6 = rows.filter(r => r?.status === 'compared' && r?.compare_status === 'done').slice(0, 6);
+  const last6Ok = last6.filter(r => {
+    const hit = toNum(r?.hit_count, 0);
+    const detail = toArray(safeJson(r?.compare_result_json)?.detail);
+    const hit2 = detail.filter(d => toNum(d?.hit ?? d?.hit_count, 0) >= 2).length;
+    return hit >= 3 || hit2 >= 4;
+  }).length;
   return (
     <div style={S.page}>
-      <Card title="近期命中紀錄（各路自有・不等共同）" icon="📋">
-        {!rows.length ? <div style={S.empty}>尚無比對紀錄</div> : rows.map((row, idx) => {
+      <Card title={`近期命中紀錄・${laneLabel || '本路'}（自有・近6已收錄）`} icon="📋">
+        <div style={{
+          fontSize: 12, fontWeight: 800, color: C.text,
+          background: '#EEF2FF', border: '1px solid #C7D2FE', borderRadius: 8,
+          padding: '8px 10px', marginBottom: 10, lineHeight: 1.5,
+        }}>
+          近6期已結算 {last6.length}/6
+          {last6.length > 0 ? `｜合格 ${last6Ok}/${last6.length}` : '｜尚在累積'}
+          <div style={{ fontSize: 11, fontWeight: 600, color: C.textSub, marginTop: 4 }}>
+            只看這一路自己的預測→比對，不等其他路齊。含「等待開獎」的最新一期。
+          </div>
+        </div>
+        {!rows.length ? <div style={S.empty}>尚無比對紀錄（新版上路後會一期一期收進來）</div> : rows.map((row, idx) => {
           const compareResult = safeJson(row?.compare_result_json) || safeJson(row?.compare_result);
           const detail = toArray(compareResult?.detail);
           const allGroups = toArray(row?.groups_json);
@@ -761,7 +784,7 @@ function ComboWeightsCard() {
     <div style={S.card}>
       <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>🧪 平行實戰</div>
       <div style={{ fontSize: 12, color: C.textSub, lineHeight: 1.6 }}>
-        V0808-4：方法擂台——挑戰席測切換／組法（不再只塞同類池）。臨場分各路自有。
+        V0808-5：六路預測／比對即時更新；第二頁收錄各路自有近6期。
         <br />ZM / H 軸盤面研究請用 SQL 工具，不影響 live 出手。
       </div>
     </div>
@@ -1346,7 +1369,7 @@ function ParallelStrategyTabs({ activeKey, onChange, strategies, audit }) {
   return (
     <div style={{ padding: '10px 12px 4px', background: '#F8FAFC' }}>
       <div style={{ fontSize: 11, color: C.textSub, marginBottom: 6, lineHeight: 1.5 }}>
-        V0808-4：方法擂台。右側臨場分＝近2小時＋近6期自有。挑戰席在測「何時用誰／E/F怎麼切／組怎麼排」。
+        V0808-5：右側臨場分看近6自有。第一頁切六路會跟最新預測／比對走，不再卡舊期。
         {auditOk && overallLeader ? (
           <> 此刻最高：<b style={{ color: C.text }}>{leaderShort}</b>（{leaderName} {overallLeader.total || audit?.lazy_scores?.leader?.total}分）</>
         ) : null}
@@ -1477,12 +1500,18 @@ export default function App() {
     ? { ...prediction, latest_3star_row: activeLane.latest_row }
     : prediction;
   const activeHistoryRows = (() => {
-    // ★ V0808-3：第二頁一律用各路自有結算，與臨場分對齊（不再等六路共同）
+    // ★ V0808-5：第二頁只收各路自有（含待比對）；絕不回退共同窗空列表
     const own = activeLane?.own_recent_rows;
     if (Array.isArray(own) && own.length) return own;
+    const last6 = activeLane?.own_last6_rows;
+    if (Array.isArray(last6) && last6.length) return last6;
+    // 擂主後備：舊 formal 列表（避免全空白）；影子沒資料就空，等本期進來
     if (strategyKey === 'primary') return historyRows;
-    return activeLane?.recent_rows || [];
+    return [];
   })();
+  const activeLaneLabel = PARALLEL_ALL_UI.find(x => x.key === strategyKey)?.short
+    || activeLane?.label
+    || strategyKey;
   const isShadowLane = strategyKey !== 'primary';
   const activeStreakRows = strategyKey === 'primary' ? streakRows : [];
 
@@ -1506,7 +1535,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0808-4</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0808-5</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
@@ -1532,7 +1561,7 @@ export default function App() {
       )}
       {loading && tab === 'quick' && <Spinner />}
       {tab === 'quick'   && <QuickPage   prediction={activePrediction} recent20={recent20} onRefresh={loadData} loading={loading} streakRows={activeStreakRows} isShadow={isShadowLane} />}
-      {tab === 'history' && <HistoryPage historyRows={activeHistoryRows} streakRows={activeStreakRows} isShadow={isShadowLane} />}
+      {tab === 'history' && <HistoryPage historyRows={activeHistoryRows} streakRows={activeStreakRows} isShadow={isShadowLane} laneLabel={activeLaneLabel} />}
       {tab === 'stats'   && <StatsPage audit={parallelAudit} />}
       {tab === 'market'  && <MarketPage  recent20={recent20} />}
       {tab === 'hot'     && <HotPage     recent20={recent20} />}
