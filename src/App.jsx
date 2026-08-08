@@ -1,10 +1,12 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
-// App.jsx - V0808-2（8/8）：臨場大分＝近2小時＋近6期（臨時跟牌）；長線只附註
+// App.jsx - V0808-3（8/8）：臨場分／近期改各路自有（不等共同）；分數與第二頁對齊
+// ★ V0808-2（8/8）：臨場大分＝近2小時＋近6期（臨時跟牌）；長線只附註
 // ★ V0808（8/8）：擂主 E=連號／F=避開；六路無實驗席；common=0 仍顯示上一版參考
 const RAILWAY_URL = 'https://fuwei-bingo-backend-production.up.railway.app';
 const REFRESH_INTERVAL_MS = 30000;
-const AUDIT_REFRESH_MS = 60000;
+/** 與主資料同步刷新，避免分數比近期晚一期 */
+const AUDIT_REFRESH_MS = 30000;
 const STATS_START_DATE = '2026-06-08T00:00:00.000Z';
 const PARALLEL_UI = [
   { key: 'primary', label: '暫時擂主・盤面適配', short: '擂主' },
@@ -29,7 +31,7 @@ function parallelShort(key) {
   return PARALLEL_ALL_UI.find(x => x.key === key)?.short || key;
 }
 
-/** 懶人分數 V0808-2：大分＝臨場（近2小時40＋近6期40＋劇本）；長線僅附註 */
+/** 懶人分數 V0808-3：大分＝臨場（近2小時40＋近6期自有40＋劇本）；長線僅附註 */
 function scoreLongLine(rate, gates = {}) {
   const r = Number(rate) || 0;
   let s = r >= 0.2 ? 18
@@ -79,35 +81,34 @@ function buildLazyScoreMap(audit, strategies) {
   const map = {};
   const backend = audit?.lazy_scores?.by_lane || {};
   const lanes = audit?.current?.lanes || {};
-  const hourly = toArray(audit?.hourly);
-  const last2 = hourly.slice(-2);
   for (const item of PARALLEL_ALL_UI) {
     const fromApi = backend[item.key];
     const longSummary = lanes?.[item.key]?.summary || {};
-    const recentSummary = strategies?.[item.key]?.summary || {};
-    let hq = 0;
-    let ht = 0;
-    for (const hour of last2) {
-      const cell = hour?.lanes?.[item.key] || {};
-      hq += toNum(cell.qualified, 0);
-      ht += toNum(cell.total, 0);
+    // 臨場近6：優先後端自有；否則用各路 own_summary／own_recent（不等共同）
+    const ownSummary = strategies?.[item.key]?.own_summary || {};
+    const ownRows = toArray(strategies?.[item.key]?.own_recent_rows).slice(0, 6);
+    let recentTotal = toNum(fromApi?.recent_sample, 0);
+    let recentOk = toNum(fromApi?.recent_ok, 0);
+    if (!(recentTotal > 0) && toNum(ownSummary.total, 0) > 0) {
+      // own_summary 可能是整段自有窗；若有列則改算近6
+      if (ownRows.length > 0) {
+        recentTotal = ownRows.length;
+        recentOk = ownRows.filter(row => {
+          const hit = toNum(row?.hit_count, 0);
+          const detail = toArray(safeJson(row?.compare_result_json)?.detail);
+          const hit2 = detail.filter(d => toNum(d?.hit ?? d?.hit_count, 0) >= 2).length;
+          return hit >= 3 || hit2 >= 4;
+        }).length;
+      } else {
+        recentTotal = Math.min(6, toNum(ownSummary.total, 0));
+        recentOk = Math.round(toNum(ownSummary.qualified_rate, 0) * recentTotal);
+      }
     }
-    const recentFromLane = longSummary?.recent || {};
-    const recentTotal = toNum(recentSummary.total, 0) > 0
-      ? toNum(recentSummary.total, 0)
-      : toNum(fromApi?.recent_sample, toNum(recentFromLane.last6_total, 0));
-    const recentOk = toNum(recentSummary.total, 0) > 0
-      ? toNum(recentSummary.qualified, 0)
-      : toNum(fromApi?.recent_ok, toNum(recentFromLane.last6_qualified, 0));
-    const recentRate = recentTotal > 0
-      ? (toNum(recentSummary.total, 0) > 0 ? toNum(recentSummary.qualified_rate, 0) : recentOk / recentTotal)
-      : toNum(fromApi?.recent_rate, 0);
+    const recentRate = recentTotal > 0 ? recentOk / recentTotal : toNum(fromApi?.recent_rate, 0);
     const long = fromApi
       ? toNum(fromApi.long, scoreLongLine(longSummary.qualified_rate, longSummary.gates))
       : scoreLongLine(longSummary.qualified_rate, longSummary.gates);
-    const time = fromApi
-      ? toNum(fromApi.time, scoreHourWindow(ht > 0 ? hq / ht : 0, ht))
-      : scoreHourWindow(ht > 0 ? hq / ht : 0, ht);
+    const time = toNum(fromApi?.time, 0);
     const recent = fromApi
       ? toNum(fromApi.recent, scoreRecentWindow(recentRate, recentTotal))
       : scoreRecentWindow(recentRate, recentTotal);
@@ -626,7 +627,7 @@ function HistoryPage({ historyRows, streakRows, isShadow = false }) {
   const rows = toArray(historyRows).slice(0, 20);
   return (
     <div style={S.page}>
-      <Card title="近期命中紀錄" icon="📋">
+      <Card title="近期命中紀錄（各路自有・不等共同）" icon="📋">
         {!rows.length ? <div style={S.empty}>尚無比對紀錄</div> : rows.map((row, idx) => {
           const compareResult = safeJson(row?.compare_result_json) || safeJson(row?.compare_result);
           const detail = toArray(compareResult?.detail);
@@ -759,7 +760,7 @@ function ComboWeightsCard() {
     <div style={S.card}>
       <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>🧪 平行實戰</div>
       <div style={{ fontSize: 12, color: C.textSub, lineHeight: 1.6 }}>
-        V0808-2：臨時跟牌看臨場分；長線只附註。
+        V0808-3：臨時跟牌看臨場分；近期與分數都用各路自有結算（不等共同）。
         <br />ZM / H 軸盤面研究請用 SQL 工具，不影響 live 出手。
       </div>
     </div>
@@ -1344,7 +1345,7 @@ function ParallelStrategyTabs({ activeKey, onChange, strategies, audit }) {
   return (
     <div style={{ padding: '10px 12px 4px', background: '#F8FAFC' }}>
       <div style={{ fontSize: 11, color: C.textSub, marginBottom: 6, lineHeight: 1.5 }}>
-        V0808-2：臨時跟牌看右側「臨場分」（近2小時＋近6期）。長線只附註，不會把當下熱路打低。
+        V0808-3：臨時跟牌看右側「臨場分」（近2小時＋近6期自有）。第二頁近期與分數同步，不等六路共同。
         {auditOk && overallLeader ? (
           <> 此刻最高：<b style={{ color: C.text }}>{leaderShort}</b>（{leaderName} {overallLeader.total || audit?.lazy_scores?.leader?.total}分）</>
         ) : null}
@@ -1421,14 +1422,16 @@ export default function App() {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      // V0720-4：先載主畫面需要的兩支；health／streak 後載，避免一起打爆資料庫
-      const [predRes, recentRes] = await Promise.all([
+      // V0808-3：主畫面與臨場分同輪更新，避免分數比第二頁晚 1～2 期
+      const [predRes, recentRes, auditRes] = await Promise.all([
         apiFetch('/api/prediction-latest').catch(() => ({})),
         apiFetch('/api/recent20').catch(() => ({})),
+        apiFetch('/api/parallel-audit').catch(() => null),
       ]);
       setPrediction(predRes);
       setHistoryRows(predRes?.recent_3star_compared_rows || predRes?.recent_compared_rows || []);
       setRecent20(recentRes?.recent20 || recentRes?.data || []);
+      if (auditRes) setParallelAudit(auditRes);
       setLoopStatus(isNight() ? '夜間停止（00:00-07:00）' : `已更新 ${new Date().toLocaleTimeString('zh-TW', { hour12: false })}`);
       setLoading(false);
 
@@ -1472,9 +1475,13 @@ export default function App() {
   const activePrediction = activeLane
     ? { ...prediction, latest_3star_row: activeLane.latest_row }
     : prediction;
-  const activeHistoryRows = strategyKey === 'primary'
-    ? historyRows
-    : (activeLane?.recent_rows || []);
+  const activeHistoryRows = (() => {
+    // ★ V0808-3：第二頁一律用各路自有結算，與臨場分對齊（不再等六路共同）
+    const own = activeLane?.own_recent_rows;
+    if (Array.isArray(own) && own.length) return own;
+    if (strategyKey === 'primary') return historyRows;
+    return activeLane?.recent_rows || [];
+  })();
   const isShadowLane = strategyKey !== 'primary';
   const activeStreakRows = strategyKey === 'primary' ? streakRows : [];
 
@@ -1498,7 +1505,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0808-2</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0808-3</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
