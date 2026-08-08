@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
-// App.jsx - V0808-3（8/8）：臨場分／近期改各路自有（不等共同）；分數與第二頁對齊
+// App.jsx - V0808-4（8/8）：方法擂台——挑戰席測切換／組法；臨場分各路自有
+// ★ V0808-3（8/8）：臨場分／近期改各路自有（不等共同）；分數與第二頁對齊
 // ★ V0808-2（8/8）：臨場大分＝近2小時＋近6期（臨時跟牌）；長線只附註
 // ★ V0808（8/8）：擂主 E=連號／F=避開；六路無實驗席；common=0 仍顯示上一版參考
 const RAILWAY_URL = 'https://fuwei-bingo-backend-production.up.railway.app';
@@ -10,21 +11,21 @@ const AUDIT_REFRESH_MS = 30000;
 const STATS_START_DATE = '2026-06-08T00:00:00.000Z';
 const PARALLEL_UI = [
   { key: 'primary', label: '暫時擂主・盤面適配', short: '擂主' },
-  { key: 'shadow_delay_diverse', label: '挑戰1・延遲分散', short: '挑1' },
-  { key: 'shadow_neighbor', label: '挑戰2・原版鄰號', short: '挑2' },
-  { key: 'shadow_freq', label: '挑戰3・頻率快軸', short: '挑3' },
-  { key: 'shadow_cross', label: '挑戰4・三池交叉', short: '挑4' },
-  { key: 'shadow_neighbor_balanced', label: '挑戰5・鄰號3A5B', short: '挑5' },
+  { key: 'shadow_route_ef_swap', label: '挑戰1・E/F對調', short: '對調' },
+  { key: 'shadow_route_ef_nn', label: '挑戰2・雙鄰號切', short: '雙鄰' },
+  { key: 'shadow_route_hour', label: '挑戰3・時段切換', short: '時段' },
+  { key: 'shadow_asm_cover', label: '挑戰4・同池Cover組', short: 'Cover' },
+  { key: 'shadow_asm_3a5b', label: '挑戰5・同池3A5B組', short: '3A5B' },
 ];
 const PARALLEL_LAB_UI = [];
 /** 新版座位對上一版 lane 的參考對照（僅顯示用） */
 const REFERENCE_LANE_FALLBACK = {
   primary: ['primary'],
-  shadow_delay_diverse: ['shadow_delay_diverse', 'lab_delay_diverse'],
-  shadow_neighbor: ['shadow_neighbor'],
-  shadow_freq: ['shadow_freq'],
-  shadow_cross: ['shadow_cross'],
-  shadow_neighbor_balanced: ['shadow_neighbor_balanced', 'shadow_consec', 'lab_neighbor_balanced'],
+  shadow_route_ef_swap: ['shadow_delay_diverse', 'shadow_route_ef_swap'],
+  shadow_route_ef_nn: ['shadow_neighbor', 'shadow_route_ef_nn'],
+  shadow_route_hour: ['shadow_freq', 'shadow_route_hour'],
+  shadow_asm_cover: ['shadow_cross', 'shadow_asm_cover'],
+  shadow_asm_3a5b: ['shadow_neighbor_balanced', 'shadow_asm_3a5b'],
 };
 const PARALLEL_ALL_UI = [...PARALLEL_UI, ...PARALLEL_LAB_UI];
 function parallelShort(key) {
@@ -760,7 +761,7 @@ function ComboWeightsCard() {
     <div style={S.card}>
       <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>🧪 平行實戰</div>
       <div style={{ fontSize: 12, color: C.textSub, lineHeight: 1.6 }}>
-        V0808-3：臨時跟牌看臨場分；近期與分數都用各路自有結算（不等共同）。
+        V0808-4：方法擂台——挑戰席測切換／組法（不再只塞同類池）。臨場分各路自有。
         <br />ZM / H 軸盤面研究請用 SQL 工具，不影響 live 出手。
       </div>
     </div>
@@ -983,8 +984,8 @@ function StatsPage({ audit }) {
   if (!audit?.ok) {
     return (
       <div style={S.page}>
-        <Card title="📊 V0808 固定窗口" icon="">
-          <div style={S.empty}>固定成績表尚未就緒，請先執行 V0808 SQL，部署後會自動累積。</div>
+        <Card title="📊 V0808-4 固定窗口" icon="">
+          <div style={S.empty}>固定成績表尚未就緒，請先執行 V0808-4 SQL，部署後會自動累積。</div>
         </Card>
       </div>
     );
@@ -996,15 +997,15 @@ function StatsPage({ audit }) {
   return (
     <div style={S.page}>
       <div style={{ ...S.card, border: `2px solid ${C.gold}` }}>
-        <div style={{ fontSize: 15, fontWeight: 900, color: C.gold }}>V0808 顯示六路（無實驗席）</div>
+        <div style={{ fontSize: 15, fontWeight: 900, color: C.gold }}>V0808-4 方法擂台（切換／組法）</div>
         <div style={{ fontSize: 11, color: C.textSub, marginTop: 5, lineHeight: 1.6 }}>
-          共同期要六路都有結果才算。共同期：
+          共同期要六路都有結果才算（升擂主用）。共同期：
           <b style={{ color: C.text }}>{toNum(current?.common_periods, 0)}</b> 期。
           未滿20期只顯示累積，不會宣告升擂主。
         </div>
       </div>
 
-      <div style={{ fontSize: 12, fontWeight: 800, color: C.text, margin: '4px 0 8px' }}>顯示六路</div>
+      <div style={{ fontSize: 12, fontWeight: 800, color: C.text, margin: '4px 0 8px' }}>方法六路</div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8, marginBottom: 12 }}>
         {displayKeys.map(laneKey => {
           const lane = lanes?.[laneKey] || {};
@@ -1077,9 +1078,9 @@ function StatsPage({ audit }) {
         </>
       )}
 
-      <Card title="🕐 V0808 逐時共同成績" icon="">
+      <Card title="🕐 V0808-4 逐時共同成績" icon="">
         {hourly.length === 0 ? (
-          <div style={S.empty}>等待第一批八路共同期結算</div>
+          <div style={S.empty}>等待第一批六路共同期結算</div>
         ) : (
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 720, fontSize: 10 }}>
@@ -1345,7 +1346,7 @@ function ParallelStrategyTabs({ activeKey, onChange, strategies, audit }) {
   return (
     <div style={{ padding: '10px 12px 4px', background: '#F8FAFC' }}>
       <div style={{ fontSize: 11, color: C.textSub, marginBottom: 6, lineHeight: 1.5 }}>
-        V0808-3：臨時跟牌看右側「臨場分」（近2小時＋近6期自有）。第二頁近期與分數同步，不等六路共同。
+        V0808-4：方法擂台。右側臨場分＝近2小時＋近6期自有。挑戰席在測「何時用誰／E/F怎麼切／組怎麼排」。
         {auditOk && overallLeader ? (
           <> 此刻最高：<b style={{ color: C.text }}>{leaderShort}</b>（{leaderName} {overallLeader.total || audit?.lazy_scores?.leader?.total}分）</>
         ) : null}
@@ -1356,7 +1357,7 @@ function ParallelStrategyTabs({ activeKey, onChange, strategies, audit }) {
           background: '#FFEDD5', border: '1px solid #FDBA74',
           borderRadius: 8, padding: '8px 10px', marginBottom: 8, lineHeight: 1.45,
         }}>
-          新版 V0808 共同期尚在累積（目前 {commonN} 期）。
+          新版 V0808-4 共同期尚在累積（目前 {commonN} 期）。
           {refRunId ? <>左側暫顯示上一版 {refRunId} 成績參考；</> : null}
           右側臨場分仍可看。
         </div>
@@ -1505,7 +1506,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0808-3</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0808-4</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
