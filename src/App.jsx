@@ -1,32 +1,30 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
-// App.jsx - V0808-5（8/8）：第一頁六路即時更新預測／比對；第二頁收錄各路自有近6
+// App.jsx - V0814（8/14）：擂主雙鄰；方法擂台換血。第一頁即時、第二頁自有近6
+// ★ V0808-5（8/8）：第一頁六路即時更新預測／比對；第二頁收錄各路自有近6
 // ★ V0808-4（8/8）：方法擂台——挑戰席測切換／組法；臨場分各路自有
-// ★ V0808-3（8/8）：臨場分／近期改各路自有（不等共同）；分數與第二頁對齊
-// ★ V0808-2（8/8）：臨場大分＝近2小時＋近6期（臨時跟牌）；長線只附註
-// ★ V0808（8/8）：擂主 E=連號／F=避開；六路無實驗席；common=0 仍顯示上一版參考
 const RAILWAY_URL = 'https://fuwei-bingo-backend-production.up.railway.app';
 const REFRESH_INTERVAL_MS = 30000;
 /** 與主資料同步刷新，避免分數比近期晚一期 */
 const AUDIT_REFRESH_MS = 30000;
 const STATS_START_DATE = '2026-06-08T00:00:00.000Z';
 const PARALLEL_UI = [
-  { key: 'primary', label: '暫時擂主・盤面適配', short: '擂主' },
-  { key: 'shadow_route_ef_swap', label: '挑戰1・E/F對調', short: '對調' },
-  { key: 'shadow_route_ef_nn', label: '挑戰2・雙鄰號切', short: '雙鄰' },
+  { key: 'primary', label: '暫時擂主・雙鄰號', short: '擂主' },
+  { key: 'shadow_board_ca', label: '挑戰1・舊盤面適配', short: '舊適' },
+  { key: 'shadow_ef_na', label: '挑戰2・E鄰F避', short: '混血' },
   { key: 'shadow_route_hour', label: '挑戰3・時段切換', short: '時段' },
-  { key: 'shadow_asm_cover', label: '挑戰4・同池Cover組', short: 'Cover' },
-  { key: 'shadow_asm_3a5b', label: '挑戰5・同池3A5B組', short: '3A5B' },
+  { key: 'shadow_asm_cover', label: '挑戰4・鄰號Cover組', short: 'Cover' },
+  { key: 'shadow_asm_diverse', label: '挑戰5・鄰號分散組', short: '分散' },
 ];
 const PARALLEL_LAB_UI = [];
 /** 新版座位對上一版 lane 的參考對照（僅顯示用） */
 const REFERENCE_LANE_FALLBACK = {
-  primary: ['primary'],
-  shadow_route_ef_swap: ['shadow_delay_diverse', 'shadow_route_ef_swap'],
-  shadow_route_ef_nn: ['shadow_neighbor', 'shadow_route_ef_nn'],
-  shadow_route_hour: ['shadow_freq', 'shadow_route_hour'],
-  shadow_asm_cover: ['shadow_cross', 'shadow_asm_cover'],
-  shadow_asm_3a5b: ['shadow_neighbor_balanced', 'shadow_asm_3a5b'],
+  primary: ['primary', 'shadow_route_ef_nn'],
+  shadow_board_ca: ['primary', 'shadow_board_ca'],
+  shadow_ef_na: ['shadow_route_ef_swap', 'shadow_ef_na'],
+  shadow_route_hour: ['shadow_route_hour'],
+  shadow_asm_cover: ['shadow_asm_cover'],
+  shadow_asm_diverse: ['shadow_asm_3a5b', 'shadow_asm_diverse'],
 };
 const PARALLEL_ALL_UI = [...PARALLEL_UI, ...PARALLEL_LAB_UI];
 function parallelShort(key) {
@@ -784,7 +782,7 @@ function ComboWeightsCard() {
     <div style={S.card}>
       <div style={{ fontSize: 13, fontWeight: 800, color: C.gold, marginBottom: 8 }}>🧪 平行實戰</div>
       <div style={{ fontSize: 12, color: C.textSub, lineHeight: 1.6 }}>
-        V0808-5：六路預測／比對即時更新；第二頁收錄各路自有近6期。
+        V0814：擂主雙鄰。六路預測／比對即時更新；第二頁收錄各路自有近6期。
         <br />ZM / H 軸盤面研究請用 SQL 工具，不影響 live 出手。
       </div>
     </div>
@@ -1007,8 +1005,8 @@ function StatsPage({ audit }) {
   if (!audit?.ok) {
     return (
       <div style={S.page}>
-        <Card title="📊 V0808-4 固定窗口" icon="">
-          <div style={S.empty}>固定成績表尚未就緒，請先執行 V0808-4 SQL，部署後會自動累積。</div>
+        <Card title="📊 V0814 固定窗口" icon="">
+          <div style={S.empty}>固定成績表尚未就緒，請先執行 V0814 SQL，部署後會自動累積。</div>
         </Card>
       </div>
     );
@@ -1020,7 +1018,7 @@ function StatsPage({ audit }) {
   return (
     <div style={S.page}>
       <div style={{ ...S.card, border: `2px solid ${C.gold}` }}>
-        <div style={{ fontSize: 15, fontWeight: 900, color: C.gold }}>V0808-4 方法擂台（切換／組法）</div>
+        <div style={{ fontSize: 15, fontWeight: 900, color: C.gold }}>V0814 方法擂台（雙鄰擂主）</div>
         <div style={{ fontSize: 11, color: C.textSub, marginTop: 5, lineHeight: 1.6 }}>
           共同期要六路都有結果才算（升擂主用）。共同期：
           <b style={{ color: C.text }}>{toNum(current?.common_periods, 0)}</b> 期。
@@ -1101,7 +1099,7 @@ function StatsPage({ audit }) {
         </>
       )}
 
-      <Card title="🕐 V0808-4 逐時共同成績" icon="">
+      <Card title="🕐 V0814 逐時共同成績" icon="">
         {hourly.length === 0 ? (
           <div style={S.empty}>等待第一批六路共同期結算</div>
         ) : (
@@ -1369,7 +1367,7 @@ function ParallelStrategyTabs({ activeKey, onChange, strategies, audit }) {
   return (
     <div style={{ padding: '10px 12px 4px', background: '#F8FAFC' }}>
       <div style={{ fontSize: 11, color: C.textSub, marginBottom: 6, lineHeight: 1.5 }}>
-        V0808-5：右側臨場分看近6自有。第一頁切六路會跟最新預測／比對走，不再卡舊期。
+        V0814：右側臨場分看近6自有。擂主是雙鄰；臨時跟牌跟高分那一路。
         {auditOk && overallLeader ? (
           <> 此刻最高：<b style={{ color: C.text }}>{leaderShort}</b>（{leaderName} {overallLeader.total || audit?.lazy_scores?.leader?.total}分）</>
         ) : null}
@@ -1380,7 +1378,7 @@ function ParallelStrategyTabs({ activeKey, onChange, strategies, audit }) {
           background: '#FFEDD5', border: '1px solid #FDBA74',
           borderRadius: 8, padding: '8px 10px', marginBottom: 8, lineHeight: 1.45,
         }}>
-          新版 V0808-4 共同期尚在累積（目前 {commonN} 期）。
+          新版 V0814 共同期尚在累積（目前 {commonN} 期）。
           {refRunId ? <>左側暫顯示上一版 {refRunId} 成績參考；</> : null}
           右側臨場分仍可看。
         </div>
@@ -1535,7 +1533,7 @@ export default function App() {
       <div style={S.header}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={S.headerTitle}>🏆 富緯賓果 AI V0808-5</div>
+            <div style={S.headerTitle}>🏆 富緯賓果 AI V0814</div>
             <div style={S.headerSub}>{loopStatus}</div>
           </div>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
